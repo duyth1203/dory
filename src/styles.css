@@ -5,7 +5,7 @@
 @layer base {
   :root {
     color-scheme: light;
-    /* BAF design system — light mode */
+    /* Hibo design system — light mode */
     --background: 40 11% 94%;           /* warm off-white  #F2F1EF */
     --foreground: 0 0% 0%;             /* black    #000000 */
     --card: 0 0% 100%;                 /* white    #ffffff */
@@ -30,7 +30,7 @@
 
   .dark {
     color-scheme: dark;
-    /* BAF design system — dark mode */
+    /* Hibo design system — dark mode */
     --background: 0 0% 12%;             /* dark  #1E1E1E */
     --foreground: 0 0% 100%;
     --card: 210 3% 13%;                /* grey.09  #202122 */
@@ -100,6 +100,30 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+
+  /* Let native vibrancy show through behind the WebView (_only_ after plugin init adds .tauri-liquid-glass). */
+  html.tauri-liquid-glass,
+  html.tauri-liquid-glass body {
+    background-color: transparent !important;
+  }
+
+  html.tauri-liquid-glass #root {
+    min-height: 100vh;
+    background-color: transparent;
+  }
+
+  /* Shell surfaces: keep in base as defaults. Liquid-glass overrides live in @layer utilities (below) so they win over `.bg-background` / `bg-card/*` on the same node. */
+  .app-liquid-chrome {
+    background-color: hsl(var(--background));
+  }
+
+  .app-chrome-header {
+    background-color: hsl(var(--card) / 0.5);
+  }
+
+  .app-chrome-aside {
+    background-color: hsl(var(--card) / 0.3);
+  }
 }
 
 @layer utilities {
@@ -126,6 +150,93 @@
   .ring-ring { --tw-ring-color: hsl(var(--ring)); }
   .ring-primary { --tw-ring-color: hsl(var(--primary)); }
   .accent-primary { accent-color: hsl(var(--primary)); }
+}
+
+/*
+ * Unlayered: must beat Tailwind’s generated `.bg-*` utilities (layer order is not guaranteed vs our @layer utilities).
+ */
+html.tauri-liquid-glass:not(.dark) .app-liquid-chrome {
+  background-color: hsl(var(--background) / 0.55);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+html.tauri-liquid-glass.dark .app-liquid-chrome {
+  background-color: hsl(var(--background) / 0.72);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+html.tauri-liquid-glass:not(.dark) .app-chrome-header {
+  background-color: hsl(var(--card) / 0.42);
+  /* Hairline via shadow reads lighter on bright glass than a solid border. */
+  border-bottom-width: 0;
+  box-shadow:
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.28),
+    0 1px 0 0 hsl(var(--foreground) / 0.055);
+}
+
+html.tauri-liquid-glass.dark .app-chrome-header {
+  background-color: hsl(var(--card) / 0.45);
+  border-bottom-color: hsl(var(--border) / 0.65);
+}
+
+html.tauri-liquid-glass:not(.dark) .app-chrome-aside {
+  background-color: hsl(var(--muted) / 0.28);
+  /* Pane edge is drawn on `.app-chrome-panes-split` to avoid a double line with the separator. */
+  border-right-width: 0;
+}
+
+html.tauri-liquid-glass:not(.dark) .app-chrome-panes-split {
+  background-color: transparent;
+  box-shadow: 1px 0 0 0 hsl(var(--foreground) / 0.06);
+}
+
+html.tauri-liquid-glass.dark .app-chrome-aside {
+  background-color: hsl(var(--muted) / 0.35);
+  border-right-color: hsl(var(--border) / 0.55);
+}
+
+/*
+ * Light liquid glass: translucent fields (lower white fill + stronger blur = lighter / airier than shell).
+ */
+html.tauri-liquid-glass:not(.dark) select,
+html.tauri-liquid-glass:not(.dark) textarea,
+html.tauri-liquid-glass:not(.dark) input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not([type="button"]):not([type="submit"]):not([type="reset"]) {
+  /* background-color: hsl(0 0% 100% / 0.2); */
+  background-color: white;
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+/*
+ * Light glass: horizontal rules and checklist frame — hairline via shadow (solid borders read heavy on vibrancy).
+ * Skipped where keyframes animate border/box-shadow (pipeline spotlight row, recording cards).
+ */
+html.tauri-liquid-glass:not(.dark) .app-glass-hairline-b {
+  border-bottom-width: 0 !important;
+  box-shadow: 0 1px 0 0 hsl(var(--foreground) / 0.055);
+}
+
+html.tauri-liquid-glass:not(.dark) .app-glass-hairline-t {
+  border-top-width: 0 !important;
+  box-shadow: inset 0 1px 0 0 hsl(var(--foreground) / 0.055);
+}
+
+html.tauri-liquid-glass:not(.dark) .app-glass-checklist {
+  border-width: 0;
+  box-shadow:
+    0 1px 2px 0 rgb(15 23 42 / 0.06),
+    0 0 0 1px hsl(var(--foreground) / 0.065);
+}
+
+html.tauri-liquid-glass:not(.dark) .app-glass-checklist.divide-y > * + * {
+  border-top-width: 0;
+  box-shadow: inset 0 1px 0 0 hsl(var(--foreground) / 0.055);
+}
+
+html.tauri-liquid-glass:not(.dark) .app-glass-muted-rule {
+  background-color: hsl(var(--foreground) / 0.065);
 }
 
 /* Smooth animations */

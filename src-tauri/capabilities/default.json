@@ -5,6 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "liquid-glass:default",
     "core:window:allow-start-dragging",
     "core:window:allow-set-focus",
     "shell:allow-open",

@@ -191,7 +191,7 @@ function PipelineQueueDropdownBody({
           </p>
         </div>
       ) : null}
-      {activeId && waiting.length > 0 ? <div className="h-px bg-border" /> : null}
+      {activeId && waiting.length > 0 ? <div className="app-glass-muted-rule h-px bg-border" /> : null}
       {waitingBlock}
     </div>
   );
@@ -415,7 +415,7 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between px-4 py-3 border-b gap-2 flex-wrap">
+      <div className="app-glass-hairline-b flex items-center justify-between px-4 py-3 border-b gap-2 flex-wrap">
         <h2 className="text-sm font-semibold text-foreground">
           Recordings
           {recordings.length > 0 && (
@@ -440,7 +440,7 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
       </div>
 
       {recordings.length > 0 && (
-        <div className="animate-filter-bar-enter flex flex-col gap-2 px-4 py-2 border-b bg-muted/20">
+        <div className="app-glass-hairline-b animate-filter-bar-enter flex flex-col gap-2 px-4 py-2 border-b bg-muted/20">
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-[160px] max-w-md">
               <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />

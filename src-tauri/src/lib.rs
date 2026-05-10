@@ -1555,6 +1555,7 @@ async fn sync_default_input_to_aggregate() -> Result<(), String> {
 pub fn run() {
     let pipeline = Arc::new(PipelineCoordinator::new());
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_liquid_glass::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(pipeline.clone())

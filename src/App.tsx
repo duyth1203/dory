@@ -3,6 +3,8 @@ import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { sileo, Toaster } from "sileo";
 import appIcon from "@/assets/icon.png";
+import { AppMenu } from "@/components/AppMenu";
+import { IntroductionDialog } from "@/components/IntroductionDialog";
 import { RecorderPanel } from "@/components/RecorderPanel";
 import { RecordingsList } from "@/components/RecordingsList";
 import { SetupScreen } from "@/components/SetupScreen";
@@ -11,8 +13,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useRecordings } from "@/hooks/useRecordings";
 import { cn } from "@/lib/utils";
 
+const INTRO_SEEN_KEY = "mnt:introSeen";
+
 export default function App() {
   const [ready, setReady] = useState(false);
+  const isFirstLaunch = import.meta.env.DEV || !localStorage.getItem(INTRO_SEEN_KEY);
+  const [introOpen, setIntroOpen] = useState(isFirstLaunch);
   const [, startTransition] = useTransition();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -40,6 +46,13 @@ export default function App() {
     // blocking the setup screen, eliminating the visible freeze.
     startTransition(() => setReady(true));
   }, [startTransition]);
+
+  const handleIntroClose = useCallback(() => {
+    setIntroOpen(false);
+    if (!import.meta.env.DEV) {
+      localStorage.setItem(INTRO_SEEN_KEY, "1");
+    }
+  }, []);
 
   const handleRecordingComplete = useCallback(
     async (id: string, _path: string, duration: number) => {
@@ -75,7 +88,8 @@ export default function App() {
           ready ? "opacity-0 pointer-events-none" : "opacity-100"
         )}
       >
-        <SetupScreen onContinue={handleContinue} />
+        {/* Mount SetupScreen only after intro is dismissed so checks don't run behind the dialog */}
+        {!introOpen && <SetupScreen onContinue={handleContinue} />}
       </div>
 
       <div
@@ -95,9 +109,10 @@ export default function App() {
               )}
             </div>
             <div className="flex-1" />
-            <span className="text-xs text-muted-foreground">
+            <span className="text-xs text-muted-foreground hidden sm:inline">
               Whisper + Gemma 4 + BlackHole · Local AI
             </span>
+            <AppMenu onOpenIntro={() => setIntroOpen(true)} />
           </header>
 
           {/* Body */}
@@ -127,6 +142,7 @@ export default function App() {
 
         </div>
       </div>
+      <IntroductionDialog open={introOpen} onClose={handleIntroClose} />
     </TooltipProvider>
   );
 }

@@ -760,6 +760,15 @@ async fn run_pipeline_job_inner(
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
     if need_summary {
+        // Transcribe-first jobs already move to summarizing after Whisper; summarize-only reruns
+        // (e.g. after cancel) stay on "queued" until here — patch so UI and queue snapshot match work.
+        patch_recording_meta(
+            app,
+            id,
+            serde_json::json!({ "pipeline_status": "summarizing", "pipeline_error": null }),
+        )
+        .await?;
+        emit_pipeline_event(app, id, "summarizing", None);
         let summary =
             run_summarize_internal_cancellable(transcript, cancel.clone(), PIPELINE_CANCELLED).await?;
         patch_recording_meta(

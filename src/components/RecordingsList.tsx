@@ -10,6 +10,7 @@ import {
   ChevronDown,
   Mic,
   Sparkles,
+  CheckCircle2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -72,6 +73,8 @@ function pipelineStepLabel(status: string | null | undefined) {
       return "Summarizing";
     case "queued":
       return "Queued";
+    case "done":
+      return "Done";
     default:
       return status?.replace(/_/g, " ") || "Working";
   }
@@ -97,6 +100,8 @@ function PipelineStepStatusIcon({ status }: Readonly<{ status: string | null | u
           aria-hidden
         />
       );
+    case "done":
+      return <CheckCircle2 className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />;
     default:
       return (
         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" aria-hidden />
@@ -168,7 +173,7 @@ function PipelineQueueDropdownBody({
   return (
     <div className="space-y-3">
       {activeId ? (
-        <div>
+        <div className="pipeline-queue-active-spotlight rounded-lg border border-border bg-muted/25 px-2.5 py-2">
           <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground mb-1">
             Now processing
           </p>
@@ -296,20 +301,37 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
   const [queueSnapshot, setQueueSnapshot] = useState<PipelineQueueSnapshot | null>(null);
   const [queueSnapLoading, setQueueSnapLoading] = useState(false);
   const [queueSnapError, setQueueSnapError] = useState<string | null>(null);
+  const [queueMenuOpen, setQueueMenuOpen] = useState(false);
 
-  const fetchQueueSnapshot = useCallback(async () => {
-    setQueueSnapLoading(true);
-    setQueueSnapError(null);
-    try {
-      const snap = await invoke<PipelineQueueSnapshot>("get_pipeline_queue_snapshot");
-      setQueueSnapshot(snap);
-    } catch (e) {
-      setQueueSnapshot(null);
-      setQueueSnapError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setQueueSnapLoading(false);
-    }
-  }, []);
+  const fetchQueueSnapshot = useCallback(
+    async (mode: "full" | "refresh" = "full") => {
+      const quiet = mode === "refresh";
+      if (!quiet) {
+        setQueueSnapLoading(true);
+        setQueueSnapError(null);
+      }
+      try {
+        const snap = await invoke<PipelineQueueSnapshot>("get_pipeline_queue_snapshot");
+        setQueueSnapshot(snap);
+        if (!quiet) setQueueSnapError(null);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (quiet) {
+          return;
+        }
+        setQueueSnapshot(null);
+        setQueueSnapError(msg);
+      } finally {
+        if (!quiet) setQueueSnapLoading(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!queueMenuOpen) return;
+    void fetchQueueSnapshot("refresh");
+  }, [recordings, queueMenuOpen, fetchQueueSnapshot]);
 
   const selectionCanCancel = useMemo(
     () =>
@@ -510,7 +532,8 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
               </Button>
               <DropdownMenu
                 onOpenChange={(open) => {
-                  if (open) void fetchQueueSnapshot();
+                  setQueueMenuOpen(open);
+                  if (open) void fetchQueueSnapshot("full");
                 }}
               >
                 <DropdownMenuTrigger asChild>

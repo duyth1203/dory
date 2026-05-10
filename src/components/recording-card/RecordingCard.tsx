@@ -51,6 +51,8 @@ export function RecordingCard({
   const pipelineStatus = recording.pipeline_status ?? null;
   const pipelineTranscribing = pipelineStatus === "transcribing";
   const pipelineSummarizing = pipelineStatus === "summarizing";
+  const pipelineBusyVisual = pipelineTranscribing || pipelineSummarizing;
+  const pipelineQueuedOnly = pipelineStatus === "queued";
   const inPipeline =
     pipelineStatus === "queued" ||
     pipelineStatus === "transcribing" ||
@@ -113,75 +115,85 @@ export function RecordingCard({
     <Card
       className={cn(
         "transition-all duration-200 hover:shadow-md",
-        selection?.selected && "ring-2 ring-inset ring-primary"
+        selection?.selected && "ring-2 ring-inset ring-primary",
+        pipelineBusyVisual && "relative overflow-hidden animate-pipeline-card-busy",
+        pipelineQueuedOnly && "animate-pipeline-card-queued"
       )}
     >
-      <RecordingCardHeader
-        recording={recording}
-        pipelineStatus={pipelineStatus}
-        audioDurationSecs={playback.audioDuration}
-        selection={selection}
-        onRename={onRename}
-        setGlobalError={setError}
-      />
-
-      <CardContent className="pt-0 space-y-3">
-        <RecordingCardPlayer
-          isPlaying={playback.isPlaying}
+      {pipelineBusyVisual ? (
+        <div
+          className="pipeline-shimmer-layer pointer-events-none absolute inset-0 z-0 rounded-xl opacity-80"
+          aria-hidden
+        />
+      ) : null}
+      <div className="relative z-[1]">
+        <RecordingCardHeader
+          recording={recording}
+          pipelineStatus={pipelineStatus}
           audioDurationSecs={playback.audioDuration}
-          progressPct={playback.progressPct}
-          displayTimeSecs={playback.displayTimeSecs}
-          hasAudioLoaded={playback.hasAudioLoaded}
-          progressRef={playback.progressRef}
-          togglePlay={() => playback.togglePlay(setError)}
-          onProgressPointerDown={playback.onProgressPointerDown}
-          onProgressPointerMove={playback.onProgressPointerMove}
-          onProgressPointerUpOrCancel={playback.onProgressPointerUpOrCancel}
+          selection={selection}
+          onRename={onRename}
+          setGlobalError={setError}
         />
 
-        {recording.pipeline_error && pipelineStatus === "failed" && (
-          <p className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1 whitespace-pre-wrap">
-            {recording.pipeline_error}
-            <span className="block mt-1 text-muted-foreground">
-              You can run Summarize again to retry.
-            </span>
-          </p>
-        )}
+        <CardContent className="pt-0 space-y-3">
+          <RecordingCardPlayer
+            isPlaying={playback.isPlaying}
+            audioDurationSecs={playback.audioDuration}
+            progressPct={playback.progressPct}
+            displayTimeSecs={playback.displayTimeSecs}
+            hasAudioLoaded={playback.hasAudioLoaded}
+            progressRef={playback.progressRef}
+            togglePlay={() => playback.togglePlay(setError)}
+            onProgressPointerDown={playback.onProgressPointerDown}
+            onProgressPointerMove={playback.onProgressPointerMove}
+            onProgressPointerUpOrCancel={playback.onProgressPointerUpOrCancel}
+          />
 
-        <RecordingCardActions
-          recording={recording}
-          pipelineStatus={pipelineStatus}
-          pipelineTranscribing={pipelineTranscribing}
-          pipelineSummarizing={pipelineSummarizing}
-          inPipeline={inPipeline}
-          removeFromQueuePending={removeFromQueuePending}
-          onEnqueueOrResummarize={handleEnqueueOrResummarize}
-          onRemoveFromQueue={onRemoveFromQueue}
-          onDelete={onDelete}
-        />
+          {recording.pipeline_error && pipelineStatus === "failed" && (
+            <p className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1 whitespace-pre-wrap">
+              {recording.pipeline_error}
+              <span className="block mt-1 text-muted-foreground">
+                You can run Summarize again to retry.
+              </span>
+            </p>
+          )}
 
-        {error && (
-          <p className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1">{error}</p>
-        )}
+          <RecordingCardActions
+            recording={recording}
+            pipelineStatus={pipelineStatus}
+            pipelineTranscribing={pipelineTranscribing}
+            pipelineSummarizing={pipelineSummarizing}
+            inPipeline={inPipeline}
+            removeFromQueuePending={removeFromQueuePending}
+            onEnqueueOrResummarize={handleEnqueueOrResummarize}
+            onRemoveFromQueue={onRemoveFromQueue}
+            onDelete={onDelete}
+          />
 
-        <RecordingCardPanels
-          recording={recording}
-          pipelineStatus={pipelineStatus}
-          pipelineTranscribing={pipelineTranscribing}
-          pipelineSummarizing={pipelineSummarizing}
-          transcriptOpen={transcriptOpen}
-          setTranscriptOpen={setTranscriptOpen}
-          summaryOpen={summaryOpen}
-          setSummaryOpen={setSummaryOpen}
-          streamingTranscript={streamingTranscript}
-          canCopyTranscript={canCopyTranscript}
-          canCopySummary={canCopySummary}
-          transcriptCopied={transcriptFlash.on}
-          summaryCopied={summaryFlash.on}
-          onCopyTranscript={copyTranscript}
-          onCopySummary={copySummary}
-        />
-      </CardContent>
+          {error && (
+            <p className="text-xs text-destructive bg-destructive/10 rounded px-2 py-1">{error}</p>
+          )}
+
+          <RecordingCardPanels
+            recording={recording}
+            pipelineStatus={pipelineStatus}
+            pipelineTranscribing={pipelineTranscribing}
+            pipelineSummarizing={pipelineSummarizing}
+            transcriptOpen={transcriptOpen}
+            setTranscriptOpen={setTranscriptOpen}
+            summaryOpen={summaryOpen}
+            setSummaryOpen={setSummaryOpen}
+            streamingTranscript={streamingTranscript}
+            canCopyTranscript={canCopyTranscript}
+            canCopySummary={canCopySummary}
+            transcriptCopied={transcriptFlash.on}
+            summaryCopied={summaryFlash.on}
+            onCopyTranscript={copyTranscript}
+            onCopySummary={copySummary}
+          />
+        </CardContent>
+      </div>
     </Card>
   );
 }

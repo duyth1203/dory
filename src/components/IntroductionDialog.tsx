@@ -18,48 +18,48 @@ interface Props {
 const features = [
   {
     icon: Mic,
-    color: "text-red-500",
-    bg: "bg-red-500/10",
+    color: "text-red-500 dark:text-red-400",
+    bg: "bg-red-500/15 dark:bg-red-500/20",
     title: "Record Meetings",
     description:
       "Capture both your microphone and Mac system audio simultaneously. Supports pause/resume so you never miss a moment.",
   },
   {
     icon: AudioLines,
-    color: "text-blue-500",
-    bg: "bg-blue-500/10",
+    color: "text-blue-500 dark:text-blue-400",
+    bg: "bg-blue-500/15 dark:bg-blue-500/20",
     title: "Whisper Transcription",
     description:
       "Your recording is transcribed locally using OpenAI Whisper — fast, accurate, and completely offline.",
   },
   {
     icon: Sparkles,
-    color: "text-purple-500",
-    bg: "bg-purple-500/10",
+    color: "text-purple-500 dark:text-purple-400",
+    bg: "bg-purple-500/15 dark:bg-purple-500/20",
     title: "AI Summarisation",
     description:
       "Gemma 4 (via Ollama) reads the transcript and generates a concise meeting summary with key decisions and action items.",
   },
   {
     icon: MonitorSpeaker,
-    color: "text-amber-500",
-    bg: "bg-amber-500/10",
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-500/15 dark:bg-amber-500/20",
     title: "System Audio Capture",
     description:
       "BlackHole routes your Mac's audio output through a virtual device so you can record remote calls, videos, and more alongside your mic.",
   },
   {
     icon: FileText,
-    color: "text-emerald-500",
-    bg: "bg-emerald-500/10",
+    color: "text-emerald-600 dark:text-emerald-400",
+    bg: "bg-emerald-500/15 dark:bg-emerald-500/20",
     title: "Transcript & Notes",
     description:
       "Browse full transcripts and formatted summaries for every recording. Rename, export, or delete them at any time.",
   },
   {
     icon: Shield,
-    color: "text-slate-500",
-    bg: "bg-slate-500/10",
+    color: "text-slate-600 dark:text-slate-400",
+    bg: "bg-slate-500/12 dark:bg-slate-400/15",
     title: "100 % Local & Private",
     description:
       "Nothing leaves your machine. Whisper and Gemma run entirely on-device — no cloud, no subscriptions, no data collection.",

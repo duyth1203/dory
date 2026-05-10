@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronUp, Copy, FileText, ListOrdered, Loader2, Sparkles } from "lucide-react";
+import { Check, ChevronDown, Copy, FileText, ListOrdered, Loader2, Sparkles } from "lucide-react";
 import type { Dispatch, SetStateAction } from "react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -55,7 +55,7 @@ export function RecordingCardPanels({
   if (!visible) return null;
 
   return (
-    <div className="space-y-2 animate-in slide-in-from-top-2 duration-200">
+    <div className="space-y-2 animate-in slide-in-from-top-2 fade-in duration-300">
       <Separator />
       {(recording.transcript || pipelineTranscribing) && (
         <div className="rounded-lg border border-border/60 overflow-hidden">
@@ -65,14 +65,16 @@ export function RecordingCardPanels({
               onClick={() => setTranscriptOpen((v) => !v)}
               className={cn(
                 "flex flex-1 min-w-0 items-center gap-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide",
-                "text-muted-foreground bg-muted/30 hover:bg-muted/50 transition-colors rounded-none border-0"
+                "text-muted-foreground bg-muted/30 hover:bg-muted/50 transition-[background-color,color] duration-200 rounded-none border-0"
               )}
             >
-              {transcriptOpen ? (
-                <ChevronUp className="h-3.5 w-3.5 shrink-0" />
-              ) : (
-                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-              )}
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none",
+                  transcriptOpen && "-rotate-180"
+                )}
+                aria-hidden
+              />
               <FileText className="h-3 w-3 shrink-0" />
               <span className="flex-1 min-w-0">Transcript</span>
               {pipelineTranscribing && <Loader2 className="h-3 w-3 animate-spin shrink-0" />}
@@ -98,7 +100,7 @@ export function RecordingCardPanels({
             </Button>
           </div>
           {transcriptOpen && (
-            <div className="border-t border-border/60 px-3 py-2 bg-muted/20">
+            <div className="border-t border-border/60 px-3 py-2 bg-muted/20 animate-expand-reveal origin-top">
               <div className="text-sm text-foreground leading-relaxed whitespace-pre-wrap max-h-48 overflow-y-auto">
                 {pipelineTranscribing && streamingTranscript !== null ? (
                   <>
@@ -129,14 +131,16 @@ export function RecordingCardPanels({
               onClick={() => setSummaryOpen((v) => !v)}
               className={cn(
                 "flex flex-1 min-w-0 items-center gap-2 px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide",
-                "text-muted-foreground bg-muted/30 hover:bg-muted/50 transition-colors rounded-none border-0"
+                "text-muted-foreground bg-muted/30 hover:bg-muted/50 transition-[background-color,color] duration-200 rounded-none border-0"
               )}
             >
-              {summaryOpen ? (
-                <ChevronUp className="h-3.5 w-3.5 shrink-0" />
-              ) : (
-                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
-              )}
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none",
+                  summaryOpen && "-rotate-180"
+                )}
+                aria-hidden
+              />
               <SummarySectionLeadingIcon
                 pipelineStatus={pipelineStatus}
                 hasSummary={Boolean(recording.summary?.trim())}
@@ -165,12 +169,12 @@ export function RecordingCardPanels({
             </Button>
           </div>
           {summaryOpen && recording.summary && (
-            <div className="border-t border-border/60 px-3 py-2 bg-muted/20">
+            <div className="border-t border-border/60 px-3 py-2 bg-muted/20 animate-expand-reveal origin-top">
               <SummaryMarkdown>{recording.summary}</SummaryMarkdown>
             </div>
           )}
           {summaryOpen && !recording.summary && pipelineSummarizing && (
-            <div className="border-t border-border/60 px-3 py-2 bg-muted/20">
+            <div className="border-t border-border/60 px-3 py-2 bg-muted/20 animate-expand-reveal origin-top">
               <p className="text-sm text-muted-foreground flex items-center gap-2">
                 <Sparkles
                   className={cn("h-3.5 w-3.5 shrink-0 text-primary opacity-90 animate-lucide-sparkles")}
@@ -184,7 +188,7 @@ export function RecordingCardPanels({
             !recording.summary &&
             pipelineStatus === "queued" &&
             recording.transcript?.trim() && (
-              <div className="border-t border-border/60 px-3 py-2 bg-muted/20">
+              <div className="border-t border-border/60 px-3 py-2 bg-muted/20 animate-expand-reveal origin-top">
                 <p className="text-sm text-muted-foreground flex items-center gap-2">
                   <ListOrdered
                     className={cn("h-3.5 w-3.5 shrink-0 opacity-90 animate-lucide-queue")}

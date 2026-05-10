@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback, type ReactNode } from "react";
+import { useEffect, useMemo, useState, useCallback, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Loader2,
@@ -101,7 +101,12 @@ function PipelineStepStatusIcon({ status }: Readonly<{ status: string | null | u
         />
       );
     case "done":
-      return <CheckCircle2 className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden />;
+      return (
+        <CheckCircle2
+          className="h-3 w-3 shrink-0 text-muted-foreground animate-in fade-in zoom-in-95 duration-300"
+          aria-hidden
+        />
+      );
     default:
       return (
         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" aria-hidden />
@@ -435,7 +440,7 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
       </div>
 
       {recordings.length > 0 && (
-        <div className="flex flex-col gap-2 px-4 py-2 border-b bg-muted/20">
+        <div className="animate-filter-bar-enter flex flex-col gap-2 px-4 py-2 border-b bg-muted/20">
           <div className="flex flex-wrap items-center gap-2">
             <div className="relative flex-1 min-w-[160px] max-w-md">
               <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground pointer-events-none" />
@@ -597,19 +602,19 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
 
       <ScrollArea className="flex-1 px-4 py-3">
         {loading && recordings.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
+          <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground animate-in fade-in duration-500">
             <Loader2 className="h-6 w-6 animate-spin" />
             <p className="text-sm">Loading recordings…</p>
           </div>
         ) : recordings.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground">
-            <Inbox className="h-10 w-10 opacity-30" />
+          <div className="flex flex-col items-center justify-center py-16 gap-3 text-muted-foreground animate-in fade-in zoom-in-95 duration-450">
+            <Inbox className="h-10 w-10 opacity-30 motion-safe:animate-empty-float" aria-hidden />
             <p className="text-sm">No recordings yet</p>
             <p className="text-xs opacity-60">Start recording to see them here</p>
           </div>
         ) : filteredRecordings.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground px-4 text-center">
-            <Inbox className="h-10 w-10 opacity-30" />
+          <div className="flex flex-col items-center justify-center py-16 gap-2 text-muted-foreground px-4 text-center animate-in fade-in zoom-in-95 duration-450">
+            <Inbox className="h-10 w-10 opacity-30 motion-safe:animate-empty-float" aria-hidden />
             <p className="text-sm">No recordings match your filters</p>
             <p className="text-xs opacity-70">
               Try another search or set status to &quot;All statuses&quot;.
@@ -617,9 +622,17 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
           </div>
         ) : (
           <div className="space-y-3 pb-4">
-            {filteredRecordings.map((rec) => (
-              <RecordingCard
+            {filteredRecordings.map((rec, index) => (
+              <div
                 key={rec.id}
+                className="animate-list-item-enter"
+                style={
+                  {
+                    "--enter-delay": `${Math.min(index, 20) * 36}ms`,
+                  } as CSSProperties
+                }
+              >
+              <RecordingCard
                 recording={rec}
                 onRename={(displayName) => renameRecordingDisplay(rec.id, displayName)}
                 onDelete={deleteRecording}
@@ -652,6 +665,7 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
                       }
                 }
               />
+              </div>
             ))}
           </div>
         )}

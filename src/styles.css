@@ -1,7 +1,10 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
+    color-scheme: light;
     /* BAF design system — light mode */
     --background: 40 11% 94%;           /* warm off-white  #F2F1EF */
     --foreground: 0 0% 0%;             /* black    #000000 */
@@ -26,6 +29,7 @@
   }
 
   .dark {
+    color-scheme: dark;
     /* BAF design system — dark mode */
     --background: 0 0% 12%;             /* dark  #1E1E1E */
     --foreground: 0 0% 100%;
@@ -179,6 +183,64 @@
 .zoom-in-95 { animation-name: zoom-in-95; }
 .zoom-out-95 { animation-name: zoom-out-95; }
 .duration-200 { animation-duration: 200ms; }
+.duration-300 { animation-duration: 300ms; }
+.duration-450 { animation-duration: 450ms; }
+.duration-500 { animation-duration: 500ms; }
+
+/* List / layout entrances */
+@keyframes fade-in-up-soft {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes gentle-float-y {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes scale-in-soft {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes app-split-in-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes app-split-in-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
 
 /* Lucide pipeline status icons — motion only when the user hasn’t reduced it */
 @keyframes lucide-icon-breathe {
@@ -289,6 +351,27 @@
   }
 }
 
+/* Pipeline cards — slow moving tint behind content (Whisper / Gemma / queue) */
+@keyframes pipeline-bg-wash {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes pipeline-bg-wash-soft {
+  0%,
+  100% {
+    background-position: 12% 45%;
+  }
+  50% {
+    background-position: 88% 55%;
+  }
+}
+
 @keyframes pipeline-queue-spotlight {
   0%,
   100% {
@@ -299,6 +382,12 @@
     border-color: hsl(var(--primary) / 0.35);
     box-shadow: 0 0 0 1px hsl(var(--primary) / 0.08);
   }
+}
+
+/* Pipeline card tinted layer (paired with animated gradient in motion-safe prefs) */
+.pipeline-bg-animated {
+  pointer-events: none;
+  background-color: hsl(var(--card));
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -335,6 +424,34 @@
     will-change: background-position;
   }
 
+  .pipeline-bg-animated-busy {
+    background-image: linear-gradient(
+      100deg,
+      hsl(var(--card)) 0%,
+      hsl(var(--primary) / 0.13) 32%,
+      hsl(var(--primary) / 0.07) 50%,
+      hsl(var(--primary) / 0.14) 68%,
+      hsl(var(--card)) 100%
+    );
+    background-size: 240% 100%;
+    animation: pipeline-bg-wash 5s ease-in-out infinite;
+    will-change: background-position;
+  }
+
+  .pipeline-bg-animated-queued {
+    background-image: linear-gradient(
+      102deg,
+      hsl(var(--card)) 0%,
+      hsl(var(--primary) / 0.05) 38%,
+      hsl(var(--muted) / 0.45) 50%,
+      hsl(var(--primary) / 0.055) 62%,
+      hsl(var(--card)) 100%
+    );
+    background-size: 260% 100%;
+    animation: pipeline-bg-wash-soft 12s ease-in-out infinite;
+    will-change: background-position;
+  }
+
   .pipeline-queue-active-spotlight {
     animation: pipeline-queue-spotlight 2.8s ease-in-out infinite;
   }
@@ -352,5 +469,57 @@
 
   .pipeline-shimmer-layer {
     display: none;
+  }
+
+  .pipeline-bg-animated-busy,
+  .pipeline-bg-animated-queued {
+    animation: none;
+    background-size: 100% 100%;
+    background-position: 50% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .animate-list-item-enter {
+    animation: fade-in-up-soft 0.48s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: var(--enter-delay, 0ms);
+  }
+
+  .animate-empty-float {
+    animation: gentle-float-y 4.25s ease-in-out infinite;
+  }
+
+  .animate-expand-reveal {
+    animation: scale-in-soft 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .animate-app-pane-left {
+    animation: app-split-in-from-left 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: var(--pane-delay, 0ms);
+  }
+
+  .animate-app-pane-right {
+    animation: app-split-in-from-right 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: var(--pane-delay, 0ms);
+  }
+
+  .animate-filter-bar-enter {
+    animation: fade-in-up-soft 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  header.app-shell-header-motion {
+    animation: fade-in-up-soft 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-list-item-enter,
+  .animate-empty-float,
+  .animate-expand-reveal,
+  .animate-app-pane-left,
+  .animate-app-pane-right,
+  .animate-filter-bar-enter,
+  header.app-shell-header-motion {
+    animation: none;
   }
 }

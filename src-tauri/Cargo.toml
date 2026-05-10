@@ -1,0 +1,33 @@
+[package]
+name = "meeting-note-taker"
+version = "0.1.0"
+description = "Meeting Note Taker with local AI transcription and summarisation"
+authors = []
+edition = "2021"
+
+[lib]
+name = "meeting_note_taker_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "meeting-note-taker"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

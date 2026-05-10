@@ -111,7 +111,7 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
       {/* Waveform visualiser — outer shell pulses while recording / paused */}
       <div
         className={cn(
-          "relative flex w-full max-w-xs flex-col items-center rounded-xl px-2 py-3",
+          "relative flex w-full max-w-xs flex-col items-center rounded-xl px-2 py-3 transition-[background-color,box-shadow] duration-500 ease-out",
           state === "recording" && "animate-record-live-shell bg-destructive/[0.06]",
           state === "paused" && "animate-pause-shell bg-amber-500/[0.07]"
         )}
@@ -129,7 +129,7 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
               <div
                 key={i}
                 className={cn(
-                  "w-2 rounded-full transition-[height,box-shadow] duration-100 ease-out",
+                  "w-2 rounded-full transition-[height,box-shadow,opacity] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]",
                   state === "recording" ? "bg-red-500" : "bg-muted-foreground/30",
                   hot && "shadow-[0_0_12px_-2px_hsl(var(--destructive)/0.55)]"
                 )}
@@ -143,8 +143,8 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
       {/* Timer */}
       <div
         className={cn(
-          "font-mono text-4xl font-light tracking-widest tabular-nums",
-          nearLimit ? "text-amber-500" : "text-foreground"
+          "font-mono text-4xl font-light tracking-widest tabular-nums transition-[color,transform] duration-500 ease-out",
+          nearLimit ? "text-amber-500 motion-safe:scale-[1.02]" : "text-foreground motion-safe:scale-100"
         )}
       >
         {formatDuration(duration)}
@@ -152,7 +152,7 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
 
       {/* Near-limit warning */}
       {nearLimit && state !== "idle" && (
-        <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded-lg px-3 py-1.5 w-full justify-center animate-pulse">
+        <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 rounded-lg px-3 py-1.5 w-full justify-center motion-safe:animate-pulse animate-in fade-in slide-in-from-top-2 duration-300">
           <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
           Auto-stops in {formatDuration(timeRemaining)}
         </div>

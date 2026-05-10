@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useTransition } from "react";
+import { useState, useCallback, useEffect, useTransition, type CSSProperties } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { sileo, Toaster } from "sileo";
@@ -10,12 +10,14 @@ import { RecordingsList } from "@/components/RecordingsList";
 import { SetupScreen } from "@/components/SetupScreen";
 import { Separator } from "@/components/ui/separator";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { ThemeProvider, useTheme } from "@/contexts/theme";
 import { useRecordings } from "@/hooks/useRecordings";
 import { cn } from "@/lib/utils";
 
 const INTRO_SEEN_KEY = "mnt:introSeen";
 
-export default function App() {
+function AppContent() {
+  const { resolved } = useTheme();
   const [ready, setReady] = useState(false);
   const isFirstLaunch = import.meta.env.DEV || !localStorage.getItem(INTRO_SEEN_KEY);
   const [introOpen, setIntroOpen] = useState(isFirstLaunch);
@@ -79,7 +81,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <Toaster position="bottom-center" theme="system" options={{ duration: 4000 }} />
+      <Toaster position="bottom-center" theme={resolved} options={{ duration: 4000 }} />
 
       {/* Both screens are rendered in the tree; CSS drives the crossfade */}
       <div
@@ -100,7 +102,7 @@ export default function App() {
       >
         <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
           {/* Header */}
-          <header className="flex items-center gap-3 px-5 py-3 border-b bg-card/50 backdrop-blur-sm shrink-0">
+          <header className="app-shell-header-motion flex items-center gap-3 px-5 py-3 border-b bg-card/50 backdrop-blur-sm shrink-0">
             <div className="flex items-center gap-2.5">
               <img src={appIcon} alt="" className="h-7 w-7 rounded-lg object-cover" />
               <span className="font-semibold text-sm tracking-tight">Meeting Note Taker</span>
@@ -117,7 +119,10 @@ export default function App() {
 
           {/* Body */}
           <div className="flex flex-1 overflow-hidden">
-            <aside className="w-80 shrink-0 border-r flex flex-col bg-card/30">
+            <aside
+              className="animate-app-pane-left w-80 shrink-0 border-r flex flex-col bg-card/30"
+              style={{ "--pane-delay": "40ms" } as CSSProperties}
+            >
               <div className="px-4 pt-4 pb-2">
                 <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
                   New Recording
@@ -131,18 +136,28 @@ export default function App() {
 
             <Separator orientation="vertical" />
 
-            <main className="flex-1 overflow-hidden">
-            <RecordingsList
-              refreshTrigger={refreshTrigger}
-              api={recordingsApi}
-              onNotify={showToast}
-            />
+            <main
+              className="animate-app-pane-right flex-1 overflow-hidden"
+              style={{ "--pane-delay": "90ms" } as CSSProperties}
+            >
+              <RecordingsList
+                refreshTrigger={refreshTrigger}
+                api={recordingsApi}
+                onNotify={showToast}
+              />
             </main>
           </div>
-
         </div>
       </div>
       <IntroductionDialog open={introOpen} onClose={handleIntroClose} />
     </TooltipProvider>
+  );
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
   );
 }

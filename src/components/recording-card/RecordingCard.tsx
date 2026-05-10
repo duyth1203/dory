@@ -114,12 +114,23 @@ export function RecordingCard({
   return (
     <Card
       className={cn(
-        "transition-all duration-200 hover:shadow-md",
+        "transition-[box-shadow,border-color,ring] duration-200 ease-out",
+        "motion-safe:hover:shadow-md",
         selection?.selected && "ring-2 ring-inset ring-primary",
-        pipelineBusyVisual && "relative overflow-hidden animate-pipeline-card-busy",
+        inPipeline && "relative overflow-hidden",
+        pipelineBusyVisual && "animate-pipeline-card-busy",
         pipelineQueuedOnly && "animate-pipeline-card-queued"
       )}
     >
+      {inPipeline ? (
+        <div
+          className={cn(
+            "pipeline-bg-animated absolute inset-0 z-0 rounded-[inherit]",
+            pipelineBusyVisual ? "pipeline-bg-animated-busy" : "pipeline-bg-animated-queued"
+          )}
+          aria-hidden
+        />
+      ) : null}
       {pipelineBusyVisual ? (
         <div
           className="pipeline-shimmer-layer pointer-events-none absolute inset-0 z-0 rounded-xl opacity-80"

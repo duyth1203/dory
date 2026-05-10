@@ -13,7 +13,8 @@ const buttonVariants = cva(
         secondary: "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80 active:scale-95",
         ghost: "hover:bg-accent hover:text-accent-foreground active:scale-95",
         link: "text-primary underline-offset-4 hover:underline",
-        record: "bg-red-500 text-white shadow-lg hover:bg-red-600 active:scale-95 ring-4 ring-red-500/20",
+        record:
+          "bg-red-500 text-white shadow-lg hover:bg-red-600 active:scale-95 ring-4 ring-red-500/20 motion-safe:hover:scale-[1.04] motion-safe:hover:shadow-xl motion-safe:transition-[transform,box-shadow] motion-safe:duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
       },
       size: {
         default: "h-9 px-4 py-2",

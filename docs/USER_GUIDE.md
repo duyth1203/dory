@@ -3,9 +3,10 @@
 ## Table of Contents
 
 1. [First Launch — Setup Screen](#1-first-launch--setup-screen)
+   - [Device expectations (RAM and disk)](#device-expectations-ram-and-disk)
 2. [Recording a Meeting](#2-recording-a-meeting)
 3. [Capturing System Audio](#3-capturing-system-audio)
-4. [Transcribing a Recording](#4-transcribing-a-recording)
+4. [Transcription and the background AI queue](#4-transcription-and-the-background-ai-queue)
 5. [Summarising with AI](#5-summarising-with-ai)
 6. [Playback and Navigation](#6-playback-and-navigation)
 7. [Managing Recordings](#7-managing-recordings)
@@ -56,6 +57,10 @@ When all required checks pass the screen **fades out automatically** — there i
 
 Click the **Guide** link next to any failed item to expand step-by-step fix instructions with copyable terminal commands. After following the steps, click **Re-check** to verify without restarting the app.
 
+### Device expectations (RAM and disk)
+
+The app does not enforce a minimum CPU or RAM tier. For **disk budgets** (models + recordings), **RAM** guidance for `gemma4:e4b` vs larger Gemma variants, and **Apple Silicon** context for performance, see **[Device and hardware recommendations](../README.md#device-and-hardware-recommendations)** in the README.
+
 ---
 
 ## 2. Recording a Meeting
@@ -71,7 +76,7 @@ The **Input device** dropdown lists microphones, headsets, and — after success
 
 **Important:** Standalone loopback devices (for example **BlackHole 2ch** by itself) are **not shown** in the list. That avoids picking “system only” by mistake. BlackHole is still installed and used **inside** **Meeting Note Taker Input**.
 
-When **Meeting Note Taker Input** appears, the app **sorts it to the top** and **selects it by default**. Green helper text confirms _“Using preferred input — voice and device audio.”_ If you choose a plain mic while the preferred input exists, an amber hint suggests switching back.
+When **Meeting Note Taker Input** appears, the app **sorts it to the top** and **selects it by default**. If you choose a plain mic while the preferred input exists, a short **amber** hint may suggest switching back.
 
 > The dropdown is disabled while recording. Choose your device before you start.
 
@@ -90,6 +95,8 @@ Click **⏸ Pause** to pause mid-meeting (for a break or off-the-record conversa
 ### Step 4 — Stop and save
 
 Click the **red square (■)** to stop. The recording is saved instantly to your local app-data folder and appears in the recordings list on the right.
+
+**Transcript + summary:** The new recording is saved with **`pipeline_status: idle`**. Nothing runs until you add it to the AI queue — either click **Summarize** on that card or select it (with others) and use **Queue for processing**. Everything shares **one** FIFO worker (**Whisper** then **Gemma**). Only **one** recording runs at a time; the rest wait. Card badges show **Queued**, **Transcribing**, **Summarizing**, or **AI failed** as appropriate. See [Section 4](#4-transcription-and-the-background-ai-queue) for batch queue, **Cancel queue**, and recovery.
 
 ### Recording limits
 
@@ -150,25 +157,64 @@ This combines BlackHole 2ch with your microphone into a single recordable input.
 2. Check **BlackHole 2ch** and your microphone
 3. In Meeting Note Taker, select **that aggregate** from the **Input device** dropdown — or use **Meeting Note Taker Input** if the app created it after **Re-check**
 
-> In the recorder, green helper text **“Using preferred input — voice and device audio”** appears when **Meeting Note Taker Input** is selected. Standalone BlackHole will not appear in the list.
+> Standalone BlackHole will not appear in the recorder’s input list; use **Meeting Note Taker Input** (or another aggregate you created).
 
 ---
 
-## 4. Transcribing a Recording
+## 4. Transcription and the background AI queue
 
-1. Find the recording in the list on the right
-2. Click **Transcribe**
-3. The button shows a spinner and **Transcribing…** while Whisper runs
-4. When done, click **▾** to expand the card and read the transcript
+### After save: idle until you queue
 
-### How it works internally
+When you stop a recording, Meeting Note Taker:
+
+1. Saves the audio file and metadata with **`pipeline_status: idle`**
+2. Shows the item in the list — **no** Whisper or Gemma run yet
+
+To process it, use either:
+
+- **Summarize** on the card (same action as **Re-summarize** when both transcript and summary already exist — that clears prior text and re-queues a **full** run), **or**
+- **Queue for processing** in the list toolbar (multi-select + batch queue)
+
+Both call the same Rust entry point — **`enqueue_pipeline_jobs`** — and append to **one** internal FIFO queue.
+
+### What the worker does
+
+When an item reaches the front of the queue:
+
+1. **Whisper** (if there is no transcript yet) → writes **transcript**, emits **`transcription-chunk`** lines for live preview when verbose output is on  
+2. **Gemma** (if there is no summary yet) → writes **summary**  
+3. Sets **`pipeline_status: done`** (or **`failed`** + **`pipeline_error`**)
+
+You can **keep using the app** while work runs. The list **refreshes** on **`pipeline-job-update`** events.
+
+### Queue behaviour
+
+- If a job is already running, new IDs stay **Queued** until their turn.
+- **Remove from queue** (card) or **Cancel queue** (toolbar) cancels Whisper/Gemma for matching IDs and/or removes them from the waiting queue.
+- After you quit and reopen, **incomplete** in-flight states are **re-queued** where appropriate; **`failed`** and **`idle`** are not auto-started.
+
+### Card badges and actions
+
+| UI | Meaning |
+|----|---------|
+| **Queued** | Waiting for the worker |
+| **Transcribing** / **Summarizing** | Pipeline step in progress for this recording |
+| **AI failed** | See error on the card; click **Summarize** again to re-enqueue |
+| **Priority** | Metadata flag for this queued item (moves to front when set via `set_pipeline_job_priority`) |
+| **Summarize** / **Re-summarize** | Enters this recording into the **same** queue as **Queue for processing** |
+
+### Persistence
+
+All results live in **`metadata/<id>.json`** (same folder as in [Section 7](#7-managing-recordings)). Reopening the app loads transcripts and summaries from disk with **no** re-processing unless the pipeline is incomplete or you enqueue again.
+
+### How Whisper fits in (technical)
 
 ```
 Recording (.webm)
-      ↓  ffmpeg converts to WAV 16kHz mono
-Whisper base model (runs on CPU/GPU)
-      ↓  outputs plain text
-Transcript stored in app data
+      ↓  ffmpeg converts to WAV 16 kHz mono (recommended)
+Whisper (e.g. base model)
+      ↓  plain text transcript
+metadata JSON + streaming chunks to the UI (during transcribe step)
 ```
 
 ### Expected times (Apple Silicon, base model)
@@ -179,11 +225,11 @@ Transcript stored in app data
 | 30 minutes | ~3 minutes |
 | 1 hour | ~6 minutes |
 
-> The app UI is unresponsive while Whisper runs. For long recordings, wait for the spinner to stop before clicking elsewhere.
+Work runs in the **background worker**; the window stays usable.
 
 ### Improving accuracy
 
-Edit `src-tauri/src/lib.rs` → `transcribe_with_whisper` to use a larger model:
+Edit `src-tauri/src/lib.rs` → `run_whisper_transcription` (the `whisper` `Command` args) to use a larger model:
 
 ```
 "--model", "small",   // better than base, ~460 MB
@@ -196,23 +242,27 @@ Remove `"--language", "en"` for automatic language detection.
 
 ## 5. Summarising with AI
 
-Summarisation requires a transcript to already exist. If **Summarize** is greyed out, run **Transcribe** first.
+### Same queue as the card **Summarize** button
 
-1. Click **Summarize** on a transcribed recording
-2. Gemma 4 generates a structured summary including:
-   - Key topics discussed
-   - Action items
-   - Decisions made
-3. Click **▾** to expand and read the summary
+**Gemma** always runs **after** a usable transcript exists, inside the **same pipeline job** as Whisper when started from **idle**. There are no separate “manual” `summarize` / `transcribe` IPC commands — only **`enqueue_pipeline_jobs`** (used by the card button and the batch toolbar).
+
+### Using **Summarize** on a card
+
+1. Ensure the recording is **not** already **Queued / Transcribing / Summarizing** (the button is disabled while it is).
+2. Click **Summarize** (or **Re-summarize** if both transcript and summary exist — this clears them and re-runs from audio).
+3. The card label becomes **Queued…** / **Transcribing…** / **Summarizing…** while the shared worker runs.
+4. Expand **Summary** on the card to read the result.
+
+If there is **no transcript** yet, the worker runs Whisper first. If only the summary is missing, it skips to Gemma.
 
 ### How it works internally
 
 ```
 Transcript (plain text)
-      ↓  sent to Ollama at localhost:11434
+      ↓  POST localhost:11434/api/generate
 Gemma 4 e4b model
-      ↓  generates structured summary
-Summary stored alongside transcript
+      ↓  structured summary
+Summary stored in metadata JSON
 ```
 
 ### Ollama must be running
@@ -258,16 +308,26 @@ All recordings and metadata are stored locally — nothing is sent to the cloud.
 ```
 <app-data>/
 ├── recordings/      ← .webm audio files
-└── metadata/        ← <id>.json (transcript, summary, duration, date)
+└── metadata/        ← <id>.json sidecar:
+                       id, transcript, summary, duration_secs, created_at,
+                       pipeline_status, pipeline_error, pipeline_priority
 ```
+
+`pipeline_status` is typically `queued` → `transcribing` → `summarizing` → `done`, or `failed` / `idle` as described in §4.
+
+### List toolbar (search, batch queue)
+
+Use the **search** field to filter by name, id, filename, or snippets of transcript/summary. The **status** dropdown limits the list (for example **In queue / processing** or **Failed**). **Select all** / **Queue for processing** / **Cancel queue** operate on the **filtered** list (fully summarized rows are excluded from batch selection).
 
 ### Deleting a recording
 
 Click the **🗑 trash icon** on a recording card. Both the audio file and its metadata (transcript + summary) are permanently deleted.
 
-### Re-transcribing or Re-summarising
+### Re-summarising (overwrite)
 
-Click **Re-transcribe** or **Re-summarize** to overwrite a previous result — useful after switching to a more accurate Whisper model.
+Click **Re-summarize** when both **Transcribed** and **Summarized** are present. The app clears the stored transcript and summary, sets **`queued`**, and runs **Whisper → Gemma** again — useful after switching to a better Whisper model or editing the recording title for clarity (content still comes from the audio file).
+
+There is no separate **Re-transcribe** control: a full redo is always **Re-summarize** (full pipeline).
 
 ---
 
@@ -396,6 +456,15 @@ Whisper will auto-detect the language.
 
 ---
 
-### The app freezes during transcription
+### The **Summarize** button stays on one label while something else runs
 
-This is expected — Whisper runs synchronously and blocks the UI on long recordings. Wait for the spinner to disappear. Future versions will run this in a background thread.
+**Summarize** is disabled while **this** recording is **Queued / Transcribing / Summarizing**. Work always goes through the **shared queue**; the button does not block the whole window.
+
+If you click **Summarize** but nothing new is enqueued (for example the ID was already waiting), the app shows a short notice — check badges on the card.
+
+### Background job stuck or **AI failed**
+
+1. Confirm **Whisper** and **Ollama** are installed and the **Gemma** model is pulled (setup screen).
+2. Read the error text on the card (also stored as `pipeline_error` in metadata).
+3. Click **Summarize** again to re-enqueue; a successful run sets **`done`** and clears **`pipeline_error`**.
+4. For recordings stuck in **`idle`** with partial data, enqueue via **Summarize** or batch **Queue for processing** — nothing auto-starts from **idle** alone.

@@ -1,7 +1,13 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::{Mutex, Notify};
+use tokio_util::sync::CancellationToken;
+
+/// Whisper / pipeline aborted because the user cancelled the job (`cancel_pipeline_jobs`).
+const PIPELINE_CANCELLED: &str = "pipeline_cancelled_by_user";
 
 /// GUI-launched macOS apps use a minimal PATH (no shell profile). Prepend common install dirs
 /// so Homebrew (`brew install whisper ffmpeg`) and pip user bins (`~/.local/bin`) are found.
@@ -44,10 +50,55 @@ pub struct Recording {
     pub id: String,
     pub filename: String,
     pub path: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub duration_secs: f64,
     pub created_at: u64,
     pub transcript: Option<String>,
     pub summary: Option<String>,
+    /// queued | transcribing | summarizing | done | failed — omit when not yet in pipeline
+    #[serde(default)]
+    pub pipeline_status: Option<String>,
+    #[serde(default)]
+    pub pipeline_error: Option<String>,
+    #[serde(default)]
+    pub pipeline_priority: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnqueuePipelineOutcome {
+    pub enqueued: u32,
+    pub skipped_complete: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct EnqueuePipelineJobsArgs {
+    pub ids: Vec<String>,
+    #[serde(default)]
+    pub overwrite_complete: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct PipelineQueueSnapshot {
+    pub active_id: Option<String>,
+    pub queued_ids: Vec<String>,
+}
+
+#[tauri::command]
+async fn get_pipeline_queue_snapshot(app: AppHandle) -> Result<PipelineQueueSnapshot, String> {
+    let coord = app.state::<Arc<PipelineCoordinator>>();
+    let queued_ids: Vec<String> = {
+        let q = coord.queue.lock().await;
+        q.iter().cloned().collect()
+    };
+    let active_id = {
+        let a = coord.active.lock().await;
+        a.as_ref().map(|(id, _)| id.clone())
+    };
+    Ok(PipelineQueueSnapshot {
+        active_id,
+        queued_ids,
+    })
 }
 
 #[tauri::command]
@@ -78,8 +129,7 @@ async fn save_recording(
     Ok(file_path.to_string_lossy().to_string())
 }
 
-#[tauri::command]
-async fn list_recordings(app: AppHandle) -> Result<Vec<Recording>, String> {
+async fn list_recordings_impl(app: &AppHandle) -> Result<Vec<Recording>, String> {
     let data_dir = app
         .path()
         .app_data_dir()
@@ -109,19 +159,40 @@ async fn list_recordings(app: AppHandle) -> Result<Vec<Recording>, String> {
                 .to_string();
 
             let meta_path = meta_dir.join(format!("{}.json", id));
-            let (transcript, summary, duration_secs, created_at) =
-                if let Ok(meta_bytes) = std::fs::read(&meta_path) {
+            let (
+                transcript,
+                summary,
+                display_name,
+                duration_secs,
+                created_at,
+                pipeline_status,
+                pipeline_error,
+                pipeline_priority,
+            ) = if let Ok(meta_bytes) = std::fs::read(&meta_path) {
                     if let Ok(meta) =
                         serde_json::from_slice::<serde_json::Value>(&meta_bytes)
                     {
                         (
                             meta["transcript"].as_str().map(String::from),
                             meta["summary"].as_str().map(String::from),
+                            meta["display_name"].as_str().map(String::from),
                             meta["duration_secs"].as_f64().unwrap_or(0.0),
                             meta["created_at"].as_u64().unwrap_or(0),
+                            meta["pipeline_status"].as_str().map(String::from),
+                            meta["pipeline_error"].as_str().map(String::from),
+                            meta["pipeline_priority"].as_bool().unwrap_or(false),
                         )
                     } else {
-                        (None, None, 0.0, 0)
+                        (
+                            None,
+                            None,
+                            None,
+                            0.0,
+                            0,
+                            None,
+                            None,
+                            false,
+                        )
                     }
                 } else {
                     let created_at = entry
@@ -133,23 +204,32 @@ async fn list_recordings(app: AppHandle) -> Result<Vec<Recording>, String> {
                         })
                         .map(|d| d.as_secs())
                         .unwrap_or(0);
-                    (None, None, 0.0, created_at)
+                    (None, None, None, 0.0, created_at, None, None, false)
                 };
 
             recordings.push(Recording {
                 id,
                 filename,
                 path: path.to_string_lossy().to_string(),
+                display_name,
                 duration_secs,
                 created_at,
                 transcript,
                 summary,
+                pipeline_status,
+                pipeline_error,
+                pipeline_priority,
             });
         }
     }
 
     recordings.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(recordings)
+}
+
+#[tauri::command]
+async fn list_recordings(app: AppHandle) -> Result<Vec<Recording>, String> {
+    list_recordings_impl(&app).await
 }
 
 #[tauri::command]
@@ -160,24 +240,89 @@ async fn save_metadata(
     summary: Option<String>,
     duration_secs: f64,
     created_at: u64,
+    pipeline_status: Option<String>,
+    pipeline_error: Option<String>,
+    pipeline_priority: Option<bool>,
 ) -> Result<(), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    let meta_dir = data_dir.join("metadata");
+    let meta_dir = app_data_dir(&app)?.join("metadata");
     std::fs::create_dir_all(&meta_dir).map_err(|e| e.to_string())?;
     let meta_path = meta_dir.join(format!("{}.json", id));
-    let meta = serde_json::json!({
-        "id": id,
-        "transcript": transcript,
-        "summary": summary,
-        "duration_secs": duration_secs,
-        "created_at": created_at,
-    });
-    std::fs::write(meta_path, serde_json::to_string_pretty(&meta).unwrap())
-        .map_err(|e| e.to_string())?;
+
+    let mut meta: serde_json::Value = if meta_path.exists() {
+        let bytes = std::fs::read(&meta_path).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    meta["id"] = serde_json::json!(id);
+    // Only patch transcript/summary when a value is provided so `None` means "leave existing"
+    // (frontend sends null for those keys on new recordings; missing keys behave the same).
+    if let Some(t) = transcript {
+        meta["transcript"] = serde_json::json!(t);
+    }
+    if let Some(s) = summary {
+        meta["summary"] = serde_json::json!(s);
+    }
+    meta["duration_secs"] = serde_json::json!(duration_secs);
+    meta["created_at"] = serde_json::json!(created_at);
+
+    if let Some(ref p) = pipeline_status {
+        meta["pipeline_status"] = serde_json::json!(p);
+    }
+    if let Some(ref e) = pipeline_error {
+        meta["pipeline_error"] = serde_json::json!(e);
+    }
+    if let Some(pr) = pipeline_priority {
+        meta["pipeline_priority"] = serde_json::json!(pr);
+    }
+
+    std::fs::write(
+        meta_path,
+        serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Set or clear the user-visible recording label stored in metadata (`display_name`).
+/// Passing an empty string (after trim) removes the custom name so the UI falls back to the default.
+#[tauri::command]
+async fn set_recording_display_name(app: AppHandle, id: String, display_name: String) -> Result<(), String> {
+    let meta_path = recording_meta_path(&app, &id)?;
+    let mut meta: serde_json::Value = if meta_path.exists() {
+        let bytes = std::fs::read(&meta_path).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    meta["id"] = serde_json::json!(id);
+
+    let s = display_name.trim().chars().take(200).collect::<String>();
+    if s.is_empty() {
+        if let Some(o) = meta.as_object_mut() {
+            o.remove("display_name");
+        }
+    } else {
+        meta["display_name"] = serde_json::json!(s);
+    }
+
+    std::fs::write(
+        meta_path,
+        serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
+fn recording_meta_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
+    let meta_dir = app_data_dir(app)?.join("metadata");
+    Ok(meta_dir.join(format!("{id}.json")))
 }
 
 #[tauri::command]
@@ -199,6 +344,139 @@ async fn delete_recording(app: AppHandle, id: String) -> Result<(), String> {
     if meta_path.exists() {
         std::fs::remove_file(meta_path).map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct PipelineCoordinator {
+    queue: Mutex<VecDeque<String>>,
+    notify: Notify,
+    exclusive: Mutex<()>,
+    /// Currently running pipeline job (if any), with its cancellation handle.
+    active: Mutex<Option<(String, CancellationToken)>>,
+}
+
+impl PipelineCoordinator {
+    fn new() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            notify: Notify::new(),
+            exclusive: Mutex::new(()),
+            active: Mutex::new(None),
+        }
+    }
+
+    /// Returns `true` if the id was newly appended (not already in the queue).
+    async fn enqueue_unique_back(&self, id: String) -> bool {
+        let mut q = self.queue.lock().await;
+        if !q.iter().any(|x| x == &id) {
+            q.push_back(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn promote_to_front(&self, id: &str) {
+        let mut q = self.queue.lock().await;
+        if let Some(pos) = q.iter().position(|x| x == id) {
+            let item = q.remove(pos).unwrap();
+            q.push_front(item);
+        }
+    }
+
+    /// Removes matching IDs from the queue and cancels the active job when its ID matches.
+    /// Returns `(removed_from_queue, active_cancelled_id)`.
+    async fn cancel_matching(&self, ids: &HashSet<String>) -> (Vec<String>, Option<String>) {
+        let mut dequeued: Vec<String> = Vec::new();
+        {
+            let mut q = self.queue.lock().await;
+            q.retain(|x| {
+                if ids.contains(x) {
+                    dequeued.push(x.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        let mut active_hit: Option<String> = None;
+        {
+            let a = self.active.lock().await;
+            if let Some((ref rid, ref tok)) = *a {
+                if ids.contains(rid) {
+                    tok.cancel();
+                    active_hit = Some(rid.clone());
+                }
+            }
+        }
+        (dequeued, active_hit)
+    }
+
+    fn wake(&self) {
+        self.notify.notify_one();
+    }
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct PipelineJobEvent {
+    id: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn audio_path_for_id(app: &AppHandle, id: &str) -> Result<String, String> {
+    let dir = app_data_dir(app)?.join("recordings");
+    for ext in ["webm", "wav"] {
+        let p = dir.join(format!("{id}.{ext}"));
+        if p.exists() {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+    Err(format!("No audio file for id {id}"))
+}
+
+async fn patch_recording_meta(app: &AppHandle, id: &str, patch: serde_json::Value) -> Result<(), String> {
+    let path = recording_meta_path(app, id)?;
+    let mut meta: serde_json::Value = if path.exists() {
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| serde_json::json!({ "id": id }))
+    } else {
+        serde_json::json!({ "id": id })
+    };
+    if let Some(obj) = patch.as_object() {
+        for (k, v) in obj {
+            meta[k] = v.clone();
+        }
+    }
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn emit_pipeline_event(app: &AppHandle, id: &str, status: &str, error: Option<String>) {
+    let _ = app.emit(
+        "pipeline-job-update",
+        PipelineJobEvent {
+            id: id.to_string(),
+            status: status.to_string(),
+            error,
+        },
+    );
+}
+
+async fn pipeline_cancelled_cleanup(app: &AppHandle, id: &str) -> Result<(), String> {
+    patch_recording_meta(
+        app,
+        id,
+        serde_json::json!({ "pipeline_status": "idle", "pipeline_error": null }),
+    )
+    .await?;
+    emit_pipeline_event(app, id, "cancelled", None);
     Ok(())
 }
 
@@ -237,8 +515,11 @@ async fn convert_to_wav(webm_path: &str) -> Result<String, String> {
     }
 }
 
-#[tauri::command]
-async fn transcribe_with_whisper(app: AppHandle, audio_path: String) -> Result<String, String> {
+async fn run_whisper_transcription(
+    app: AppHandle,
+    audio_path: String,
+    cancel: CancellationToken,
+) -> Result<String, String> {
     let (transcribe_path, wav_tmp) = match convert_to_wav(&audio_path).await {
         Ok(wav) => (wav.clone(), Some(wav)),
         Err(e) => {
@@ -291,7 +572,22 @@ async fn transcribe_with_whisper(app: AppHandle, audio_path: String) -> Result<S
         }
     });
 
-    let status = child.wait().await.map_err(|e| e.to_string())?;
+    let status = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            stream_task.abort();
+            let _ = stream_task.await;
+            if let Some(ref wav) = wav_tmp {
+                let _ = std::fs::remove_file(wav);
+            }
+            return Err(PIPELINE_CANCELLED.to_string());
+        }
+        res = child.wait() => {
+            res.map_err(|e| e.to_string())?
+        }
+    };
     let _ = stream_task.await;
 
     if let Some(ref wav) = wav_tmp {
@@ -321,8 +617,7 @@ struct OllamaResponse {
     response: String,
 }
 
-#[tauri::command]
-async fn summarize_with_gemma(transcript: String) -> Result<String, String> {
+async fn run_summarize_internal(transcript: String) -> Result<String, String> {
     let client = reqwest::Client::new();
     let prompt = format!(
         "You are a helpful assistant that summarizes meeting transcripts.\n\n\
@@ -358,6 +653,325 @@ async fn summarize_with_gemma(transcript: String) -> Result<String, String> {
         .map_err(|e| format!("Failed to parse Ollama response: {}", e))?;
 
     Ok(ollama_response.response.trim().to_string())
+}
+
+async fn run_summarize_internal_cancellable(
+    transcript: String,
+    cancel: CancellationToken,
+    cancelled_msg: &'static str,
+) -> Result<String, String> {
+    let mut task = tokio::spawn(async move { run_summarize_internal(transcript).await });
+    tokio::select! {
+        biased;
+        _ = cancel.cancelled() => {
+            task.abort();
+            let _ = task.await;
+            Err(cancelled_msg.to_string())
+        }
+        res = &mut task => match res {
+            Ok(Ok(s)) => Ok(s),
+            Ok(Err(e)) => Err(e),
+            Err(join_err) => {
+                if join_err.is_cancelled() {
+                    Err(cancelled_msg.to_string())
+                } else {
+                    Err(join_err.to_string())
+                }
+            }
+        },
+    }
+}
+
+async fn run_pipeline_job_inner(
+    app: &AppHandle,
+    id: &str,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    if cancel.is_cancelled() {
+        return Err(PIPELINE_CANCELLED.to_string());
+    }
+
+    let audio_path = audio_path_for_id(app, id)?;
+    let path = recording_meta_path(app, id)?;
+    let meta: serde_json::Value = if path.exists() {
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
+    } else {
+        return Err(format!("Missing metadata for {id}"));
+    };
+
+    let has_t = meta["transcript"]
+        .as_str()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let has_s = meta["summary"]
+        .as_str()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    if has_t && has_s {
+        patch_recording_meta(
+            app,
+            id,
+            serde_json::json!({ "pipeline_status": "done", "pipeline_error": null }),
+        )
+        .await?;
+        emit_pipeline_event(app, id, "done", None);
+        return Ok(());
+    }
+
+    if !has_t {
+        patch_recording_meta(
+            app,
+            id,
+            serde_json::json!({ "pipeline_status": "transcribing", "pipeline_error": null }),
+        )
+        .await?;
+        emit_pipeline_event(app, id, "transcribing", None);
+        let transcript =
+            run_whisper_transcription(app.clone(), audio_path, cancel.clone()).await?;
+        if cancel.is_cancelled() {
+            return Err(PIPELINE_CANCELLED.to_string());
+        }
+        patch_recording_meta(
+            app,
+            id,
+            serde_json::json!({ "transcript": transcript, "pipeline_status": "summarizing" }),
+        )
+        .await?;
+        emit_pipeline_event(app, id, "summarizing", None);
+    }
+
+    if cancel.is_cancelled() {
+        return Err(PIPELINE_CANCELLED.to_string());
+    }
+
+    let meta2: serde_json::Value = {
+        let bytes = std::fs::read(recording_meta_path(app, id)?).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?
+    };
+    let transcript = meta2["transcript"]
+        .as_str()
+        .ok_or_else(|| "Transcript missing after transcription step".to_string())?
+        .to_string();
+
+    let need_summary = !meta2["summary"]
+        .as_str()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if need_summary {
+        let summary =
+            run_summarize_internal_cancellable(transcript, cancel.clone(), PIPELINE_CANCELLED).await?;
+        patch_recording_meta(
+            app,
+            id,
+            serde_json::json!({ "summary": summary, "pipeline_status": "done", "pipeline_error": null }),
+        )
+        .await?;
+    } else {
+        patch_recording_meta(
+            app,
+            id,
+            serde_json::json!({ "pipeline_status": "done", "pipeline_error": null }),
+        )
+        .await?;
+    }
+    emit_pipeline_event(app, id, "done", None);
+    Ok(())
+}
+
+async fn run_pipeline_job(
+    app: &AppHandle,
+    id: &str,
+    cancel: CancellationToken,
+) -> Result<(), String> {
+    let result = run_pipeline_job_inner(app, id, cancel).await;
+    match result {
+        Ok(()) => Ok(()),
+        Err(e) if e == PIPELINE_CANCELLED => pipeline_cancelled_cleanup(app, id).await,
+        Err(e) => {
+            let _ = patch_recording_meta(
+                app,
+                id,
+                serde_json::json!({ "pipeline_status": "failed", "pipeline_error": e }),
+            )
+            .await;
+            emit_pipeline_event(app, id, "failed", Some(e.clone()));
+            Err(e)
+        }
+    }
+}
+
+async fn pipeline_worker_loop(app: AppHandle, coord: Arc<PipelineCoordinator>) {
+    loop {
+        let id = {
+            let mut q = coord.queue.lock().await;
+            q.pop_front()
+        };
+        if let Some(id) = id {
+            let cancel = CancellationToken::new();
+            {
+                let mut a = coord.active.lock().await;
+                *a = Some((id.clone(), cancel.clone()));
+            }
+            let _guard = coord.exclusive.lock().await;
+            let _ = run_pipeline_job(&app, &id, cancel).await;
+            drop(_guard);
+            {
+                let mut a = coord.active.lock().await;
+                if let Some((ref rid, _)) = *a {
+                    if rid == &id {
+                        *a = None;
+                    }
+                }
+            }
+            let _ = app.emit(
+                "pipeline-job-update",
+                PipelineJobEvent {
+                    id: id.clone(),
+                    status: "updated".into(),
+                    error: None,
+                },
+            );
+        } else {
+            coord.notify.notified().await;
+        }
+    }
+}
+
+async fn recover_pipeline_queue(app: AppHandle, coord: Arc<PipelineCoordinator>) {
+    let Ok(list) = list_recordings_impl(&app).await else {
+        return;
+    };
+    for rec in list {
+        let has_t = rec
+            .transcript
+            .as_ref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+        let has_s = rec
+            .summary
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if has_t && has_s {
+            continue;
+        }
+        let st = rec.pipeline_status.as_deref().unwrap_or("");
+        if st == "failed" || st == "idle" {
+            continue;
+        }
+        if st == "transcribing" || st == "summarizing" {
+            let _ = patch_recording_meta(
+                &app,
+                &rec.id,
+                serde_json::json!({ "pipeline_status": "queued" }),
+            )
+            .await;
+        }
+        let _ = coord.enqueue_unique_back(rec.id.clone()).await;
+    }
+    coord.wake();
+}
+
+#[tauri::command]
+async fn enqueue_pipeline_jobs(
+    app: AppHandle,
+    args: EnqueuePipelineJobsArgs,
+) -> Result<EnqueuePipelineOutcome, String> {
+    let EnqueuePipelineJobsArgs {
+        ids,
+        overwrite_complete,
+    } = args;
+    let coord = app.state::<Arc<PipelineCoordinator>>();
+    let list = list_recordings_impl(&app).await?;
+    let mut enqueued: u32 = 0;
+    let mut skipped_complete: u32 = 0;
+    let mut needs_wake = false;
+
+    for id in ids {
+        let rec = list
+            .iter()
+            .find(|r| r.id == id)
+            .ok_or_else(|| format!("Recording {id} not found"))?;
+        let has_t = rec
+            .transcript
+            .as_ref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+        let has_s = rec
+            .summary
+            .as_ref()
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if has_t && has_s && !overwrite_complete {
+            skipped_complete += 1;
+            continue;
+        }
+        let patch = if has_t && has_s && overwrite_complete {
+            serde_json::json!({
+                "transcript": null,
+                "summary": null,
+                "pipeline_status": "queued",
+                "pipeline_error": null,
+            })
+        } else {
+            serde_json::json!({ "pipeline_status": "queued", "pipeline_error": null })
+        };
+        patch_recording_meta(&app, &id, patch).await?;
+        if coord.enqueue_unique_back(id).await {
+            enqueued += 1;
+            needs_wake = true;
+        }
+    }
+    if needs_wake {
+        coord.wake();
+    }
+    Ok(EnqueuePipelineOutcome {
+        enqueued,
+        skipped_complete,
+    })
+}
+
+#[tauri::command]
+async fn cancel_pipeline_jobs(app: AppHandle, ids: Vec<String>) -> Result<Vec<String>, String> {
+    let coord = app.state::<Arc<PipelineCoordinator>>();
+    let id_set: HashSet<String> = ids.into_iter().collect();
+
+    let (dequeued, active_cancelled) = coord.cancel_matching(&id_set).await;
+
+    let mut affected: HashSet<String> = dequeued.iter().cloned().collect();
+    if let Some(ref id) = active_cancelled {
+        affected.insert(id.clone());
+    }
+
+    for id in &dequeued {
+        patch_recording_meta(
+            &app,
+            id,
+            serde_json::json!({ "pipeline_status": "idle", "pipeline_error": null }),
+        )
+        .await?;
+        emit_pipeline_event(&app, id, "cancelled", None);
+    }
+
+    Ok(affected.into_iter().collect())
+}
+
+#[tauri::command]
+async fn set_pipeline_job_priority(app: AppHandle, id: String, priority: bool) -> Result<(), String> {
+    let coord = app.state::<Arc<PipelineCoordinator>>();
+    patch_recording_meta(
+        &app,
+        &id,
+        serde_json::json!({ "pipeline_priority": priority }),
+    )
+    .await?;
+    if priority {
+        coord.promote_to_front(&id).await;
+        coord.wake();
+    }
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]
@@ -930,17 +1544,37 @@ async fn sync_default_input_to_aggregate() -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let pipeline = Arc::new(PipelineCoordinator::new());
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        .manage(pipeline.clone())
+        .setup(move |app| {
+            let coord = Arc::clone(&*app.state::<Arc<PipelineCoordinator>>());
+            let handle = app.handle().clone();
+            {
+                let coord = coord.clone();
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    pipeline_worker_loop(handle, coord).await;
+                });
+            }
+            tauri::async_runtime::spawn(async move {
+                recover_pipeline_queue(handle, coord).await;
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_recordings_dir,
             save_recording,
             list_recordings,
             save_metadata,
+            set_recording_display_name,
             delete_recording,
-            transcribe_with_whisper,
-            summarize_with_gemma,
+            enqueue_pipeline_jobs,
+            get_pipeline_queue_snapshot,
+            cancel_pipeline_jobs,
+            set_pipeline_job_priority,
             check_whisper,
             check_ffmpeg,
             check_ollama,

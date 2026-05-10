@@ -1,22 +1,38 @@
-import { useState, useCallback, useTransition } from "react";
+import { useState, useCallback, useEffect, useTransition } from "react";
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
+import { sileo, Toaster } from "sileo";
 import appIcon from "@/assets/icon.png";
 import { RecorderPanel } from "@/components/RecorderPanel";
 import { RecordingsList } from "@/components/RecordingsList";
 import { SetupScreen } from "@/components/SetupScreen";
 import { Separator } from "@/components/ui/separator";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useRecordings } from "@/hooks/useRecordings";
 import { cn } from "@/lib/utils";
 
 export default function App() {
   const [ready, setReady] = useState(false);
   const [, startTransition] = useTransition();
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [toast, setToast] = useState<{ msg: string; type: "error" | "info" } | null>(null);
+  const recordingsApi = useRecordings();
+  const { refresh: refreshRecordings } = recordingsApi;
+
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(null));
+  }, []);
 
   const showToast = useCallback((msg: string, type: "error" | "info" = "info") => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
+    const opts = {
+      title: type === "error" ? "Error" : "Notice",
+      description: msg,
+      duration: 4000,
+    };
+    if (type === "error") sileo.error(opts);
+    else sileo.info(opts);
   }, []);
 
   const handleContinue = useCallback(() => {
@@ -27,21 +43,31 @@ export default function App() {
 
   const handleRecordingComplete = useCallback(
     async (id: string, _path: string, duration: number) => {
-      await invoke("save_metadata", {
-        id,
-        transcript: null,
-        summary: null,
-        durationSecs: duration,
-        createdAt: Math.floor(Date.now() / 1000),
-      });
-      setRefreshTrigger((n) => n + 1);
-      showToast("Recording saved!", "info");
+      try {
+        await invoke("save_metadata", {
+          id,
+          transcript: null,
+          summary: null,
+          durationSecs: duration,
+          createdAt: Math.floor(Date.now() / 1000),
+          pipelineStatus: "idle",
+          pipelineError: null,
+          pipelinePriority: false,
+        });
+        await refreshRecordings();
+        setRefreshTrigger((n) => n + 1);
+        showToast("Recording saved — click Summarize on the card when you want transcript + summary", "info");
+      } catch (e) {
+        showToast(e instanceof Error ? e.message : String(e), "error");
+      }
     },
-    [showToast]
+    [refreshRecordings, showToast]
   );
 
   return (
     <TooltipProvider delayDuration={300}>
+      <Toaster position="bottom-center" theme="system" options={{ duration: 4000 }} />
+
       {/* Both screens are rendered in the tree; CSS drives the crossfade */}
       <div
         className={cn(
@@ -64,6 +90,9 @@ export default function App() {
             <div className="flex items-center gap-2.5">
               <img src={appIcon} alt="" className="h-7 w-7 rounded-lg object-cover" />
               <span className="font-semibold text-sm tracking-tight">Meeting Note Taker</span>
+              {appVersion === null ? null : (
+                <span className="text-xs text-muted-foreground tabular-nums">v{appVersion}</span>
+              )}
             </div>
             <div className="flex-1" />
             <span className="text-xs text-muted-foreground">
@@ -88,24 +117,14 @@ export default function App() {
             <Separator orientation="vertical" />
 
             <main className="flex-1 overflow-hidden">
-              <RecordingsList refreshTrigger={refreshTrigger} />
+            <RecordingsList
+              refreshTrigger={refreshTrigger}
+              api={recordingsApi}
+              onNotify={showToast}
+            />
             </main>
           </div>
 
-          {/* Toast */}
-          {toast && (
-            <div
-              className={cn(
-                "fixed bottom-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-lg text-sm shadow-lg z-50",
-                "animate-in slide-in-from-bottom-4 fade-in duration-200",
-                toast.type === "error"
-                  ? "bg-destructive text-destructive-foreground"
-                  : "bg-primary text-primary-foreground"
-              )}
-            >
-              {toast.msg}
-            </div>
-          )}
         </div>
       </div>
     </TooltipProvider>

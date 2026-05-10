@@ -16,7 +16,7 @@ import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { formatDuration, cn } from "@/lib/utils";
 
 interface Props {
-  onRecordingComplete: (id: string, path: string, duration: number) => void;
+  onRecordingComplete: (id: string, path: string, duration: number) => void | Promise<void>;
   onError: (msg: string) => void;
 }
 
@@ -39,9 +39,15 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
   const handleStop = useCallback(async () => {
     try {
       const { id, path, duration: dur } = await stop();
-      onRecordingComplete(id, path, dur);
-    } catch {
-      onError("Failed to save recording.");
+      await Promise.resolve(onRecordingComplete(id, path, dur));
+    } catch (e) {
+      if (e instanceof Error && e.message && !e.message.includes("No recorder")) {
+        onError(e.message);
+      } else if (typeof e === "string") {
+        onError(e);
+      } else {
+        onError("Failed to save recording.");
+      }
     }
   }, [stop, onRecordingComplete, onError]);
 
@@ -79,7 +85,7 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
               disabled={state !== "idle"}
               className={cn(
                 "w-full appearance-none rounded-md border border-input bg-background px-3 py-1.5 pr-8 text-sm",
-                "focus:outline-none focus:ring-2 focus:ring-ring",
+                "focus:outline-none focus:ring-2 focus:ring-primary",
                 "disabled:opacity-50 disabled:cursor-not-allowed",
                 "text-foreground"
               )}
@@ -197,7 +203,7 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
                 <AlertDialogHeader>
                   <AlertDialogTitle>Stop this recording?</AlertDialogTitle>
                   <AlertDialogDescription>
-                    The recording will be saved. You can transcribe and summarise it afterwards.
+                    The recording will be saved. Open it in the list and click Summarize when you want a transcript and summary (Whisper, then Gemma).
                   </AlertDialogDescription>
                 </AlertDialogHeader>
                 <AlertDialogFooter>

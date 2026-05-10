@@ -11,8 +11,41 @@ Transcription via **Whisper** · Summarisation via **Gemma 4** (Ollama).
 
 | Document | Description |
 |----------|-------------|
-| **README** *(this file)* | Setup, architecture, configuration reference |
+| **README** *(this file)* | Setup, architecture, configuration reference, **device / hardware notes** |
 | [docs/USER_GUIDE.md](docs/USER_GUIDE.md) | Step-by-step guide for recording, transcribing, and summarising |
+
+---
+
+## Device and hardware recommendations
+
+The app does **not** enforce fixed CPU, RAM, or GPU minimums. Use the following to set expectations for **disk**, **memory**, and **performance** with the default stack (`gemma4:e4b` + local Whisper).
+
+### Platform
+
+- **macOS** with **Apple Silicon** (M-series) matches the documented **system-audio** setup (BlackHole, aggregate devices) and the Whisper **speed** table under [Configuration → Whisper model](#whisper-model) (those figures are labelled for Apple Silicon). Intel Macs may work but transcription is often slower.
+
+### Disk space
+
+Budget for model downloads, the app, tools, and growing recordings:
+
+| Component | Typical footprint |
+|-----------|-------------------|
+| Gemma `gemma4:e2b` | ~7.2 GB |
+| Gemma `gemma4:e4b` *(default-style)* | ~9.6 GB |
+| Gemma `gemma4:26b` / `gemma4:31b` | ~18–20 GB |
+| Whisper model | ~75 MB (`tiny`) … ~3 GB (`large`) — see [Whisper model](#whisper-model) |
+| Recordings | Varies; each meeting can be up to **2 hours** of audio plus `metadata/` JSON |
+
+Keep **well above** the model size alone in free space for macOS, dependencies, and recording growth.
+
+### Memory (RAM)
+
+- **`gemma4:e4b`**: **16 GB** system RAM is usually comfortable with other apps open; **8 GB** can work but may swap or feel tight when **Whisper** and **Ollama** run together.
+- **Larger Gemma models** (`gemma4:26b`, `gemma4:31b`): expect to need **substantially more RAM** than `e4b` (see [Pull the Gemma 4 model](#pull-the-gemma-4-model)).
+
+### GPU
+
+No discrete GPU is required. **Apple Silicon** uses unified memory; acceleration depends on your **Ollama** build and **PyTorch / Whisper** install.
 
 ---
 
@@ -83,13 +116,31 @@ Every launch shows a setup screen that verifies **BlackHole 2ch**, **audio routi
 
 BlackHole 2ch remains **required** under the hood: the setup flow creates **Meeting Note Taker Output** (Multi-Output) and **Meeting Note Taker Input** (Aggregate: mic + BlackHole). You do **not** pick BlackHole itself in the app — pick **Meeting Note Taker Input** after setup. See [docs/USER_GUIDE.md § 3](docs/USER_GUIDE.md#3-capturing-system-audio) for install, auto-setup, and manual fallback.
 
+### AI pipeline (single queue)
+
+After you **stop and save**, the recording appears in the list with **`pipeline_status: idle`**. Nothing runs until you **queue** it:
+
+- Click **Summarize** (or **Re-summarize** on fully processed items) on a card, **or**
+- Select one or more eligible recordings and use **Queue for processing**.
+
+All of the above use the **same** backend queue: **one** recording is processed at a time (**Whisper** → **Gemma**). Extra items wait in a **FIFO** queue.
+
+- **Metadata** (`metadata/<id>.json`) stores `transcript`, `summary`, and pipeline fields (`pipeline_status`, `pipeline_error`, `pipeline_priority`) so results survive **app restarts** without re-running.
+- On launch, **incomplete** jobs (e.g. stuck in **queued** / **transcribing** / **summarizing**) are **re-queued** automatically where appropriate; **failed** and **idle** items are not auto-started.
+
+**Cancel / remove from queue:** **Remove from queue** (per card) or **Cancel queue** (batch) stops the active job and/or clears matching IDs from the queue.
+
+Statuses include: `queued`, `transcribing`, `summarizing`, `done`, `failed`, and `idle` (not in the queue).
+
+See [docs/USER_GUIDE.md § 4–5](docs/USER_GUIDE.md#4-transcription-and-the-background-ai-queue).
+
 ### Transcription
 
 Whisper runs locally. Before calling Whisper, the app converts the WebM recording to 16 kHz mono WAV via ffmpeg — this is the format Whisper is optimised for and significantly improves reliability.
 
 ### AI summarisation
 
-Gemma 4 (via Ollama) generates a structured summary from the transcript, including key topics, action items, and decisions.
+Gemma 4 (via Ollama) generates a structured summary from the transcript, including key topics, action items, and decisions. After you enqueue a recording, this runs **after** Whisper in the **same** pipeline job.
 
 ### Playback
 
@@ -103,7 +154,7 @@ Inline audio player per recording with a seekable progress bar and live time cou
 ┌─────────────────────────────────────────────────┐
 │  Frontend (React + Vite)                        │
 │                                                 │
-│  SetupScreen ──► 4 requirement checks           │
+│  SetupScreen — dependency & routing checks              │
 │                                                 │
 │  RecorderPanel ──► useAudioRecorder             │
 │    MediaRecorder API + Web Audio (level meter)  │
@@ -113,10 +164,10 @@ Inline audio player per recording with a seekable progress bar and live time cou
 │                                                 │
 │  RecordingsList ──► RecordingCard               │
 │    Playback via readFile + Blob URL             │
-│    Seekable progress bar                        │
-│    Inline transcript + summary viewer           │
+│    Search + status filters · Batch queue tools   │
+│    listen: pipeline-job-update → refresh        │
 └──────────────────────┬──────────────────────────┘
-                       │ Tauri IPC (invoke)
+                       │ Tauri IPC (invoke + events)
 ┌──────────────────────▼──────────────────────────┐
 │  Backend (Rust / Tauri 2)                       │
 │                                                 │
@@ -124,16 +175,20 @@ Inline audio player per recording with a seekable progress bar and live time cou
 │  check_ollama  / check_ollama_model             │
 │                                                 │
 │  save_recording      writes .webm to disk       │
-│  list_recordings     reads recordings dir       │
-│  save_metadata       writes JSON sidecar        │
+│  list_recordings     reads recordings + meta    │
+│  save_metadata       merges JSON sidecar        │
 │  delete_recording    removes file + metadata    │
 │                                                 │
-│  transcribe_with_whisper                        │
-│    ffmpeg: .webm → 16kHz mono WAV               │
-│    whisper: WAV → transcript text               │
+│  Background pipeline (one job at a time)        │
+│    enqueue_pipeline_jobs · cancel_pipeline_jobs  │
+│    set_pipeline_job_priority                    │
+│    recover incomplete on startup                │
+│    emit pipeline-job-update                     │
 │                                                 │
-│  summarize_with_gemma                           │
-│    POST localhost:11434/api/generate            │
+│  Per job (worker):                              │
+│    run_whisper_transcription → transcript       │
+│    (streams transcription-chunk to UI)          │
+│    Ollama POST /api/generate → summary          │
 └──────────────────────┬──────────────────────────┘
                        │
           ┌────────────┴────────────┐
@@ -157,7 +212,8 @@ All data is stored locally — nothing leaves your machine.
 ```
 <app-data>/
 ├── recordings/        # .webm audio files
-└── metadata/          # <id>.json — transcript, summary, duration, created_at
+└── metadata/          # <id>.json — transcript, summary, duration, created_at,
+                        #   pipeline_status, pipeline_error, pipeline_priority
 ```
 
 ---
@@ -166,7 +222,7 @@ All data is stored locally — nothing leaves your machine.
 
 ### Whisper model
 
-Edit [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs) → `transcribe_with_whisper`:
+Edit [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs) → `run_whisper_transcription` (the `whisper` `Command` args):
 
 ```rust
 "--model", "base",      // tiny | base | small | medium | large
@@ -183,7 +239,7 @@ Edit [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs) → `transcribe_with_whisper
 
 ### Ollama model
 
-Edit [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs) → `summarize_with_gemma`:
+Edit [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs) → `run_summarize_internal` (the `OllamaRequest` `model` field used by the pipeline worker):
 
 ```rust
 model: "gemma4:e4b".to_string(),
@@ -218,15 +274,15 @@ Quick reference:
 | "Model not found" | `ollama pull gemma4:e4b` |
 | Garbled transcript | `brew install ffmpeg` |
 | Wrong language | Remove `--language en` from lib.rs |
+| **AI failed** / queue stuck | Check Whisper + Ollama; click **Summarize** again on the card to re-enqueue; see [USER_GUIDE §8 — Background job stuck or AI failed](docs/USER_GUIDE.md#background-job-stuck-or-ai-failed) |
 
 ---
 
 ## Known Limitations
 
-- **UI freezes during transcription** — Whisper runs synchronously; long recordings block the window.
-- **No streaming summaries** — Gemma's response arrives all at once.
+- **No blocking “manual” transcribe/summarize** — both steps run only through the **shared queue**; the main button enqueues and the UI stays responsive while you use the app.
+- Whisper can stream **partial transcript lines** to the card while a job is **transcribing**; **Gemma** still returns the summary in one shot.
 - **No export** — transcript and summary are view-only inside the app.
-- **No search** — recordings cannot be filtered by content.
 
 ---
 

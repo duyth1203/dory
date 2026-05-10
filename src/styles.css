@@ -21,7 +21,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 220 9% 93%;              /* grey.03  #ecedef */
     --input: 220 9% 93%;
-    --ring: 143 100% 32%;              /* primary.light-mode */
+    --ring: var(--primary);            /* focus rings track primary */
     --radius: 0.5rem;
   }
 
@@ -45,13 +45,48 @@
     --destructive-foreground: 0 0% 100%;
     --border: 225 5% 17%;              /* grey.08 */
     --input: 225 5% 17%;
-    --ring: 154 71% 51%;               /* primary.dark-mode */
+    --ring: var(--primary);
   }
+}
+
+/* Map design tokens so Tailwind v4 generates color utilities (e.g. focus-visible:ring-primary). */
+@theme {
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--primary));
 }
 
 @layer base {
   * {
     border-color: hsl(var(--border));
+  }
+
+  :is(button, input, select, textarea, [role="button"], [href]):focus-visible {
+    outline: none;
+  }
+
+  :is(button, [role="button"], a):focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  *:focus-visible {
+    outline-color: hsl(var(--primary));
   }
 
   body {
@@ -85,6 +120,8 @@
   .border-border { border-color: hsl(var(--border)); }
   .border-input { border-color: hsl(var(--input)); }
   .ring-ring { --tw-ring-color: hsl(var(--ring)); }
+  .ring-primary { --tw-ring-color: hsl(var(--primary)); }
+  .accent-primary { accent-color: hsl(var(--primary)); }
 }
 
 /* Smooth animations */
@@ -142,3 +179,35 @@
 .zoom-in-95 { animation-name: zoom-in-95; }
 .zoom-out-95 { animation-name: zoom-out-95; }
 .duration-200 { animation-duration: 200ms; }
+
+/* Lucide pipeline status icons — motion only when the user hasn’t reduced it */
+@keyframes lucide-icon-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.9);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .animate-lucide-breathe {
+    animation: lucide-icon-breathe 1.35s ease-in-out infinite;
+    transform-origin: center;
+    will-change: transform, opacity;
+  }
+
+  .animate-lucide-sparkles {
+    animation: lucide-icon-breathe 0.95s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+    transform-origin: center;
+    will-change: transform, opacity;
+  }
+
+  .animate-lucide-queue {
+    animation: lucide-icon-breathe 2s ease-in-out infinite;
+    transform-origin: center;
+  }
+}

@@ -302,7 +302,7 @@ const INITIAL: Requirement[] = [
         {
           type: "tip",
           content:
-            "If you pull gemma4:e2b, update the model name in src-tauri/src/lib.rs → summarize_with_gemma.",
+            "If you pull gemma4:e2b, update the model name in src-tauri/src/lib.rs → run_summarize_internal (Ollama model field).",
         },
         {
           type: "text",

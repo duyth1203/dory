@@ -108,25 +108,36 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
         </div>
       )}
 
-      {/* Waveform visualiser */}
-      <div className="relative flex h-16 items-end justify-center gap-[3px] w-full max-w-xs">
-        {bars.map((i) => {
-          const phase = (i / bars.length) * Math.PI * 2;
-          const baseH =
-            state === "recording"
-              ? Math.max(4, (Math.sin(phase) * 0.5 + 0.5) * audioLevel * 0.9)
-              : 4;
-          return (
-            <div
-              key={i}
-              className={cn(
-                "w-2 rounded-full transition-all duration-75",
-                state === "recording" ? "bg-red-500" : "bg-muted-foreground/30"
-              )}
-              style={{ height: `${Math.max(4, baseH)}px` }}
-            />
-          );
-        })}
+      {/* Waveform visualiser — outer shell pulses while recording / paused */}
+      <div
+        className={cn(
+          "relative flex w-full max-w-xs flex-col items-center rounded-xl px-2 py-3",
+          state === "recording" && "animate-record-live-shell bg-destructive/[0.06]",
+          state === "paused" && "animate-pause-shell bg-amber-500/[0.07]"
+        )}
+      >
+        <div className="relative flex h-16 w-full max-w-[18rem] items-end justify-center gap-[3px]">
+          {bars.map((i) => {
+            const phase = (i / bars.length) * Math.PI * 2;
+            const baseH =
+              state === "recording"
+                ? Math.max(4, (Math.sin(phase) * 0.5 + 0.5) * audioLevel * 0.92)
+                : 4;
+            const h = Math.max(4, baseH);
+            const hot = state === "recording" && h > 13;
+            return (
+              <div
+                key={i}
+                className={cn(
+                  "w-2 rounded-full transition-[height,box-shadow] duration-100 ease-out",
+                  state === "recording" ? "bg-red-500" : "bg-muted-foreground/30",
+                  hot && "shadow-[0_0_12px_-2px_hsl(var(--destructive)/0.55)]"
+                )}
+                style={{ height: `${h}px` }}
+              />
+            );
+          })}
+        </div>
       </div>
 
       {/* Timer */}
@@ -167,14 +178,14 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
       ) : (
         <div className="flex flex-col items-center gap-3 w-full">
           {state === "recording" && !nearLimit && (
-            <span className="flex items-center gap-1.5 text-xs text-red-500 font-medium">
-              <span className="inline-block h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+            <span className="flex items-center gap-1.5 text-xs font-medium text-red-500">
+              <span className="inline-block h-2.5 w-2.5 rounded-full bg-red-500 animate-record-dot motion-reduce:animate-none" />
               Recording…
             </span>
           )}
           {state === "paused" && (
-            <span className="flex items-center gap-1.5 text-xs text-amber-500 font-medium">
-              <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
+            <span className="flex items-center gap-1.5 text-xs font-medium text-amber-500">
+              <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500 motion-safe:animate-pulse" />
               Paused
             </span>
           )}

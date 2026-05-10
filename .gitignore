@@ -4,3 +4,4 @@ src-tauri/target
 src-tauri/gen
 .env
 *.local
+src-tauri/icons/_dock_source_1024.png

@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    /* BAF design system — light mode */
+    --background: 40 11% 94%;           /* warm off-white  #F2F1EF */
+    --foreground: 0 0% 0%;             /* black    #000000 */
+    --card: 0 0% 100%;                 /* white    #ffffff */
+    --card-foreground: 0 0% 0%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 0%;
+    --primary: 143 100% 32%;           /* primary.light-mode  #00a33f */
+    --primary-foreground: 0 0% 100%;   /* white */
+    --secondary: 147 35% 91%;          /* button.secondary.default  #e0f0e7 */
+    --secondary-foreground: 220 3% 21%; /* grey.07  #353638 */
+    --muted: 180 2% 96%;               /* grey.02  #f4f5f5 */
+    --muted-foreground: 0 0% 50%;      /* grey.05  #808080 */
+    --accent: 147 35% 91%;             /* same as secondary */
+    --accent-foreground: 220 3% 21%;
+    --destructive: 357 86% 66%;        /* system.error.100  #f35f66 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 9% 93%;              /* grey.03  #ecedef */
+    --input: 220 9% 93%;
+    --ring: 143 100% 32%;              /* primary.light-mode */
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* BAF design system — dark mode */
+    --background: 0 0% 12%;             /* dark  #1E1E1E */
+    --foreground: 0 0% 100%;
+    --card: 210 3% 13%;                /* grey.09  #202122 */
+    --card-foreground: 0 0% 100%;
+    --popover: 210 3% 13%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 154 71% 51%;            /* primary.dark-mode  #2bdb8f */
+    --primary-foreground: 0 0% 0%;     /* dark text on light-green */
+    --secondary: 225 5% 17%;           /* grey.08  #2a2b2e */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 225 5% 17%;
+    --muted-foreground: 0 0% 50%;      /* grey.05  #808080 */
+    --accent: 225 5% 17%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 357 86% 66%;        /* system.error.100  #f35f66 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 225 5% 17%;              /* grey.08 */
+    --input: 225 5% 17%;
+    --ring: 154 71% 51%;               /* primary.dark-mode */
+  }
+}
+
+@layer base {
+  * {
+    border-color: hsl(var(--border));
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer utilities {
+  .bg-background { background-color: hsl(var(--background)); }
+  .bg-card { background-color: hsl(var(--card)); }
+  .bg-muted { background-color: hsl(var(--muted)); }
+  .bg-primary { background-color: hsl(var(--primary)); }
+  .bg-secondary { background-color: hsl(var(--secondary)); }
+  .bg-accent { background-color: hsl(var(--accent)); }
+  .bg-destructive { background-color: hsl(var(--destructive)); }
+
+  .text-foreground { color: hsl(var(--foreground)); }
+  .text-card-foreground { color: hsl(var(--card-foreground)); }
+  .text-muted-foreground { color: hsl(var(--muted-foreground)); }
+  .text-primary { color: hsl(var(--primary)); }
+  .text-primary-foreground { color: hsl(var(--primary-foreground)); }
+  .text-secondary-foreground { color: hsl(var(--secondary-foreground)); }
+  .text-accent-foreground { color: hsl(var(--accent-foreground)); }
+  .text-destructive { color: hsl(var(--destructive)); }
+  .text-destructive-foreground { color: hsl(var(--destructive-foreground)); }
+
+  .border-border { border-color: hsl(var(--border)); }
+  .border-input { border-color: hsl(var(--input)); }
+  .ring-ring { --tw-ring-color: hsl(var(--ring)); }
+}
+
+/* Smooth animations */
+@keyframes slide-in-from-bottom-4 {
+  from { transform: translate(-50%, 1rem); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+@keyframes slide-in-from-top-2 {
+  from { transform: translateY(-0.5rem); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes zoom-in-95 {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes zoom-out-95 {
+  from { transform: scale(1); opacity: 1; }
+  to { transform: scale(0.95); opacity: 0; }
+}
+
+@keyframes slide-out-to-left-half {
+  from { transform: translate(-50%, -50%); }
+  to { transform: translate(calc(-50% - 8px), -50%); }
+}
+
+@keyframes slide-out-to-top-48 {
+  from { transform: translate(-50%, -50%); }
+  to { transform: translate(-50%, calc(-50% - 8px)); }
+}
+
+.animate-in { animation-duration: 200ms; animation-fill-mode: both; }
+.animate-out { animation-duration: 200ms; animation-fill-mode: both; }
+.slide-in-from-bottom-4 { animation-name: slide-in-from-bottom-4; }
+.slide-in-from-top-2 { animation-name: slide-in-from-top-2; }
+.slide-in-from-left-1\/2 { animation-name: slide-in-from-bottom-4; }
+.slide-in-from-top-\[48\%\] { animation-name: slide-in-from-top-2; }
+.slide-out-to-left-1\/2 { animation-name: slide-out-to-left-half; }
+.slide-out-to-top-\[48\%\] { animation-name: slide-out-to-top-48; }
+.fade-in { animation-name: fade-in; }
+.fade-in-0 { animation-name: fade-in; }
+.fade-out-0 { animation-name: fade-out; }
+.zoom-in-95 { animation-name: zoom-in-95; }
+.zoom-out-95 { animation-name: zoom-out-95; }
+.duration-200 { animation-duration: 200ms; }

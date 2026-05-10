@@ -12,6 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider, useTheme } from "@/contexts/theme";
 import { useRecordings } from "@/hooks/useRecordings";
+import { initNativeLiquidGlass } from "@/lib/liquidGlass";
 import { cn } from "@/lib/utils";
 
 const INTRO_SEEN_KEY = "mnt:introSeen";
@@ -31,6 +32,10 @@ function AppContent() {
     void getVersion()
       .then(setAppVersion)
       .catch(() => setAppVersion(null));
+  }, []);
+
+  useEffect(() => {
+    void initNativeLiquidGlass();
   }, []);
 
   const showToast = useCallback((msg: string, type: "error" | "info" = "info") => {
@@ -90,8 +95,8 @@ function AppContent() {
           ready ? "opacity-0 pointer-events-none" : "opacity-100"
         )}
       >
-        {/* Mount SetupScreen only after intro is dismissed so checks don't run behind the dialog */}
-        {!introOpen && <SetupScreen onContinue={handleContinue} />}
+        {/* Mount SetupScreen only after intro is dismissed; unmount once main app is ready (avoids duplicate full-screen layers). */}
+        {!introOpen && !ready && <SetupScreen onContinue={handleContinue} />}
       </div>
 
       <div
@@ -100,9 +105,9 @@ function AppContent() {
           ready ? "opacity-100" : "opacity-0 pointer-events-none"
         )}
       >
-        <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-          {/* Header */}
-          <header className="app-shell-header-motion flex items-center gap-3 px-5 py-3 border-b bg-card/50 backdrop-blur-sm shrink-0">
+        <div className="app-liquid-chrome flex flex-col h-screen text-foreground overflow-hidden">
+          {/* Backgrounds come from .app-* in styles.css (not bg-* utilities — those override semi-transparency). */}
+          <header className="app-chrome-header app-shell-header-motion flex items-center gap-3 px-5 py-3 border-b border-border shrink-0">
             <div className="flex items-center gap-2.5">
               <img src={appIcon} alt="" className="h-7 w-7 rounded-lg object-cover" />
               <span className="font-semibold text-sm tracking-tight">Meeting Note Taker</span>
@@ -120,7 +125,7 @@ function AppContent() {
           {/* Body */}
           <div className="flex flex-1 overflow-hidden">
             <aside
-              className="animate-app-pane-left w-80 shrink-0 border-r flex flex-col bg-card/30"
+              className="app-chrome-aside animate-app-pane-left w-80 shrink-0 border-r border-border flex flex-col"
               style={{ "--pane-delay": "40ms" } as CSSProperties}
             >
               <div className="px-4 pt-4 pb-2">
@@ -134,7 +139,7 @@ function AppContent() {
               />
             </aside>
 
-            <Separator orientation="vertical" />
+            <Separator orientation="vertical" className="app-chrome-panes-split" />
 
             <main
               className="animate-app-pane-right flex-1 overflow-hidden"

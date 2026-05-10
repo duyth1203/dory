@@ -449,7 +449,7 @@ export function SetupScreen({ onContinue }: Props) {
   const stillChecking = items.some((r) => r.status === "checking");
 
   return (
-    <div className="flex flex-col h-screen bg-background items-center justify-center p-6 overflow-auto">
+    <div className="app-liquid-chrome flex flex-col h-screen items-center justify-center p-6 overflow-auto text-foreground">
       <div className="w-full max-w-lg space-y-5 py-6">
         {/* Header */}
         <div className="space-y-1 text-center">
@@ -464,7 +464,7 @@ export function SetupScreen({ onContinue }: Props) {
         </div>
 
         {/* Checklist */}
-        <div className="rounded-xl border bg-card divide-y overflow-hidden">
+        <div className="app-glass-checklist rounded-xl border bg-card divide-y overflow-hidden">
           {items.map((item) => {
             const isExpanded = expanded[item.id] ?? false;
             const showGuide = (item.status === "error" || item.status === "warning") && done;
@@ -527,7 +527,7 @@ export function SetupScreen({ onContinue }: Props) {
 
                 {/* Expanded step-by-step guide */}
                 {showGuide && isExpanded && (
-                  <div className="bg-muted/30 border-t px-4 py-4 ml-0 space-y-2 animate-in slide-in-from-top-2 duration-200">
+                  <div className="app-glass-hairline-t bg-muted/30 border-t px-4 py-4 ml-0 space-y-2 animate-in slide-in-from-top-2 duration-200">
                     <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1.5 mb-3">
                       <BookOpen className="h-3 w-3" />
                       How to fix

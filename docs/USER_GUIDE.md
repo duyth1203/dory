@@ -16,14 +16,14 @@
 
 ## 1. First Launch — Setup Screen
 
-Every time the app opens it runs a health check on its five dependencies before showing the main interface.
+Every time the app opens it runs a health check on its dependencies before showing the main interface.
 
 ```
 ┌─────────────────────────────────────────┐
 │  Getting ready…                         │
 │                                         │
 │  ✅  BlackHole 2ch   2ch                │
-│  ✅  Whisper         0.9.0              │
+│  ✅  Sona transcription  ready                 │
 │  ⚠️  ffmpeg          optional           │
 │  ✅  Ollama          0.6.1              │
 │  ✅  Gemma 4 (e4b)   4.5B               │
@@ -48,7 +48,7 @@ When all required checks pass the screen **fades out automatically** — there i
 | Requirement | Why it's needed | Required? |
 |-------------|----------------|-----------|
 | **BlackHole 2ch** | Virtual audio driver that captures system audio alongside your mic | **Yes** |
-| **Whisper** | Converts your recordings to text | **Yes** |
+| **Sona + GGUF model** | Bundled Sona sidecar and path to a whisper.cpp-compatible model | **Yes** |
 | **ffmpeg** | Converts WebM audio to WAV before transcription — improves reliability | No |
 | **Ollama** | Runs the Gemma AI model locally | **Yes** |
 | **Gemma 4 (e4b)** | Generates meeting summaries from transcripts | **Yes** |
@@ -96,7 +96,7 @@ Click **⏸ Pause** to pause mid-meeting (for a break or off-the-record conversa
 
 Click the **red square (■)** to stop. The recording is saved instantly to your local app-data folder and appears in the recordings list on the right.
 
-**Transcript + summary:** The new recording is saved with **`pipeline_status: idle`**. Nothing runs until you add it to the AI queue — either click **Summarize** on that card or select it (with others) and use **Queue for processing**. Everything shares **one** FIFO worker (**Whisper** then **Gemma**). Only **one** recording runs at a time; the rest wait. Card badges show **Queued**, **Transcribing**, **Summarizing**, or **AI failed** as appropriate. See [Section 4](#4-transcription-and-the-background-ai-queue) for batch queue, **Cancel queue**, and recovery.
+**Transcript + summary:** The new recording is saved with **`pipeline_status: idle`**. Nothing runs until you add it to the AI queue — either click **Summarize** on that card or select it (with others) and use **Queue for processing**. Everything shares **one** FIFO worker (**Sona** then **Gemma**). Only **one** recording runs at a time; the rest wait. Card badges show **Queued**, **Transcribing**, **Summarizing**, or **AI failed** as appropriate. See [Section 4](#4-transcription-and-the-background-ai-queue) for batch queue, **Cancel queue**, and recovery.
 
 ### Recording limits
 
@@ -168,7 +168,7 @@ This combines BlackHole 2ch with your microphone into a single recordable input.
 When you stop a recording, Meeting Note Taker:
 
 1. Saves the audio file and metadata with **`pipeline_status: idle`**
-2. Shows the item in the list — **no** Whisper or Gemma run yet
+2. Shows the item in the list — **no** transcription or Gemma run yet
 
 To process it, use either:
 
@@ -181,7 +181,7 @@ Both call the same Rust entry point — **`enqueue_pipeline_jobs`** — and appe
 
 When an item reaches the front of the queue:
 
-1. **Whisper** (if there is no transcript yet) → writes **transcript**, emits **`transcription-chunk`** lines for live preview when verbose output is on  
+1. **Sona** (if there is no transcript yet) → writes **transcript**, emits **`transcription-chunk`** lines for live preview  
 2. **Gemma** (if there is no summary yet) → writes **summary**  
 3. Sets **`pipeline_status: done`** (or **`failed`** + **`pipeline_error`**)
 
@@ -190,7 +190,7 @@ You can **keep using the app** while work runs. The list **refreshes** on **`pip
 ### Queue behaviour
 
 - If a job is already running, new IDs stay **Queued** until their turn.
-- **Remove from queue** (card) or **Cancel queue** (toolbar) cancels Whisper/Gemma for matching IDs and/or removes them from the waiting queue.
+- **Remove from queue** (card) or **Cancel queue** (toolbar) cancels transcription/Gemma for matching IDs and/or removes them from the waiting queue.
 - After you quit and reopen, **incomplete** in-flight states are **re-queued** where appropriate; **`failed`** and **`idle`** are not auto-started.
 
 ### Card badges and actions
@@ -207,13 +207,13 @@ You can **keep using the app** while work runs. The list **refreshes** on **`pip
 
 All results live in **`metadata/<id>.json`** (same folder as in [Section 7](#7-managing-recordings)). Reopening the app loads transcripts and summaries from disk with **no** re-processing unless the pipeline is incomplete or you enqueue again.
 
-### How Whisper fits in (technical)
+### How Sona fits in (technical)
 
 ```
 Recording (.webm)
       ↓  ffmpeg converts to WAV 16 kHz mono (recommended)
-Whisper (e.g. base model)
-      ↓  plain text transcript
+Sona (+ optional sona-diarize for speaker labels)
+      ↓  plain text transcript ([Speaker N] lines when diarization is on)
 metadata JSON + streaming chunks to the UI (during transcribe step)
 ```
 
@@ -229,14 +229,7 @@ Work runs in the **background worker**; the window stays usable.
 
 ### Improving accuracy
 
-Edit `src-tauri/src/lib.rs` → `run_whisper_transcription` (the `whisper` `Command` args) to use a larger model:
-
-```
-"--model", "small",   // better than base, ~460 MB
-"--model", "medium",  // great accuracy, ~1.5 GB
-```
-
-Remove `"--language", "en"` for automatic language detection.
+Use a **larger GGUF** (e.g. `medium` / `large`) and set its path in **Setup → Transcription settings**. To change language, edit the `language` field in **`run_sona_transcription`** in `src-tauri/src/lib.rs`.
 
 ---
 
@@ -244,7 +237,7 @@ Remove `"--language", "en"` for automatic language detection.
 
 ### Same queue as the card **Summarize** button
 
-**Gemma** always runs **after** a usable transcript exists, inside the **same pipeline job** as Whisper when started from **idle**. There are no separate “manual” `summarize` / `transcribe` IPC commands — only **`enqueue_pipeline_jobs`** (used by the card button and the batch toolbar).
+**Gemma** always runs **after** a usable transcript exists, inside the **same pipeline job** as **Sona** when started from **idle**. There are no separate “manual” `summarize` / `transcribe` IPC commands — only **`enqueue_pipeline_jobs`** (used by the card button and the batch toolbar).
 
 ### Using **Summarize** on a card
 
@@ -253,7 +246,7 @@ Remove `"--language", "en"` for automatic language detection.
 3. The card label becomes **Queued…** / **Transcribing…** / **Summarizing…** while the shared worker runs.
 4. Expand **Summary** on the card to read the result.
 
-If there is **no transcript** yet, the worker runs Whisper first. If only the summary is missing, it skips to Gemma.
+If there is **no transcript** yet, the worker runs **Sona** first. If only the summary is missing, it skips to Gemma.
 
 ### How it works internally
 
@@ -308,6 +301,8 @@ All recordings and metadata are stored locally — nothing is sent to the cloud.
 ```
 <app-data>/
 ├── recordings/      ← .webm audio files
+├── models/          ← optional diarization ONNX
+├── transcription_settings.json
 └── metadata/        ← <id>.json sidecar:
                        id, transcript, summary, duration_secs, created_at,
                        pipeline_status, pipeline_error, pipeline_priority
@@ -325,7 +320,7 @@ Click the **🗑 trash icon** on a recording card. Both the audio file and its m
 
 ### Re-summarising (overwrite)
 
-Click **Re-summarize** when both **Transcribed** and **Summarized** are present. The app clears the stored transcript and summary, sets **`queued`**, and runs **Whisper → Gemma** again — useful after switching to a better Whisper model or editing the recording title for clarity (content still comes from the audio file).
+Click **Re-summarize** when both **Transcribed** and **Summarized** are present. The app clears the stored transcript and summary, sets **`queued`**, and runs **Sona → Gemma** again — useful after switching to a different GGUF model or editing the recording title for clarity (content still comes from the audio file).
 
 There is no separate **Re-transcribe** control: a full redo is always **Re-summarize** (full pipeline).
 
@@ -387,26 +382,19 @@ Alternatively: **System Settings → Privacy & Security → Microphone** and ena
 
 ---
 
-### "Failed to run whisper"
+### "sona binary not found" or transcription setup fails
 
-Whisper is not on your PATH.
+**Normal install (downloaded app):** Meeting Note Taker downloads Sona when you are online and the bundled copy is missing. Try, in order:
 
-```bash
-which whisper          # should print a path
-whisper --version      # should print a version
+1. Connect to the internet and click **Re-check** on the setup screen (or quit and reopen the app).
+2. Rule out VPNs, captive portals, or strict firewalls blocking GitHub downloads.
+3. Download and install the app again from the **official release** you got it from.
 
-# If missing:
-pip install openai-whisper
-# or
-pip3 install openai-whisper
-```
+In **Setup**, you must still set the full path to a **Whisper GGUF** / `.bin` model file and click **Save transcription settings**.
 
-If whisper is installed but the command isn't found, add Python's bin to PATH:
+**Building from source:** Contributors must populate `src-tauri/binaries/` before packaging — run **`pnpm prebuild:sona`** or **`python3 scripts/pre_build.py`** from the repo root (Python 3.10+; on Windows, **`py -3 scripts\pre_build.py`**). See **README** prerequisites.
 
-```bash
-# Add to ~/.zshrc or ~/.bash_profile
-export PATH="$HOME/Library/Python/3.x/bin:$PATH"
-```
+**Speaker diarization** is unavailable on **Intel Mac** (upstream binary). On supported platforms, download the ONNX model from Setup when diarization is enabled.
 
 ---
 
@@ -445,14 +433,7 @@ ollama list               # verify it appears
 
 ### Transcript is in the wrong language
 
-Remove the `--language en` flag from the Whisper command in `src-tauri/src/lib.rs`:
-
-```rust
-// Remove this line:
-"--language", "en",
-```
-
-Whisper will auto-detect the language.
+Edit **`run_sona_transcription`** in `src-tauri/src/lib.rs` — the **`language`** field passed to Sona (default `en`).
 
 ---
 
@@ -464,7 +445,7 @@ If you click **Summarize** but nothing new is enqueued (for example the ID was a
 
 ### Background job stuck or **AI failed**
 
-1. Confirm **Whisper** and **Ollama** are installed and the **Gemma** model is pulled (setup screen).
+1. Confirm **Sona sidecars** (`pnpm prebuild:sona`), **GGUF path** in Setup, and **Ollama** + **Gemma** (setup screen).
 2. Read the error text on the card (also stored as `pipeline_error` in metadata).
 3. Click **Summarize** again to re-enqueue; a successful run sets **`done`** and clears **`pipeline_error`**.
 4. For recordings stuck in **`idle`** with partial data, enqueue via **Summarize** or batch **Queue for processing** — nothing auto-starts from **idle** alone.

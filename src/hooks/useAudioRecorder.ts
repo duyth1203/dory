@@ -13,6 +13,10 @@ export interface AudioDevice {
 export type RefreshDevicesOptions = {
   /** After refreshing the list, select this input if it is present. */
   selectDeviceId?: string;
+  /** Prefer Meeting Note Taker Input after refreshing (used after macOS routing switches for recording). */
+  forceMeetingNoteTakerInput?: boolean;
+  /** Pick first physical mic after recording stops (system input is restored off the aggregate). */
+  pickFirstNonAggregate?: boolean;
 };
 
 const MAX_DURATION_SECS = 7200; // 2 hours hard stop
@@ -80,6 +84,8 @@ export function useAudioRecorder() {
   const durationRef = useRef(0);
   const onAutoStopRef = useRef<(() => void) | null>(null);
   const syncInputTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Last seen input *label* from our picker — avoids re-sync when only `deviceId` strings churn after System Settings / enumerate changes. */
+  const prevInputLabelForSyncRef = useRef<string>("");
 
   const enumerateDevices = useCallback(
     async (options?: RefreshDevicesOptions): Promise<AudioDevice[]> => {
@@ -105,19 +111,59 @@ export function useAudioRecorder() {
           return inputs;
         }
       }
+      if (options?.forceMeetingNoteTakerInput) {
+        const preferred =
+          inputs.find((d) => PREFERRED_INPUT_LABEL_RE.test(d.label)) ??
+          inputs.find((d) => /meeting note taker/i.test(d.label));
+        if (preferred) {
+          setSelectedDeviceId(preferred.deviceId);
+          return inputs;
+        }
+      }
+      if (options?.pickFirstNonAggregate) {
+        const physical = inputs.find(
+          (d) =>
+            !PREFERRED_INPUT_LABEL_RE.test(d.label) && !/meeting note taker/i.test(d.label)
+        );
+        if (physical) {
+          setSelectedDeviceId(physical.deviceId);
+          return inputs;
+        }
+      }
       setSelectedDeviceId((prev) => pickPreferredDeviceId(inputs, prev));
       return inputs;
     },
     []
   );
 
-  // When user picks our aggregate, align macOS default **input** with System Settings (Tauri macOS only).
+  // When the user switches the *dropdown* from another mic to our aggregate, align macOS default input.
+  // If `devices` refreshes while the dropdown still shows the aggregate (e.g. after Sound → Input
+  // changes), `prevLabel` is already the aggregate — we skip sync so we don't override the user.
   useEffect(() => {
     if (syncInputTimerRef.current) clearTimeout(syncInputTimerRef.current);
-    const d = devices.find((x) => x.deviceId === selectedDeviceId);
-    if (!d || !selectedDeviceId) return;
-    if (!/meeting note taker input/i.test(d.label)) return;
+    if (!selectedDeviceId) return;
 
+    const d = devices.find((x) => x.deviceId === selectedDeviceId);
+    if (!d) return;
+
+    const label = d.label;
+    const prevLabel = prevInputLabelForSyncRef.current;
+    const isAggregate = /meeting note taker input/i.test(label);
+
+    if (!isAggregate) {
+      prevInputLabelForSyncRef.current = label;
+      return;
+    }
+
+    if (prevLabel === "") {
+      prevInputLabelForSyncRef.current = label;
+      return;
+    }
+    if (/meeting note taker input/i.test(prevLabel)) {
+      return;
+    }
+
+    prevInputLabelForSyncRef.current = label;
     syncInputTimerRef.current = setTimeout(() => {
       invoke("sync_default_input_to_aggregate").catch(() => {});
     }, 400);
@@ -171,73 +217,87 @@ export function useAudioRecorder() {
 
   const start = useCallback(
     async (onAutoStop?: () => void) => {
-      let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: micConstraintsForDevice(selectedDeviceId || undefined),
-        });
-      } catch (first) {
-        if (selectedDeviceId && isRetryWithoutDeviceOk(first)) {
-          try {
-            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            await enumerateDevices();
-          } catch (second) {
-            throw formatMediaError(second);
+        await invoke("begin_recording_audio_routing");
+
+        const inputs = await enumerateDevices({ forceMeetingNoteTakerInput: true });
+        const mnt =
+          inputs.find((d) => PREFERRED_INPUT_LABEL_RE.test(d.label)) ??
+          inputs.find((d) => /meeting note taker/i.test(d.label));
+        const deviceIdForStream = mnt?.deviceId ?? selectedDeviceId;
+
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: micConstraintsForDevice(deviceIdForStream || undefined),
+          });
+        } catch (first) {
+          if (deviceIdForStream && isRetryWithoutDeviceOk(first)) {
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              await enumerateDevices({ forceMeetingNoteTakerInput: true });
+            } catch (second) {
+              throw formatMediaError(second);
+            }
+          } else {
+            throw formatMediaError(first);
           }
-        } else {
-          throw formatMediaError(first);
         }
-      }
-      streamRef.current = stream;
-      onAutoStopRef.current = onAutoStop ?? null;
+        streamRef.current = stream;
+        onAutoStopRef.current = onAutoStop ?? null;
 
-      await enumerateDevices();
+        await enumerateDevices();
 
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : "audio/webm";
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : "audio/webm";
 
-      const actx = new AudioContext();
-      meterCtxRef.current = actx;
-      if (actx.state === "suspended") {
-        await actx.resume();
-      }
-      const sourceNode = actx.createMediaStreamSource(stream);
-      const analyser = actx.createAnalyser();
-      analyser.fftSize = 256;
-      sourceNode.connect(analyser);
-      analyserRef.current = analyser;
-
-      const recorderOptions: MediaRecorderOptions = { mimeType };
-      if (mimeType.includes("opus")) {
-        recorderOptions.audioBitsPerSecond = 192000;
-      }
-      const recorder = new MediaRecorder(stream, recorderOptions);
-      mediaRecorderRef.current = recorder;
-      chunksRef.current = [];
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunksRef.current.push(e.data);
-      };
-
-      recorder.start(100);
-      setState("recording");
-      durationRef.current = 0;
-      setDuration(0);
-      setNearLimit(false);
-      startLevelMonitor();
-
-      timerRef.current = setInterval(() => {
-        durationRef.current += 1;
-        setDuration(durationRef.current);
-
-        const remaining = MAX_DURATION_SECS - durationRef.current;
-        setNearLimit(remaining <= WARN_BEFORE_SECS && remaining > 0);
-
-        if (durationRef.current >= MAX_DURATION_SECS) {
-          onAutoStopRef.current?.();
+        const actx = new AudioContext();
+        meterCtxRef.current = actx;
+        if (actx.state === "suspended") {
+          await actx.resume();
         }
-      }, 1000);
+        const sourceNode = actx.createMediaStreamSource(stream);
+        const analyser = actx.createAnalyser();
+        analyser.fftSize = 256;
+        sourceNode.connect(analyser);
+        analyserRef.current = analyser;
+
+        const recorderOptions: MediaRecorderOptions = { mimeType };
+        if (mimeType.includes("opus")) {
+          recorderOptions.audioBitsPerSecond = 192000;
+        }
+        const recorder = new MediaRecorder(stream, recorderOptions);
+        mediaRecorderRef.current = recorder;
+        chunksRef.current = [];
+
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+
+        recorder.start(100);
+        setState("recording");
+        durationRef.current = 0;
+        setDuration(0);
+        setNearLimit(false);
+        startLevelMonitor();
+
+        timerRef.current = setInterval(() => {
+          durationRef.current += 1;
+          setDuration(durationRef.current);
+
+          const remaining = MAX_DURATION_SECS - durationRef.current;
+          setNearLimit(remaining <= WARN_BEFORE_SECS && remaining > 0);
+
+          if (durationRef.current >= MAX_DURATION_SECS) {
+            onAutoStopRef.current?.();
+          }
+        }, 1000);
+      } catch (err) {
+        await invoke("end_recording_audio_routing").catch(() => {});
+        void enumerateDevices({ pickFirstNonAggregate: true });
+        throw err;
+      }
     },
     [selectedDeviceId, enumerateDevices, startLevelMonitor]
   );
@@ -279,6 +339,8 @@ export function useAudioRecorder() {
       const capturedDuration = durationRef.current;
 
       recorder.onstop = async () => {
+        streamRef.current?.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
         try {
           const blob = new Blob(chunksRef.current, { type: "audio/webm" });
           const arrayBuffer = await blob.arrayBuffer();
@@ -291,18 +353,19 @@ export function useAudioRecorder() {
           resolve({ id, path, duration: capturedDuration });
         } catch (err) {
           reject(err);
+        } finally {
+          await invoke("end_recording_audio_routing").catch(() => {});
+          void enumerateDevices({ pickFirstNonAggregate: true });
         }
       };
 
       recorder.stop();
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
       teardownMeter();
       setState("idle");
       setNearLimit(false);
       if (timerRef.current) clearInterval(timerRef.current);
     });
-  }, [teardownMeter]);
+  }, [teardownMeter, enumerateDevices]);
 
   return {
     state,

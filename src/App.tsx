@@ -5,6 +5,7 @@ import { sileo, Toaster } from "sileo";
 import appIcon from "@/assets/icon.png";
 import { AppMenu } from "@/components/AppMenu";
 import { IntroductionDialog } from "@/components/IntroductionDialog";
+import { SettingsDialog } from "@/components/SettingsDialog";
 import { RecorderPanel } from "@/components/RecorderPanel";
 import { RecordingsList } from "@/components/RecordingsList";
 import { SetupScreen } from "@/components/SetupScreen";
@@ -25,6 +26,7 @@ function AppContent() {
   const [, startTransition] = useTransition();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const recordingsApi = useRecordings();
   const { refresh: refreshRecordings } = recordingsApi;
 
@@ -117,9 +119,12 @@ function AppContent() {
             </div>
             <div className="flex-1" />
             <span className="text-xs text-muted-foreground hidden sm:inline">
-              Whisper + Gemma 4 + BlackHole · Local AI
+              Sona + Gemma 4 + BlackHole · Local AI
             </span>
-            <AppMenu onOpenIntro={() => setIntroOpen(true)} />
+            <AppMenu
+              onOpenIntro={() => setIntroOpen(true)}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
           </header>
 
           {/* Body */}
@@ -155,6 +160,12 @@ function AppContent() {
         </div>
       </div>
       <IntroductionDialog open={introOpen} onClose={handleIntroClose} />
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        onSaved={() => showToast("Settings saved", "info")}
+        onNotify={(msg, type) => showToast(msg, type ?? "info")}
+      />
     </TooltipProvider>
   );
 }

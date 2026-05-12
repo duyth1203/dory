@@ -1,4 +1,4 @@
-# Meeting Note Taker
+# Dory
 
 A local-first desktop app for recording meetings, transcribing audio, and summarising with AI — all on-device, no cloud required.
 
@@ -79,8 +79,8 @@ ollama pull gemma4:e4b     # ~9.6 GB — recommended for most machines
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-username/meeting-note-taker.git
-cd meeting-note-taker
+git clone https://github.com/your-username/dory.git
+cd dory
 
 # 2. Download Sona sidecars (required before first `pnpm dev` / `pnpm build`)
 pnpm prebuild:sona
@@ -112,15 +112,15 @@ Every launch shows a setup screen that verifies **BlackHole 2ch**, **audio routi
 
 ### Audio recording
 
-- **Input device** dropdown lists real microphones, headsets, and **Meeting Note Taker Input** (the app-created aggregate). Standalone loopback drivers such as **BlackHole** are **hidden** on purpose — you should use **Meeting Note Taker Input** to capture **your voice and audio playing on the Mac** together; other listed inputs are effectively **mic-only** unless you built your own aggregate elsewhere.
-- **Meeting Note Taker Input** is listed first when present and selected by default; the recorder explains when you are using this preferred input.
+- **Input device** dropdown lists real microphones, headsets, and **Dory Input** (the app-created aggregate). Standalone loopback drivers such as **BlackHole** are **hidden** on purpose — you should use **Dory Input** to capture **your voice and audio playing on the Mac** together; other listed inputs are effectively **mic-only** unless you built your own aggregate elsewhere.
+- **Dory Input** is listed first when present and selected by default; the recorder explains when you are using this preferred input.
 - Live waveform visualiser driven by the Web Audio API
 - Pause / Resume mid-recording
 - **Max duration:** 2 hours — amber warning at 5 minutes remaining, auto-save at the limit
 
 ### System audio capture
 
-BlackHole 2ch remains **required** under the hood: the setup flow creates **Meeting Note Taker Output** (Multi-Output) and **Meeting Note Taker Input** (Aggregate: mic + BlackHole). You do **not** pick BlackHole itself in the app — pick **Meeting Note Taker Input** after setup. See [docs/USER_GUIDE.md § 3](docs/USER_GUIDE.md#3-capturing-system-audio) for install, auto-setup, and manual fallback.
+BlackHole 2ch remains **required** under the hood: the setup flow creates **Dory Output** (Multi-Output) and **Dory Input** (Aggregate: mic + BlackHole). You do **not** pick BlackHole itself in the app — pick **Dory Input** after setup. See [docs/USER_GUIDE.md § 3](docs/USER_GUIDE.md#3-capturing-system-audio) for install, auto-setup, and manual fallback.
 
 ### AI pipeline (single queue)
 
@@ -167,7 +167,7 @@ Inline audio player per recording with a seekable progress bar and live time cou
 │  RecorderPanel ──► useAudioRecorder             │
 │    MediaRecorder API + Web Audio (level meter)  │
 │    enumerateDevices — hides loopback picks;     │
-│    prefers Meeting Note Taker Input             │
+│    prefers Dory Input             │
 │    Max-duration timer with auto-stop            │
 │                                                 │
 │  RecordingsList ──► RecordingCard               │
@@ -213,9 +213,9 @@ All data is stored locally — nothing leaves your machine.
 
 | Platform | Path |
 |----------|------|
-| macOS | `~/Library/Application Support/com.meeting-note-taker.app/` |
-| Linux | `~/.local/share/com.meeting-note-taker.app/` |
-| Windows | `%APPDATA%\com.meeting-note-taker.app\` |
+| macOS | `~/Library/Application Support/com.dory.app/` |
+| Linux | `~/.local/share/com.dory.app/` |
+| Windows | `%APPDATA%\com.dory.app\` |
 
 ```
 <app-data>/
@@ -267,10 +267,10 @@ Quick reference:
 | Error | Fix |
 |-------|-----|
 | "BlackHole 2ch not found" | Install from [existential.audio/blackhole](https://existential.audio/blackhole/), then Re-check |
-| Missing **Meeting Note Taker Input** in the recorder | Fix **Audio routing** + microphone on the setup screen, then Re-check; see [USER_GUIDE §8](docs/USER_GUIDE.md#meeting-note-taker-input-is-missing-from-the-recorder) |
+| Missing **Dory Input** in the recorder | Fix **Audio routing** + microphone on the setup screen, then Re-check; see [USER_GUIDE §8](docs/USER_GUIDE.md#dory-input-is-missing-from-the-recorder) |
 | Built `.app` claims Sona/ffmpeg missing | **If you use a downloaded app:** stay online or reinstall — the app can fetch Sona when the bundle is incomplete. **If you package the app yourself:** run **`pnpm prebuild:sona`** before **`pnpm build`** so `src-tauri/binaries/` is populated. |
 | "Sona binary not found" | Stay online, **Re-check** in Setup, or reinstall from the official download. (From source: **`pnpm prebuild:sona`** before **`pnpm build`** — see prerequisites above.) |
-| Microphone denied / no Settings entry (`pnpm dev`) | Settings → Microphone → enable **meeting-note-taker** (debug binary), or `tccutil reset Microphone` (all apps), or run `pnpm build` and use the `.app` (then `com.meeting-note-taker.app` applies) |
+| Microphone denied / no Settings entry (`pnpm dev`) | Settings → Microphone → enable **dory** (debug binary), or `tccutil reset Microphone` (all apps), or run `pnpm build` and use the `.app` (then `com.dory.app` applies) |
 | Transcription model path missing | Setup → paste full path to GGUF / `.bin` → Save. |
 | "Failed to connect to Ollama" | `ollama serve` or open Ollama.app |
 | "Model not found" | `ollama pull gemma4:e4b` |

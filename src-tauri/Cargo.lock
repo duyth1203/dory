@@ -713,6 +713,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "dory"
+version = "0.1.0"
+dependencies = [
+ "eyre",
+ "flate2",
+ "futures-util",
+ "image",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-fs",
+ "tauri-plugin-liquid-glass",
+ "tauri-plugin-shell",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "which",
+ "zip",
+]
+
+[[package]]
 name = "dpi"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1964,31 +1989,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
-]
-
-[[package]]
-name = "meeting-note-taker"
-version = "0.1.0"
-dependencies = [
- "eyre",
- "flate2",
- "futures-util",
- "image",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-fs",
- "tauri-plugin-liquid-glass",
- "tauri-plugin-shell",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "which",
- "zip",
 ]
 
 [[package]]

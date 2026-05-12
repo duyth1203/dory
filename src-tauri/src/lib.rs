@@ -1592,8 +1592,8 @@ mod audio_setup {
     use std::path::Path;
     use std::ptr;
 
-    const MULTI_OUT_UID: &str = "com.meeting-note-taker.multioutput";
-    const AGGREGATE_UID: &str = "com.meeting-note-taker.aggregate";
+    const MULTI_OUT_UID: &str = "com.dory.multioutput";
+    const AGGREGATE_UID: &str = "com.dory.aggregate";
 
     type AudioObjectID = u32;
     type AudioDeviceID = AudioObjectID;
@@ -1738,7 +1738,7 @@ mod audio_setup {
     /// Sets the system default **input** to our Aggregate Device so System Settings matches the app.
     pub fn sync_default_input_to_aggregate() -> Result<(), String> {
         let id = find_by_uid(AGGREGATE_UID)
-            .ok_or("Meeting Note Taker Input not found. Finish audio setup on the setup screen first.")?;
+            .ok_or("Dory Input not found. Finish audio setup on the setup screen first.")?;
         set_default_input(id);
         Ok(())
     }
@@ -1858,15 +1858,15 @@ mod audio_setup {
         let uid = dev_uid(in_id).ok_or("No input device UID")?;
         if uid == AGGREGATE_UID {
             let subs = aggregate_full_subdevice_uids(in_id).ok_or(
-                "macOS did not list sub-devices for Meeting Note Taker Input (Core Audio). \
+                "macOS did not list sub-devices for Dory Input (Core Audio). \
 Try this order: (1) System Settings → Sound → Input → pick your real mic (e.g. Built-in or AirPods), not this aggregate — then Setup → Re-check. \
 (2) Quit other apps using the mic and Re-check. \
-(3) In Audio MIDI Setup, delete Meeting Note Taker Input/Output if duplicated, then Re-check. \
+(3) In Audio MIDI Setup, delete Dory Input/Output if duplicated, then Re-check. \
 (4) Terminal: sudo killall coreaudiod — then Re-check.",
             )?;
             subs.into_iter()
                 .find(|u| u != bh_uid)
-                .ok_or_else(|| "Meeting Note Taker Input has no microphone subdevice".to_string())
+                .ok_or_else(|| "Dory Input has no microphone subdevice".to_string())
         } else {
             Ok(uid)
         }
@@ -2007,7 +2007,7 @@ Try opening Audio MIDI Setup, restart your Mac, or run: sudo killall coreaudiod"
                 .and_then(load_output_restore)
                 .filter(|u| !u.is_empty())
                 .ok_or_else(|| {
-                    "Output is still set to “Meeting Note Taker Output”, but the app has no saved speaker to restore. \
+                    "Output is still set to “Dory Output”, but the app has no saved speaker to restore. \
 Pick your speakers or headphones in **System Settings → Sound → Output** (or Audio MIDI Setup), then tap **Re-check**."
                         .to_string()
                 })?
@@ -2045,7 +2045,7 @@ In System Settings → Sound → Output, pick your speakers or AirPods, then Re-
             }
             let new_mid = unsafe {
                 create_device(
-                    "Meeting Note Taker Output",
+                    "Dory Output",
                     MULTI_OUT_UID,
                     &physical_output_uid,
                     &[&physical_output_uid, &bh_uid],
@@ -2053,7 +2053,7 @@ In System Settings → Sound → Output, pick your speakers or AirPods, then Re-
                 )
             }
             .ok_or_else(|| {
-                "Failed to create Multi-Output Device (Meeting Note Taker Output). \
+                "Failed to create Multi-Output Device (Dory Output). \
 Bluetooth headphones sometimes need to be paired as the system output first — pick them in Sound settings, then Re-check."
                     .to_string()
             })?;
@@ -2077,7 +2077,7 @@ In System Settings → Sound → Input, pick your mic, then Re-check."
             }
             let new_agg = unsafe {
                 create_device(
-                    "Meeting Note Taker Input",
+                    "Dory Input",
                     AGGREGATE_UID,
                     &mic_uid,
                     &[&mic_uid, &bh_uid],
@@ -2085,7 +2085,7 @@ In System Settings → Sound → Input, pick your mic, then Re-check."
                 )
             }
             .ok_or_else(|| {
-                "Failed to create Meeting Note Taker Input (mic + BlackHole). \
+                "Failed to create Dory Input (mic + BlackHole). \
 If you use Bluetooth-only headphones, try switching the default **input** to the Mac microphone for setup, then Re-check."
                     .to_string()
             })?;
@@ -2095,7 +2095,7 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
         }
 
         let multi_id = find_by_uid(MULTI_OUT_UID).unwrap_or(0);
-        let agg_id = find_by_uid(AGGREGATE_UID).ok_or("Meeting Note Taker Input not found after setup")?;
+        let agg_id = find_by_uid(AGGREGATE_UID).ok_or("Dory Input not found after setup")?;
 
         if multi_id != 0 {
             if let Some(cur_out) = default_device(sel_default_output()) {
@@ -2106,7 +2106,7 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
         }
 
         Ok(SetupResult {
-            aggregate_device_name: dev_name(agg_id).unwrap_or_else(|| "Meeting Note Taker Input".to_string()),
+            aggregate_device_name: dev_name(agg_id).unwrap_or_else(|| "Dory Input".to_string()),
             previous_output_uid: physical_output_uid,
         })
     }
@@ -2117,14 +2117,14 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
         input_device_uid: String,
     }
 
-    /// Save current Sound output/input, switch to Meeting Note Taker Output + Meeting Note Taker Input.
+    /// Save current Sound output/input, switch to Dory Output + Dory Input.
     /// Idempotent if already on those devices (no session file).
     pub fn begin_recording_audio_routing(output_restore_path: &Path, session_path: &Path) -> Result<(), String> {
         let multi_id = find_by_uid(MULTI_OUT_UID).ok_or_else(|| {
-            "Meeting Note Taker Output not found. Open Setup → Re-check (Audio routing), then try again.".to_string()
+            "Dory Output not found. Open Setup → Re-check (Audio routing), then try again.".to_string()
         })?;
         let agg_id = find_by_uid(AGGREGATE_UID).ok_or_else(|| {
-            "Meeting Note Taker Input not found. Open Setup → Re-check (Audio routing), then try again.".to_string()
+            "Dory Input not found. Open Setup → Re-check (Audio routing), then try again.".to_string()
         })?;
 
         let cur_out_id = default_device(sel_default_output()).ok_or("No default output device")?;

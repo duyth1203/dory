@@ -13,8 +13,8 @@ export interface AudioDevice {
 export type RefreshDevicesOptions = {
   /** After refreshing the list, select this input if it is present. */
   selectDeviceId?: string;
-  /** Prefer Meeting Note Taker Input after refreshing (used after macOS routing switches for recording). */
-  forceMeetingNoteTakerInput?: boolean;
+  /** Prefer Dory Input after refreshing (used after macOS routing switches for recording). */
+  forceDoryInput?: boolean;
   /** Pick first physical mic after recording stops (system input is restored off the aggregate). */
   pickFirstNonAggregate?: boolean;
 };
@@ -23,13 +23,13 @@ const MAX_DURATION_SECS = 7200; // 2 hours hard stop
 const WARN_BEFORE_SECS = 300; // warn 5 min before
 
 /** App aggregate from setup (mic + system audio). Preferred over picking BlackHole alone. */
-const PREFERRED_INPUT_LABEL_RE = /meeting note taker input/i;
+const PREFERRED_INPUT_LABEL_RE = /dory input/i;
 
-/** Hide loopback drivers from the picker; full capture is via Meeting Note Taker Input. */
+/** Hide loopback drivers from the picker; full capture is via Dory Input. */
 function isHiddenLoopbackInput(label: string): boolean {
   const l = label.toLowerCase();
   if (PREFERRED_INPUT_LABEL_RE.test(label)) return false;
-  if (l.includes("meeting note taker")) return false;
+  if (/\bdory\b/.test(l)) return false;
   if (l.includes("blackhole")) return true;
   if (l.includes("soundflower")) return true;
   if (/\bvb-?cable\b/.test(l)) return true;
@@ -40,7 +40,7 @@ function pickPreferredDeviceId(inputs: AudioDevice[], prev: string): string {
   if (prev && inputs.some((d) => d.deviceId === prev)) return prev;
   const preferred =
     inputs.find((d) => PREFERRED_INPUT_LABEL_RE.test(d.label)) ??
-    inputs.find((d) => /meeting note taker/i.test(d.label));
+    inputs.find((d) => /\bdory\b/i.test(d.label));
   return preferred?.deviceId ?? inputs[0]?.deviceId ?? "";
 }
 
@@ -111,10 +111,10 @@ export function useAudioRecorder() {
           return inputs;
         }
       }
-      if (options?.forceMeetingNoteTakerInput) {
+      if (options?.forceDoryInput) {
         const preferred =
           inputs.find((d) => PREFERRED_INPUT_LABEL_RE.test(d.label)) ??
-          inputs.find((d) => /meeting note taker/i.test(d.label));
+          inputs.find((d) => /\bdory\b/i.test(d.label));
         if (preferred) {
           setSelectedDeviceId(preferred.deviceId);
           return inputs;
@@ -123,7 +123,7 @@ export function useAudioRecorder() {
       if (options?.pickFirstNonAggregate) {
         const physical = inputs.find(
           (d) =>
-            !PREFERRED_INPUT_LABEL_RE.test(d.label) && !/meeting note taker/i.test(d.label)
+            !PREFERRED_INPUT_LABEL_RE.test(d.label) && !/\bdory\b/i.test(d.label)
         );
         if (physical) {
           setSelectedDeviceId(physical.deviceId);
@@ -148,7 +148,7 @@ export function useAudioRecorder() {
 
     const label = d.label;
     const prevLabel = prevInputLabelForSyncRef.current;
-    const isAggregate = /meeting note taker input/i.test(label);
+    const isAggregate = /dory input/i.test(label);
 
     if (!isAggregate) {
       prevInputLabelForSyncRef.current = label;
@@ -159,7 +159,7 @@ export function useAudioRecorder() {
       prevInputLabelForSyncRef.current = label;
       return;
     }
-    if (/meeting note taker input/i.test(prevLabel)) {
+    if (/dory input/i.test(prevLabel)) {
       return;
     }
 
@@ -172,7 +172,7 @@ export function useAudioRecorder() {
     };
   }, [selectedDeviceId, devices]);
 
-  // First paint: enumerate devices (selection prefers Meeting Note Taker Input when present).
+  // First paint: enumerate devices (selection prefers Dory Input when present).
   useEffect(() => {
     void enumerateDevices();
   }, [enumerateDevices]);
@@ -220,11 +220,11 @@ export function useAudioRecorder() {
       try {
         await invoke("begin_recording_audio_routing");
 
-        const inputs = await enumerateDevices({ forceMeetingNoteTakerInput: true });
-        const mnt =
+        const inputs = await enumerateDevices({ forceDoryInput: true });
+        const doryInput =
           inputs.find((d) => PREFERRED_INPUT_LABEL_RE.test(d.label)) ??
-          inputs.find((d) => /meeting note taker/i.test(d.label));
-        const deviceIdForStream = mnt?.deviceId ?? selectedDeviceId;
+          inputs.find((d) => /\bdory\b/i.test(d.label));
+        const deviceIdForStream = doryInput?.deviceId ?? selectedDeviceId;
 
         let stream: MediaStream;
         try {
@@ -235,7 +235,7 @@ export function useAudioRecorder() {
           if (deviceIdForStream && isRetryWithoutDeviceOk(first)) {
             try {
               stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              await enumerateDevices({ forceMeetingNoteTakerInput: true });
+              await enumerateDevices({ forceDoryInput: true });
             } catch (second) {
               throw formatMediaError(second);
             }

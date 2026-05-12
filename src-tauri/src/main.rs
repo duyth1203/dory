@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    meeting_note_taker_lib::run()
+    dory_lib::run()
 }

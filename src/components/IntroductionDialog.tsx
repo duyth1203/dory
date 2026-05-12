@@ -68,7 +68,7 @@ const features = [
 
 const steps = [
   { step: "1", label: "Click the red mic button to start recording." },
-  { step: "2", label: 'Select "Meeting Note Taker Input" from the device dropdown for full audio capture.' },
+  { step: "2", label: 'Select "Dory Input" from the device dropdown for full audio capture.' },
   { step: "3", label: 'When done, click Stop → "Stop & save".' },
   { step: "4", label: 'Find the recording in the list on the right and click "Summarize".' },
   { step: "5", label: "Wait for transcription, then Gemma to summarise. Done!" },
@@ -82,7 +82,7 @@ export function IntroductionDialog({ open, onClose }: Props) {
           <div className="flex items-center gap-3 mb-1">
             <img src={appIcon} alt="" className="h-9 w-9 rounded-xl object-cover" />
             <div>
-              <DialogTitle>Welcome to Meeting Note Taker</DialogTitle>
+              <DialogTitle>Welcome to Dory</DialogTitle>
               <DialogDescription className="mt-0.5">
                 Local AI that records, transcribes, and summarises your meetings.
               </DialogDescription>

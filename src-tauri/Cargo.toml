@@ -1,16 +1,16 @@
 [package]
-name = "meeting-note-taker"
+name = "dory"
 version = "0.1.0"
-description = "Meeting Note Taker with local AI transcription and summarisation"
+description = "Dory — local AI meeting transcription and summarisation"
 authors = []
 edition = "2021"
 
 [lib]
-name = "meeting_note_taker_lib"
+name = "dory_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "meeting-note-taker"
+name = "dory"
 path = "src/main.rs"
 
 [build-dependencies]

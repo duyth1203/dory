@@ -24,7 +24,7 @@ export function AppMenu({ onOpenIntro, onOpenSettings }: Props) {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
         <DropdownMenuLabel className="text-xs text-muted-foreground font-normal">
-          Meeting Note Taker
+          Dory
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={onOpenIntro} className="gap-2 cursor-pointer">

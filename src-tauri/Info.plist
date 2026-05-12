@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Meeting Note Taker needs microphone access to record your meetings.</string>
+    <string>Dory needs microphone access to record your meetings.</string>
     <key>NSCameraUseContinuityCameraDeviceType</key>
     <true/>
 </dict>

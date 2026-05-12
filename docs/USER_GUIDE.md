@@ -1,4 +1,4 @@
-# User Guide — Meeting Note Taker
+# User Guide — Dory
 
 ## Table of Contents
 
@@ -67,20 +67,20 @@ The app does not enforce a minimum CPU or RAM tier. For **disk budgets** (models
 
 ### Step 1 — Choose your input device
 
-The **Input device** dropdown lists microphones, headsets, and — after successful setup — **Meeting Note Taker Input**.
+The **Input device** dropdown lists microphones, headsets, and — after successful setup — **Dory Input**.
 
 | Input | What gets recorded |
 |-------|--------------------|
-| **Meeting Note Taker Input** *(preferred)* | Your **voice** and **audio playing on this Mac** (meetings, browser, media) — uses the app’s aggregate (microphone + BlackHole). |
+| **Dory Input** *(preferred)* | Your **voice** and **audio playing on this Mac** (meetings, browser, media) — uses the app’s aggregate (microphone + BlackHole). |
 | **Built-in / USB / headset mic** | **Microphone only.** Remote participants’ voices coming out of your speakers are **not** included unless you use the preferred input and routing from §3. |
 
-**Important:** Standalone loopback devices (for example **BlackHole 2ch** by itself) are **not shown** in the list. That avoids picking “system only” by mistake. BlackHole is still installed and used **inside** **Meeting Note Taker Input**.
+**Important:** Standalone loopback devices (for example **BlackHole 2ch** by itself) are **not shown** in the list. That avoids picking “system only” by mistake. BlackHole is still installed and used **inside** **Dory Input**.
 
-When **Meeting Note Taker Input** appears, the app **sorts it to the top** and **selects it by default**. If you choose a plain mic while the preferred input exists, a short **amber** hint may suggest switching back.
+When **Dory Input** appears, the app **sorts it to the top** and **selects it by default**. If you choose a plain mic while the preferred input exists, a short **amber** hint may suggest switching back.
 
 > The dropdown is disabled while recording. Choose your device before you start.
 
-> Choosing **Meeting Note Taker Input** can sync macOS **default input** with Sound settings so the name matches what you hear in other apps (see in-app help text).
+> Choosing **Dory Input** can sync macOS **default input** with Sound settings so the name matches what you hear in other apps (see in-app help text).
 
 ### Step 2 — Start recording
 
@@ -108,18 +108,18 @@ Click the **red square (■)** to stop. The recording is saved instantly to your
 
 ## 3. Capturing System Audio
 
-Meeting Note Taker needs **BlackHole 2ch** so **Meeting Note Taker Input** can combine your **microphone** with **everything playing through the Mac** (Zoom, Google Meet, YouTube, etc.) in one recording.
+Dory needs **BlackHole 2ch** so **Dory Input** can combine your **microphone** with **everything playing through the Mac** (Zoom, Google Meet, YouTube, etc.) in one recording.
 
-BlackHole is verified on the **setup screen**. It must be installed before the app will pass startup checks; you normally do **not** select BlackHole in the recorder — select **Meeting Note Taker Input** instead ([Section 2](#2-recording-a-meeting)).
+BlackHole is verified on the **setup screen**. It must be installed before the app will pass startup checks; you normally do **not** select BlackHole in the recorder — select **Dory Input** instead ([Section 2](#2-recording-a-meeting)).
 
 ### Automatic setup (normal path)
 
 When BlackHole is installed and **Audio routing** succeeds on the setup screen, the app creates:
 
-- **Meeting Note Taker Output** — Multi-Output (your speakers/headphones + BlackHole) so sound still comes out of your speakers while a copy feeds BlackHole  
-- **Meeting Note Taker Input** — Aggregate (your mic + BlackHole) so one input carries **voice + system audio**
+- **Dory Output** — Multi-Output (your speakers/headphones + BlackHole) so sound still comes out of your speakers while a copy feeds BlackHole  
+- **Dory Input** — Aggregate (your mic + BlackHole) so one input carries **voice + system audio**
 
-Then open the recorder and leave **Meeting Note Taker Input** selected (or pick it from the list). See the **Audio routing** item on the setup screen for restore behaviour when you quit the app.
+Then open the recorder and leave **Dory Input** selected (or pick it from the list). See the **Audio routing** item on the setup screen for restore behaviour when you quit the app.
 
 ### Manual install — BlackHole only
 
@@ -147,7 +147,7 @@ This lets your speakers/headphones continue to work while BlackHole captures a c
    - Option-click the speaker icon in the menu bar  
    - Select your new Multi-Output Device  
 
-You can name it anything; the app’s automatic device is usually **Meeting Note Taker Output**.
+You can name it anything; the app’s automatic device is usually **Dory Output**.
 
 ### Manual Aggregate (if automatic setup failed)
 
@@ -155,9 +155,9 @@ This combines BlackHole 2ch with your microphone into a single recordable input.
 
 1. In Audio MIDI Setup, click **+** → **Create Aggregate Device**
 2. Check **BlackHole 2ch** and your microphone
-3. In Meeting Note Taker, select **that aggregate** from the **Input device** dropdown — or use **Meeting Note Taker Input** if the app created it after **Re-check**
+3. In Dory, select **that aggregate** from the **Input device** dropdown — or use **Dory Input** if the app created it after **Re-check**
 
-> Standalone BlackHole will not appear in the recorder’s input list; use **Meeting Note Taker Input** (or another aggregate you created).
+> Standalone BlackHole will not appear in the recorder’s input list; use **Dory Input** (or another aggregate you created).
 
 ---
 
@@ -165,7 +165,7 @@ This combines BlackHole 2ch with your microphone into a single recordable input.
 
 ### After save: idle until you queue
 
-When you stop a recording, Meeting Note Taker:
+When you stop a recording, Dory:
 
 1. Saves the audio file and metadata with **`pipeline_status: idle`**
 2. Shows the item in the list — **no** transcription or Gemma run yet
@@ -294,9 +294,9 @@ All recordings and metadata are stored locally — nothing is sent to the cloud.
 
 | Platform | Path |
 |----------|------|
-| macOS | `~/Library/Application Support/com.meeting-note-taker.app/` |
-| Linux | `~/.local/share/com.meeting-note-taker.app/` |
-| Windows | `%APPDATA%\com.meeting-note-taker.app\` |
+| macOS | `~/Library/Application Support/com.dory.app/` |
+| Linux | `~/.local/share/com.dory.app/` |
+| Windows | `%APPDATA%\com.dory.app\` |
 
 ```
 <app-data>/
@@ -347,16 +347,16 @@ You should see `BlackHole2ch.driver`.
 
 ---
 
-### Meeting Note Taker Input is missing from the recorder
+### Dory Input is missing from the recorder
 
 The app only lists inputs macOS exposes after **microphone permission** and **working audio routing**.
 
 1. On the **setup screen**, ensure **Microphone permission**, **BlackHole 2ch**, and **Audio routing** are all **OK** (use **Re-check** after Audio MIDI Setup changes).
 2. Grant microphone access if prompted (see [_Could not access microphone_](#could-not-access-microphone) below).
 3. **Quit and reopen** the app; sometimes WebKit lags after new aggregate devices appear.
-4. Open **Audio MIDI Setup** and confirm an aggregate exists whose name includes **Meeting Note Taker Input** (or your manual aggregate with mic + BlackHole). If routing failed, complete §3 manually, then **Re-check**.
+4. Open **Audio MIDI Setup** and confirm an aggregate exists whose name includes **Dory Input** (or your manual aggregate with mic + BlackHole). If routing failed, complete §3 manually, then **Re-check**.
 
-**Why BlackHole does not appear in the list:** The recorder **hides** standalone loopback drivers so you do not record “system only” without your mic. Use **Meeting Note Taker Input** (or another aggregate you created) for mic + system audio.
+**Why BlackHole does not appear in the list:** The recorder **hides** standalone loopback drivers so you do not record “system only” without your mic. Use **Dory Input** (or another aggregate you created) for mic + system audio.
 
 ---
 
@@ -364,11 +364,11 @@ The app only lists inputs macOS exposes after **microphone permission** and **wo
 
 macOS denied microphone access, or the app never got a usable TCC entry.
 
-**If you run the app with `pnpm dev` (`tauri dev`):** the process is usually the **debug binary** (`meeting-note-taker`), not the shipped app bundle. **System Settings → Privacy & Security → Microphone** may list **meeting-note-taker** (or a path under `target/debug`) instead of “Meeting Note Taker”. Enable that entry, or use a built app for the normal name (see below).
+**If you run the app with `pnpm dev` (`tauri dev`):** the process is usually the **debug binary** (`dory`), not the shipped app bundle. **System Settings → Privacy & Security → Microphone** may list **dory** (or a path under `target/debug`) instead of “Dory”. Enable that entry, or use a built app for the normal name (see below).
 
 ```bash
 # Packaged .app only — resets permission for the bundle id from tauri.conf.json
-tccutil reset Microphone com.meeting-note-taker.app
+tccutil reset Microphone com.dory.app
 
 # Dev-friendly: reset microphone prompts for *all* apps (you will be re-prompted elsewhere too)
 tccutil reset Microphone
@@ -376,7 +376,7 @@ tccutil reset Microphone
 
 Then relaunch the app and click Record.
 
-**Packaged app:** run `pnpm build` and open **Meeting Note Taker** from `src-tauri/target/release/bundle/macos/`. Then Settings shows the real app name and the bundle-id reset above matches.
+**Packaged app:** run `pnpm build` and open **Dory** from `src-tauri/target/release/bundle/macos/`. Then Settings shows the real app name and the bundle-id reset above matches.
 
 Alternatively: **System Settings → Privacy & Security → Microphone** and enable the correct process for how you launch the app.
 
@@ -384,7 +384,7 @@ Alternatively: **System Settings → Privacy & Security → Microphone** and ena
 
 ### "sona binary not found" or transcription setup fails
 
-**Normal install (downloaded app):** Meeting Note Taker downloads Sona when you are online and the bundled copy is missing. Try, in order:
+**Normal install (downloaded app):** Dory downloads Sona when you are online and the bundled copy is missing. Try, in order:
 
 1. Connect to the internet and click **Re-check** on the setup screen (or quit and reopen the app).
 2. Rule out VPNs, captive portals, or strict firewalls blocking GitHub downloads.

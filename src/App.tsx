@@ -112,7 +112,7 @@ function AppContent() {
           <header className="app-chrome-header app-shell-header-motion flex items-center gap-3 px-5 py-3 border-b border-border shrink-0">
             <div className="flex items-center gap-2.5">
               <img src={appIcon} alt="" className="h-7 w-7 rounded-lg object-cover" />
-              <span className="font-semibold text-sm tracking-tight">Meeting Note Taker</span>
+              <span className="font-semibold text-sm tracking-tight">Dory</span>
               {appVersion === null ? null : (
                 <span className="text-xs text-muted-foreground tabular-nums">v{appVersion}</span>
               )}

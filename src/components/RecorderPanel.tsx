@@ -81,9 +81,9 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
   const timeRemaining = maxDuration - duration;
 
   const selectedLabel = devices.find((d) => d.deviceId === selectedDeviceId)?.label ?? "";
-  const isMeetingNoteTakerInput = /meeting note taker input/i.test(selectedLabel);
-  const hasMeetingNoteTakerInputInList = devices.some((d) =>
-    /meeting note taker input/i.test(d.label)
+  const isDoryInput = /dory input/i.test(selectedLabel);
+  const hasDoryInputInList = devices.some((d) =>
+    /dory input/i.test(d.label)
   );
 
   return (
@@ -117,10 +117,10 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           </div>
 
-          {!isMeetingNoteTakerInput && hasMeetingNoteTakerInputInList && (
+          {!isDoryInput && hasDoryInputInList && (
             <p className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1">
               <AlertTriangle className="h-3 w-3 shrink-0" />
-              The list shows idle preferences; starting recording always switches to Meeting Note Taker Input
+              The list shows idle preferences; starting recording always switches to Dory Input
               for capture (your mic + Mac audio).
             </p>
           )}
@@ -233,7 +233,7 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
               />
               {!volumeHintDismissed && (
                 <p className="text-[10px] leading-snug text-muted-foreground">
-                  macOS often greys out the menu bar volume control for Multi-Output (Meeting Note Taker
+                  macOS often greys out the menu bar volume control for Multi-Output (Dory
                   Output). This slider adjusts system output volume when AppleScript is allowed. You can
                   also change level in your meeting app or on headphones.
                   <button

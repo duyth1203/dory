@@ -38,6 +38,32 @@ export function shouldUseNativeLiquidGlass(): boolean {
   return isLikelyMacOs() && isTauriWebview();
 }
 
+async function applyLiquidGlassEffectConfigured(): Promise<{ supported: boolean }> {
+  const { setLiquidGlassEffect, GlassMaterialVariant, isGlassSupported } =
+    await import("tauri-plugin-liquid-glass-api");
+  const supported = await isGlassSupported();
+  await setLiquidGlassEffect({
+    cornerRadius: 10,
+    variant: GlassMaterialVariant.CartouchePopover,
+  });
+  return { supported };
+}
+
+/**
+ * Re-apply native glass after the window theme changes (e.g. light/dark).
+ * No-op if glass was never enabled for this session.
+ */
+export async function refreshNativeLiquidGlass(): Promise<void> {
+  if (!shouldUseNativeLiquidGlass()) return;
+  if (!document.documentElement.classList.contains(LIQUID_HTML_CLASS)) return;
+  try {
+    await applyLiquidGlassEffectConfigured();
+    if (import.meta.env.DEV) log("refreshed");
+  } catch (e) {
+    if (import.meta.env.DEV) console.warn("[liquid-glass] refresh failed:", e);
+  }
+}
+
 /** Enable plugin + mark &lt;html&gt; for transparent root CSS. No-op if not macOS Tauri or import fails. */
 export async function initNativeLiquidGlass(): Promise<boolean> {
   const mac = isLikelyMacOs();
@@ -55,13 +81,7 @@ export async function initNativeLiquidGlass(): Promise<boolean> {
   );
 
   try {
-    const { setLiquidGlassEffect, GlassMaterialVariant, isGlassSupported } =
-      await import("tauri-plugin-liquid-glass-api");
-    const supported = await isGlassSupported();
-    await setLiquidGlassEffect({
-      cornerRadius: 10,
-      variant: GlassMaterialVariant.CartouchePopover,
-    });
+    const { supported } = await applyLiquidGlassEffectConfigured();
     document.documentElement.classList.add(LIQUID_HTML_CLASS);
     if (import.meta.env.DEV) {
       log("ready", {

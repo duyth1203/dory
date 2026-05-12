@@ -44,7 +44,7 @@ HOST_TRIPLE_MAP = {
     ("Windows", "AMD64"): "x86_64-pc-windows-msvc",
 }
 
-USER_AGENT = "meeting-note-taker-prebuild/1 (+https://github.com/meeting-note-taker)"
+USER_AGENT = "dory-prebuild/1 (+https://github.com/your-username/dory)"
 
 
 def parse_target_arg(args: list[str]) -> str | None:

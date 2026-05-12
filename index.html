@@ -4,6 +4,10 @@
     <script>
       (function () {
         try {
+          var pal = localStorage.getItem("mnt:palette");
+          if (pal !== "maya" && pal !== "dory") pal = "dory";
+          document.documentElement.dataset.palette = pal;
+
           var p = localStorage.getItem("mnt:theme");
           var dark = false;
           if (p === "dark") dark = true;
@@ -16,7 +20,7 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Meeting Note Taker</title>
+    <title>Dory</title>
   </head>
   <body>
     <div id="root"></div>

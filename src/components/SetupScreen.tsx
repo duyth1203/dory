@@ -137,7 +137,7 @@ const INITIAL: Requirement[] = [
         {
           type: "tip",
           content:
-            "Usually the setup screen creates **Meeting Note Taker Input** (mic + BlackHole) for you. In the recorder, pick **Meeting Note Taker Input** — not BlackHole alone (BlackHole is hidden from the list on purpose). If you configure manually: Aggregate Device with BlackHole 2ch + your microphone, then select that aggregate or **Meeting Note Taker Input** after Re-check.",
+            "Usually the setup screen creates **Dory Input** (mic + BlackHole) for you. In the recorder, pick **Dory Input** — not BlackHole alone (BlackHole is hidden from the list on purpose). If you configure manually: Aggregate Device with BlackHole 2ch + your microphone, then select that aggregate or **Dory Input** after Re-check.",
         },
         {
           type: "text",
@@ -155,7 +155,7 @@ const INITIAL: Requirement[] = [
     id: "audio_routing",
     label: "Audio routing",
     description:
-      "Multi-Output + Aggregate — configured automatically. System output moves to “Meeting Note Taker Output” only the first time; quitting the app restores your previous speakers when possible.",
+      "Multi-Output + Aggregate — configured automatically. System output moves to “Dory Output” only the first time; quitting the app restores your previous speakers when possible.",
     required: true,
     status: "pending",
     fix: {
@@ -171,22 +171,22 @@ const INITIAL: Requirement[] = [
         {
           type: "tip",
           content:
-            "**AirPods or other headphones:** Connect them and choose them as **Sound → Output** (not only as the mic), then open Setup and tap **Re-check**. The app rebuilds **Meeting Note Taker Output** so it includes your current headphones plus BlackHole — otherwise macOS may play meeting audio straight to the buds and **nothing reaches BlackHole**.",
+            "**AirPods or other headphones:** Connect them and choose them as **Sound → Output** (not only as the mic), then open Setup and tap **Re-check**. The app rebuilds **Dory Output** so it includes your current headphones plus BlackHole — otherwise macOS may play meeting audio straight to the buds and **nothing reaches BlackHole**.",
         },
         {
           type: "tip",
           content:
-            "The app switches macOS **output** back to **Meeting Note Taker Output** when you Re-check if it was something else (for example bare **AirPods**) — that is required so a copy of system audio still hits BlackHole. You’ll hear calls and media through the multi-output device (headphones + virtual sink).",
+            "The app switches macOS **output** back to **Dory Output** when you Re-check if it was something else (for example bare **AirPods**) — that is required so a copy of system audio still hits BlackHole. You’ll hear calls and media through the multi-output device (headphones + virtual sink).",
         },
         {
           type: "tip",
           content:
-            "Manual path: Multi-Output + BlackHole + speakers; Aggregate + BlackHole + mic. Option-click the menu bar volume icon to choose output. In the app, select **Meeting Note Taker Input** (preferred) so both your voice and device audio are recorded.",
+            "Manual path: Multi-Output + BlackHole + speakers; Aggregate + BlackHole + mic. Option-click the menu bar volume icon to choose output. In the app, select **Dory Input** (preferred) so both your voice and device audio are recorded.",
         },
         {
           type: "tip",
           content:
-            "No sound from Safari/Chrome while using “Meeting Note Taker Output”? Remove that Multi-Output in Audio MIDI Setup and tap **Re-check** so it is recreated with drift correction for BlackHole. Old devices made without this often hear nothing on real speakers.",
+            "No sound from Safari/Chrome while using “Dory Output”? Remove that Multi-Output in Audio MIDI Setup and tap **Re-check** so it is recreated with drift correction for BlackHole. Old devices made without this often hear nothing on real speakers.",
         },
       ],
     },
@@ -195,7 +195,7 @@ const INITIAL: Requirement[] = [
     id: "microphone",
     label: "Microphone permission",
     description:
-      "Required to record and to show input names — including **Meeting Note Taker Input** — in the recorder dropdown",
+      "Required to record and to show input names — including **Dory Input** — in the recorder dropdown",
     required: true,
     status: "pending",
     fix: {
@@ -208,11 +208,11 @@ const INITIAL: Requirement[] = [
         {
           type: "tip",
           content:
-            "System Settings → Privacy & Security → Microphone → enable Meeting Note Taker (or meeting-note-taker when using pnpm dev). You can reset prompts with: tccutil reset Microphone",
+            "System Settings → Privacy & Security → Microphone → enable Dory (or dory when using pnpm dev). You can reset prompts with: tccutil reset Microphone",
         },
         {
           type: "text",
-          content: "Packaged app: tccutil reset Microphone com.meeting-note-taker.app then reopen the .app.",
+          content: "Packaged app: tccutil reset Microphone com.dory.app then reopen the .app.",
         },
       ],
     },

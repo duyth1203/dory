@@ -14,7 +14,7 @@ use zip::ZipArchive;
 
 static DOWNLOAD_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
-const USER_AGENT: &str = "meeting-note-taker/1 (+https://github.com/meeting-note-taker)";
+const USER_AGENT: &str = "dory/1 (+https://github.com/your-username/dory)";
 
 pub fn sona_version_tag() -> &'static str {
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../.sona-version")).trim()

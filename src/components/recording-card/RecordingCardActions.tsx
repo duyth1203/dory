@@ -90,7 +90,7 @@ export function RecordingCardActions({
           title={
             pipelineSummarizing
               ? "Stop the in-progress Gemma summarization"
-              : "Stop Whisper if running, cancel pipeline work or queue slot, and make this card editable again"
+              : "Stop transcription if running, cancel pipeline work or queue slot, and make this card editable again"
           }
         >
           {removeFromQueuePending ? (

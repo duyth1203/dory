@@ -28,9 +28,9 @@ const features = [
     icon: AudioLines,
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-500/15 dark:bg-blue-500/20",
-    title: "Whisper Transcription",
+    title: "Sona transcription",
     description:
-      "Your recording is transcribed locally using OpenAI Whisper — fast, accurate, and completely offline.",
+      "Your recording is transcribed locally with the bundled Sona engine and a Whisper-compatible GGUF model — fast, accurate, and offline.",
   },
   {
     icon: Sparkles,
@@ -62,7 +62,7 @@ const features = [
     bg: "bg-slate-500/12 dark:bg-slate-400/15",
     title: "100 % Local & Private",
     description:
-      "Nothing leaves your machine. Whisper and Gemma run entirely on-device — no cloud, no subscriptions, no data collection.",
+      "Nothing leaves your machine. Sona and Gemma run entirely on-device — no cloud, no subscriptions, no data collection.",
   },
 ];
 
@@ -71,7 +71,7 @@ const steps = [
   { step: "2", label: 'Select "Meeting Note Taker Input" from the device dropdown for full audio capture.' },
   { step: "3", label: 'When done, click Stop → "Stop & save".' },
   { step: "4", label: 'Find the recording in the list on the right and click "Summarize".' },
-  { step: "5", label: "Wait for Whisper to transcribe, then Gemma to summarise. Done!" },
+  { step: "5", label: "Wait for transcription, then Gemma to summarise. Done!" },
 ];
 
 export function IntroductionDialog({ open, onClose }: Props) {

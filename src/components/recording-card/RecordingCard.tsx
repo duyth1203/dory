@@ -16,13 +16,13 @@ export interface RecordingCardProps {
   /** Saves trimmed label; empty string clears the custom name and restores the default title. */
   onRename?: (displayName: string) => Promise<void>;
   onDelete: (id: string) => void;
-  /** Adds this recording to the global AI queue (Whisper → Gemma), same as “Queue for processing”. */
+  /** Adds this recording to the global AI queue (Sona → Gemma), same as “Queue for processing”. */
   onEnqueuePipeline: (overwriteComplete: boolean) => Promise<EnqueuePipelineOutcome | null>;
   selection?: {
     selected: boolean;
     onToggle: () => void;
   };
-  /** Cancels Whisper/Gemma if active, removes from queue, sets recording idle */
+  /** Cancels Sona/Gemma if active, removes from queue, sets recording idle */
   onRemoveFromQueue?: (id: string) => void | Promise<void>;
   removeFromQueuePending?: boolean;
 }

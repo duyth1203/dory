@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   CheckCircle2,
   XCircle,
@@ -14,8 +15,13 @@ import {
   Info,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { ensureMicrophoneAccess } from "@/lib/mediaDevices";
+
+import * as transcriptionConfig from "@/lib/transcription-config";
+import type { DiarizeModelInfo } from "@/lib/transcription-config";
 
 interface CheckResult {
   available: boolean;
@@ -48,42 +54,53 @@ interface Requirement {
   };
 }
 
+interface TranscriptionSettings {
+  sona_model_path: string;
+  diarize_enabled: boolean;
+  gpu_device: number | null;
+}
+
 const INITIAL: Requirement[] = [
   {
-    id: "whisper",
-    label: "Whisper",
-    description: "Speech-to-text transcription",
+    id: "transcription",
+    label: "Sona transcription",
+    description:
+      "Bundled Sona binary + a local Whisper GGUF model (whisper.cpp format). Set the model path below.",
     required: true,
     status: "pending",
     fix: {
-      summary: "openai-whisper is not installed or not on your PATH.",
-      command: "pip install openai-whisper",
-      url: "https://github.com/openai/whisper",
+      summary:
+        "Online, the app installs the speech engine for you. You still choose a Whisper model file and paste its path below. If this fails: check internet, tap Re-check, or reinstall from the official download.",
+      url: "https://github.com/thewh1teagle/sona",
       guide: [
         {
           type: "text",
-          content: "1. Make sure Python 3.8+ is installed:",
+          content:
+            "1. Connect to the internet. On first launch the app downloads Sona (and ffmpeg when it ships with the release). Use **Re-check** after you are online, or quit and reopen once.",
         },
-        { type: "command", content: "python3 --version" },
-        {
-          type: "text",
-          content: "2. Install Whisper via pip:",
-        },
-        { type: "command", content: "pip install openai-whisper" },
         {
           type: "tip",
           content:
-            "If pip is not found, try pip3. On Apple Silicon you may also need ffmpeg (see below).",
+            "VPNs, school/work firewalls, or offline installs can block the download. Try another network or reinstall the app from the official release you trust.",
         },
         {
           type: "text",
-          content: "3. Verify the install worked:",
+          content: "2. Download a Whisper GGUF model (examples):",
         },
-        { type: "command", content: "whisper --version" },
+        {
+          type: "link",
+          content: "ggml-base.bin on Hugging Face",
+          href: transcriptionConfig.exampleModelUrls[0],
+        },
         {
           type: "tip",
           content:
-            "If whisper is installed but not found, your Python bin directory may not be on PATH. Add it:\nexport PATH=\"$HOME/Library/Python/3.x/bin:$PATH\"",
+            "Save the .bin anywhere permanent (e.g. ~/Models). Paste the full path into “Whisper GGUF path” below and click Save.",
+        },
+        {
+          type: "text",
+          content:
+            "3. Optional: enable speaker diarization (Apple Silicon, Linux, or Windows — not Intel Mac). Download the small ONNX model from this screen when prompted.",
         },
       ],
     },
@@ -154,7 +171,12 @@ const INITIAL: Requirement[] = [
         {
           type: "tip",
           content:
-            "The app switches macOS **output** to “Meeting Note Taker Output” **only when it first creates** that device — not on every launch — so your speakers are not overridden repeatedly. When you **quit** the app, output is set back to the speakers/headphones UID saved at setup time (stored in app data). If output was already stuck on Meeting Note Taker from an old version, pick real speakers in **System Settings → Sound**, then Re-check.",
+            "**AirPods or other headphones:** Connect them and choose them as **Sound → Output** (not only as the mic), then open Setup and tap **Re-check**. The app rebuilds **Meeting Note Taker Output** so it includes your current headphones plus BlackHole — otherwise macOS may play meeting audio straight to the buds and **nothing reaches BlackHole**.",
+        },
+        {
+          type: "tip",
+          content:
+            "The app switches macOS **output** back to **Meeting Note Taker Output** when you Re-check if it was something else (for example bare **AirPods**) — that is required so a copy of system audio still hits BlackHole. You’ll hear calls and media through the multi-output device (headphones + virtual sink).",
         },
         {
           type: "tip",
@@ -198,7 +220,8 @@ const INITIAL: Requirement[] = [
   {
     id: "ffmpeg",
     label: "ffmpeg",
-    description: "Audio conversion — WebM → WAV for reliable transcription",
+    description:
+      "WebM → WAV before transcription — bundled with desktop builds on macOS/Windows, or install via Homebrew",
     required: false,
     status: "pending",
     fix: {
@@ -208,7 +231,7 @@ const INITIAL: Requirement[] = [
         {
           type: "text",
           content:
-            "ffmpeg converts your WebM recordings to WAV (16 kHz mono PCM) before passing them to Whisper, which improves reliability.",
+            "ffmpeg converts recordings to WAV (16 kHz mono) before Sona. Release builds often bundle ffmpeg; otherwise install it:",
         },
         {
           type: "text",
@@ -332,6 +355,31 @@ export function SetupScreen({ onContinue }: Props) {
   const [items, setItems] = useState<Requirement[]>(INITIAL);
   const [done, setDone] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [tsSettings, setTsSettings] = useState<TranscriptionSettings>({
+    sona_model_path: "",
+    diarize_enabled: false,
+    gpu_device: null,
+  });
+  const [diarizeSupported, setDiarizeSupported] = useState(true);
+  const [savingTs, setSavingTs] = useState(false);
+  const [downloadingDiarize, setDownloadingDiarize] = useState(false);
+  const [modelPathSaveError, setModelPathSaveError] = useState<string | null>(null);
+  const [diarizeModelInfo, setDiarizeModelInfo] = useState<DiarizeModelInfo | null>(null);
+
+  useEffect(() => {
+    void invoke<TranscriptionSettings>("get_transcription_settings").then(setTsSettings);
+    void invoke<boolean>("is_diarization_platform_supported").then(setDiarizeSupported);
+  }, []);
+
+  useEffect(() => {
+    if (!diarizeSupported || !tsSettings.diarize_enabled) {
+      setDiarizeModelInfo(null);
+      return;
+    }
+    void invoke<DiarizeModelInfo>("get_diarize_model_info")
+      .then(setDiarizeModelInfo)
+      .catch(() => setDiarizeModelInfo(null));
+  }, [diarizeSupported, tsSettings.diarize_enabled]);
 
   const patch = (id: string, update: Partial<Requirement>) =>
     setItems((prev) => prev.map((r) => (r.id === id ? { ...r, ...update } : r)));
@@ -343,8 +391,8 @@ export function SetupScreen({ onContinue }: Props) {
       INITIAL.map((r) => ({ ...r, status: "checking" as CheckStatus, detail: undefined }))
     );
 
-    const [whisper, blackhole, audioRoutingPre, ffmpeg, ollama, micResult] = await Promise.all([
-      invoke<CheckResult>("check_whisper"),
+    const [transcription, blackhole, audioRoutingPre, ffmpeg, ollama, micResult] = await Promise.all([
+      invoke<CheckResult>("check_transcription_ready"),
       invoke<CheckResult>("check_blackhole"),
       safeCheckAudioRouting(),
       invoke<CheckResult>("check_ffmpeg"),
@@ -352,9 +400,10 @@ export function SetupScreen({ onContinue }: Props) {
       ensureMicrophoneAccess(),
     ]);
 
-    patch("whisper", {
-      status: whisper.available ? "ok" : "error",
-      version: whisper.version ?? undefined,
+    patch("transcription", {
+      status: transcription.available ? "ok" : "error",
+      version: transcription.version ?? undefined,
+      detail: transcription.error ?? undefined,
     });
     patch("blackhole", {
       status: blackhole.available ? "ok" : "error",
@@ -404,7 +453,7 @@ export function SetupScreen({ onContinue }: Props) {
     });
 
     let allOk =
-      whisper.available &&
+      transcription.available &&
       blackhole.available &&
       audioRouting.available &&
       micResult.ok &&
@@ -430,6 +479,53 @@ export function SetupScreen({ onContinue }: Props) {
       setTimeout(onContinue, AUTO_PROCEED_MS);
     }
   }, [onContinue]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen("sona-sidecars-ready", () => {
+      void runChecks();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [runChecks]);
+
+  const saveTranscriptionSettings = async () => {
+    setSavingTs(true);
+    setModelPathSaveError(null);
+    try {
+      await invoke("set_transcription_settings", { settings: tsSettings });
+      patch("transcription", { detail: undefined });
+      await runChecks();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setModelPathSaveError(msg);
+      patch("transcription", {
+        status: "error",
+        detail: msg,
+      });
+    } finally {
+      setSavingTs(false);
+    }
+  };
+
+  const downloadDiarizeModel = async () => {
+    setDownloadingDiarize(true);
+    try {
+      await invoke<string>("download_diarize_model");
+      const dm = await invoke<DiarizeModelInfo>("get_diarize_model_info");
+      setDiarizeModelInfo(dm);
+      await runChecks();
+    } catch (e) {
+      patch("transcription", {
+        detail: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      setDownloadingDiarize(false);
+    }
+  };
 
   useEffect(() => {
     void runChecks();
@@ -553,6 +649,103 @@ export function SetupScreen({ onContinue }: Props) {
           })}
         </div>
 
+        <div className="app-glass-checklist rounded-xl border bg-card p-4 space-y-3">
+          <h2 className="text-sm font-semibold">Transcription settings</h2>
+          <p className="text-xs text-muted-foreground">
+            Paste the full path to a Whisper <code className="text-foreground">.bin</code> /{" "}
+            <code className="text-foreground">.gguf</code> model in whisper.cpp format, then save.
+          </p>
+          <Input
+            className="font-mono"
+            value={tsSettings.sona_model_path}
+            onChange={(e) => {
+              setModelPathSaveError(null);
+              setTsSettings((s) => ({ ...s, sona_model_path: e.target.value }));
+            }}
+            placeholder="/Users/you/Models/ggml-base.bin"
+            autoCorrect="off"
+            spellCheck={false}
+            aria-label="Whisper model file path"
+          />
+          {diarizeSupported ? (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="setup-transcription-diarize"
+                checked={tsSettings.diarize_enabled}
+                onCheckedChange={(c) =>
+                  setTsSettings((s) => ({ ...s, diarize_enabled: c === true }))
+                }
+              />
+              <label
+                htmlFor="setup-transcription-diarize"
+                className="text-sm cursor-pointer select-none leading-snug text-foreground peer-disabled:cursor-not-allowed peer-disabled:opacity-50"
+              >
+                Enable speaker diarization (up to 4 speakers)
+              </label>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Speaker diarization is unavailable on Intel Mac for this build (no{" "}
+              <code className="text-foreground">sona-diarize</code> binary).
+            </p>
+          )}
+          {diarizeSupported && tsSettings.diarize_enabled && (
+            <div className="space-y-2">
+              {diarizeModelInfo?.present && diarizeModelInfo.size_bytes != null ? (
+                <div className="flex items-start gap-2 rounded-md border border-emerald-500/25 bg-emerald-500/5 px-2.5 py-2">
+                  <CheckCircle2
+                    className="h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5"
+                    aria-hidden
+                  />
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200">
+                      Diarization model ready (
+                      {transcriptionConfig.formatModelFileSize(diarizeModelInfo.size_bytes)})
+                    </p>
+                    <p
+                      className="text-[10px] font-mono text-muted-foreground truncate"
+                      title={diarizeModelInfo.path}
+                    >
+                      {diarizeModelInfo.path}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  variant={diarizeModelInfo?.present ? "outline" : "secondary"}
+                  size="sm"
+                  disabled={downloadingDiarize}
+                  onClick={() => void downloadDiarizeModel()}
+                >
+                  {downloadingDiarize ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : null}
+                  {diarizeModelInfo?.present ? "Re-download" : "Download"}{" "}
+                  {transcriptionConfig.diarizeModelFilename}
+                </Button>
+                {!diarizeModelInfo?.present ? (
+                  <span className="text-[11px] text-muted-foreground">~25 MB</span>
+                ) : null}
+              </div>
+            </div>
+          )}
+          {modelPathSaveError ? (
+            <p className="text-xs text-destructive whitespace-pre-wrap">{modelPathSaveError}</p>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            disabled={savingTs}
+            onClick={() => void saveTranscriptionSettings()}
+            className="gap-1.5"
+          >
+            {savingTs ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            Save transcription settings
+          </Button>
+        </div>
+
         {/* Actions */}
         {done && (
           <div className="flex flex-col gap-2">
@@ -619,7 +812,7 @@ function GuideStepView({ step }: { step: GuideStep }) {
   return <p className="text-xs text-foreground/80">{step.content}</p>;
 }
 
-function StatusIcon({ status }: { status: CheckStatus }) {
+function StatusIcon({ status }: Readonly<{ status: CheckStatus }>) {
   switch (status) {
     case "checking":
       return <Loader2 className="h-5 w-5 text-muted-foreground animate-spin mt-0.5 shrink-0" />;

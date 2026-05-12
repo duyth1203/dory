@@ -1,4 +1,10 @@
 node_modules
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
 dist
 src-tauri/target
 src-tauri/gen

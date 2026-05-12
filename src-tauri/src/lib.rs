@@ -6,11 +6,34 @@ use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
-/// Whisper / pipeline aborted because the user cancelled the job (`cancel_pipeline_jobs`).
+mod sona;
+mod sona_download;
+mod sona_paths;
+
+/// Pipeline job aborted because the user cancelled the job (`cancel_pipeline_jobs`).
 const PIPELINE_CANCELLED: &str = "pipeline_cancelled_by_user";
 
+/// ONNX Sortformer model (same as Vibe) — speaker diarization up to 4 speakers.
+const DIARIZE_MODEL_FILENAME: &str = "diar_streaming_sortformer_4spk-v2.1.onnx";
+const DIARIZE_MODEL_URL: &str = "https://huggingface.co/altunenes/parakeet-rs/resolve/main/diar_streaming_sortformer_4spk-v2.1.onnx";
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
+pub struct TranscriptionSettings {
+    pub sona_model_path: String,
+    pub diarize_enabled: bool,
+    pub gpu_device: Option<i32>,
+}
+
+#[derive(Default)]
+pub struct SonaState {
+    pub process: Option<sona::SonaProcess>,
+    pub loaded_model_path: Option<String>,
+    pub loaded_gpu_device: Option<i32>,
+}
+
 /// GUI-launched macOS apps use a minimal PATH (no shell profile). Prepend common install dirs
-/// so Homebrew (`brew install whisper ffmpeg`) and pip user bins (`~/.local/bin`) are found.
+/// so Homebrew (`brew install ffmpeg`) and pip user bins (`~/.local/bin`) are found.
 fn apply_user_tool_path(cmd: &mut tokio::process::Command) {
     let sep = if cfg!(windows) { ';' } else { ':' };
     let mut prefixes: Vec<String> = Vec::new();
@@ -320,6 +343,10 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
 
+fn diarize_model_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("models").join(DIARIZE_MODEL_FILENAME))
+}
+
 fn recording_meta_path(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     let meta_dir = app_data_dir(app)?.join("metadata");
     Ok(meta_dir.join(format!("{id}.json")))
@@ -480,47 +507,422 @@ async fn pipeline_cancelled_cleanup(app: &AppHandle, id: &str) -> Result<(), Str
     Ok(())
 }
 
-async fn convert_to_wav(webm_path: &str) -> Result<String, String> {
+fn diarization_platform_supported() -> bool {
+    !(cfg!(all(target_os = "macos", target_arch = "x86_64")))
+}
+
+fn speaker_line(speaker: Option<i32>, text: &str) -> String {
+    let prefix = speaker
+        .map(|s| format!("[Speaker {}] ", s + 1))
+        .unwrap_or_default();
+    format!("{}{}", prefix, text.trim())
+}
+
+fn transcription_settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("transcription_settings.json"))
+}
+
+/// Ensures the path points to a plausible on-disk Whisper GGUF / legacy .bin before persisting settings.
+fn validate_sona_model_path(model_path: &str) -> Result<(), String> {
+    use std::io::Read;
+
+    let p = Path::new(model_path);
+    if !p.is_file() {
+        return Err(format!(
+            "No file at that path. Check spelling and that the file is still there:\n{}",
+            model_path
+        ));
+    }
+    let meta = std::fs::metadata(p).map_err(|e| format!("Cannot read that file: {e}"))?;
+    let len = meta.len();
+    if len == 0 {
+        return Err("That file is empty.".to_string());
+    }
+
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        match ext.to_ascii_lowercase().as_str() {
+            "gguf" | "bin" => {}
+            other => {
+                return Err(format!(
+                    "Use a Whisper model whose name ends with .gguf or .bin (not .{other})."
+                ));
+            }
+        }
+    }
+
+    let mut file = std::fs::File::open(p).map_err(|e| format!("Cannot open model file: {e}"))?;
+    let mut magic = [0u8; 4];
+    if file.read_exact(&mut magic).is_err() {
+        return Err(
+            "Could not read the start of the file — it may be empty or permissions may block access."
+                .to_string(),
+        );
+    }
+    if magic == *b"GGUF" {
+        return Ok(());
+    }
+    if p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+    {
+        return Err(
+            "This file is named .gguf but does not contain a GGUF header — it may be corrupt or not a model."
+                .to_string(),
+        );
+    }
+
+    const MIN_WHISPER_BYTES: u64 = 10 * 1024 * 1024;
+    if len < MIN_WHISPER_BYTES {
+        return Err(format!(
+            "File is not a GGUF model (missing GGUF header) and is smaller than a typical Whisper .bin (expect at least {} MB).",
+            MIN_WHISPER_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(())
+}
+
+async fn read_transcription_settings(app: &AppHandle) -> Result<TranscriptionSettings, String> {
+    let path = transcription_settings_path(app)?;
+    if !path.exists() {
+        return Ok(TranscriptionSettings::default());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(serde_json::from_slice(&bytes).unwrap_or_else(|_| TranscriptionSettings::default()))
+}
+
+async fn resolve_sona_with_optional_download(app: &AppHandle) -> Result<PathBuf, String> {
+    let dl_err = sona_download::ensure_sona_sidecars_present(app).await.err();
+    match sona_paths::resolve_sona_binary(app) {
+        Ok(p) => Ok(p),
+        Err(e) => Err(match dl_err {
+            Some(d) => format!("{d} — {e}"),
+            None => e,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn check_transcription_ready(app: AppHandle) -> CheckResult {
+    if let Err(e) = resolve_sona_with_optional_download(&app).await {
+        return CheckResult {
+            available: false,
+            version: None,
+            error: Some(e),
+        };
+    }
+
+    let settings = match read_transcription_settings(&app).await {
+        Ok(s) => s,
+        Err(e) => {
+            return CheckResult {
+                available: false,
+                version: None,
+                error: Some(e),
+            };
+        }
+    };
+
+    let model_path = settings.sona_model_path.trim();
+    if model_path.is_empty() {
+        return CheckResult {
+            available: false,
+            version: None,
+            error: Some(
+                "Choose a Sona-compatible Whisper GGUF file — see guide below.".to_string(),
+            ),
+        };
+    }
+
+    if !Path::new(model_path).is_file() {
+        return CheckResult {
+            available: false,
+            version: None,
+            error: Some(format!("Model file not found: {model_path}")),
+        };
+    }
+
+    if settings.diarize_enabled && diarization_platform_supported() {
+        match app_data_dir(&app).map(|d| d.join("models").join(DIARIZE_MODEL_FILENAME)) {
+            Ok(path) if path.is_file() => {}
+            Ok(path) => {
+                return CheckResult {
+                    available: false,
+                    version: None,
+                    error: Some(format!(
+                        "Speaker diarization is on but the ONNX model is missing. Download it or disable diarization. Expected: {}",
+                        path.display()
+                    )),
+                };
+            }
+            Err(e) => {
+                return CheckResult {
+                    available: false,
+                    version: None,
+                    error: Some(e),
+                };
+            }
+        }
+    }
+
+    CheckResult {
+        available: true,
+        version: Some(model_path.to_string()),
+        error: None,
+    }
+}
+
+#[tauri::command]
+async fn get_transcription_settings(app: AppHandle) -> Result<TranscriptionSettings, String> {
+    read_transcription_settings(&app).await
+}
+
+#[tauri::command]
+async fn set_transcription_settings(
+    app: AppHandle,
+    mut settings: TranscriptionSettings,
+) -> Result<(), String> {
+    settings.sona_model_path = settings.sona_model_path.trim().to_string();
+    if settings.sona_model_path.is_empty() {
+        return Err(
+            "Paste the full path to your Whisper model file (.gguf or .bin), then save.".to_string(),
+        );
+    }
+    validate_sona_model_path(&settings.sona_model_path)?;
+    let path = transcription_settings_path(&app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_models_dir(app: AppHandle) -> Result<String, String> {
+    let dir = app_data_dir(&app)?.join("models");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn is_diarization_platform_supported() -> bool {
+    diarization_platform_supported()
+}
+
+#[derive(Debug, Serialize)]
+struct DiarizeModelInfo {
+    path: String,
+    present: bool,
+    size_bytes: Option<u64>,
+}
+
+#[tauri::command]
+fn get_diarize_model_info(app: AppHandle) -> Result<DiarizeModelInfo, String> {
+    let path = diarize_model_path(&app)?;
+    let path_str = path.to_string_lossy().to_string();
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() && meta.len() > 0 => Ok(DiarizeModelInfo {
+            path: path_str,
+            present: true,
+            size_bytes: Some(meta.len()),
+        }),
+        _ => Ok(DiarizeModelInfo {
+            path: path_str,
+            present: false,
+            size_bytes: None,
+        }),
+    }
+}
+
+/// Reject tiny downloads (error pages, broken proxies) — real asset is tens of MB.
+const MIN_DIARIZE_ONNX_BYTES: u64 = 512 * 1024;
+
+#[tauri::command]
+async fn download_diarize_model(app: AppHandle) -> Result<String, String> {
+    let dest = diarize_model_path(&app)?;
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(DIARIZE_MODEL_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("Download failed: HTTP {}", response.status()));
+    }
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+    let meta = std::fs::metadata(&dest).map_err(|e| e.to_string())?;
+    let len = meta.len();
+    if len < MIN_DIARIZE_ONNX_BYTES {
+        let _ = std::fs::remove_file(&dest);
+        return Err(format!(
+            "Downloaded file is only {len} bytes (expected a large ONNX model). Removed bad file — check network and try again."
+        ));
+    }
+    Ok(dest.to_string_lossy().to_string())
+}
+
+async fn ensure_sona_model_loaded(
+    app: &AppHandle,
+    sona_state: &Mutex<SonaState>,
+    model_path: &str,
+    gpu_device: Option<i32>,
+) -> Result<(), String> {
+    resolve_sona_with_optional_download(app).await?;
+    let spawn_fresh = || -> Result<sona::SonaProcess, String> {
+        let binary = sona_paths::resolve_sona_binary(app)?;
+        let ffmpeg = sona_paths::resolve_ffmpeg_path(app);
+        let diarize = sona_paths::resolve_diarize_path(app);
+        sona::SonaProcess::spawn(&binary, ffmpeg.as_deref(), diarize.as_deref())
+            .map_err(|e| format!("{:#}", e))
+    };
+
+    let mut guard = sona_state.lock().await;
+
+    let alive = guard
+        .process
+        .as_mut()
+        .map(|p| p.is_alive())
+        .unwrap_or(false);
+    if !alive {
+        if let Some(mut old) = guard.process.take() {
+            old.kill();
+        }
+        guard.process = Some(spawn_fresh()?);
+        guard.loaded_model_path = None;
+    }
+
+    if guard.loaded_model_path.as_deref() == Some(model_path) {
+        return Ok(());
+    }
+
+    let load_result = {
+        let proc = guard
+            .process
+            .as_mut()
+            .ok_or_else(|| "sona process missing".to_string())?;
+        proc.load_model(model_path, gpu_device, false).await
+    };
+
+    match load_result {
+        Ok(()) => {
+            guard.loaded_model_path = Some(model_path.to_string());
+            guard.loaded_gpu_device = gpu_device;
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!("sona load_model failed (retrying on CPU): {:#}", e);
+            if let Some(mut old) = guard.process.take() {
+                old.kill();
+            }
+            let mut proc = spawn_fresh()?;
+            proc.load_model(model_path, gpu_device, true)
+                .await
+                .map_err(|e2| format!("{:#}", e2))?;
+            guard.process = Some(proc);
+            guard.loaded_model_path = Some(model_path.to_string());
+            guard.loaded_gpu_device = gpu_device;
+            Ok(())
+        }
+    }
+}
+
+async fn convert_to_wav(webm_path: &str, ffmpeg_bin: Option<&Path>) -> Result<String, String> {
     let stem = PathBuf::from(webm_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("audio")
         .to_string();
-    let wav_path = format!("/tmp/{}_converted.wav", stem);
+    let wav_path = std::env::temp_dir()
+        .join(format!("mnt_{}_converted.wav", stem));
+    let wav_str = wav_path.to_string_lossy().to_string();
 
-    let mut ff = tokio::process::Command::new("ffmpeg");
-    apply_user_tool_path(&mut ff);
-    let result = ff
-        .args([
+    let result = if let Some(bin) = ffmpeg_bin {
+        tokio::process::Command::new(bin)
+            .args([
+                "-y",
+                "-i",
+                webm_path,
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                &wav_str,
+            ])
+            .output()
+            .await
+    } else {
+        let mut ff = tokio::process::Command::new("ffmpeg");
+        apply_user_tool_path(&mut ff);
+        ff.args([
             "-y",
-            "-i", webm_path,
-            "-ar", "16000",   // 16 kHz — optimal for Whisper
-            "-ac", "1",       // mono
-            "-c:a", "pcm_s16le",
-            &wav_path,
+            "-i",
+            webm_path,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            &wav_str,
         ])
         .output()
-        .await;
+        .await
+    };
 
     match result {
-        Ok(out) if out.status.success() => Ok(wav_path),
+        Ok(out) if out.status.success() => Ok(wav_str),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            Err(format!("ffmpeg conversion failed: {}\n\nInstall ffmpeg: brew install ffmpeg", stderr))
+            Err(format!(
+                "ffmpeg conversion failed: {}\n\nInstall ffmpeg or use a bundled app build with ffmpeg.",
+                stderr
+            ))
         }
         Err(e) => Err(format!(
-            "ffmpeg not found ({}). Install it with: brew install ffmpeg",
+            "ffmpeg not found ({}). Install ffmpeg or use a desktop build that bundles ffmpeg.",
             e
         )),
     }
 }
 
-async fn run_whisper_transcription(
+async fn run_sona_transcription(
     app: AppHandle,
     audio_path: String,
     cancel: CancellationToken,
+    sona_state: Arc<Mutex<SonaState>>,
 ) -> Result<String, String> {
-    let (transcribe_path, wav_tmp) = match convert_to_wav(&audio_path).await {
+    use futures_util::StreamExt;
+
+    let settings = read_transcription_settings(&app).await?;
+    let model_path = settings.sona_model_path.trim();
+    if model_path.is_empty() {
+        return Err(
+            "No transcription model path set. Open Setup → Transcription and choose a Sona-compatible GGUF model."
+                .to_string(),
+        );
+    }
+    if !Path::new(model_path).is_file() {
+        return Err(format!("Transcription model file not found: {model_path}"));
+    }
+
+    ensure_sona_model_loaded(&app, &sona_state, model_path, settings.gpu_device).await?;
+
+    let bundled_ffmpeg = sona_paths::resolve_ffmpeg_path(&app);
+    let ffmpeg_ref = bundled_ffmpeg.as_deref();
+
+    let (transcribe_path, wav_tmp) = match convert_to_wav(&audio_path, ffmpeg_ref).await {
         Ok(wav) => (wav.clone(), Some(wav)),
         Err(e) => {
             eprintln!("ffmpeg conversion skipped: {}", e);
@@ -528,81 +930,96 @@ async fn run_whisper_transcription(
         }
     };
 
-    let stem = PathBuf::from(&transcribe_path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("audio")
-        .to_string();
+    let models_base = app_data_dir(&app)?.join("models");
+    let diarize_model_path = if settings.diarize_enabled && diarization_platform_supported() {
+        let p = models_base.join(DIARIZE_MODEL_FILENAME);
+        if p.is_file() {
+            Some(p.to_string_lossy().to_string())
+        } else {
+            if let Some(ref w) = wav_tmp {
+                let _ = std::fs::remove_file(w);
+            }
+            return Err(format!(
+                "Speaker diarization is enabled but the model file is missing. Download it in Setup or place it at {}",
+                p.display()
+            ));
+        }
+    } else {
+        None
+    };
 
-    let mut whisper_cmd = tokio::process::Command::new("whisper");
-    apply_user_tool_path(&mut whisper_cmd);
-    let mut child = whisper_cmd
-        .args([
-            &transcribe_path,
-            "--model", "base",
-            "--output_format", "txt",
-            "--output_dir", "/tmp",
-            "--language", "en",
-            "--verbose", "True",
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to run whisper: {}. Make sure whisper is installed (pip install openai-whisper)", e))?;
+    let opts = sona::SonaTranscribeOptions {
+        path: transcribe_path.clone(),
+        language: Some("en".to_string()),
+        translate: false,
+        prompt: None,
+        diarize_model: diarize_model_path,
+    };
 
-    // Stream each transcript segment to the frontend as it appears in stderr.
-    // Whisper verbose lines look like: [00:00.000 --> 00:05.000]  Some text here
-    let stderr = child.stderr.take().expect("stderr piped");
-    let app_clone = app.clone();
-    let stream_task = tokio::spawn(async move {
-        use tokio::io::AsyncBufReadExt;
-        let mut lines = tokio::io::BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with('[') {
-                if let Some(bracket_end) = trimmed.find(']') {
-                    if trimmed[1..bracket_end].contains("-->") {
-                        let text = trimmed[bracket_end + 1..].trim().to_string();
-                        if !text.is_empty() {
-                            let _ = app_clone.emit("transcription-chunk", &text);
+    let (client, base_url) = {
+        let mut guard = sona_state.lock().await;
+        let proc = guard
+            .process
+            .as_mut()
+            .ok_or_else(|| "sona process missing".to_string())?;
+        (proc.client(), proc.base_url())
+    };
+
+    let stream = sona::SonaProcess::transcribe_stream(&client, &base_url, &opts)
+        .await
+        .map_err(|e| {
+            if let Some(api) = e.downcast_ref::<sona::SonaApiError>() {
+                format!("{}: {}", api.code, api.message)
+            } else {
+                format!("{:#}", e)
+            }
+        })?;
+
+    tokio::pin!(stream);
+
+    let mut lines: Vec<String> = Vec::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                if let Some(ref w) = wav_tmp {
+                    let _ = std::fs::remove_file(w);
+                }
+                return Err(PIPELINE_CANCELLED.to_string());
+            }
+            ev = stream.next() => {
+                let Some(event_result) = ev else { break };
+                match event_result {
+                    Ok(sona::SonaEvent::Segment { text, speaker, .. }) => {
+                        let line = speaker_line(speaker, &text);
+                        let _ = app.emit("transcription-chunk", &line);
+                        lines.push(line);
+                    }
+                    Ok(sona::SonaEvent::Error { code, message }) => {
+                        if let Some(ref w) = wav_tmp {
+                            let _ = std::fs::remove_file(w);
                         }
+                        let c = code.unwrap_or_else(|| "transcription_error".to_string());
+                        return Err(format!("{c}: {message}"));
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        if let Some(ref w) = wav_tmp {
+                            let _ = std::fs::remove_file(w);
+                        }
+                        return Err(format!("{:#}", e));
                     }
                 }
             }
         }
-    });
-
-    let status = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => {
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            stream_task.abort();
-            let _ = stream_task.await;
-            if let Some(ref wav) = wav_tmp {
-                let _ = std::fs::remove_file(wav);
-            }
-            return Err(PIPELINE_CANCELLED.to_string());
-        }
-        res = child.wait() => {
-            res.map_err(|e| e.to_string())?
-        }
-    };
-    let _ = stream_task.await;
-
-    if let Some(ref wav) = wav_tmp {
-        let _ = std::fs::remove_file(wav);
     }
 
-    if !status.success() {
-        return Err("Whisper failed. Check that whisper is installed correctly (pip install openai-whisper).".to_string());
+    if let Some(ref w) = wav_tmp {
+        let _ = std::fs::remove_file(w);
     }
 
-    let txt_path = format!("/tmp/{}.txt", stem);
-    let transcript = std::fs::read_to_string(&txt_path)
-        .map_err(|e| format!("Could not read whisper output: {}", e))?;
-    let _ = std::fs::remove_file(&txt_path);
-    Ok(transcript.trim().to_string())
+    Ok(lines.join("\n"))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -691,6 +1108,8 @@ async fn run_pipeline_job_inner(
         return Err(PIPELINE_CANCELLED.to_string());
     }
 
+    let sona_state = Arc::clone(&*app.state::<Arc<Mutex<SonaState>>>());
+
     let audio_path = audio_path_for_id(app, id)?;
     let path = recording_meta_path(app, id)?;
     let meta: serde_json::Value = if path.exists() {
@@ -729,7 +1148,7 @@ async fn run_pipeline_job_inner(
         .await?;
         emit_pipeline_event(app, id, "transcribing", None);
         let transcript =
-            run_whisper_transcription(app.clone(), audio_path, cancel.clone()).await?;
+            run_sona_transcription(app.clone(), audio_path, cancel.clone(), sona_state).await?;
         if cancel.is_cancelled() {
             return Err(PIPELINE_CANCELLED.to_string());
         }
@@ -760,7 +1179,7 @@ async fn run_pipeline_job_inner(
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
     if need_summary {
-        // Transcribe-first jobs already move to summarizing after Whisper; summarize-only reruns
+        // Transcribe-first jobs already move to summarizing after Sona; summarize-only reruns
         // (e.g. after cancel) stay on "queued" until here — patch so UI and queue snapshot match work.
         patch_recording_meta(
             app,
@@ -991,35 +1410,61 @@ pub struct CheckResult {
 }
 
 #[tauri::command]
-async fn check_whisper() -> CheckResult {
-    let mut c = tokio::process::Command::new("whisper");
-    apply_user_tool_path(&mut c);
-    match c.arg("--version").output().await
-    {
-        Ok(out) if out.status.success() => {
-            let version = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            CheckResult { available: true, version: Some(version), error: None }
-        }
-        Ok(out) => {
-            // whisper --version exits non-zero on some builds but is still present
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            CheckResult { available: true, version: None, error: if stderr.is_empty() { None } else { Some(stderr) } }
-        }
-        Err(e) => CheckResult { available: false, version: None, error: Some(e.to_string()) },
+async fn check_sona(app: AppHandle) -> CheckResult {
+    match resolve_sona_with_optional_download(&app).await {
+        Ok(path) => CheckResult {
+            available: true,
+            version: Some(path.to_string_lossy().to_string()),
+            error: None,
+        },
+        Err(e) => CheckResult {
+            available: false,
+            version: None,
+            error: Some(e),
+        },
     }
 }
 
 #[tauri::command]
-async fn check_ffmpeg() -> CheckResult {
+async fn check_ffmpeg(app: AppHandle) -> CheckResult {
+    let _ = sona_download::ensure_sona_sidecars_present(&app).await;
+    if let Some(bin) = sona_paths::resolve_ffmpeg_path(&app) {
+        match tokio::process::Command::new(&bin).arg("-version").output().await {
+            Ok(out) if out.status.success() => {
+                let version = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .next()
+                    .map(|l| l.replace("ffmpeg version ", ""))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                return CheckResult {
+                    available: true,
+                    version: Some(version),
+                    error: None,
+                };
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                return CheckResult {
+                    available: false,
+                    version: None,
+                    error: Some(stderr),
+                };
+            }
+            Err(e) => {
+                return CheckResult {
+                    available: false,
+                    version: None,
+                    error: Some(e.to_string()),
+                };
+            }
+        }
+    }
+
     let mut c = tokio::process::Command::new("ffmpeg");
     apply_user_tool_path(&mut c);
-    match c.arg("-version").output().await
-    {
+    match c.arg("-version").output().await {
         Ok(out) => {
             let version = String::from_utf8_lossy(&out.stdout)
                 .lines()
@@ -1028,9 +1473,17 @@ async fn check_ffmpeg() -> CheckResult {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            CheckResult { available: true, version: Some(version), error: None }
+            CheckResult {
+                available: true,
+                version: Some(version),
+                error: None,
+            }
         }
-        Err(e) => CheckResult { available: false, version: None, error: Some(e.to_string()) },
+        Err(e) => CheckResult {
+            available: false,
+            version: None,
+            error: Some(e.to_string()),
+        },
     }
 }
 
@@ -1167,6 +1620,8 @@ mod audio_setup {
     fn sel_default_output()    -> u32 { cc(b"dOut") }
     fn sel_uid()               -> u32 { cc(b"uid ") }
     fn sel_name()              -> u32 { cc(b"lnam") }
+    /// `kAudioAggregateDevicePropertyFullSubDeviceList` — sub-device UIDs (Multi-Output & aggregates).
+    fn sel_aggregate_full_subdevices() -> u32 { cc(b"grnd") }
 
     #[repr(C)]
     struct Addr { sel: u32, scope: u32, elem: u32 }
@@ -1180,6 +1635,7 @@ mod audio_setup {
         fn AudioObjectGetPropertyData(id: AudioObjectID, addr: *const Addr, qs: u32, qd: *const c_void, sz: *mut u32, out: *mut c_void) -> OSStatus;
         fn AudioObjectSetPropertyData(id: AudioObjectID, addr: *const Addr, qs: u32, qd: *const c_void, sz: u32, data: *const c_void) -> OSStatus;
         fn AudioHardwareCreateAggregateDevice(desc: CFDictionaryRef, out: *mut AudioDeviceID) -> OSStatus;
+        fn AudioHardwareDestroyAggregateDevice(device_id: AudioDeviceID) -> OSStatus;
     }
 
     #[link(name = "CoreFoundation", kind = "framework")]
@@ -1190,6 +1646,8 @@ mod audio_setup {
         fn CFArrayCreate(a: CFAllocatorRef, vals: *const CFTypeRef, n: CFIndex, cbs: *const c_void) -> CFArrayRef;
         fn CFDictionaryCreate(a: CFAllocatorRef, keys: *const CFTypeRef, vals: *const CFTypeRef, n: CFIndex, kcbs: *const c_void, vcbs: *const c_void) -> CFDictionaryRef;
         fn CFRelease(r: CFTypeRef);
+        fn CFArrayGetCount(the_array: CFArrayRef) -> CFIndex;
+        fn CFArrayGetValueAtIndex(the_array: CFArrayRef, idx: CFIndex) -> *const c_void;
         static kCFTypeDictionaryKeyCallBacks: c_void;
         static kCFTypeDictionaryValueCallBacks: c_void;
         static kCFTypeArrayCallBacks: c_void;
@@ -1205,6 +1663,19 @@ mod audio_setup {
     unsafe fn cf_to_string(r: CFStringRef) -> Option<String> {
         if r.is_null() { return None; }
         let mut buf = vec![0u8; 512];
+        if CFStringGetCString(r, buf.as_mut_ptr() as *mut c_char, buf.len() as i64, UTF8) {
+            Some(CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    }
+
+    /// Copy a `CFString` that we do **not** own (e.g. values inside a `CFArray`).
+    unsafe fn cf_string_to_string_unowned(r: CFStringRef) -> Option<String> {
+        if r.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u8; 1024];
         if CFStringGetCString(r, buf.as_mut_ptr() as *mut c_char, buf.len() as i64, UTF8) {
             Some(CStr::from_ptr(buf.as_ptr() as *const c_char).to_string_lossy().into_owned())
         } else {
@@ -1342,6 +1813,76 @@ mod audio_setup {
         list_devices().into_iter().find(|&id| dev_uid(id).as_deref() == Some(uid))
     }
 
+    fn aggregate_full_subdevice_uids(device_id: AudioDeviceID) -> Option<Vec<String>> {
+        let addr = Addr::global(sel_aggregate_full_subdevices());
+        let mut arr: CFArrayRef = ptr::null();
+        let mut data_sz = std::mem::size_of::<CFArrayRef>() as u32;
+        let ok = unsafe {
+            AudioObjectGetPropertyData(
+                device_id,
+                &addr,
+                0,
+                ptr::null(),
+                &mut data_sz,
+                &mut arr as *mut CFArrayRef as *mut c_void,
+            ) == 0
+        };
+        if !ok || arr.is_null() {
+            return None;
+        }
+        let count = unsafe { CFArrayGetCount(arr) };
+        let mut out = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let v = unsafe { CFArrayGetValueAtIndex(arr, i) } as CFStringRef;
+            if let Some(s) = unsafe { cf_string_to_string_unowned(v) } {
+                out.push(s);
+            }
+        }
+        unsafe { CFRelease(arr as CFTypeRef) };
+        Some(out)
+    }
+
+    fn two_subdevices_match(device_id: AudioDeviceID, a: &str, b: &str) -> bool {
+        let Some(uids) = aggregate_full_subdevice_uids(device_id) else {
+            return false;
+        };
+        if uids.len() != 2 {
+            return false;
+        }
+        uids.iter().any(|u| u == a) && uids.iter().any(|u| u == b)
+    }
+
+    /// Default mic/input UID — when the default is our aggregate, use the real mic leg (not BlackHole).
+    fn resolve_physical_mic_uid(bh_uid: &str) -> Result<String, String> {
+        let in_id = default_device(sel_default_input()).ok_or("No default input device")?;
+        let uid = dev_uid(in_id).ok_or("No input device UID")?;
+        if uid == AGGREGATE_UID {
+            let subs = aggregate_full_subdevice_uids(in_id).ok_or(
+                "macOS did not list sub-devices for Meeting Note Taker Input (Core Audio). \
+Try this order: (1) System Settings → Sound → Input → pick your real mic (e.g. Built-in or AirPods), not this aggregate — then Setup → Re-check. \
+(2) Quit other apps using the mic and Re-check. \
+(3) In Audio MIDI Setup, delete Meeting Note Taker Input/Output if duplicated, then Re-check. \
+(4) Terminal: sudo killall coreaudiod — then Re-check.",
+            )?;
+            subs.into_iter()
+                .find(|u| u != bh_uid)
+                .ok_or_else(|| "Meeting Note Taker Input has no microphone subdevice".to_string())
+        } else {
+            Ok(uid)
+        }
+    }
+
+    fn destroy_virtual_device(id: AudioDeviceID) -> Result<(), String> {
+        let st = unsafe { AudioHardwareDestroyAggregateDevice(id) };
+        if st == 0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "Could not remove stale audio device (OSStatus {st}). Quit other apps using audio, then Re-check."
+            ))
+        }
+    }
+
     /// Subdevice dict for `AudioHardwareCreateAggregateDevice`.
     /// Multi-Output must enable drift compensation on non-master outputs or playback to the
     /// physical device can be silent while BlackHole still receives signal.
@@ -1427,6 +1968,12 @@ mod audio_setup {
 
     pub fn check_routing() -> bool {
         if find_by_uid(AGGREGATE_UID).is_some() {
+            if find_by_uid(MULTI_OUT_UID).is_some() {
+                let Some(out) = default_device(sel_default_output()) else {
+                    return false;
+                };
+                return dev_uid(out).as_deref() == Some(MULTI_OUT_UID);
+            }
             return true;
         }
         // Also accept any aggregate or virtual device that contains BlackHole by name
@@ -1471,45 +2018,179 @@ Pick your speakers or headphones in **System Settings → Sound → Output** (or
             out_uid.clone()
         };
 
-        let in_id = default_device(sel_default_input()).ok_or("No default input device")?;
-        let in_uid = dev_uid(in_id).ok_or("No input device UID")?;
+        let mic_uid = resolve_physical_mic_uid(&bh_uid)?;
 
-        let multi_existed_before = find_by_uid(MULTI_OUT_UID).is_some();
+        let need_new_multi = match find_by_uid(MULTI_OUT_UID) {
+            None => true,
+            Some(mid) => !two_subdevices_match(mid, &physical_output_uid, &bh_uid),
+        };
 
-        let multi_id = find_by_uid(MULTI_OUT_UID).unwrap_or_else(|| unsafe {
-            create_device(
-                "Meeting Note Taker Output",
-                MULTI_OUT_UID,
-                &physical_output_uid,
-                &[&physical_output_uid, &bh_uid],
-                true,
-            )
-            .unwrap_or(0)
-        });
-        // Only switch system output when we first create the virtual device — avoids yanking the user
-        // back from speakers every time setup runs or the app re-checks.
-        if multi_id != 0 && !multi_existed_before {
-            set_default_output(multi_id);
+        let need_new_agg = match find_by_uid(AGGREGATE_UID) {
+            None => true,
+            Some(aid) => !two_subdevices_match(aid, &mic_uid, &bh_uid),
+        };
+
+        if need_new_multi {
+            if let Some(mid) = find_by_uid(MULTI_OUT_UID) {
+                if default_device(sel_default_output()) == Some(mid) {
+                    let phys_id = find_by_uid(&physical_output_uid).ok_or_else(|| {
+                        format!(
+                            "Could not find output device “{physical_output_uid}”. \
+In System Settings → Sound → Output, pick your speakers or AirPods, then Re-check."
+                        )
+                    })?;
+                    set_default_output(phys_id);
+                }
+                destroy_virtual_device(mid)?;
+            }
+            let new_mid = unsafe {
+                create_device(
+                    "Meeting Note Taker Output",
+                    MULTI_OUT_UID,
+                    &physical_output_uid,
+                    &[&physical_output_uid, &bh_uid],
+                    true,
+                )
+            }
+            .ok_or_else(|| {
+                "Failed to create Multi-Output Device (Meeting Note Taker Output). \
+Bluetooth headphones sometimes need to be paired as the system output first — pick them in Sound settings, then Re-check."
+                    .to_string()
+            })?;
+            if new_mid == 0 {
+                return Err("Failed to create Multi-Output Device".to_string());
+            }
         }
 
-        let agg_id = find_by_uid(AGGREGATE_UID).unwrap_or_else(|| unsafe {
-            create_device(
-                "Meeting Note Taker Input",
-                AGGREGATE_UID,
-                &in_uid,
-                &[&in_uid, &bh_uid],
-                false,
-            )
-            .unwrap_or(0)
-        });
-        if agg_id == 0 {
-            return Err("Failed to create Aggregate Device".to_string());
+        if need_new_agg {
+            if let Some(aid) = find_by_uid(AGGREGATE_UID) {
+                if default_device(sel_default_input()) == Some(aid) {
+                    let mic_dev = find_by_uid(&mic_uid).ok_or_else(|| {
+                        format!(
+                            "Could not find microphone “{mic_uid}”. \
+In System Settings → Sound → Input, pick your mic, then Re-check."
+                        )
+                    })?;
+                    set_default_input(mic_dev);
+                }
+                destroy_virtual_device(aid)?;
+            }
+            let new_agg = unsafe {
+                create_device(
+                    "Meeting Note Taker Input",
+                    AGGREGATE_UID,
+                    &mic_uid,
+                    &[&mic_uid, &bh_uid],
+                    false,
+                )
+            }
+            .ok_or_else(|| {
+                "Failed to create Meeting Note Taker Input (mic + BlackHole). \
+If you use Bluetooth-only headphones, try switching the default **input** to the Mac microphone for setup, then Re-check."
+                    .to_string()
+            })?;
+            if new_agg == 0 {
+                return Err("Failed to create Aggregate Device".to_string());
+            }
+        }
+
+        let multi_id = find_by_uid(MULTI_OUT_UID).unwrap_or(0);
+        let agg_id = find_by_uid(AGGREGATE_UID).ok_or("Meeting Note Taker Input not found after setup")?;
+
+        if multi_id != 0 {
+            if let Some(cur_out) = default_device(sel_default_output()) {
+                if dev_uid(cur_out).as_deref() != Some(MULTI_OUT_UID) {
+                    set_default_output(multi_id);
+                }
+            }
         }
 
         Ok(SetupResult {
             aggregate_device_name: dev_name(agg_id).unwrap_or_else(|| "Meeting Note Taker Input".to_string()),
             previous_output_uid: physical_output_uid,
         })
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct RecordingSessionRestore {
+        output_device_uid: String,
+        input_device_uid: String,
+    }
+
+    /// Save current Sound output/input, switch to Meeting Note Taker Output + Meeting Note Taker Input.
+    /// Idempotent if already on those devices (no session file).
+    pub fn begin_recording_audio_routing(output_restore_path: &Path, session_path: &Path) -> Result<(), String> {
+        let multi_id = find_by_uid(MULTI_OUT_UID).ok_or_else(|| {
+            "Meeting Note Taker Output not found. Open Setup → Re-check (Audio routing), then try again.".to_string()
+        })?;
+        let agg_id = find_by_uid(AGGREGATE_UID).ok_or_else(|| {
+            "Meeting Note Taker Input not found. Open Setup → Re-check (Audio routing), then try again.".to_string()
+        })?;
+
+        let cur_out_id = default_device(sel_default_output()).ok_or("No default output device")?;
+        let cur_out_uid = dev_uid(cur_out_id).ok_or("No output device UID")?;
+        let cur_in_id = default_device(sel_default_input()).ok_or("No default input device")?;
+        let cur_in_uid = dev_uid(cur_in_id).ok_or("No input device UID")?;
+
+        let out_ok = cur_out_uid == MULTI_OUT_UID;
+        let in_ok = cur_in_uid == AGGREGATE_UID;
+
+        if out_ok && in_ok {
+            return Ok(());
+        }
+
+        if let Some(parent) = session_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let payload = RecordingSessionRestore {
+            output_device_uid: cur_out_uid.clone(),
+            input_device_uid: cur_in_uid.clone(),
+        };
+        std::fs::write(
+            session_path,
+            serde_json::to_string(&payload).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+
+        if !out_ok {
+            let _ = persist_output_restore(output_restore_path, &cur_out_uid);
+            set_default_output(multi_id);
+        }
+        if !in_ok {
+            set_default_input(agg_id);
+        }
+        Ok(())
+    }
+
+    /// Restore Sound output/input saved at recording start. Safe if no session file.
+    ///
+    /// When [`begin_recording_audio_routing`] skips writing a session (already on Multi-Output +
+    /// aggregate), there is no JSON snapshot — fall back to [`restore_default_output_if_needed`]
+    /// using `audio_output_restore.json` from setup so real speakers/headphones return.
+    pub fn end_recording_audio_routing(session_path: &Path) {
+        let output_restore_path = session_path.parent().map(|p| p.join("audio_output_restore.json"));
+
+        match std::fs::read_to_string(session_path) {
+            Ok(s) => match serde_json::from_str::<RecordingSessionRestore>(&s) {
+                Ok(payload) => {
+                    if let Some(id) = find_by_uid(&payload.output_device_uid) {
+                        set_default_output(id);
+                    }
+                    if let Some(id) = find_by_uid(&payload.input_device_uid) {
+                        set_default_input(id);
+                    }
+                    let _ = std::fs::remove_file(session_path);
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(session_path);
+                }
+            },
+            Err(_) => {}
+        }
+
+        if let Some(ref p) = output_restore_path {
+            restore_default_output_if_needed(p);
+        }
     }
 }
 
@@ -1551,14 +2232,123 @@ async fn sync_default_input_to_aggregate() -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+#[cfg(target_os = "macos")]
+async fn begin_recording_audio_routing(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let output_restore = dir.join("audio_output_restore.json");
+    let session = dir.join("audio_recording_session.json");
+    tokio::task::spawn_blocking(move || {
+        audio_setup::begin_recording_audio_routing(output_restore.as_path(), session.as_path())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[cfg(target_os = "macos")]
+async fn end_recording_audio_routing(app: tauri::AppHandle) -> Result<(), String> {
+    let session = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("audio_recording_session.json");
+    tokio::task::spawn_blocking(move || audio_setup::end_recording_audio_routing(session.as_path()))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+async fn begin_recording_audio_routing() -> Result<(), String> {
+    Ok(())
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+async fn end_recording_audio_routing() -> Result<(), String> {
+    Ok(())
+}
+
+/// macOS menu‑bar volume is often disabled when the default output is a Multi‑Output device.
+/// AppleScript still updates the system output volume in many setups.
+#[cfg(target_os = "macos")]
+fn macos_output_volume_applescript_get() -> Result<u8, String> {
+    let out = std::process::Command::new("osascript")
+        .args(["-e", "output volume of (get volume settings)"])
+        .output()
+        .map_err(|e| format!("Could not read output volume ({e})."))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.trim()
+        .parse::<u8>()
+        .map_err(|_| format!("Unexpected volume output: {}", s.trim()))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_output_volume_applescript_set(percent: u8) -> Result<(), String> {
+    let v = percent.min(100);
+    let script = format!("set volume output volume {v}");
+    let st = std::process::Command::new("osascript")
+        .args(["-e", &script])
+        .status()
+        .map_err(|e| format!("Could not change output volume ({e})."))?;
+    if st.success() {
+        Ok(())
+    } else {
+        Err("Changing output volume failed (osascript).".to_string())
+    }
+}
+
+#[tauri::command]
+#[cfg(target_os = "macos")]
+async fn get_macos_output_volume() -> Result<u8, String> {
+    tokio::task::spawn_blocking(macos_output_volume_applescript_get)
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[cfg(target_os = "macos")]
+async fn set_macos_output_volume(percent: u8) -> Result<(), String> {
+    let pct = percent.min(100);
+    tokio::task::spawn_blocking(move || macos_output_volume_applescript_set(pct))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+async fn get_macos_output_volume() -> Result<u8, String> {
+    Ok(0)
+}
+
+#[tauri::command]
+#[cfg(not(target_os = "macos"))]
+async fn set_macos_output_volume(_percent: u8) -> Result<(), String> {
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::from_default_env()
+                .add_directive(tracing::Level::INFO.into()),
+        )
+        .try_init();
+
     let pipeline = Arc::new(PipelineCoordinator::new());
+    let sona_state = Arc::new(Mutex::new(SonaState::default()));
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_liquid_glass::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .manage(pipeline.clone())
+        .manage(sona_state)
         .setup(move |app| {
             let coord = Arc::clone(&*app.state::<Arc<PipelineCoordinator>>());
             let handle = app.handle().clone();
@@ -1585,8 +2375,15 @@ pub fn run() {
             get_pipeline_queue_snapshot,
             cancel_pipeline_jobs,
             set_pipeline_job_priority,
-            check_whisper,
+            check_sona,
+            check_transcription_ready,
             check_ffmpeg,
+            get_transcription_settings,
+            set_transcription_settings,
+            get_models_dir,
+            download_diarize_model,
+            get_diarize_model_info,
+            is_diarization_platform_supported,
             check_ollama,
             check_ollama_model,
             check_blackhole,
@@ -1594,6 +2391,10 @@ pub fn run() {
             open_audio_midi_setup,
             setup_audio_capture,
             sync_default_input_to_aggregate,
+            begin_recording_audio_routing,
+            end_recording_audio_routing,
+            get_macos_output_volume,
+            set_macos_output_volume,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -1603,6 +2404,8 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 if let Ok(dir) = app_handle.path().app_data_dir() {
+                    let session = dir.join("audio_recording_session.json");
+                    audio_setup::end_recording_audio_routing(session.as_path());
                     let p = dir.join("audio_output_restore.json");
                     audio_setup::restore_default_output_if_needed(&p);
                 }

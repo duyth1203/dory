@@ -11,9 +11,10 @@ import {
 
 interface Props {
   readonly onOpenIntro: () => void;
+  readonly onOpenSettings: () => void;
 }
 
-export function AppMenu({ onOpenIntro }: Props) {
+export function AppMenu({ onOpenIntro, onOpenSettings }: Props) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -31,7 +32,7 @@ export function AppMenu({ onOpenIntro }: Props) {
           Introduction
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled className="gap-2">
+        <DropdownMenuItem onClick={onOpenSettings} className="gap-2 cursor-pointer">
           <Settings className="h-4 w-4 text-muted-foreground" />
           Settings
         </DropdownMenuItem>

@@ -559,7 +559,7 @@ export function RecordingsList({ refreshTrigger, api, onNotify }: Props) {
                       AI processing queue
                     </DropdownMenuLabel>
                     <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground font-normal">
-                      Live order from the app — Whisper first, then summarization.
+                      Live order from the app — transcription first, then summarization.
                     </p>
                   </div>
                   <div className="max-h-64 overflow-y-auto px-3 py-2 text-xs">

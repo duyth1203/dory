@@ -1615,11 +1615,13 @@ mod audio_setup {
 
     fn cc(b: &[u8; 4]) -> u32 { u32::from_be_bytes(*b) }
     fn scope_global()          -> u32 { cc(b"glob") }
+    fn scope_output()          -> u32 { cc(b"outp") }
     fn sel_devices()           -> u32 { cc(b"dev#") }
     fn sel_default_input()     -> u32 { cc(b"dIn ") }
     fn sel_default_output()    -> u32 { cc(b"dOut") }
     fn sel_uid()               -> u32 { cc(b"uid ") }
     fn sel_name()              -> u32 { cc(b"lnam") }
+    fn sel_volume()            -> u32 { cc(b"volm") } // kAudioDevicePropertyVolumeScalar
     /// `kAudioAggregateDevicePropertyFullSubDeviceList` — sub-device UIDs (Multi-Output & aggregates).
     fn sel_aggregate_full_subdevices() -> u32 { cc(b"grnd") }
 
@@ -1710,6 +1712,26 @@ mod audio_setup {
 
     fn dev_uid(id: AudioDeviceID)  -> Option<String> { get_str_prop(id, sel_uid()) }
     fn dev_name(id: AudioDeviceID) -> Option<String> { get_str_prop(id, sel_name()) }
+
+    fn get_device_output_volume(id: AudioDeviceID) -> Option<f32> {
+        let addr = Addr { sel: sel_volume(), scope: scope_output(), elem: ELEMENT_MAIN };
+        let mut sz = std::mem::size_of::<f32>() as u32;
+        let mut val: f32 = 0.0;
+        let ok = unsafe {
+            AudioObjectGetPropertyData(id, &addr, 0, ptr::null(), &mut sz,
+                &mut val as *mut f32 as *mut c_void) == 0
+        };
+        if ok { Some(val) } else { None }
+    }
+
+    fn set_device_output_volume(id: AudioDeviceID, scalar: f32) {
+        let addr = Addr { sel: sel_volume(), scope: scope_output(), elem: ELEMENT_MAIN };
+        let val = scalar.clamp(0.0, 1.0);
+        unsafe {
+            AudioObjectSetPropertyData(id, &addr, 0, ptr::null(),
+                std::mem::size_of::<f32>() as u32, &val as *const f32 as *const c_void);
+        }
+    }
 
     fn default_device(sel: u32) -> Option<AudioDeviceID> {
         let addr = Addr::global(sel);
@@ -1968,11 +1990,10 @@ Try this order: (1) System Settings → Sound → Input → pick your real mic (
 
     pub fn check_routing() -> bool {
         if find_by_uid(AGGREGATE_UID).is_some() {
+            // Both virtual devices exist → routing is ready; no need for the output to already
+            // be switched to Dory Output (that only happens when recording starts).
             if find_by_uid(MULTI_OUT_UID).is_some() {
-                let Some(out) = default_device(sel_default_output()) else {
-                    return false;
-                };
-                return dev_uid(out).as_deref() == Some(MULTI_OUT_UID);
+                return true;
             }
             return true;
         }
@@ -2094,16 +2115,7 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
             }
         }
 
-        let multi_id = find_by_uid(MULTI_OUT_UID).unwrap_or(0);
         let agg_id = find_by_uid(AGGREGATE_UID).ok_or("Dory Input not found after setup")?;
-
-        if multi_id != 0 {
-            if let Some(cur_out) = default_device(sel_default_output()) {
-                if dev_uid(cur_out).as_deref() != Some(MULTI_OUT_UID) {
-                    set_default_output(multi_id);
-                }
-            }
-        }
 
         Ok(SetupResult {
             aggregate_device_name: dev_name(agg_id).unwrap_or_else(|| "Dory Input".to_string()),
@@ -2115,6 +2127,8 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
     struct RecordingSessionRestore {
         output_device_uid: String,
         input_device_uid: String,
+        #[serde(default)]
+        output_volume_scalar: Option<f32>,
     }
 
     /// Save current Sound output/input, switch to Dory Output + Dory Input.
@@ -2139,12 +2153,16 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
             return Ok(());
         }
 
+        // Read the physical output device's CoreAudio volume scalar before we switch away from it.
+        let output_volume_scalar = get_device_output_volume(cur_out_id);
+
         if let Some(parent) = session_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let payload = RecordingSessionRestore {
             output_device_uid: cur_out_uid.clone(),
             input_device_uid: cur_in_uid.clone(),
+            output_volume_scalar,
         };
         std::fs::write(
             session_path,
@@ -2155,6 +2173,11 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
         if !out_ok {
             let _ = persist_output_restore(output_restore_path, &cur_out_uid);
             set_default_output(multi_id);
+            // Re-apply the physical device's volume via CoreAudio so it stays correct inside
+            // the Multi-Output aggregate (bypasses the greyed-out macOS menu-bar control).
+            if let Some(vol) = output_volume_scalar {
+                set_device_output_volume(cur_out_id, vol);
+            }
         }
         if !in_ok {
             set_default_input(agg_id);
@@ -2175,6 +2198,10 @@ If you use Bluetooth-only headphones, try switching the default **input** to the
                 Ok(payload) => {
                     if let Some(id) = find_by_uid(&payload.output_device_uid) {
                         set_default_output(id);
+                        // Restore the saved CoreAudio volume on the physical device.
+                        if let Some(vol) = payload.output_volume_scalar {
+                            set_device_output_volume(id, vol);
+                        }
                     }
                     if let Some(id) = find_by_uid(&payload.input_device_uid) {
                         set_default_input(id);

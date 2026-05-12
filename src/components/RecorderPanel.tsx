@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Mic, Pause, Play, AlertCircle, AlertTriangle, ChevronDown, CircleStop, Volume2 } from "lucide-react";
+import { useCallback } from "react";
+import { Mic, Pause, Play, AlertCircle, AlertTriangle, ChevronDown, CircleStop } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -14,8 +14,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useAudioRecorder } from "@/hooks/useAudioRecorder";
 import { formatDuration, cn } from "@/lib/utils";
-import { shouldUseNativeLiquidGlass } from "@/lib/liquidGlass";
-import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   onRecordingComplete: (id: string, path: string, duration: number) => void | Promise<void>;
@@ -37,22 +35,6 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
     resume,
     stop,
   } = useAudioRecorder();
-
-  const [outputVolume, setOutputVolume] = useState(70);
-  const [volumeHintDismissed, setVolumeHintDismissed] = useState(false);
-
-  useEffect(() => {
-    if (state === "idle" || !shouldUseNativeLiquidGlass()) return;
-    let cancelled = false;
-    void invoke<number>("get_macos_output_volume")
-      .then((v) => {
-        if (!cancelled) setOutputVolume(v);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [state]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -207,45 +189,6 @@ export function RecorderPanel({ onRecordingComplete, onError }: Props) {
               <span className="inline-block h-2.5 w-2.5 rounded-full bg-amber-500 motion-safe:animate-pulse" />
               Paused
             </span>
-          )}
-
-          {shouldUseNativeLiquidGlass() && (
-            <div className="w-full max-w-xs space-y-1.5 rounded-lg border border-border/60 bg-muted/30 px-3 py-2">
-              <div className="flex items-center justify-between gap-2">
-                <label className="text-xs text-muted-foreground flex items-center gap-1.5 shrink-0">
-                  <Volume2 className="h-3.5 w-3.5" />
-                  Output volume
-                </label>
-                <span className="text-xs tabular-nums text-foreground/80">{outputVolume}%</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                value={outputVolume}
-                aria-label="Output volume while recording"
-                className="w-full h-2 accent-primary cursor-pointer"
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  setOutputVolume(v);
-                  void invoke("set_macos_output_volume", { percent: v }).catch(() => {});
-                }}
-              />
-              {!volumeHintDismissed && (
-                <p className="text-[10px] leading-snug text-muted-foreground">
-                  macOS often greys out the menu bar volume control for Multi-Output (Dory
-                  Output). This slider adjusts system output volume when AppleScript is allowed. You can
-                  also change level in your meeting app or on headphones.
-                  <button
-                    type="button"
-                    className="ml-1 underline text-foreground/70 hover:text-foreground"
-                    onClick={() => setVolumeHintDismissed(true)}
-                  >
-                    Dismiss
-                  </button>
-                </p>
-              )}
-            </div>
           )}
 
           <div className="flex items-center gap-3 w-full">

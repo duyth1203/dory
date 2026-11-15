@@ -1,0 +1,23 @@
+[package]
+name = "dory-core"
+version = "0.1.0"
+description = "Dory domain, ports, and product policy. No platform, runtime, or IO dependencies."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+crossbeam-channel.workspace = true
+async-channel.workspace = true
+rtrb.workspace = true
+
+[features]
+testing = []
+
+[lints]
+workspace = true
+
+[[test]]
+name = "facade"
+required-features = ["testing"]

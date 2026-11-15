@@ -14,5 +14,5 @@ src-tauri/icons/_dock_source_1024.png
 
 # Rust workspace
 /target
-fixtures/
-results/
+/fixtures/
+/results/

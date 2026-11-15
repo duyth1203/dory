@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/dory-core"]
+exclude = ["src-tauri"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+
+[workspace.dependencies]
+dory-core = { path = "crates/dory-core" }
+dory-macos = { path = "crates/dory-macos" }
+dory-store = { path = "crates/dory-store" }
+thiserror = "2"
+crossbeam-channel = "0.5"
+async-channel = "2"
+rtrb = "0.4"
+hound = "3.5"
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+flacenc = "0.5"
+claxon = "0.4"
+rubato = "=5.0.1"
+tempfile = "3"
+sha2 = "=0.11.1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -25,10 +25,12 @@ pub fn frame_channel(layout: ChannelLayout, capacity_frames: usize) -> (FrameSin
         dropped_issues: AtomicU64::new(0),
     });
     let (issue_tx, issue_rx) = crossbeam_channel::bounded(ISSUE_QUEUE);
+    let (rt_issue_tx, rt_issue_rx) = rtrb::RingBuffer::new(ISSUE_QUEUE);
     let sink = FrameSink {
         producer,
         channels,
         shared: Arc::clone(&shared),
+        rt_issues: rt_issue_tx,
         issues: IssueReporter {
             tx: issue_tx,
             shared: Arc::clone(&shared),
@@ -38,6 +40,7 @@ pub fn frame_channel(layout: ChannelLayout, capacity_frames: usize) -> (FrameSin
         consumer,
         channels,
         shared,
+        rt_issues: rt_issue_rx,
         issues: issue_rx,
     };
     (sink, source)
@@ -56,6 +59,8 @@ pub struct FrameSink {
     producer: rtrb::Producer<f32>,
     channels: usize,
     shared: Arc<Shared>,
+    /// Issues reported from the audio thread. Wait-free, unlike the shared reporter's channel.
+    rt_issues: rtrb::Producer<CaptureIssue>,
     issues: IssueReporter,
 }
 
@@ -99,9 +104,12 @@ impl FrameSink {
     }
 
     /// Reports an issue. Never blocks. Safe on the audio thread, though adapters usually report
-    /// from listener threads through [`FrameSink::issue_reporter`].
-    pub fn report(&self, issue: CaptureIssue) {
-        self.issues.report(issue);
+    /// Reports an issue. Wait-free and allocation-free, so it is safe on the audio thread. Other
+    /// threads, such as device-change listeners, use [`FrameSink::issue_reporter`].
+    pub fn report(&mut self, issue: CaptureIssue) {
+        if self.rt_issues.push(issue).is_err() {
+            self.shared.dropped_issues.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// A handle for threads other than the audio thread, such as device-change listeners.
@@ -141,6 +149,7 @@ pub struct FrameSource {
     consumer: rtrb::Consumer<f32>,
     channels: usize,
     shared: Arc<Shared>,
+    rt_issues: rtrb::Consumer<CaptureIssue>,
     issues: Receiver<CaptureIssue>,
 }
 
@@ -183,8 +192,13 @@ impl FrameSource {
         self.consumer.is_abandoned() && self.consumer.slots() == 0
     }
 
-    pub fn issues(&self) -> impl Iterator<Item = CaptureIssue> + '_ {
-        self.issues.try_iter()
+    /// Issues from the sink and from every [`IssueReporter`]. Order is kept within each, not
+    /// across the two.
+    pub fn issues(&mut self) -> impl Iterator<Item = CaptureIssue> + '_ {
+        let rt = std::iter::from_fn(|| self.rt_issues.pop().ok());
+        rt.collect::<Vec<_>>()
+            .into_iter()
+            .chain(self.issues.try_iter())
     }
 
     /// Issues that arrived while the issue queue was full.
@@ -278,8 +292,22 @@ mod tests {
     }
 
     #[test]
+    fn audio_thread_issues_use_their_own_queue_and_overflow_is_counted() {
+        let (mut sink, mut source) = frame_channel(ChannelLayout::MicSystem, 8);
+        for _ in 0..ISSUE_QUEUE + 2 {
+            sink.report(CaptureIssue::SourceLost(crate::domain::Channel::Mic));
+        }
+        sink.issue_reporter()
+            .report(CaptureIssue::SystemAudioSilent);
+        let issues: Vec<_> = source.issues().collect();
+        assert_eq!(issues.len(), ISSUE_QUEUE + 1);
+        assert_eq!(issues.last(), Some(&CaptureIssue::SystemAudioSilent));
+        assert_eq!(source.dropped_issue_count(), 2);
+    }
+
+    #[test]
     fn issues_reach_the_source_and_overflow_is_counted() {
-        let (sink, source) = frame_channel(ChannelLayout::MicSystem, 8);
+        let (sink, mut source) = frame_channel(ChannelLayout::MicSystem, 8);
         let reporter = sink.issue_reporter();
         for _ in 0..ISSUE_QUEUE + 3 {
             reporter.report(CaptureIssue::SystemAudioSilent);

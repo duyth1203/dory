@@ -90,7 +90,7 @@ impl Timeline {
         self.resumed = true;
     }
 
-    pub fn report(&self, issue: CaptureIssue) {
+    pub fn report(&mut self, issue: CaptureIssue) {
         self.sink.report(issue);
     }
 }

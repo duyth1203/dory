@@ -825,7 +825,7 @@ impl Supervisor {
             }
         }
         if let Live::Running(graph) = live {
-            let (timeline, closed) = graph.teardown();
+            let (mut timeline, closed) = graph.teardown();
             if let Err(e) = closed {
                 timeline.report(CaptureIssue::Fatal(format!(
                     "teardown: {e}; the IOProc block was leaked"
@@ -876,7 +876,10 @@ impl Supervisor {
                 Live::Running(Box::new(graph))
             }
             Err(failed) => {
-                let Failed { timeline, error } = *failed;
+                let Failed {
+                    mut timeline,
+                    error,
+                } = *failed;
                 if self.rebuilder.record(self.now(), false) == Verdict::GiveUp {
                     timeline.report(CaptureIssue::Fatal(format!(
                         "could not rebuild the capture graph within {} s: {error}",

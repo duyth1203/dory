@@ -181,10 +181,10 @@ fn the_fixture_folder_imports_as_the_old_app_listed_it() {
             .map(|s| (s.speaker, s.range, s.channel))
             .collect::<Vec<_>>(),
         [
-            (SpeakerId(0), None, Channel::Mixed),
             (SpeakerId(1), None, Channel::Mixed),
-            (SpeakerId(0), None, Channel::Mixed),
             (SpeakerId(2), None, Channel::Mixed),
+            (SpeakerId(1), None, Channel::Mixed),
+            (SpeakerId(3), None, Channel::Mixed),
         ]
     );
     assert_eq!(
@@ -276,8 +276,8 @@ fn the_fixture_folder_imports_as_the_old_app_listed_it() {
             .map(|s| (s.speaker, s.text.as_str()))
             .collect::<Vec<_>>(),
         [
-            (SpeakerId(0), "Just one voice, no speaker labels."),
-            (SpeakerId(0), "Second line.")
+            (SpeakerId(1), "Just one voice, no speaker labels."),
+            (SpeakerId(1), "Second line.")
         ]
     );
     assert_eq!(

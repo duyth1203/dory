@@ -309,8 +309,9 @@ fn wav_facts(path: &Path) -> (Option<u32>, Option<Ms>) {
     (Some(spec.sample_rate), duration)
 }
 
-/// Parses the old `[Speaker N] text` lines. `[Speaker 1]` is the old app's first speaker, which
-/// becomes `SpeakerId(0)`. A line with no label belongs to speaker zero.
+/// Parses the old `[Speaker N] text` lines into untimed segments. `[Speaker N]` keeps its number,
+/// because `SpeakerId(0)` means the local user and a legacy mixed take has no mic channel. A line
+/// with no label belongs to the first speaker.
 pub(crate) fn parse_transcript(text: &str) -> Vec<Segment> {
     text.lines()
         .filter_map(|line| {
@@ -320,8 +321,8 @@ pub(crate) fn parse_transcript(text: &str) -> Vec<Segment> {
                 .and_then(|rest| rest.split_once(']'))
                 .and_then(|(n, rest)| Some((n.trim().parse::<u16>().ok()?, rest)))
             {
-                Some((n, rest)) => (SpeakerId(n.saturating_sub(1)), rest.trim()),
-                None => (SpeakerId::LOCAL, line),
+                Some((n, rest)) => (SpeakerId(n.max(1)), rest.trim()),
+                None => (SpeakerId(1), line),
             };
             (!body.is_empty()).then(|| Segment {
                 range: None,
@@ -542,33 +543,33 @@ mod tests {
         let cases: &[(&str, Vec<(u16, &str)>)] = &[
             ("", vec![]),
             ("\n  \n", vec![]),
-            ("[Speaker 1] hello", vec![(0, "hello")]),
-            ("[Speaker 2] hi\n[Speaker 1] yo", vec![(1, "hi"), (0, "yo")]),
-            ("[Speaker 12] far", vec![(11, "far")]),
-            ("[Speaker 0] odd", vec![(0, "odd")]),
-            ("no label", vec![(0, "no label")]),
+            ("[Speaker 1] hello", vec![(1, "hello")]),
+            ("[Speaker 2] hi\n[Speaker 1] yo", vec![(2, "hi"), (1, "yo")]),
+            ("[Speaker 12] far", vec![(12, "far")]),
+            ("[Speaker 0] odd", vec![(1, "odd")]),
+            ("no label", vec![(1, "no label")]),
             ("[Speaker 1]", vec![]),
             ("[Speaker 1]   ", vec![]),
             (
                 "[Speaker x] not a label",
-                vec![(0, "[Speaker x] not a label")],
+                vec![(1, "[Speaker x] not a label")],
             ),
             (
                 "[Speaker 1 missing bracket",
-                vec![(0, "[Speaker 1 missing bracket")],
+                vec![(1, "[Speaker 1 missing bracket")],
             ),
             (
                 "[Speaker 3] a\r\n[Speaker 3] b\r\n",
-                vec![(2, "a"), (2, "b")],
+                vec![(3, "a"), (3, "b")],
             ),
-            ("  [Speaker 2]   padded  ", vec![(1, "padded")]),
+            ("  [Speaker 2]   padded  ", vec![(2, "padded")]),
             (
                 "[Speaker 1] has [brackets] inside",
-                vec![(0, "has [brackets] inside")],
+                vec![(1, "has [brackets] inside")],
             ),
             (
                 "[Speaker 70000] too big",
-                vec![(0, "[Speaker 70000] too big")],
+                vec![(1, "[Speaker 70000] too big")],
             ),
         ];
         for (input, want) in cases {

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/dory-core", "crates/dory-store", "crates/dory-macos", "apps/dory-cli"]
+members = ["crates/dory", "crates/dory-core", "crates/dory-store", "crates/dory-macos", "apps/dory-cli"]
 exclude = ["src-tauri"]
 
 [workspace.package]
@@ -9,6 +9,7 @@ rust-version = "1.90"
 license = "MIT"
 
 [workspace.dependencies]
+dory = { path = "crates/dory" }
 dory-core = { path = "crates/dory-core" }
 dory-macos = { path = "crates/dory-macos" }
 dory-store = { path = "crates/dory-store" }

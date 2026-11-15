@@ -40,7 +40,8 @@ The new code follows `docs/architecture/hexagonal.md`. Read it before you touch 
 ## Build and run
 
 - `cargo test --workspace --all-features` and `cargo clippy --workspace --all-features --all-targets -- -D warnings` cover the new crates. Run `cargo fmt` before committing.
-- `cargo run -p dory-cli -- capture --layout mic-system --seconds 10 --out /tmp/take.wav` records through the macOS adapter. macOS attributes the permission prompts to the app that launched it.
+- `dory-cli` drives the app headlessly through the `dory` composition root: `import <old-data-dir>`, `list`, `show <id>`, `record`, `process <id> [--fake-engines]`, and `models`. Set `DORY_DATA_DIR` to a throwaway folder for anything you run by hand. The default is `~/Library/Application Support/com.dory.app/v2`, and the old Tauri folder is refused.
+- `cargo run -p dory-cli -- capture --layout mic-system --seconds 10 --out /tmp/take.wav` records through the macOS adapter directly, for capture debugging. macOS attributes the permission prompts to the app that launched it.
 - `pnpm prebuild:sona` downloads the Sona sidecars into `src-tauri/binaries/`. Run it once before the first Tauri build.
 - `pnpm install`, then `pnpm dev`, runs the Tauri app. `src-tauri/` is outside the Cargo workspace until the GPUI app replaces it.
 - `pnpm vite:build` is the only typecheck for the React side.
@@ -49,7 +50,7 @@ The new code follows `docs/architecture/hexagonal.md`. Read it before you touch 
 ## Find the code
 
 - `crates/dory-core` holds the domain, ports, recorder state machine, model selection, and the frame ring that capture adapters push into.
-- `crates/dory-macos` holds the macOS 26 adapters. `apps/dory-cli` is the headless driving adapter and test harness.
+- `crates/dory-store` holds the SQLite store, file takes, and legacy import. `crates/dory-macos` holds the macOS 26 adapters. `crates/dory` is the composition root, the only crate that names adapters. `apps/dory-cli` is the headless driving adapter and test harness.
 - `src-tauri/src/lib.rs` holds the old commands, the pipeline queue (`PipelineCoordinator`, `pipeline_worker_loop`), and the BlackHole routing module `audio_setup`.
 - `src-tauri/src/sona.rs` runs the Sona HTTP sidecar. `sona_download.rs` and `sona_paths.rs` locate or fetch it.
 - `src/` is the React UI. Audio capture lives in `src/hooks/useAudioRecorder.ts`.

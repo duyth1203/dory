@@ -1,0 +1,25 @@
+[package]
+name = "dory"
+version = "0.1.0"
+description = "Dory composition root: the only crate that names adapters."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Registers dory-core's fake speech and summary engines and fake capture, for lanes and demos.
+fake-engines = ["dory-core/testing"]
+
+[dependencies]
+dory-core.workspace = true
+dory-store.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dory-macos.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,61 @@
+use std::sync::Arc;
+
+use dory_core::ports::capture::CaptureBackend;
+
+#[cfg(target_os = "macos")]
+pub fn capture() -> Arc<dyn CaptureBackend> {
+    Arc::new(dory_macos::CoreAudioCapture::new())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn capture() -> Arc<dyn CaptureBackend> {
+    Arc::new(Unsupported)
+}
+
+/// The backend on a platform with no adapter yet. Everything says so.
+#[cfg(not(target_os = "macos"))]
+struct Unsupported;
+
+#[cfg(not(target_os = "macos"))]
+const WHY: &str = "audio capture has no adapter for this platform yet";
+
+#[cfg(not(target_os = "macos"))]
+impl CaptureBackend for Unsupported {
+    fn probe(&self) -> dory_core::ports::capture::CaptureCaps {
+        use dory_core::ports::capture::{Access, CaptureCaps};
+        CaptureCaps {
+            microphone: Access::Unsupported,
+            system_audio: Access::Unsupported,
+            unsupported: Some(WHY.into()),
+        }
+    }
+
+    fn input_devices(
+        &self,
+    ) -> Result<Vec<dory_core::ports::capture::InputDevice>, dory_core::ports::capture::CaptureError>
+    {
+        Err(dory_core::ports::capture::CaptureError::Unsupported(
+            WHY.into(),
+        ))
+    }
+
+    fn request_access(
+        &self,
+        _: dory_core::ports::capture::Source,
+    ) -> Result<dory_core::ports::capture::Access, dory_core::ports::capture::CaptureError> {
+        Ok(dory_core::ports::capture::Access::Unsupported)
+    }
+
+    fn start(
+        &self,
+        _: &dory_core::ports::capture::CaptureSpec,
+        _: dory_core::capture::FrameSink,
+    ) -> Result<
+        Box<dyn dory_core::ports::capture::CaptureHandle>,
+        dory_core::ports::capture::CaptureError,
+    > {
+        Err(dory_core::ports::capture::CaptureError::Unsupported(
+            WHY.into(),
+        ))
+    }
+}

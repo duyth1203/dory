@@ -244,16 +244,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dory"
+version = "0.1.0"
+dependencies = [
+ "dory-core",
+ "dory-macos",
+ "dory-store",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "dory-cli"
 version = "0.1.0"
 dependencies = [
  "block2",
  "ctrlc",
+ "dory",
  "dory-core",
  "dory-macos",
  "hound",
  "objc2-core-audio",
  "objc2-core-audio-types",
+ "tempfile",
 ]
 
 [[package]]

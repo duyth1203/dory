@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/dory-core"]
+members = ["crates/dory-core", "crates/dory-store"]
 exclude = ["src-tauri"]
 
 [workspace.package]

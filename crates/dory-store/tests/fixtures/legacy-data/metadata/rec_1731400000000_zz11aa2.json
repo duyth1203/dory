@@ -1,0 +1,10 @@
+{
+  "id": "rec_1731400000000_zz11aa2",
+  "display_name": "Customer call",
+  "transcript": "[Speaker 1] Thanks for joining.\n[Speaker 2] Happy to be here.",
+  "duration_secs": 95.5,
+  "created_at": 1731400000,
+  "pipeline_status": "failed",
+  "pipeline_error": "ollama: connection refused",
+  "pipeline_priority": false
+}

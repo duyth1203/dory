@@ -1,0 +1,25 @@
+[package]
+name = "dory-store"
+version = "0.1.0"
+description = "Dory storage adapters: SQLite store, file-system takes, legacy import."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2.workspace = true
+dory-core.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+hound.workspace = true
+flacenc.workspace = true
+claxon.workspace = true
+rubato.workspace = true
+tempfile.workspace = true
+serde_json = "=1.0.154"
+
+[dev-dependencies]
+dory-core = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

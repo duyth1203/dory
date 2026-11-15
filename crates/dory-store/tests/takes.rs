@@ -1,0 +1,684 @@
+use std::f32::consts::TAU;
+use std::path::Path;
+
+use dory_core::domain::{
+    Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
+};
+use dory_core::ports::{TakeError, Takes};
+use dory_store::FsTakes;
+
+fn rid(s: &str) -> RecordingId {
+    RecordingId::parse(s).unwrap()
+}
+
+fn tone(freq: f32, rate: u32, from_s: f32, to_s: f32, amp: f32, total_frames: usize) -> Vec<f32> {
+    (0..total_frames)
+        .map(|i| {
+            // f64 phase: an f32 phase has errors of whole milliradians after a few seconds, which
+            // is broadband noise that no resampler should be blamed for.
+            let t = i as f64 / f64::from(rate);
+            if t >= f64::from(from_s) && t < f64::from(to_s) {
+                (f64::from(amp) * (std::f64::consts::TAU * f64::from(freq) * t).sin()) as f32
+            } else {
+                0.0
+            }
+        })
+        .collect()
+}
+
+fn interleave(channels: &[&[f32]]) -> Vec<f32> {
+    let frames = channels[0].len();
+    (0..frames)
+        .flat_map(|i| channels.iter().map(move |c| c[i]))
+        .collect()
+}
+
+fn read_clip(path: &Path) -> (hound::WavSpec, Vec<f32>) {
+    let mut reader = hound::WavReader::open(path).unwrap();
+    let spec = reader.spec();
+    let samples = reader
+        .samples::<i16>()
+        .map(|s| f32::from(s.unwrap()) / 32768.0)
+        .collect();
+    (spec, samples)
+}
+
+fn rms(samples: &[f32]) -> f32 {
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+fn db(ratio: f32) -> f32 {
+    20.0 * ratio.log10()
+}
+
+/// Amplitude of the `freq` component, by correlation with a sine and a cosine.
+fn amplitude_at(samples: &[f32], freq: f32, rate: u32) -> f32 {
+    let (mut i, mut q) = (0.0f64, 0.0f64);
+    for (n, s) in samples.iter().enumerate() {
+        let phase = f64::from(TAU) * f64::from(freq) * n as f64 / f64::from(rate);
+        i += f64::from(*s) * phase.sin();
+        q += f64::from(*s) * phase.cos();
+    }
+    (2.0 * (i * i + q * q).sqrt() / samples.len() as f64) as f32
+}
+
+fn write_in_chunks(
+    writer: &mut dyn dory_core::ports::TakeWriter,
+    interleaved: &[f32],
+    channels: usize,
+    rate: u32,
+) {
+    let chunk = (rate as usize / 100) * channels;
+    for piece in interleaved.chunks(chunk) {
+        writer.write(piece).unwrap();
+    }
+}
+
+#[test]
+fn a_crashed_take_is_recovered_sealed_and_clipped_per_channel_at_16_khz() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = rid("2026-11-15T153012-7f3a");
+    let rate = 48_000u32;
+    let frames = rate as usize * 7;
+    let mic = tone(1_000.0, rate, 0.0, 100.0, 0.5, frames);
+    let system = tone(12_000.0, rate, 0.0, 100.0, 0.5, frames);
+    let audio = interleave(&[&mic, &system]);
+
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let mut writer = takes.begin(&id, ChannelLayout::MicSystem, rate).unwrap();
+    let five_s = rate as usize * 5 * 2;
+    write_in_chunks(&mut *writer, &audio[..five_s], 2, rate);
+    writer.checkpoint().unwrap();
+    write_in_chunks(&mut *writer, &audio[five_s..], 2, rate);
+    assert_eq!(writer.frames_written(), frames as u64);
+    // kill -9: no finish, no drop, no header update after the checkpoint.
+    std::mem::forget(writer);
+
+    let wav = dir.path().join("takes").join(format!("{id}.wav"));
+    let header = std::fs::read(&wav).unwrap();
+    let declared = u32::from_le_bytes(header[40..44].try_into().unwrap());
+    assert_eq!(
+        declared as usize,
+        five_s * 2,
+        "the header still describes the checkpoint"
+    );
+    assert_eq!(
+        header.len(),
+        44 + frames * 4,
+        "but every written frame reached the file"
+    );
+
+    let after_restart = FsTakes::new(dir.path().join("takes"));
+    assert_eq!(after_restart.orphans().unwrap(), vec![id.clone()]);
+    assert_eq!(
+        after_restart.inspect(&id).unwrap(),
+        Some(TakeInfo {
+            container: TakeContainer::Wav,
+            rate_hz: rate,
+            duration: Ms(7_000)
+        }),
+        "the duration comes from the file length"
+    );
+
+    let sealed = after_restart.seal(&id).unwrap();
+    assert_eq!(
+        sealed,
+        TakeInfo {
+            container: TakeContainer::Flac,
+            rate_hz: rate,
+            duration: Ms(7_000)
+        }
+    );
+    assert!(
+        !wav.exists(),
+        "the WAV is deleted once the FLAC is verified"
+    );
+    assert!(after_restart.orphans().unwrap().is_empty());
+    assert_eq!(
+        after_restart.seal(&id).unwrap(),
+        sealed,
+        "sealing again is a no-op"
+    );
+    assert_eq!(after_restart.inspect(&id).unwrap(), Some(sealed));
+    let flac_len = std::fs::metadata(after_restart.playback_path(&id).unwrap())
+        .unwrap()
+        .len();
+    assert!(
+        flac_len < (frames as u64 * 4),
+        "FLAC is smaller than the 16-bit WAV: {flac_len}"
+    );
+
+    let mic_clip = after_restart.clip(&id, Channel::Mic, None).unwrap();
+    let (spec, mic_out) = read_clip(&mic_clip.path);
+    assert_eq!(
+        (spec.channels, spec.sample_rate, spec.bits_per_sample),
+        (1, 16_000, 16)
+    );
+    assert_eq!(mic_out.len(), 7 * 16_000, "7 s at 16 kHz, to the sample");
+    assert_eq!((mic_clip.duration, mic_clip.origin), (Ms(7_000), Ms(0)));
+    let middle = &mic_out[16_000..6 * 16_000];
+    let kept = amplitude_at(middle, 1_000.0, 16_000);
+    assert!(
+        (kept - 0.5).abs() < 0.01,
+        "1 kHz survives at its original level, got {kept}"
+    );
+
+    let system_clip = after_restart.clip(&id, Channel::System, None).unwrap();
+    let (_, system_out) = read_clip(&system_clip.path);
+    assert_eq!(system_out.len(), 7 * 16_000);
+    let middle = &system_out[16_000..6 * 16_000];
+    let input_rms = rms(&system[48_000..6 * 48_000]);
+    let attenuation = db(rms(middle) / input_rms);
+    assert!(
+        attenuation <= -40.0,
+        "a 12 kHz tone must not alias into the 8 kHz band, but it is only {attenuation:.1} dB down"
+    );
+    assert!(
+        rms(middle) < rms(&mic_out[16_000..6 * 16_000]) / 50.0,
+        "the system clip does not carry the mic's tone"
+    );
+
+    let path = mic_clip.path.clone();
+    drop(mic_clip);
+    assert!(!path.exists(), "dropping a clip deletes its file");
+    assert!(system_clip.path.exists());
+}
+
+#[test]
+fn a_finished_take_seals_and_a_span_clip_starts_where_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("span");
+    let rate = 44_100u32;
+    let frames = rate as usize * 5;
+    let burst = tone(1_000.0, rate, 3.0, 4.0, 0.4, frames);
+
+    let mut writer = takes.begin(&id, ChannelLayout::MicOnly, rate).unwrap();
+    write_in_chunks(&mut *writer, &burst, 1, rate);
+    let finished = writer.finish().unwrap();
+    assert_eq!(
+        finished,
+        TakeInfo {
+            container: TakeContainer::Wav,
+            rate_hz: rate,
+            duration: Ms(5_000)
+        }
+    );
+    takes.seal(&id).unwrap();
+
+    let span = |a, b| Some(TimeRange::new(Ms(a), Ms(b)).unwrap());
+    let quiet = takes.clip(&id, Channel::Mic, span(1_000, 2_000)).unwrap();
+    let loud = takes.clip(&id, Channel::Mic, span(3_000, 4_000)).unwrap();
+    let (_, quiet_out) = read_clip(&quiet.path);
+    let (_, loud_out) = read_clip(&loud.path);
+    assert_eq!((quiet_out.len(), loud_out.len()), (16_000, 16_000));
+    assert_eq!((quiet.origin, quiet.duration), (Ms(1_000), Ms(1_000)));
+    assert_eq!((loud.origin, loud.duration), (Ms(3_000), Ms(1_000)));
+    assert!(
+        rms(&quiet_out) < 0.001,
+        "nothing happens between 1 s and 2 s"
+    );
+    assert!(
+        (amplitude_at(&loud_out[1_000..15_000], 1_000.0, 16_000) - 0.4).abs() < 0.02,
+        "the burst is where the span says"
+    );
+
+    let past_the_end = takes.clip(&id, Channel::Mic, span(4_500, 9_000)).unwrap();
+    assert_eq!(
+        past_the_end.duration,
+        Ms(500),
+        "a span past the end is cut at the end"
+    );
+    let beyond = takes.clip(&id, Channel::Mic, span(8_000, 9_000)).unwrap();
+    assert_eq!(beyond.duration, Ms(0));
+}
+
+#[test]
+fn channels_are_picked_by_layout() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let rate = 16_000u32;
+    let left = tone(500.0, rate, 0.0, 9.0, 0.5, rate as usize);
+    let right = tone(2_000.0, rate, 0.0, 9.0, 0.25, rate as usize);
+
+    let id = rid("stereo");
+    let mut writer = takes.begin(&id, ChannelLayout::MicSystem, rate).unwrap();
+    writer.write(&interleave(&[&left, &right])).unwrap();
+    writer.finish().unwrap();
+    takes.seal(&id).unwrap();
+
+    let amp = |channel, freq| {
+        let clip = takes.clip(&id, channel, None).unwrap();
+        let (spec, out) = read_clip(&clip.path);
+        assert_eq!(spec.sample_rate, 16_000);
+        assert_eq!(
+            out.len(),
+            16_000,
+            "an already-16k take passes through at the same length"
+        );
+        amplitude_at(&out[2_000..14_000], freq, 16_000)
+    };
+    assert!((amp(Channel::Mic, 500.0) - 0.5).abs() < 0.01);
+    assert!(amp(Channel::Mic, 2_000.0) < 0.01);
+    assert!((amp(Channel::System, 2_000.0) - 0.25).abs() < 0.01);
+    assert!(amp(Channel::System, 500.0) < 0.01);
+    assert!(
+        (amp(Channel::Mixed, 500.0) - 0.25).abs() < 0.01,
+        "Mixed averages both channels"
+    );
+    assert!((amp(Channel::Mixed, 2_000.0) - 0.125).abs() < 0.01);
+
+    let mono = rid("mic-only");
+    let mut writer = takes.begin(&mono, ChannelLayout::MicOnly, rate).unwrap();
+    writer.write(&left).unwrap();
+    writer.finish().unwrap();
+    assert!(
+        takes.clip(&mono, Channel::System, None).is_ok(),
+        "a mono file has one channel to give"
+    );
+}
+
+#[test]
+fn a_layout_without_the_channel_is_refused_on_a_stereo_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("s");
+    let mut writer = takes.begin(&id, ChannelLayout::MicSystem, 16_000).unwrap();
+    writer.write(&[0.0; 320]).unwrap();
+    writer.finish().unwrap();
+    std::fs::write(dir.path().join("s.meta"), "layout=system_only\n").unwrap();
+    assert!(matches!(
+        takes.clip(&id, Channel::Mic, None),
+        Err(TakeError::Decode(_))
+    ));
+}
+
+#[test]
+fn begin_refuses_an_existing_take_and_write_refuses_torn_frames() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("dup");
+    let mut writer = takes.begin(&id, ChannelLayout::MicSystem, 48_000).unwrap();
+    assert!(matches!(
+        takes.begin(&id, ChannelLayout::MicSystem, 48_000),
+        Err(TakeError::Exists(_))
+    ));
+    assert!(matches!(writer.write(&[0.0; 3]), Err(TakeError::Io(_))));
+    assert_eq!(writer.frames_written(), 0, "a refused write writes nothing");
+    writer.write(&[0.0; 4]).unwrap();
+    writer.finish().unwrap();
+    takes.seal(&id).unwrap();
+    assert!(
+        matches!(
+            takes.begin(&id, ChannelLayout::MicOnly, 48_000),
+            Err(TakeError::Exists(_))
+        ),
+        "a sealed take also blocks a new begin"
+    );
+    assert!(matches!(
+        takes.begin(&rid("zero"), ChannelLayout::MicOnly, 0),
+        Err(TakeError::Io(_))
+    ));
+}
+
+#[test]
+fn an_empty_take_seals_to_a_valid_empty_flac() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("empty");
+    takes
+        .begin(&id, ChannelLayout::MicSystem, 48_000)
+        .unwrap()
+        .finish()
+        .unwrap();
+    let info = takes.seal(&id).unwrap();
+    assert_eq!(
+        (info.container, info.duration),
+        (TakeContainer::Flac, Ms(0))
+    );
+    let clip = takes.clip(&id, Channel::Mic, None).unwrap();
+    assert_eq!(clip.duration, Ms(0));
+}
+
+#[test]
+fn seal_finishes_a_crash_between_the_flac_rename_and_the_wav_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("midway");
+    let mut writer = takes.begin(&id, ChannelLayout::MicOnly, 16_000).unwrap();
+    writer
+        .write(&tone(300.0, 16_000, 0.0, 9.0, 0.5, 32_000))
+        .unwrap();
+    writer.finish().unwrap();
+    let wav = dir.path().join("midway.wav");
+    let copy = dir.path().join("saved.wav");
+    std::fs::copy(&wav, &copy).unwrap();
+    takes.seal(&id).unwrap();
+    std::fs::rename(&copy, &wav).unwrap();
+    assert_eq!(
+        takes.orphans().unwrap(),
+        vec![id.clone()],
+        "a leftover WAV is listed so it gets cleaned"
+    );
+
+    let info = takes.seal(&id).unwrap();
+    assert_eq!(
+        (info.container, info.duration),
+        (TakeContainer::Flac, Ms(2_000))
+    );
+    assert!(!wav.exists());
+}
+
+#[test]
+fn seal_rebuilds_a_flac_that_does_not_match_its_wav() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("stale-flac");
+    let mut writer = takes.begin(&id, ChannelLayout::MicOnly, 16_000).unwrap();
+    writer
+        .write(&tone(300.0, 16_000, 0.0, 9.0, 0.5, 32_000))
+        .unwrap();
+    writer.finish().unwrap();
+    std::fs::write(dir.path().join("stale-flac.flac"), b"not a flac").unwrap();
+    let info = takes.seal(&id).unwrap();
+    assert_eq!(info.duration, Ms(2_000));
+    let clip = takes.clip(&id, Channel::Mic, None).unwrap();
+    assert_eq!(clip.duration, Ms(2_000));
+}
+
+#[test]
+fn a_leftover_tmp_flac_from_a_crash_during_encoding_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("tmp");
+    let mut writer = takes.begin(&id, ChannelLayout::MicOnly, 16_000).unwrap();
+    writer.write(&[0.25; 16_000]).unwrap();
+    writer.finish().unwrap();
+    std::fs::write(dir.path().join("tmp.flac.tmp"), b"half written").unwrap();
+    takes.seal(&id).unwrap();
+    assert!(!dir.path().join("tmp.flac.tmp").exists());
+}
+
+#[test]
+fn delete_removes_everything_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("gone");
+    takes
+        .begin(&id, ChannelLayout::MicOnly, 16_000)
+        .unwrap()
+        .finish()
+        .unwrap();
+    takes.seal(&id).unwrap();
+    takes.delete(&id).unwrap();
+    takes.delete(&id).unwrap();
+    assert_eq!(takes.inspect(&id).unwrap(), None);
+    assert!(matches!(
+        takes.playback_path(&id),
+        Err(TakeError::Missing(_))
+    ));
+    assert!(matches!(
+        takes.clip(&id, Channel::Mic, None),
+        Err(TakeError::Missing(_))
+    ));
+    assert!(matches!(takes.seal(&id), Err(TakeError::Missing(_))));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn playback_path_follows_the_take_through_its_life() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("life");
+    let writer = takes.begin(&id, ChannelLayout::MicOnly, 16_000).unwrap();
+    assert_eq!(
+        takes.playback_path(&id).unwrap(),
+        dir.path().join("life.wav")
+    );
+    writer.finish().unwrap();
+    takes.seal(&id).unwrap();
+    assert_eq!(
+        takes.playback_path(&id).unwrap(),
+        dir.path().join("life.flac")
+    );
+}
+
+#[test]
+fn importing_a_stereo_wav_makes_a_sealed_mono_mixed_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let source = dir.path().join("meeting.wav");
+    let rate = 44_100u32;
+    let left = tone(1_000.0, rate, 0.0, 9.0, 0.5, rate as usize * 2);
+    let right = vec![0.0f32; left.len()];
+    let mut external = hound::WavWriter::create(
+        &source,
+        hound::WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 24,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for s in interleave(&[&left, &right]) {
+        external.write_sample((s * 8_388_607.0) as i32).unwrap();
+    }
+    external.finalize().unwrap();
+
+    let id = rid("imported");
+    let info = takes.import(&id, &source).unwrap();
+    assert_eq!(
+        info,
+        TakeInfo {
+            container: TakeContainer::Flac,
+            rate_hz: rate,
+            duration: Ms(2_000)
+        }
+    );
+    assert!(source.exists(), "the source file is left alone");
+    assert!(matches!(
+        takes.import(&id, &source),
+        Err(TakeError::Exists(_))
+    ));
+
+    let clip = takes.clip(&id, Channel::Mixed, None).unwrap();
+    let (_, out) = read_clip(&clip.path);
+    assert_eq!(out.len(), 32_000);
+    let amp = amplitude_at(&out[4_000..28_000], 1_000.0, 16_000);
+    assert!(
+        (amp - 0.25).abs() < 0.01,
+        "stereo is averaged into mono, got {amp}"
+    );
+}
+
+#[test]
+fn importing_a_flac_copies_it_in_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = FsTakes::new(dir.path().join("a"));
+    let b = FsTakes::new(dir.path().join("b"));
+    let id = rid("src");
+    let mut writer = a.begin(&id, ChannelLayout::MicOnly, 16_000).unwrap();
+    writer.write(&[0.1; 8_000]).unwrap();
+    writer.finish().unwrap();
+    a.seal(&id).unwrap();
+    let source = a.playback_path(&id).unwrap();
+
+    let copied = rid("copy");
+    let info = b.import(&copied, &source).unwrap();
+    assert_eq!(
+        (info.container, info.duration),
+        (TakeContainer::Flac, Ms(500))
+    );
+    assert_eq!(
+        std::fs::read(&source).unwrap(),
+        std::fs::read(b.playback_path(&copied).unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn importing_garbage_fails_without_leaving_a_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let source = dir.path().join("noise.wav");
+    std::fs::write(&source, b"this is not audio").unwrap();
+    assert!(takes.import(&rid("bad"), &source).is_err());
+    assert_eq!(takes.inspect(&rid("bad")).unwrap(), None);
+    assert!(takes.orphans().unwrap().is_empty());
+    assert!(matches!(
+        takes.import(&rid("nofile"), &dir.path().join("missing.flac")),
+        Err(TakeError::Missing(_))
+    ));
+}
+
+fn working_ffmpeg() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("ffmpeg"))
+                .collect()
+        })
+        .unwrap_or_default();
+    candidates.push("/opt/homebrew/bin/ffmpeg".into());
+    candidates.into_iter().find(|p| {
+        std::process::Command::new(p)
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+#[test]
+fn a_legacy_webm_is_decoded_through_ffmpeg() {
+    let Some(ffmpeg) = working_ffmpeg() else {
+        eprintln!(
+            "skipped: no working ffmpeg on this machine (see tests/ffmpeg_fake.rs for the plumbing test)"
+        );
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let webm = dir.path().join("old.webm");
+    let status = std::process::Command::new(ffmpeg)
+        .args([
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:duration=2",
+        ])
+        .args(["-c:a", "libopus"])
+        .arg(&webm)
+        .status()
+        .unwrap();
+    assert!(status.success(), "could not make a WebM fixture");
+
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let id = rid("old");
+    let info = takes
+        .link_legacy(&id, &webm, TakeContainer::LegacyWebm, 48_000, Ms(2_000))
+        .unwrap();
+    assert_eq!(info.container, TakeContainer::LegacyWebm);
+    assert_eq!(takes.inspect(&id).unwrap(), Some(info));
+    assert_eq!(takes.playback_path(&id).unwrap(), webm);
+
+    let clip = takes.clip(&id, Channel::Mixed, None).unwrap();
+    let (spec, out) = read_clip(&clip.path);
+    assert_eq!(spec.sample_rate, 16_000);
+    assert!(
+        (out.len() as i64 - 32_000).abs() < 1_700,
+        "about 2 s, got {} samples",
+        out.len()
+    );
+    let amp = amplitude_at(&out[8_000..24_000], 1_000.0, 16_000);
+    assert!(amp > 0.05, "the tone survived the decode, got {amp}");
+
+    assert!(
+        matches!(takes.seal(&id), Ok(i) if i.container == TakeContainer::LegacyWebm),
+        "sealing a legacy take is a no-op"
+    );
+    takes.delete(&id).unwrap();
+    assert!(
+        webm.exists(),
+        "deleting the take never deletes the old audio"
+    );
+    assert_eq!(takes.inspect(&id).unwrap(), None);
+}
+
+#[test]
+fn a_legacy_wav_is_read_in_place_without_ffmpeg() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old.wav");
+    let rate = 22_050u32;
+    let mut w = hound::WavWriter::create(
+        &old,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for s in tone(1_000.0, rate, 0.0, 9.0, 0.5, rate as usize * 3) {
+        w.write_sample((s * 32767.0) as i16).unwrap();
+    }
+    w.finalize().unwrap();
+    let before = std::fs::read(&old).unwrap();
+
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let id = rid("old");
+    let info = takes
+        .link_legacy(&id, &old, TakeContainer::Wav, rate, Ms(3_000))
+        .unwrap();
+    assert_eq!(info.container, TakeContainer::Wav);
+    assert!(
+        takes.orphans().unwrap().is_empty(),
+        "a legacy WAV is not an unsealed take of ours"
+    );
+    assert_eq!(takes.seal(&id).unwrap(), info);
+
+    let clip = takes.clip(&id, Channel::Mixed, None).unwrap();
+    let (_, out) = read_clip(&clip.path);
+    assert_eq!(out.len(), 48_000);
+    assert!((amplitude_at(&out[4_000..44_000], 1_000.0, 16_000) - 0.5).abs() < 0.01);
+    takes.delete(&id).unwrap();
+    assert_eq!(
+        std::fs::read(&old).unwrap(),
+        before,
+        "the old file is untouched"
+    );
+}
+
+#[test]
+fn linking_the_same_legacy_file_twice_writes_nothing_the_second_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let old = dir.path().join("old.webm");
+    std::fs::write(&old, b"x").unwrap();
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let id = rid("old");
+    takes
+        .link_legacy(&id, &old, TakeContainer::LegacyWebm, 48_000, Ms(5))
+        .unwrap();
+    let pointer = dir.path().join("takes").join("old.legacy");
+    let first = std::fs::metadata(&pointer).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    takes
+        .link_legacy(&id, &old, TakeContainer::LegacyWebm, 48_000, Ms(5))
+        .unwrap();
+    assert_eq!(
+        std::fs::metadata(&pointer).unwrap().modified().unwrap(),
+        first
+    );
+    assert!(matches!(
+        takes.link_legacy(
+            &rid("none"),
+            &dir.path().join("absent.webm"),
+            TakeContainer::LegacyWebm,
+            48_000,
+            Ms(5)
+        ),
+        Err(TakeError::Missing(_))
+    ));
+}

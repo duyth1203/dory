@@ -33,6 +33,10 @@ pub trait Takes: Send + Sync {
     /// Takes still open as WAV, left by a crash before sealing.
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError>;
 
+    /// Every id with any file here: open, sealing, sealed, or a legacy pointer. Startup deletes
+    /// those whose recording is gone, whatever state the files are in.
+    fn stored(&self) -> Result<Vec<RecordingId>, TakeError>;
+
     /// What is on disk, with the duration read from the file. `None` if there is no take.
     fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError>;
 

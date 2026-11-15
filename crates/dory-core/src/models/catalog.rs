@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use thiserror::Error;
 
-use super::{Choice, KindTag, ModelEntry, ModelId, ModelKind, ModelRef};
+use super::{Choice, ModelEntry, ModelId, ModelKind, ModelRef};
 
 /// Every model of one kind that providers offer, validated once at startup.
 #[derive(Clone, Debug)]
@@ -14,21 +14,17 @@ pub struct Catalog<K: ModelKind> {
 pub enum CatalogError {
     #[error("duplicate model id {0}")]
     Duplicate(ModelRef),
-    #[error("no {0} models registered")]
-    Empty(KindTag),
 }
 
 impl<K: ModelKind> Catalog<K> {
-    /// Rejects duplicate ids, and an empty list for kinds the user cannot turn off.
+    /// Rejects duplicate ids. An empty list is valid for every kind: a job that needs a model of
+    /// an empty required kind blocks on `Blocker::NoModel`, which tells the user what is missing.
     pub fn new(entries: Vec<ModelEntry<K>>) -> Result<Self, CatalogError> {
         let mut seen = HashSet::new();
         for entry in &entries {
             if !seen.insert(&entry.id) {
                 return Err(CatalogError::Duplicate(entry.id.erase()));
             }
-        }
-        if entries.is_empty() && !K::OPTIONAL {
-            return Err(CatalogError::Empty(K::TAG));
         }
         Ok(Self { entries })
     }
@@ -55,7 +51,7 @@ impl<K: ModelKind> Catalog<K> {
 mod tests {
     use super::*;
     use crate::domain::{LangSet, Ms};
-    use crate::models::{Diar, DiarizationSupport, LangSupport, Stt, SttCaps};
+    use crate::models::{DiarizationSupport, LangSupport, Stt, SttCaps};
 
     fn stt(id: &str) -> ModelEntry<Stt> {
         ModelEntry {
@@ -76,21 +72,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicates_and_empty_required_kinds() {
+    fn rejects_duplicates() {
         let dup = Catalog::new(vec![stt("a/x"), stt("b/y"), stt("a/x")]).unwrap_err();
         assert_eq!(
             dup,
             CatalogError::Duplicate(ModelRef::parse("a/x").unwrap())
         );
-        assert_eq!(
-            Catalog::<Stt>::new(vec![]).unwrap_err(),
-            CatalogError::Empty(KindTag::Stt)
-        );
-    }
-
-    #[test]
-    fn optional_kinds_may_be_empty() {
-        assert!(Catalog::<Diar>::new(vec![]).is_ok());
     }
 
     #[test]

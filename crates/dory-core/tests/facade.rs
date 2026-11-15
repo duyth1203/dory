@@ -1,20 +1,34 @@
 //! Drives `Dory` through its public facade with a fake for every port.
 
 use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use dory_core::app::{Dory, Event, OpenError, Options, Ports, RecorderStatus, StartOptions};
+use crossbeam_channel::{Receiver, Sender};
+use dory_core::app::{
+    Dory, DoryError, Event, OpenError, Options, Ports, RecorderStatus, StartOptions,
+};
+use dory_core::capture::FrameSink;
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, Goal, Job, JobEvent, JobState, LangTag, Ms, Priority,
-    Recording, RecordingId, RecordingQuery, Revision, Segment, Settings, SpeakerId, Stage,
-    TakeContainer, TakeInfo, TimeRange, Timestamp,
+    Blocker, Channel, ChannelLayout, Goal, Job, JobEvent, JobId, JobState, LangTag, Ms, Priority,
+    Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision, Segment,
+    Settings, SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange,
+    Timestamp, Transcript,
 };
 use dory_core::models::{
-    Availability, CatalogError, Choice, DiarizationSupport, KindTag, ModelId, ModelRef, Stt,
+    Availability, CatalogError, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId,
+    ModelRef, ProviderId, Stt,
 };
-use dory_core::ports::capture::{CaptureError, Source};
-use dory_core::ports::{Change, Store, StoreRead, Takes};
+use dory_core::ports::capture::{
+    Access, CaptureBackend, CaptureCaps, CaptureError, CaptureHandle, CaptureSpec, InputDevice,
+    Source,
+};
+use dory_core::ports::{
+    CancelToken, Change, Clip, EngineError, ModelProvider, ProvisionError, ProvisionSink, Store,
+    StoreError, StoreRead, TakeError, TakeWriter, Takes, Transcriber,
+};
 use dory_core::recorder::{FinalizeReason, Limits};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
@@ -30,6 +44,9 @@ const SUMMARY: &str = "## Key points\n- Ship it Friday.";
 struct Rig {
     store: Arc<MemStore>,
     takes: MemTakes,
+    /// What `Dory` sees: `store` and `takes` behind hooks a test can install.
+    hooked_store: Arc<HookedStore>,
+    hooked_takes: Arc<HookedTakes>,
     capture: Arc<FakeCapture>,
     clock: Arc<ManualClock>,
     transcriber: Arc<FakeTranscriber>,
@@ -60,9 +77,20 @@ impl Rig {
                 .detecting("vi"),
         );
         let llm = Arc::new(FakeLanguageModel::new(SUMMARY));
+        let store = Arc::new(MemStore::new());
+        let takes = MemTakes::new();
         Rig {
-            store: Arc::new(MemStore::new()),
-            takes: MemTakes::new(),
+            hooked_store: Arc::new(HookedStore {
+                inner: store.clone(),
+                before: Mutex::new(None),
+                after: Mutex::new(None),
+            }),
+            hooked_takes: Arc::new(HookedTakes {
+                inner: takes.clone(),
+                seal: Mutex::new(None),
+            }),
+            store,
+            takes,
             capture: Arc::new(FakeCapture::new()),
             clock: Arc::new(ManualClock::new(Timestamp(1_763_300_000_000))),
             stt: Arc::new(FakeSttProvider::new(
@@ -82,13 +110,14 @@ impl Rig {
 
     fn ports(&self) -> Ports {
         Ports {
-            store: self.store.clone(),
-            takes: Arc::new(self.takes.clone()),
+            store: self.hooked_store.clone(),
+            takes: self.hooked_takes.clone(),
             capture: self.capture.clone(),
             clock: self.clock.clone(),
             stt: vec![self.stt.clone()],
             llm: vec![self.llm_provider.clone()],
             diar: vec![],
+            guard: None,
         }
     }
 
@@ -115,6 +144,227 @@ impl Rig {
             .unwrap();
         id
     }
+}
+
+type ApplyHook = Arc<dyn Fn(&[Change]) -> Result<(), StoreError> + Send + Sync>;
+type SealHook = Arc<dyn Fn(&RecordingId) -> Result<(), TakeError> + Send + Sync>;
+
+/// A `MemStore` whose applies a test can watch, hold, or fail. `before` runs ahead of each apply
+/// and an error from it fails the apply. `after` runs once an apply committed.
+struct HookedStore {
+    inner: Arc<MemStore>,
+    before: Mutex<Option<ApplyHook>>,
+    after: Mutex<Option<ApplyHook>>,
+}
+
+impl HookedStore {
+    fn before(&self, hook: impl Fn(&[Change]) -> Result<(), StoreError> + Send + Sync + 'static) {
+        *self.before.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    fn after(&self, hook: impl Fn(&[Change]) + Send + Sync + 'static) {
+        *self.after.lock().unwrap() = Some(Arc::new(move |changes: &[Change]| {
+            hook(changes);
+            Ok(())
+        }));
+    }
+}
+
+impl StoreRead for HookedStore {
+    fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
+        self.inner.recording(id)
+    }
+    fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
+        self.inner.recordings(query)
+    }
+    fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError> {
+        self.inner.transcript(id)
+    }
+    fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        self.inner.summary(id)
+    }
+    fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
+        self.inner.speaker_names(id)
+    }
+    fn job(&self, id: JobId) -> Result<Option<Job>, StoreError> {
+        self.inner.job(id)
+    }
+    fn jobs_for(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError> {
+        self.inner.jobs_for(id)
+    }
+    fn next_runnable_job(&self, now: Timestamp) -> Result<Option<Job>, StoreError> {
+        self.inner.next_runnable_job(now)
+    }
+    fn next_wakeup(&self, now: Timestamp) -> Result<Option<Timestamp>, StoreError> {
+        self.inner.next_wakeup(now)
+    }
+    fn settings(&self) -> Result<Settings, StoreError> {
+        self.inner.settings()
+    }
+}
+
+impl Store for HookedStore {
+    fn apply(&self, changes: Vec<Change>) -> Result<(), StoreError> {
+        // Cloned out so a hook that blocks never holds the lock other appliers need.
+        let before = self.before.lock().unwrap().clone();
+        let after = self.after.lock().unwrap().clone();
+        if let Some(hook) = before {
+            hook(&changes)?;
+        }
+        self.inner.apply(changes.clone())?;
+        if let Some(hook) = after {
+            hook(&changes)?;
+        }
+        Ok(())
+    }
+}
+
+/// `MemTakes` whose `seal` a test can hold or fail.
+struct HookedTakes {
+    inner: MemTakes,
+    seal: Mutex<Option<SealHook>>,
+}
+
+impl HookedTakes {
+    fn on_seal(
+        &self,
+        hook: impl Fn(&RecordingId) -> Result<(), TakeError> + Send + Sync + 'static,
+    ) {
+        *self.seal.lock().unwrap() = Some(Arc::new(hook));
+    }
+}
+
+impl Takes for HookedTakes {
+    fn begin(
+        &self,
+        id: &RecordingId,
+        layout: ChannelLayout,
+        rate_hz: u32,
+    ) -> Result<Box<dyn TakeWriter>, TakeError> {
+        self.inner.begin(id, layout, rate_hz)
+    }
+    fn seal(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
+        let hook = self.seal.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(id)?;
+        }
+        self.inner.seal(id)
+    }
+    fn clip(
+        &self,
+        id: &RecordingId,
+        channel: Channel,
+        span: Option<TimeRange>,
+    ) -> Result<Clip, TakeError> {
+        self.inner.clip(id, channel, span)
+    }
+    fn orphans(&self) -> Result<Vec<RecordingId>, TakeError> {
+        self.inner.orphans()
+    }
+    fn stored(&self) -> Result<Vec<RecordingId>, TakeError> {
+        self.inner.stored()
+    }
+    fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError> {
+        self.inner.inspect(id)
+    }
+    fn import(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError> {
+        self.inner.import(id, source)
+    }
+    fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
+        self.inner.playback_path(id)
+    }
+    fn delete(&self, id: &RecordingId) -> Result<(), TakeError> {
+        self.inner.delete(id)
+    }
+}
+
+/// Holds whichever thread reaches it until the test opens it, and tells the test when one has.
+#[derive(Clone)]
+struct Gate {
+    reached: (Sender<()>, Receiver<()>),
+    open: (Sender<()>, Receiver<()>),
+}
+
+impl Gate {
+    fn new() -> Gate {
+        Gate {
+            reached: crossbeam_channel::unbounded(),
+            open: crossbeam_channel::unbounded(),
+        }
+    }
+
+    fn pass(&self) {
+        let _ = self.reached.0.send(());
+        let _ = self.open.1.recv_timeout(Duration::from_secs(10));
+    }
+
+    fn wait_reached(&self, what: &str) {
+        self.reached
+            .1
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+    }
+
+    fn open(&self) {
+        let _ = self.open.0.send(());
+    }
+}
+
+fn starts(changes: &[Change]) -> bool {
+    changes.iter().any(|c| {
+        matches!(
+            c,
+            Change::Job {
+                event: JobEvent::Started { .. },
+                ..
+            }
+        )
+    })
+}
+
+fn seals(changes: &[Change]) -> bool {
+    changes.iter().any(|c| {
+        matches!(
+            c,
+            Change::RecordingEdited {
+                edit: RecordingEdit::Take(TakeInfo {
+                    container: TakeContainer::Flac,
+                    ..
+                }),
+                ..
+            }
+        )
+    })
+}
+
+fn unavailable() -> StoreError {
+    StoreError::Unavailable("the disk is busy".into())
+}
+
+/// Starts a recording of `seconds` of silence and waits until all of it is written.
+fn record(dory: &Dory, rig: &Rig, seconds: usize) -> RecordingId {
+    rig.capture.push_script(self::seconds(seconds));
+    dory.recorder().start(StartOptions::default()).unwrap();
+    let want = ms(seconds as u64 * 1000);
+    eventually(
+        "the script to be written",
+        || matches!(dory.recorder().status(), RecorderStatus::Recording { recorded, .. } if recorded == want),
+    );
+    dory.recorder().status().id().cloned().unwrap()
+}
+
+/// Stops, lets the grace period run out, and waits for the recorder to be idle.
+fn stop_for_good(dory: &Dory, rig: &Rig) {
+    dory.recorder().stop().unwrap();
+    eventually("grace", || {
+        matches!(dory.recorder().status(), RecorderStatus::Grace { .. })
+    });
+    rig.clock.advance_ms(5_000);
+    eventually("idle", || dory.recorder().status() == RecorderStatus::Idle);
+}
+
+fn take_of(dory: &Dory, id: &RecordingId) -> Option<TakeInfo> {
+    dory.library().recording(id).unwrap().and_then(|r| r.take)
 }
 
 fn recording(id: &RecordingId, take: Option<TakeInfo>) -> Recording {
@@ -323,6 +573,14 @@ fn startup_seals_crashed_takes_drops_stray_audio_and_requeues_running_jobs() {
             .begin(&stray, ChannelLayout::MicSystem, RATE)
             .unwrap(),
     );
+    // Deleted while its seal ran, then the seal finished: sealed audio with no row.
+    let sealed_stray = RecordingId::parse("sealed-after-delete").unwrap();
+    rig.takes
+        .begin(&sealed_stray, ChannelLayout::MicSystem, RATE)
+        .unwrap()
+        .finish()
+        .unwrap();
+    rig.takes.seal(&sealed_stray).unwrap();
 
     let interrupted = rig.seed("crashed-mid-stage");
     rig.store
@@ -346,7 +604,10 @@ fn startup_seals_crashed_takes_drops_stray_audio_and_requeues_running_jobs() {
     let dory = rig.open();
     let recovery = dory.recovery().clone();
     assert_eq!(recovery.sealed, vec![crashed.clone()]);
-    assert_eq!(recovery.deleted_orphans, vec![stray.clone()]);
+    assert_eq!(
+        recovery.deleted_orphans,
+        vec![stray.clone(), sealed_stray.clone()]
+    );
     assert_eq!(recovery.interrupted, vec![job]);
     assert!(recovery.problems.is_empty(), "{:?}", recovery.problems);
 
@@ -362,6 +623,7 @@ fn startup_seals_crashed_takes_drops_stray_audio_and_requeues_running_jobs() {
         })
     );
     assert_eq!(rig.takes.frames(&stray), None);
+    assert_eq!(rig.takes.frames(&sealed_stray), None);
     assert!(rig.takes.orphans().unwrap().is_empty());
     dory.shutdown();
     drop(dory);
@@ -459,7 +721,6 @@ fn a_subscriber_that_never_reads_cannot_stall_recording() {
         || matches!(recorder.status(), RecorderStatus::Recording { recorded, .. } if recorded == ms(10_000)),
     );
     let id = recorder.status().id().cloned().unwrap();
-    std::thread::sleep(Duration::from_millis(30));
     recorder.stop().unwrap();
     eventually("grace", || {
         matches!(recorder.status(), RecorderStatus::Grace { .. })
@@ -594,4 +855,443 @@ fn a_pinned_model_that_is_gone_falls_back_to_auto_and_unknown_pins_are_refused()
     assert_eq!(rows.len(), 1);
     assert!(rows[0].chosen);
     assert_eq!(rows[0].status.availability, Availability::Ready);
+}
+
+#[test]
+fn a_cancel_that_commits_while_started_is_committing_still_stops_the_stage() {
+    let rig = Rig::new();
+    let id = rig.seed("cancel-in-the-window");
+    rig.transcriber.hold(true);
+    // Hold the worker right after `Started` commits: the moment a cancel used to find no token.
+    let gate = Gate::new();
+    let at_start = gate.clone();
+    rig.hooked_store.after(move |changes| {
+        if starts(changes) {
+            at_start.pass();
+        }
+    });
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    gate.wait_reached("Started to commit");
+    let job = job_of(&dory, &id).unwrap();
+    dory.pipeline().cancel(job.id).unwrap();
+    gate.open();
+
+    wait_for_job(&dory, &id, JobState::Cancelled);
+    // The held engine returns only when its token is cancelled.
+    eventually("the engine to see the cancel and return", || {
+        rig.transcriber.calls().len() == 1 && !rig.transcriber.is_running()
+    });
+    assert_eq!(dory.library().transcript(&id).unwrap(), None);
+}
+
+#[test]
+fn deleting_a_recording_while_its_take_seals_is_refused_until_the_seal_lands() {
+    let rig = Rig::new();
+    let gate = Gate::new();
+    let at_seal = gate.clone();
+    rig.hooked_takes.on_seal(move |_| {
+        at_seal.pass();
+        Ok(())
+    });
+    let dory = rig.open();
+    let id = record(&dory, &rig, 2);
+    stop_for_good(&dory, &rig);
+    gate.wait_reached("the seal to start");
+
+    assert!(matches!(
+        dory.library().delete(&id),
+        Err(DoryError::Saving(busy)) if busy == id
+    ));
+    gate.open();
+    eventually("the sealed take to commit", || {
+        take_of(&dory, &id).is_some_and(|t| t.container == TakeContainer::Flac)
+    });
+
+    dory.library().delete(&id).unwrap();
+    assert!(
+        rig.takes.stored().unwrap().is_empty(),
+        "no audio left behind"
+    );
+    assert!(
+        dory.library()
+            .list(&RecordingQuery::default())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_seal_that_fails_lists_the_wav_and_the_next_start_seals_it() {
+    let rig = Rig::new();
+    rig.hooked_takes
+        .on_seal(|_| Err(TakeError::Decode("the encoder broke".into())));
+    let dory = rig.open();
+    let events = dory.events();
+    let id = record(&dory, &rig, 2);
+    stop_for_good(&dory, &rig);
+    eventually("the WAV to be listed", || {
+        take_of(&dory, &id).is_some_and(|t| t.container == TakeContainer::Wav)
+    });
+    assert!(drain(&events).iter().any(|e| matches!(
+        e,
+        Event::Error {
+            context: "sealing the take",
+            ..
+        }
+    )));
+    assert!(
+        job_of(&dory, &id).is_none(),
+        "nothing processes an unsealed take"
+    );
+    drop(dory);
+
+    *rig.hooked_takes.seal.lock().unwrap() = None;
+    let again = rig.open();
+    assert_eq!(again.recovery().sealed, vec![id.clone()]);
+    assert_eq!(
+        take_of(&again, &id),
+        Some(TakeInfo {
+            container: TakeContainer::Flac,
+            rate_hz: RATE,
+            duration: ms(2_000),
+        })
+    );
+    wait_for_job(&again, &id, JobState::Succeeded);
+}
+
+#[test]
+fn a_sealed_take_whose_commit_fails_for_a_moment_is_committed_without_a_restart() {
+    let rig = Rig::new();
+    let failures = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&failures);
+    rig.hooked_store.before(move |changes| {
+        if seals(changes) && counted.fetch_add(1, Ordering::SeqCst) < 2 {
+            return Err(unavailable());
+        }
+        Ok(())
+    });
+    let dory = rig.open();
+    let events = dory.events();
+    let id = record(&dory, &rig, 2);
+    stop_for_good(&dory, &rig);
+
+    wait_for_job(&dory, &id, JobState::Succeeded);
+    assert_eq!(
+        take_of(&dory, &id).map(|t| t.container),
+        Some(TakeContainer::Flac)
+    );
+    assert_eq!(
+        failures.load(Ordering::SeqCst),
+        3,
+        "two failures, then it landed"
+    );
+    assert!(
+        !drain(&events)
+            .iter()
+            .any(|e| matches!(e, Event::Error { .. })),
+        "a commit that landed on a retry is not an error"
+    );
+}
+
+#[test]
+fn a_commit_that_keeps_failing_is_reported_and_the_next_start_commits_it() {
+    let rig = Rig::new();
+    rig.hooked_store.before(|changes| match seals(changes) {
+        true => Err(unavailable()),
+        false => Ok(()),
+    });
+    let dory = rig.open();
+    let events = dory.events();
+    let id = record(&dory, &rig, 1);
+    stop_for_good(&dory, &rig);
+    dory.shutdown();
+    assert!(drain(&events).iter().any(|e| matches!(
+        e,
+        Event::Error {
+            context: "saving the recording",
+            ..
+        }
+    )));
+    assert!(rig.takes.is_sealed(&id));
+    assert_eq!(take_of(&dory, &id), None);
+    drop(dory);
+
+    *rig.hooked_store.before.lock().unwrap() = None;
+    let again = rig.open();
+    assert_eq!(again.recovery().sealed, vec![id.clone()]);
+    wait_for_job(&again, &id, JobState::Succeeded);
+}
+
+#[test]
+fn dropping_dory_while_recording_seals_the_take_before_it_returns() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = record(&dory, &rig, 3);
+    drop(dory);
+
+    assert!(rig.takes.is_sealed(&id));
+    assert_eq!(
+        rig.store.recording(&id).unwrap().unwrap().take,
+        Some(TakeInfo {
+            container: TakeContainer::Flac,
+            rate_hz: RATE,
+            duration: ms(3_000),
+        })
+    );
+    let again = rig.open();
+    assert_eq!(
+        again.recovery(),
+        &Default::default(),
+        "nothing left to repair"
+    );
+}
+
+#[test]
+fn two_threads_shutting_down_at_once_both_wait_for_the_seal() {
+    let rig = Rig::new();
+    let gate = Gate::new();
+    let at_seal = gate.clone();
+    rig.hooked_takes.on_seal(move |_| {
+        at_seal.pass();
+        Ok(())
+    });
+    let dory = rig.open();
+    let id = record(&dory, &rig, 1);
+    std::thread::scope(|scope| {
+        let callers: Vec<_> = (0..2)
+            .map(|_| {
+                scope.spawn(|| {
+                    dory.shutdown();
+                    take_of(&dory, &id)
+                })
+            })
+            .collect();
+        gate.wait_reached("the seal to start");
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            callers.iter().all(|c| !c.is_finished()),
+            "neither caller returns while the seal is held"
+        );
+        gate.open();
+        for caller in callers {
+            assert_eq!(
+                caller.join().unwrap().map(|t| t.container),
+                Some(TakeContainer::Flac)
+            );
+        }
+    });
+}
+
+#[test]
+fn dropping_dory_mid_stage_cancels_the_stage_and_requeues_the_job() {
+    let rig = Rig::new();
+    let id = rig.seed("mid-stage");
+    rig.transcriber.hold(true);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the engine to run", || rig.transcriber.is_running());
+
+    let (dropped, done) = crossbeam_channel::bounded(1);
+    let started = Instant::now();
+    std::thread::spawn(move || {
+        drop(dory);
+        let _ = dropped.send(());
+    });
+    done.recv_timeout(Duration::from_secs(5))
+        .expect("drop to return without waiting for the held stage");
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!rig.transcriber.is_running());
+    let job = rig.store.jobs_for(&id).unwrap().pop().unwrap();
+    assert_eq!(job.state, JobState::Queued, "a shutdown is not a cancel");
+
+    rig.transcriber.hold(false);
+    let again = rig.open();
+    wait_for_job(&again, &id, JobState::Succeeded);
+}
+
+/// Capture that writes one second of silence and then keeps the sink after `stop`, as a careless
+/// adapter might. Its probes panic.
+#[derive(Default)]
+struct LeakyCapture {
+    kept: Mutex<Vec<FrameSink>>,
+}
+
+struct NoopHandle;
+
+impl CaptureHandle for NoopHandle {
+    fn stop(self: Box<Self>) {}
+}
+
+impl CaptureBackend for LeakyCapture {
+    fn probe(&self) -> CaptureCaps {
+        panic!("the probe crashed")
+    }
+
+    fn input_devices(&self) -> Result<Vec<InputDevice>, CaptureError> {
+        panic!("the device list crashed")
+    }
+
+    fn request_access(&self, _: Source) -> Result<Access, CaptureError> {
+        Ok(Access::Granted)
+    }
+
+    fn start(
+        &self,
+        _: &CaptureSpec,
+        mut sink: FrameSink,
+    ) -> Result<Box<dyn CaptureHandle>, CaptureError> {
+        sink.push(&vec![0.0; RATE as usize * sink.channels()]);
+        self.kept.lock().unwrap().push(sink);
+        Ok(Box::new(NoopHandle))
+    }
+}
+
+#[test]
+fn an_adapter_that_keeps_its_sink_after_stop_cannot_hang_the_recorder() {
+    // On its own thread, so a recorder that hangs fails this test instead of hanging the run.
+    let (done, finished) = crossbeam_channel::bounded(1);
+    std::thread::spawn(move || {
+        let rig = Rig::new();
+        let leaky = Arc::new(LeakyCapture::default());
+        let dory = Dory::open(
+            Ports {
+                capture: leaky.clone(),
+                ..rig.ports()
+            },
+            options(),
+        )
+        .unwrap();
+        dory.recorder().start(StartOptions::default()).unwrap();
+        eventually(
+            "a second recorded",
+            || matches!(dory.recorder().status(), RecorderStatus::Recording { recorded, .. } if recorded == ms(1_000)),
+        );
+        let id = dory.recorder().status().id().cloned().unwrap();
+        stop_for_good(&dory, &rig);
+        wait_for_job(&dory, &id, JobState::Succeeded);
+        let _ = done.send((
+            take_of(&dory, &id).map(|t| t.duration),
+            leaky.kept.lock().unwrap().len(),
+        ));
+    });
+    let (duration, kept) = finished
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the recorder to stop, seal, and process the take");
+    assert_eq!(duration, Some(ms(1_000)));
+    assert_eq!(kept, 1, "the sink is still alive");
+}
+
+#[test]
+fn a_probe_that_panics_resolves_to_an_error_instead_of_panicking_the_caller() {
+    let rig = Rig::new();
+    let dory = Dory::open(
+        Ports {
+            capture: Arc::new(LeakyCapture::default()),
+            ..rig.ports()
+        },
+        options(),
+    )
+    .unwrap();
+    assert!(block_on(dory.recorder().probe()).is_err());
+    assert!(block_on(dory.recorder().input_devices()).is_err());
+}
+
+/// A speech model whose download panics.
+struct PanickyProvider;
+
+impl ModelProvider<Stt> for PanickyProvider {
+    fn id(&self) -> ProviderId {
+        ProviderId::parse("boom").unwrap()
+    }
+
+    fn catalog(&self) -> Vec<ModelEntry<Stt>> {
+        vec![stt_entry("boom/stt", DiarizationSupport::None)]
+    }
+
+    fn availability(&self, _: &ModelId<Stt>) -> Availability {
+        Availability::NeedsProvision { bytes: None }
+    }
+
+    fn provision(
+        &self,
+        _: &ModelId<Stt>,
+        _: &mut dyn ProvisionSink,
+        _: &CancelToken,
+    ) -> Result<(), ProvisionError> {
+        panic!("the download crashed")
+    }
+
+    fn open(
+        &self,
+        model: &ModelId<Stt>,
+        _: &CancelToken,
+    ) -> Result<Arc<dyn Transcriber>, EngineError> {
+        Err(EngineError::ModelMissing(model.to_string()))
+    }
+}
+
+#[test]
+fn a_provider_that_panics_reports_a_failure_and_can_be_tried_again() {
+    let rig = Rig::new();
+    let mut ports = rig.ports();
+    ports.stt.push(Arc::new(PanickyProvider));
+    let dory = Dory::open(ports, options()).unwrap();
+    let events = dory.events();
+    let boom: ModelId<Stt> = "boom/stt".parse().unwrap();
+    for attempt in 0..2 {
+        match block_on(dory.models().provision(boom.clone())) {
+            Err(ProvisionError::Other(why)) => {
+                assert!(why.contains("panicked"), "attempt {attempt}: {why}");
+            }
+            other => panic!("attempt {attempt}: {other:?}"),
+        }
+    }
+    let finished = drain(&events)
+        .into_iter()
+        .filter(|e| matches!(e, Event::ProvisionFinished { result: Err(_), .. }))
+        .count();
+    assert_eq!(finished, 2);
+}
+
+#[test]
+fn choosing_two_kinds_at_once_keeps_both_choices() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let stt: ModelId<Stt> = STT.parse().unwrap();
+    let llm: ModelId<Llm> = LLM.parse().unwrap();
+    for _ in 0..50 {
+        dory.models().choose::<Stt>(Choice::Auto).unwrap();
+        dory.models().choose::<Llm>(Choice::Auto).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| dory.models().choose(Choice::Pinned(stt.clone())).unwrap());
+            scope.spawn(|| dory.models().choose(Choice::Pinned(llm.clone())).unwrap());
+        });
+        let settings = dory.settings().unwrap();
+        assert_eq!(settings.stt, Choice::Pinned(stt.clone()));
+        assert_eq!(settings.llm, Choice::Pinned(llm.clone()));
+    }
+}
+
+#[test]
+fn an_empty_speech_catalog_opens_and_blocks_jobs_on_the_missing_model() {
+    let rig = Rig::new();
+    let id = rig.seed("no-engine");
+    let dory = Dory::open(
+        Ports {
+            stt: vec![],
+            ..rig.ports()
+        },
+        options(),
+    )
+    .unwrap();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for_job(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Transcribe,
+            blocker: Blocker::NoModel { kind: KindTag::Stt },
+        },
+    );
 }

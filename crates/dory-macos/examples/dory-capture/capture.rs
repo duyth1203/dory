@@ -1,5 +1,4 @@
-//! Capture harness: runs `CoreAudioCapture` into a WAV file and reports what it saw.
-//! It uses `dory-macos` directly only because no composition root crate exists yet to hand it a backend.
+//! Runs `CoreAudioCapture` into a WAV file and reports what it saw.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,7 +80,7 @@ pub fn run(args: &CaptureArgs) -> Result<(), String> {
         let layout = args.layout;
         let rate = args.rate_hz;
         thread::Builder::new()
-            .name("dory-cli-writer".into())
+            .name("dory-capture-writer".into())
             .spawn(move || write_take(source, layout, rate, &out))
             .map_err(|e| e.to_string())?
     };

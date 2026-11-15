@@ -1,20 +1,18 @@
 //! Headless driver and test bench for Dory. Commands go through the `dory` composition root, so
-//! this crate names no adapter, except in the macOS capture harness (see `capture.rs`).
+//! this crate names no adapter. The macOS capture harness lives with its adapter, as the
+//! `dory-capture` example of `dory-macos`.
 
 mod args;
-#[cfg(target_os = "macos")]
-mod capture;
 mod library;
 mod process;
 mod record;
-#[cfg(target_os = "macos")]
-mod tone;
 mod view;
 mod wait;
 
 use std::process::ExitCode;
 
-use dory::{Config, Dory};
+use dory::{Config, DATA_DIR_VAR, Dory, LibraryReader};
+use dory_core::app::Recovery;
 
 const USAGE: &str = "usage:
   dory-cli import OLD_DATA_DIR
@@ -23,10 +21,9 @@ const USAGE: &str = "usage:
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--fake-engines]
   dory-cli models [--fake-engines]
-  dory-cli capture --seconds N --out FILE.wav [--layout mic-system|mic|system] [--rate HZ] [--mic DEVICE_UID]
-  dory-cli devices
 
-The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.";
+The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
+The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,8 +42,6 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
             Some("process") => args::ProcessArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::run(&c, &a))),
-            Some("capture") => args::CaptureArgs::parse(rest).and_then(|a| platform::capture(&a)),
-            Some("devices") => platform::devices(),
             _ => Err(USAGE.to_string()),
         };
     match result {
@@ -62,12 +57,60 @@ fn config() -> Result<Config, String> {
     Config::from_env().map_err(|e| e.to_string())
 }
 
+/// Fake audio and fake transcripts never go into the default library: a `--fake-*` flag needs the
+/// data folder named explicitly.
+fn allow_fakes(flag: &str) -> Result<(), String> {
+    match std::env::var_os(DATA_DIR_VAR) {
+        Some(dir) if !dir.is_empty() => Ok(()),
+        _ => Err(format!(
+            "{flag} writes fake data, so it needs {DATA_DIR_VAR} set to a throwaway folder"
+        )),
+    }
+}
+
+/// Opens with the actors running and the data folder locked.
 fn open(config: &Config, fake_engines: bool) -> Result<Dory, String> {
-    match fake_engines {
-        true => dory::open_with_fake_engines(config),
+    let dory = match fake_engines {
+        true => {
+            allow_fakes("--fake-engines")?;
+            dory::open_with_fake_engines(config)
+        }
         false => dory::open(config),
     }
+    .map_err(chain)?;
+    report_recovery(dory.recovery());
+    Ok(dory)
+}
+
+/// Opens for reading only, which works while another process records.
+fn open_library(config: &Config, fake_engines: bool) -> Result<LibraryReader, String> {
+    match fake_engines {
+        true => {
+            allow_fakes("--fake-engines")?;
+            dory::open_library_with_fake_engines(config)
+        }
+        false => dory::open_library(config),
+    }
     .map_err(chain)
+}
+
+/// What startup repaired, and what it could not.
+fn report_recovery(recovery: &Recovery) {
+    for id in &recovery.sealed {
+        println!("recovered {id}: sealed the audio a crash left open");
+    }
+    for id in &recovery.deleted_orphans {
+        println!("recovered {id}: deleted audio whose recording was gone");
+    }
+    for job in &recovery.interrupted {
+        println!("recovered job {}: queued again after a crash", job.0);
+    }
+    for (kind, model) in &recovery.choices_reset {
+        println!("the {kind} model {model} is gone, using auto");
+    }
+    for (id, why) in &recovery.problems {
+        eprintln!("could not repair {id}, the next start tries again: {why}");
+    }
 }
 
 /// An error and its causes on one line.
@@ -80,19 +123,4 @@ fn chain(error: impl std::error::Error) -> String {
         source = cause.source();
     }
     text
-}
-
-#[cfg(target_os = "macos")]
-mod platform {
-    pub use crate::capture::{devices, run as capture};
-}
-
-#[cfg(not(target_os = "macos"))]
-mod platform {
-    pub fn capture(_: &crate::args::CaptureArgs) -> Result<(), String> {
-        Err("capture is only implemented on macOS".into())
-    }
-    pub fn devices() -> Result<(), String> {
-        Err("devices is only implemented on macOS".into())
-    }
 }

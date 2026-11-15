@@ -682,3 +682,46 @@ fn linking_the_same_legacy_file_twice_writes_nothing_the_second_time() {
         Err(TakeError::Missing(_))
     ));
 }
+
+#[test]
+fn stored_lists_every_id_with_files_in_any_state_and_delete_clears_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let old = dir.path().join("old.webm");
+    std::fs::write(&old, b"legacy audio").unwrap();
+
+    let open = rid("open");
+    drop(takes.begin(&open, ChannelLayout::MicOnly, 16_000).unwrap());
+    let sealed = rid("sealed");
+    takes
+        .begin(&sealed, ChannelLayout::MicOnly, 16_000)
+        .unwrap()
+        .finish()
+        .unwrap();
+    takes.seal(&sealed).unwrap();
+    // A crash in the middle of encoding leaves a half FLAC beside the layout file.
+    let half = rid("rec.2026.half");
+    std::fs::write(dir.path().join("rec.2026.half.flac.tmp"), b"half").unwrap();
+    std::fs::write(dir.path().join("rec.2026.half.meta"), b"layout=mic\n").unwrap();
+    let linked = rid("linked");
+    takes
+        .link_legacy(&linked, &old, TakeContainer::LegacyWebm, 48_000, Ms(5))
+        .unwrap();
+    std::fs::write(dir.path().join("not an id!.wav"), b"").unwrap();
+
+    assert_eq!(
+        takes.stored().unwrap(),
+        vec![linked.clone(), open.clone(), half.clone(), sealed.clone()]
+    );
+    assert_eq!(takes.orphans().unwrap(), vec![open.clone()]);
+
+    for id in [&linked, &open, &half, &sealed] {
+        takes.delete(id).unwrap();
+    }
+    assert!(takes.stored().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read(&old).unwrap(),
+        b"legacy audio",
+        "deleting a legacy pointer never touches the old app's file"
+    );
+}

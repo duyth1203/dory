@@ -1,8 +1,11 @@
 //! Runs the built binary against a throwaway data folder: import the legacy fixture, read it back,
 //! record from the fake capture, and process the recording with the fake engines.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 const DONE: &str = "rec_1731234567890_k3j2h1x";
 
@@ -167,6 +170,7 @@ fn records_from_the_fake_capture_then_processes_with_fake_engines() {
 
     let shown = env.ok(&["show", &id]);
     for want in [
+        "Fake tone",
         "status    done",
         "[0:00] Me: Hello from the fake microphone.",
         "[0:01] Speaker 1: Hello from the fake system audio.",
@@ -186,8 +190,11 @@ fn records_from_the_fake_capture_then_processes_with_fake_engines() {
 fn models_lists_each_kind_and_the_fakes_when_asked() {
     let env = Env::new();
     let plain = env.ok(&["models"]);
-    assert!(plain.contains("pending/speech-engine"), "{plain}");
-    assert!(plain.contains("(none registered)"), "{plain}");
+    assert_eq!(
+        plain.matches("(none registered)").count(),
+        3,
+        "no engines are registered yet:\n{plain}"
+    );
     let fake = env.ok(&["models", "--fake-engines"]);
     assert!(
         fake.contains("fake/stt") && fake.contains("fake/llm"),
@@ -208,4 +215,205 @@ fn bad_input_prints_usage_and_fails() {
         assert!(!out.status.success(), "{args:?}");
         assert!(!out.stderr.is_empty(), "{args:?}");
     }
+}
+
+/// A `record` running in the background, with its output read line by line as it comes.
+struct Recording {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: Receiver<String>,
+    seen: Vec<String>,
+}
+
+impl Recording {
+    fn start(env: &Env, args: &[&str]) -> Recording {
+        let mut child = env
+            .cmd(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(line);
+            }
+        });
+        Recording {
+            stdin: child.stdin.take(),
+            child,
+            lines,
+            seen: Vec::new(),
+        }
+    }
+
+    /// The first new line that `wanted` accepts.
+    fn wait_for(&mut self, what: &str, wanted: impl Fn(&str) -> bool) -> String {
+        let give_up = Instant::now() + Duration::from_secs(20);
+        loop {
+            let left = give_up.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left) {
+                Ok(line) => {
+                    self.seen.push(line.clone());
+                    if wanted(&line) {
+                        return line;
+                    }
+                }
+                Err(_) => panic!("no line for {what} in\n{}", self.seen.join("\n")),
+            }
+        }
+    }
+
+    /// The id from the `recording <id>` line.
+    fn wait_for_id(&mut self) -> String {
+        let line = self.wait_for("the recording id", |l| {
+            l.strip_prefix("recording ")
+                .is_some_and(|rest| !rest.starts_with("to "))
+        });
+        line["recording ".len()..].to_owned()
+    }
+
+    fn type_line(&mut self, text: &str) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{text}").unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn close_stdin(&mut self) {
+        self.stdin = None;
+    }
+
+    /// Waits for the exit and returns every stdout line. Kills the process if it outlives
+    /// `limit`.
+    fn finish(mut self, limit: Duration) -> (bool, Vec<String>, String) {
+        let give_up = Instant::now() + limit;
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= give_up {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!(
+                    "record still running after {limit:?}:\n{}",
+                    self.seen.join("\n")
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        self.seen.extend(self.lines.try_iter());
+        let mut stderr = String::new();
+        if let Some(mut err) = self.child.stderr.take() {
+            std::io::Read::read_to_string(&mut err, &mut stderr).unwrap();
+        }
+        (status.success(), self.seen, stderr)
+    }
+}
+
+#[test]
+fn list_works_while_another_process_records_and_a_second_record_fails_fast() {
+    let env = Env::new();
+    let mut first = Recording::start(&env, &["record", "--fake-capture", "60"]);
+    let id = first.wait_for_id();
+    first.wait_for("a level line", |l| l.contains("peak"));
+    let wav = env.data().join("takes").join(format!("{id}.wav"));
+
+    for _ in 0..2 {
+        let list = env.ok(&["list"]);
+        let line = list.lines().find(|l| l.starts_with(&id)).unwrap();
+        assert!(
+            line.contains("Fake tone  ") && line.contains("  -  "),
+            "{line}"
+        );
+        assert!(wav.is_file(), "the live WAV is left alone");
+    }
+
+    let started = Instant::now();
+    let second = env.run(&["record", "--fake-capture", "1"]);
+    assert!(!second.status.success());
+    assert!(
+        text(&second.stderr).contains("already running"),
+        "{}",
+        text(&second.stderr)
+    );
+    assert!(started.elapsed() < Duration::from_secs(5), "fails fast");
+
+    first.close_stdin();
+    let (ok, stdout, stderr) = first.finish(Duration::from_secs(20));
+    assert!(ok, "{}\n{stderr}", stdout.join("\n"));
+    assert!(
+        stdout.iter().any(|l| l.starts_with("sealed Flac 48000 Hz")),
+        "{}",
+        stdout.join("\n")
+    );
+    assert!(!wav.exists());
+}
+
+#[test]
+fn a_closed_stdin_stops_a_recording_that_an_undo_resumed() {
+    let env = Env::new();
+    let mut rec = Recording::start(&env, &["record", "--fake-capture", "60"]);
+    rec.wait_for_id();
+    rec.type_line("");
+    rec.wait_for("the stop", |l| l.starts_with("stopped at"));
+    // The undo and the end of input arrive together, as from `(echo; sleep 1; echo u) | ...`.
+    rec.type_line("u");
+    rec.close_stdin();
+    let (ok, stdout, stderr) = rec.finish(Duration::from_secs(20));
+    assert!(ok, "{}\n{stderr}", stdout.join("\n"));
+    let sealed = stdout
+        .iter()
+        .find_map(|l| l.strip_prefix("sealed Flac 48000 Hz "))
+        .unwrap_or_else(|| panic!("no sealed line in\n{}", stdout.join("\n")));
+    let seconds: f64 = sealed.trim_end_matches(" s").parse().unwrap();
+    assert!(
+        seconds < 10.0,
+        "stopped soon after the input closed: {seconds} s"
+    );
+}
+
+#[test]
+fn fake_flags_are_refused_unless_the_data_folder_is_named() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [
+        &["record", "--fake-capture", "1"][..],
+        &["models", "--fake-engines"],
+        &["process", "rec_1", "--fake-engines"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_dory-cli"))
+            .args(args)
+            .env_remove("DORY_DATA_DIR")
+            .env("HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "{args:?}");
+        assert!(
+            text(&out.stderr).contains("DORY_DATA_DIR"),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+    }
+    assert!(
+        !home.path().join("Library").exists(),
+        "nothing was written to the default folder"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_seal_that_fails_after_the_recording_ends_makes_record_fail() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let mut rec = Recording::start(&env, &["record", "--fake-capture", "1"]);
+    rec.wait_for_id();
+    // The open WAV keeps growing, but the FLAC cannot be created beside it.
+    let takes = env.data().join("takes");
+    std::fs::set_permissions(&takes, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (ok, stdout, stderr) = rec.finish(Duration::from_secs(20));
+    std::fs::set_permissions(&takes, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!ok, "{}\n{stderr}", stdout.join("\n"));
+    assert!(stderr.contains("error sealing the take"), "{stderr}");
+    assert!(stderr.contains("error(s) while recording"), "{stderr}");
 }

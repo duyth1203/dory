@@ -1,14 +1,15 @@
 //! `record`: drives the recorder through the facade and reports from its events.
 //!
 //! Keys on stdin, one per line: Enter stops, `p` pauses or resumes, `u` undoes a stop during the
-//! grace window. A closed stdin or Ctrl-C stops too.
+//! grace window. Ctrl-C stops too. A closed stdin stops and keeps stopping: an undo read before it
+//! cannot resume a recording that nobody can stop anymore.
 
 use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 use dory::Config;
-use dory_core::app::{Dory, Event, RecorderStatus, StartOptions};
-use dory_core::domain::{Channel, Ms};
+use dory_core::app::{Dory, Event, RecorderStatus, StartOptions, Subscription};
+use dory_core::domain::{Channel, Ms, TakeContainer};
 use dory_core::ports::capture::{Access, Source};
 
 use crate::args::RecordArgs;
@@ -19,19 +20,27 @@ const TICK: Duration = Duration::from_millis(20);
 const LEVEL_EVERY: Duration = Duration::from_secs(1);
 const PERMISSION_WAIT: Duration = Duration::from_secs(30);
 
+const FAKE_TITLE: &str = "Fake tone";
+
 enum Key {
     Stop,
     Pause,
     Undo,
+    /// Stdin closed. Nothing more can be typed, so the recording must end.
+    Closed,
     Unknown(String),
 }
 
 pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
     let dory = match args.fake_capture {
-        Some(_) => dory::open_with_fake_capture(config),
+        Some(_) => {
+            crate::allow_fakes("--fake-capture")?;
+            dory::open_with_fake_capture(config)
+        }
         None => dory::open(config),
     }
     .map_err(crate::chain)?;
+    crate::report_recovery(dory.recovery());
     if args.fake_capture.is_none() {
         check_access(&dory, args)?;
     }
@@ -48,6 +57,7 @@ pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
     let recorder = dory.recorder();
     recorder
         .start(StartOptions {
+            title: args.fake_capture.map(|_| FAKE_TITLE.to_owned()),
             layout: args.layout,
             mic: args.mic.clone(),
             ..StartOptions::default()
@@ -61,8 +71,10 @@ pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
     // The loudest peak per channel since the last line, and the latest recorded time.
     let mut peaks = vec![0.0f32; names.len()];
     let mut recorded_at = Ms(0);
-    // A stop sent but not yet seen in the status, so one key or an EOF behind it sends only one.
+    // A stop sent but not yet seen as Grace, so a key, a closed stdin, and the fake capture's
+    // timer behind it send only one.
     let mut stop_sent = false;
+    let mut stdin_closed = false;
     let mut auto_stopped = false;
     let mut next_levels = Instant::now() + LEVEL_EVERY;
     let mut errors = 0;
@@ -71,6 +83,13 @@ pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
         // Status first: an Idle read means everything it announced is already queued below.
         let status = recorder.status();
         active |= status != RecorderStatus::Idle;
+        let capturing = matches!(
+            status,
+            RecorderStatus::Recording { .. } | RecorderStatus::Paused { .. }
+        );
+        if matches!(status, RecorderStatus::Grace { .. }) {
+            stop_sent = false;
+        }
         let mut finished = None;
         while let Some(event) = events.try_recv() {
             match event {
@@ -106,8 +125,9 @@ pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
 
         while let Ok(key) = keys.try_recv() {
             match (key, &status) {
+                (Key::Closed, _) => stdin_closed = true,
                 (Key::Stop, _) if stop_sent => {}
-                (Key::Stop, RecorderStatus::Recording { .. } | RecorderStatus::Paused { .. }) => {
+                (Key::Stop, _) if capturing => {
                     stop_sent = true;
                     let _ = recorder.stop();
                 }
@@ -129,12 +149,12 @@ pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
                 }
             }
         }
-        if let (Some(stop_at), RecorderStatus::Recording { recorded, .. }) = (stop_at, &status)
-            && *recorded >= stop_at
-            && !auto_stopped
-            && !stop_sent
-        {
-            auto_stopped = true;
+        let timer_due = !auto_stopped
+            && matches!((stop_at, &status), (Some(at), RecorderStatus::Recording { recorded, .. }) if *recorded >= at);
+        auto_stopped |= timer_due;
+        // Checked against every fresh status, not only when the key arrives: an undo queued just
+        // before the stdin closed resumes after the status above was read.
+        if (stdin_closed || timer_due) && capturing && !stop_sent {
             stop_sent = true;
             let _ = recorder.stop();
         }
@@ -153,21 +173,48 @@ pub fn run(config: &Config, args: &RecordArgs) -> Result<(), String> {
 
     let (id, reason) = finished;
     println!("recorded {id} ({reason:?})");
-    // Shutting down waits for the take to seal, so the row below is final.
+    // Shutting down waits for the take to seal, so the row below is final, and every error the
+    // seal reported is already queued.
     dory.shutdown();
+    errors += report_errors(&events);
+    // The row says whether the seal landed, even if its error event was lost.
     match dory.library().recording(&id).map_err(crate::chain)? {
         Some(recording) => match recording.take {
-            Some(take) => println!(
+            Some(take) if take.container != TakeContainer::Wav => println!(
                 "sealed {:?} {} Hz {:.1} s",
                 take.container,
                 take.rate_hz,
                 take.duration.0 as f64 / 1000.0
             ),
-            None => println!("the audio is not sealed yet, the next start finishes it"),
+            _ => {
+                errors += 1;
+                eprintln!("the audio is not sealed, the next start finishes it");
+            }
         },
         None => return Err(format!("{id} is not in the library")),
     }
-    Ok(())
+    match errors {
+        0 => Ok(()),
+        n => Err(format!(
+            "{n} error(s) while recording {id}, see above. The next start repairs what it can."
+        )),
+    }
+}
+
+/// Prints the errors still queued and counts them.
+fn report_errors(events: &Subscription) -> usize {
+    let mut errors = 0;
+    while let Some(event) = events.try_recv() {
+        match event {
+            Event::Error { context, message } => {
+                errors += 1;
+                eprintln!("  error {context}: {message}");
+            }
+            Event::Resync => eprintln!("  some events were lost, errors may be missing"),
+            _ => {}
+        }
+    }
+    errors
 }
 
 fn announce(status: &RecorderStatus) {
@@ -209,7 +256,7 @@ fn level_text(names: &[&str], peaks: &[f32]) -> String {
 
 /// Refuses early when capture cannot work, and asks for the microphone if macOS has not been asked.
 fn check_access(dory: &Dory, args: &RecordArgs) -> Result<(), String> {
-    let caps = block_on(dory.recorder().probe());
+    let caps = block_on(dory.recorder().probe()).map_err(crate::chain)?;
     println!(
         "probe: microphone={:?} system_audio={:?}",
         caps.microphone, caps.system_audio
@@ -262,7 +309,7 @@ fn read_keys(lines: impl Iterator<Item = String>, keys: &Sender<Key>) {
             return;
         }
     }
-    let _ = keys.send(Key::Stop);
+    let _ = keys.send(Key::Closed);
 }
 
 #[cfg(test)]
@@ -278,6 +325,7 @@ mod tests {
                 Key::Stop => "stop".into(),
                 Key::Pause => "pause".into(),
                 Key::Undo => "undo".into(),
+                Key::Closed => "closed".into(),
                 Key::Unknown(t) => format!("unknown {t}"),
             })
             .collect()
@@ -287,8 +335,8 @@ mod tests {
     fn keys_map_to_commands_and_a_closed_stdin_stops() {
         assert_eq!(
             keys_of("p\n  p \nu\nx\n\n"),
-            ["pause", "pause", "undo", "unknown x", "stop", "stop"]
+            ["pause", "pause", "undo", "unknown x", "stop", "closed"]
         );
-        assert_eq!(keys_of(""), ["stop"]);
+        assert_eq!(keys_of(""), ["closed"]);
     }
 }

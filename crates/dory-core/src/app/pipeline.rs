@@ -61,16 +61,15 @@ pub(crate) struct PipelineHandle {
 }
 
 impl PipelineHandle {
-    /// Stops after the running stage. A stage cut short goes back to the queue, not to Cancelled.
+    /// Cancels the running stage and waits for the worker to stop. A stage cut short goes back to
+    /// the queue, not to Cancelled. A second caller also returns only once the worker has stopped.
     pub fn shutdown(&self) {
-        let Some(thread) = self
-            .thread
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-        else {
+        let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(thread) = thread.take() else {
             return;
         };
+        // Stop first, then cancel: a worker that sets `current` after this reads `stop` and
+        // leaves its job queued.
         self.stop.store(true, Ordering::Release);
         self.current.cancel_if(|_, _| true);
         self.nudge.wake();
@@ -183,10 +182,22 @@ impl Worker {
         let Ok(running) = job.on(&started) else {
             return;
         };
+        // Cancellable before `Started` commits. The facade commits a cancel or a delete before it
+        // cancels `current`, so one that commits after `Started` finds this token, and one that
+        // commits before makes `Started` fail below. Shutdown sets `stop` before it cancels
+        // `current`, so a shutdown that missed this token is seen here and the job stays queued.
+        let cancel = CancelToken::new();
+        self.current
+            .set(Some((job.id, job.recording.clone(), cancel.clone())));
+        if self.stopping() {
+            self.current.set(None);
+            return;
+        }
         if let Err(error) = self.deps.db.apply(vec![Change::Job {
             job: job.id,
             event: started,
         }]) {
+            self.current.set(None);
             // A job the user moved first is simply gone. A failing store gets a pause instead of
             // a hot loop.
             if !job_moved(&error) {
@@ -196,9 +207,6 @@ impl Worker {
             return;
         }
 
-        let cancel = CancelToken::new();
-        self.current
-            .set(Some((job.id, job.recording.clone(), cancel.clone())));
         let outcome = match self.deps.db.store.settings() {
             Ok(settings) => stages::run(
                 stage,

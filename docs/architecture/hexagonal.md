@@ -19,9 +19,9 @@ It comes from a pstack architect arena. Two runners on different models designed
 | `crates/dory-core` | Domain types, ports, pure policy, the `Dory` facade, actors, fakes | `thiserror`, `crossbeam-channel`, `async-channel`, `rtrb` |
 | `crates/dory-store` | `Store` over SQLite, `Takes` over the file system, legacy import | core, `rusqlite`, `hound`, `flacenc`, `claxon`, `rubato` |
 | `crates/dory-engines` | Portable model providers: Sona, Ollama, sherpa-onnx | core, `ureq`, `sha2`, optional `sherpa-rs` |
-| `crates/dory-macos` | macOS 26 adapters: Core Audio capture, SpeechAnalyzer, Foundation Models | core, `objc2`, `objc2-core-audio`, `objc2-core-foundation`, `objc2-avf-audio`, one Swift static library |
-| `crates/dory` | Composition root: `dory::open(Config) -> Dory` | all of the above, per target |
-| `apps/dory-cli` | Headless driving adapter, test bench, and capture harness | core, `dory` |
+| `crates/dory-macos` | macOS 26 adapters: Core Audio capture, SpeechAnalyzer, Foundation Models. Its `dory-capture` example is the capture harness, which drives the adapter directly. | core, `objc2`, `objc2-core-audio`, `objc2-core-foundation`, `objc2-avf-audio`, one Swift static library |
+| `crates/dory` | Composition root: `dory::open(Config) -> Dory` and `dory::open_library(Config) -> LibraryReader` | all of the above, per target |
+| `apps/dory-cli` | Headless driving adapter and test bench | core, `dory` |
 | `apps/dory-gpui` | The GPUI app | core, `dory`, `gpui` |
 
 The Tauri app in `src-tauri/` stays outside the workspace until the GPUI app replaces it.
@@ -44,6 +44,10 @@ for row in dory.models().list::<Stt>().await {      // probes off the UI thread
 }
 dory.models().choose::<Stt>(Choice::Pinned("sherpa/qwen3-asr-0.6b".parse()?))?;
 ```
+
+A `Dory` owns its data folder. `dory::open` takes an exclusive lock on `<data_dir>/.lock` and holds it until the `Dory` is dropped, after the last take is sealed. A second `open` of the same folder, in this process or another, fails at once with `OpenError::InUse`. Startup recovery cannot tell a take another process is still writing from one a crash left open, so only the lock holder may run it. The OS drops the lock when the process dies, so a crash never leaves the folder locked.
+
+`dory::open_library` returns a `LibraryReader`: store reads and the model list, with no actors, no recovery, and no lock. It is what `list`, `show`, and `models` use, and it works while another process records into the same folder.
 
 Facade methods that only send a command to an actor are synchronous and return at once. Methods that probe the machine or wait on the user (`models().list`, `recorder().request_access`) return futures that await an `async-channel` reply, so they run on GPUI's executor or under `block_on` in the CLI without blocking a UI thread.
 
@@ -69,7 +73,7 @@ pub trait CaptureBackend: Send + Sync {
     fn start(&self, spec: &CaptureSpec, sink: FrameSink) -> Result<Box<dyn CaptureHandle>, CaptureError>;
 }
 pub trait CaptureHandle: Send {
-    fn stop(self: Box<Self>);                                          // releases the device; cannot run twice
+    fn stop(self: Box<Self>);                                          // releases the device and drops the sink; cannot run twice
 }
 
 // Storage.
@@ -78,7 +82,8 @@ pub trait Takes: Send + Sync {
     fn begin(&self, id: &RecordingId, layout: ChannelLayout, rate_hz: u32) -> Result<Box<dyn TakeWriter>, TakeError>;
     fn seal(&self, id: &RecordingId) -> Result<TakeInfo, TakeError>;   // WAV to FLAC, idempotent
     fn clip(&self, id: &RecordingId, channel: Channel, span: Option<TimeRange>) -> Result<Clip, TakeError>;
-    fn orphans(&self) -> Result<Vec<RecordingId>, TakeError>;
+    fn orphans(&self) -> Result<Vec<RecordingId>, TakeError>;          // open WAVs a crash left
+    fn stored(&self) -> Result<Vec<RecordingId>, TakeError>;           // every id with any file
     // inspect, import, playback_path, delete
 }
 
@@ -132,12 +137,12 @@ pub trait Clock: Send + Sync { fn now(&self) -> Timestamp; fn monotonic_ms(&self
 
 - Settings store a `Choice<K>` per kind, never a path.
 - `resolve` filters the catalog by `fit` (language support, diarization, input length) and availability, then prefers Ready, then `recommended`, then the provider's `rank`. `Auto` never downloads. A job that needs an absent model becomes `Blocked(NeedsProvision)` and the UI offers the button. `Llm::fit` ignores `context_tokens` on purpose: summarization sizes its chunks from it with map-reduce, so a small window costs more passes but never rules a model out. On an optional kind (`Llm`, `Diar`), `Auto` resolves to `Skip` when nothing fits or the catalog is empty, which is how a missing diarizer leaves remote speakers as one "Remote" speaker. `Pinned` never skips.
-- `Catalog::new` rejects duplicate ids and empty kinds at startup. A settings value that names a removed model falls back to `Auto` and emits an event.
+- `Catalog::new` rejects duplicate ids at startup. An empty catalog is valid for every kind: on a required kind (`Stt`), a job blocks on `Blocker::NoModel`, which each app renders with its own fix. A settings value that names a removed model falls back to `Auto` and emits an event.
 - To add a model to an existing provider, add one catalog row. To add an engine, implement `ModelProvider<K>` and its engine trait in one module, then add one line to `dory::providers::<K>()`.
 
 ## Pipeline
 
-The queue is the store. The worker takes `next_runnable_job(now)`, commits `Started`, runs the next stage, and commits the stage output together with `StageDone` in one `apply`.
+The queue is the store. The worker takes `next_runnable_job(now)`, publishes the job's cancel token, commits `Started`, runs the next stage, and commits the stage output together with `StageDone` in one `apply`. The token is published before `Started` commits, and the facade commits a cancel or a delete before it cancels the token, so a cancel either makes `Started` fail or finds the token. Shutdown sets its stop flag before it cancels the token, and the worker reads the flag after publishing it, so shutdown never waits out a whole stage.
 
 `transcribe` (core policy):
 
@@ -153,13 +158,25 @@ The queue is the store. The worker takes `next_runnable_job(now)`, commits `Star
 | Thread | Owns |
 | --- | --- |
 | Adapter audio thread | Nothing shared. Calls `FrameSink::push` only. |
-| Take writer (core) | Drains the ring into the `TakeWriter`, pads overruns, reports `Wrote { total_frames }` (a running total, so no chunk size loses time) to the recorder. |
-| Recorder actor (core) | Recorder state, the `CaptureHandle`, the `TakeWriter`, the grace deadline. |
+| Take writer (core) | Drains the ring into the `TakeWriter`, pads overruns, reports `Wrote { total_frames }` (a running total, so no chunk size loses time) to the recorder. Exits after one last drain once the actor flags that `CaptureHandle::stop` returned, so an adapter that keeps the sink cannot hang it. |
+| Recorder actor (core) | Recorder state, the `CaptureHandle`, the `TakeWriter`, the grace deadline, and the set of takes being sealed. `Library::delete` refuses a take in that set, so a seal never lands after its row is gone. |
+| Seal threads (core) | One per finished take: WAV to FLAC, then the commit, retried with backoff while the store reports a transient error. What still fails is finished by the next start. |
 | Pipeline worker (core) | The running job and loaded engines (one per kind, unloaded when idle). |
 | Provision threads | One per download. |
 | UI | Nothing in core. Calls the facade and receives events. |
 
 Events are hints. A slow subscriber loses droppable events (levels, progress, drafts) and gets `Event::Resync`.
+
+## Recovery
+
+`Dory::open` repairs what a crash left before any actor starts, and each step reads the current state, so a second start finds nothing to do.
+
+1. Every id in `Takes::stored()` whose recording row is gone loses its files, in whatever state they are: open WAV, half-written FLAC, sealed FLAC, layout file, or legacy pointer. A legacy pointer's target in the old app's folder is never touched.
+2. Every open WAV (`Takes::orphans()`) is sealed and committed.
+3. A row with no take whose audio is sealed gets its take committed.
+4. Jobs left Running go back to the queue through `JobEvent::Interrupted`.
+
+The recorder creates a take's files before its row, so a crash between the two leaves files that step 1 deletes, never a row with no audio.
 
 ## Legacy data
 

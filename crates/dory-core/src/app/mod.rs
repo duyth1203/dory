@@ -9,6 +9,9 @@
 //! - The pipeline worker owns the running job and the loaded engines.
 //! - Each provisioning and each sealing runs on its own short-lived thread.
 //! - Every persisted fact goes through one `Db::apply`, which also announces it.
+//!
+//! [`LibraryReader`] is the read side alone: no actors, no recovery, and no writes, so it can run
+//! beside a process that is recording into the same data folder.
 
 mod events;
 mod models;
@@ -17,9 +20,10 @@ mod recorder;
 mod stages;
 mod writer;
 
+use std::any::Any;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -43,7 +47,7 @@ use crate::ports::capture::{
     Access, CaptureBackend, CaptureCaps, CaptureError, InputDevice, Source,
 };
 use crate::ports::{
-    Change, Clock, ModelProvider, ProvisionError, Store, StoreError, TakeError, Takes,
+    Change, Clock, ModelProvider, ProvisionError, Store, StoreError, StoreRead, TakeError, Takes,
 };
 use crate::recorder::{Input, Limits};
 
@@ -53,6 +57,18 @@ pub struct Ports {
     pub takes: Arc<dyn Takes>,
     pub capture: Arc<dyn CaptureBackend>,
     pub clock: Arc<dyn Clock>,
+    pub stt: Vec<Arc<dyn ModelProvider<Stt>>>,
+    pub llm: Vec<Arc<dyn ModelProvider<Llm>>>,
+    pub diar: Vec<Arc<dyn ModelProvider<Diar>>>,
+    /// Kept until `Dory` has shut down, then dropped. The composition root puts its exclusive
+    /// lock on the data folder here, so no second process can open the folder and run recovery
+    /// on a take this one is still writing or sealing.
+    pub guard: Option<Box<dyn Any + Send + Sync>>,
+}
+
+/// What [`LibraryReader`] needs: store reads and the model providers, nothing that writes.
+pub struct ReadPorts {
+    pub store: Arc<dyn StoreRead>,
     pub stt: Vec<Arc<dyn ModelProvider<Stt>>>,
     pub llm: Vec<Arc<dyn ModelProvider<Llm>>>,
     pub diar: Vec<Arc<dyn ModelProvider<Diar>>>,
@@ -123,6 +139,8 @@ pub enum DoryError {
     Invalid(#[from] InvalidInput),
     #[error("{0} is being recorded")]
     Recording(RecordingId),
+    #[error("{0} is still being saved, try again in a moment")]
+    Saving(RecordingId),
     #[error(transparent)]
     RecorderGone(#[from] RecorderGone),
 }
@@ -143,6 +161,7 @@ pub struct Recovery {
 
 pub struct Dory {
     db: Db,
+    reader: LibraryReader,
     takes: Arc<dyn Takes>,
     capture: Arc<dyn CaptureBackend>,
     clock: Arc<dyn Clock>,
@@ -151,6 +170,10 @@ pub struct Dory {
     recorder: RecorderHandle,
     pipeline: PipelineHandle,
     recovery: Recovery,
+    /// Serializes settings read-modify-write, so two edits never lose one another.
+    settings_edit: Mutex<()>,
+    /// Dropped after `Drop::drop` has shut everything down.
+    _guard: Option<Box<dyn Any + Send + Sync>>,
 }
 
 impl Dory {
@@ -206,6 +229,10 @@ impl Dory {
             &options,
         )?;
         Ok(Dory {
+            reader: LibraryReader {
+                store: db.store.clone(),
+                models: Arc::clone(&models),
+            },
             db,
             takes: ports.takes,
             capture: ports.capture,
@@ -215,6 +242,8 @@ impl Dory {
             recorder,
             pipeline,
             recovery,
+            settings_edit: Mutex::new(()),
+            _guard: ports.guard,
         })
     }
 
@@ -238,8 +267,15 @@ impl Dory {
         self.db.store.settings()
     }
 
-    /// Validates and saves `settings`. Blocked jobs are tried again, since the change may fix them.
-    pub fn update_settings(&self, settings: Settings) -> Result<(), DoryError> {
+    /// Reads the settings, applies `edit`, validates, and saves, with no other edit in between.
+    /// Blocked jobs are tried again, since the change may fix them.
+    pub fn update_settings(&self, edit: impl FnOnce(&mut Settings)) -> Result<(), DoryError> {
+        let _one_at_a_time = self
+            .settings_edit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut settings = self.db.store.settings()?;
+        edit(&mut settings);
         settings.validate()?;
         self.check_pinned::<Stt>(&settings.stt)?;
         self.check_pinned::<Llm>(&settings.llm)?;
@@ -292,9 +328,10 @@ impl Drop for Dory {
 }
 
 /// Runs `work` on its own thread and resolves with its result, so a probe never blocks the
-/// caller's executor.
+/// caller's executor. If the thread cannot start or panics, it resolves with `lost()` instead.
 fn off_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
+    lost: impl FnOnce() -> T + Send + 'static,
 ) -> impl Future<Output = T> + Send + 'static {
     let (tx, rx) = async_channel::bounded(1);
     let _ = std::thread::Builder::new()
@@ -302,7 +339,16 @@ fn off_thread<T: Send + 'static>(
         .spawn(move || {
             let _ = tx.send_blocking(work());
         });
-    async move { rx.recv().await.expect("the probe thread died") }
+    async move { rx.recv().await.unwrap_or_else(|_| lost()) }
+}
+
+const PROBE_LOST: &str = "the background probe stopped before it answered";
+
+fn capture_lost() -> CaptureError {
+    CaptureError::Platform {
+        message: PROBE_LOST.into(),
+        source: None,
+    }
 }
 
 pub struct Recorder<'a> {
@@ -335,16 +381,18 @@ impl Recorder<'_> {
         self.dory.recorder.status()
     }
 
-    pub fn probe(&self) -> impl Future<Output = CaptureCaps> + Send + 'static {
+    pub fn probe(
+        &self,
+    ) -> impl Future<Output = Result<CaptureCaps, CaptureError>> + Send + 'static {
         let capture = Arc::clone(&self.dory.capture);
-        off_thread(move || capture.probe())
+        off_thread(move || Ok(capture.probe()), || Err(capture_lost()))
     }
 
     pub fn input_devices(
         &self,
     ) -> impl Future<Output = Result<Vec<InputDevice>, CaptureError>> + Send + 'static {
         let capture = Arc::clone(&self.dory.capture);
-        off_thread(move || capture.input_devices())
+        off_thread(move || capture.input_devices(), || Err(capture_lost()))
     }
 
     /// Shows the OS prompt if needed and resolves once the user answers.
@@ -353,7 +401,10 @@ impl Recorder<'_> {
         source: Source,
     ) -> impl Future<Output = Result<Access, CaptureError>> + Send + 'static {
         let capture = Arc::clone(&self.dory.capture);
-        off_thread(move || capture.request_access(source))
+        off_thread(
+            move || capture.request_access(source),
+            || Err(capture_lost()),
+        )
     }
 
     fn command(&self, input: Input) -> Result<(), RecorderGone> {
@@ -367,27 +418,27 @@ pub struct Library<'a> {
 
 impl Library<'_> {
     pub fn list(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
-        self.dory.db.store.recordings(query)
+        self.dory.reader.list(query)
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
-        self.dory.db.store.recording(id)
+        self.dory.reader.recording(id)
     }
 
     pub fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError> {
-        self.dory.db.store.transcript(id)
+        self.dory.reader.transcript(id)
     }
 
     pub fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
-        self.dory.db.store.summary(id)
+        self.dory.reader.summary(id)
     }
 
     pub fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
-        self.dory.db.store.speaker_names(id)
+        self.dory.reader.speaker_names(id)
     }
 
     pub fn jobs(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError> {
-        self.dory.db.store.jobs_for(id)
+        self.dory.reader.jobs(id)
     }
 
     pub fn set_title(&self, id: &RecordingId, title: Option<String>) -> Result<(), DoryError> {
@@ -419,11 +470,10 @@ impl Library<'_> {
         Ok(())
     }
 
-    /// Deletes the recording and its audio. Refused while it is being recorded.
+    /// Deletes the recording and its audio. Refused while it is being recorded or sealed, so a
+    /// seal never renames audio into place after its row is gone.
     pub fn delete(&self, id: &RecordingId) -> Result<(), DoryError> {
-        if self.dory.recorder.status().id() == Some(id) {
-            return Err(DoryError::Recording(id.clone()));
-        }
+        self.dory.recorder.check_not_busy(id)?;
         self.dory
             .db
             .apply(vec![Change::RecordingDeleted(id.clone())])?;
@@ -524,20 +574,12 @@ impl Models<'_> {
     pub fn list<K: AppKind>(
         &self,
     ) -> impl Future<Output = Result<Vec<ModelRow<K>>, StoreError>> + Send + 'static {
-        let models = Arc::clone(&self.dory.models);
-        let store = Arc::clone(&self.dory.db.store);
-        off_thread(move || {
-            let settings = store.settings()?;
-            Ok(models
-                .get::<K>()
-                .rows(K::choice(&settings), &K::listing_needs(&settings)))
-        })
+        self.dory.reader.models::<K>()
     }
 
     pub fn choose<K: AppKind>(&self, choice: Choice<K>) -> Result<(), DoryError> {
-        let mut settings = self.dory.settings()?;
-        K::set_choice(&mut settings, choice);
-        self.dory.update_settings(settings)
+        self.dory
+            .update_settings(|settings| K::set_choice(settings, choice))
     }
 
     /// Downloads or installs a model, publishing progress events. Blocked jobs are tried again
@@ -573,23 +615,84 @@ impl Models<'_> {
     }
 }
 
-/// Repairs what a crash left: seals open takes and lists them, deletes audio whose recording
-/// was deleted, and requeues jobs that were running. Each step reads the current state, so
+/// The read side of a data folder: the library and the model list. It starts no actors, repairs
+/// nothing, and writes nothing, so it is safe beside a process recording into the same folder.
+pub struct LibraryReader {
+    store: Arc<dyn StoreRead>,
+    models: Arc<Registries>,
+}
+
+impl LibraryReader {
+    pub fn open(ports: ReadPorts) -> Result<LibraryReader, CatalogError> {
+        Ok(LibraryReader {
+            store: ports.store,
+            models: Arc::new(Registries::new(ports.stt, ports.llm, ports.diar)?),
+        })
+    }
+
+    pub fn list(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
+        self.store.recordings(query)
+    }
+
+    pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
+        self.store.recording(id)
+    }
+
+    pub fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError> {
+        self.store.transcript(id)
+    }
+
+    pub fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        self.store.summary(id)
+    }
+
+    pub fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
+        self.store.speaker_names(id)
+    }
+
+    pub fn jobs(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError> {
+        self.store.jobs_for(id)
+    }
+
+    /// Every model of kind `K`, probed now, with how it fits the default settings.
+    pub fn models<K: AppKind>(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ModelRow<K>>, StoreError>> + Send + 'static {
+        let models = Arc::clone(&self.models);
+        let store = Arc::clone(&self.store);
+        off_thread(
+            move || {
+                let settings = store.settings()?;
+                Ok(models
+                    .get::<K>()
+                    .rows(K::choice(&settings), &K::listing_needs(&settings)))
+            },
+            || Err(StoreError::Unavailable(PROBE_LOST.into())),
+        )
+    }
+}
+
+/// Repairs what a crash left: deletes every file whose recording was deleted, seals open takes
+/// and lists them, and requeues jobs that were running. Each step reads the current state, so
 /// running it again finds nothing to do.
+///
+/// Only the process that owns the data folder may run this: to anyone else, a take being
+/// recorded looks exactly like one a crash left open.
 fn recover(
     db: &Db,
     takes: &dyn Takes,
     clock: &dyn Clock,
     report: &mut Recovery,
 ) -> Result<(), OpenError> {
-    for id in takes.orphans()? {
+    for id in takes.stored()? {
         if db.store.recording(&id)?.is_none() {
             match takes.delete(&id) {
                 Ok(()) => report.deleted_orphans.push(id),
                 Err(error) => report.problems.push((id, error.to_string())),
             }
-            continue;
         }
+    }
+    for id in takes.orphans()? {
         match takes.seal(&id) {
             Ok(info) => {
                 commit_sealed(db, &id, info, clock)?;

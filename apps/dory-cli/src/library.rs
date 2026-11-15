@@ -1,13 +1,13 @@
 //! The read-side commands: import, list, show, models.
 
-use dory::Config;
-use dory_core::app::{AppKind, Dory, ModelRow};
+use dory::{Config, LibraryReader};
+use dory_core::app::{AppKind, ModelRow};
 use dory_core::domain::{Job, JobState, RecordingQuery, RecordingRow, TakeContainer};
 use dory_core::models::{Diar, Llm, Stt};
 
 use crate::args::{ImportArgs, ListArgs, ModelsArgs, ShowArgs};
 use crate::wait::block_on;
-use crate::{open, view};
+use crate::{open_library, view};
 
 pub fn import(config: &Config, args: &ImportArgs) -> Result<(), String> {
     println!(
@@ -21,9 +21,7 @@ pub fn import(config: &Config, args: &ImportArgs) -> Result<(), String> {
 }
 
 pub fn list(config: &Config, args: &ListArgs) -> Result<(), String> {
-    let dory = open(config, false)?;
-    let rows = dory
-        .library()
+    let rows = open_library(config, false)?
         .list(&RecordingQuery {
             text: args.search.clone(),
             limit: None,
@@ -58,8 +56,7 @@ fn list_line(row: &RecordingRow) -> String {
 }
 
 pub fn show(config: &Config, args: &ShowArgs) -> Result<(), String> {
-    let dory = open(config, false)?;
-    let lib = dory.library();
+    let lib = open_library(config, false)?;
     let recording = lib
         .recording(&args.id)
         .map_err(crate::chain)?
@@ -142,16 +139,16 @@ fn job_line(job: Option<&Job>) -> String {
 }
 
 pub fn models(config: &Config, args: &ModelsArgs) -> Result<(), String> {
-    let dory = open(config, args.fake_engines)?;
-    print_kind::<Stt>(&dory, "speech to text")?;
-    print_kind::<Llm>(&dory, "summaries")?;
-    print_kind::<Diar>(&dory, "speakers")?;
+    let lib = open_library(config, args.fake_engines)?;
+    print_kind::<Stt>(&lib, "speech to text")?;
+    print_kind::<Llm>(&lib, "summaries")?;
+    print_kind::<Diar>(&lib, "speakers")?;
     Ok(())
 }
 
-fn print_kind<K: AppKind>(dory: &Dory, title: &str) -> Result<(), String> {
+fn print_kind<K: AppKind>(lib: &LibraryReader, title: &str) -> Result<(), String> {
     println!("{title}");
-    let rows: Vec<ModelRow<K>> = block_on(dory.models().list::<K>()).map_err(crate::chain)?;
+    let rows: Vec<ModelRow<K>> = block_on(lib.models::<K>()).map_err(crate::chain)?;
     if rows.is_empty() {
         println!("  (none registered)");
     }

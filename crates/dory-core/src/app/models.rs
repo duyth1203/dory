@@ -372,7 +372,11 @@ impl Provisions {
                     model: &key,
                     step: String::new(),
                 };
-                let result = provider.provision(&id, &mut sink, &token);
+                // A panicking provider must still free its entry and answer its caller.
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    provider.provision(&id, &mut sink, &token)
+                }))
+                .unwrap_or_else(|_| Err(ProvisionError::Other("the provider panicked".into())));
                 db.publish(Event::ProvisionFinished {
                     model: key.clone(),
                     result: result.as_ref().map(|_| ()).map_err(|e| e.to_string()),

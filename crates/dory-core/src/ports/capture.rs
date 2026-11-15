@@ -10,8 +10,9 @@
 //! 3. A lost source is filled with silence of the right length plus a [`CaptureIssue`], so every
 //!    pushed frame has every channel.
 //! 4. The adapter never changes the user's default devices and creates only private devices.
-//! 5. [`CaptureHandle::stop`] releases the hardware, so the OS recording indicator turns off.
-//!    Pause and resume are stop and a fresh `start`.
+//! 5. [`CaptureHandle::stop`] releases the hardware, so the OS recording indicator turns off, and
+//!    drops the sink before it returns. The core stops reading the ring once `stop` returns, so a
+//!    frame pushed later is lost. Pause and resume are stop and a fresh `start`.
 //! 6. If system audio is digital silence for 3 seconds while the output device runs, the adapter
 //!    reports [`CaptureIssue::SystemAudioSilent`]. On macOS that is how a denied System Audio
 //!    Recording permission shows up.
@@ -39,7 +40,8 @@ pub trait CaptureBackend: Send + Sync {
 }
 
 pub trait CaptureHandle: Send {
-    /// Stops the device and drops the sink. After this returns, no frame is pushed.
+    /// Stops the device and drops the sink before returning. After this returns, no frame is
+    /// pushed, and the core does not wait for the sink to drop.
     fn stop(self: Box<Self>);
 }
 

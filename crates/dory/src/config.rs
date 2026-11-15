@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
-const DATA_DIR_VAR: &str = "DORY_DATA_DIR";
+/// The variable that names the data folder.
+pub const DATA_DIR_VAR: &str = "DORY_DATA_DIR";
 const APP_ID: &str = "com.dory.app";
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,7 +1,8 @@
 //! The recorder actor. It owns the recorder state, the device handle, the open take, and the
 //! grace deadline, feeds inputs to the pure [`crate::recorder::step`], and executes the effects.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -9,17 +10,17 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use thiserror::Error;
 
-use super::Options;
 use super::events::{Db, Event};
 use super::pipeline::Nudge;
 use super::writer::{self, Cadence, WriterJob};
+use super::{DoryError, Options};
 use crate::capture::frame_channel;
 use crate::domain::{
     ChannelLayout, Goal, LanguagePref, Ms, Priority, Recording, RecordingEdit, RecordingId,
     TakeInfo,
 };
 use crate::ports::capture::{CaptureBackend, CaptureHandle, CaptureSpec, MicSelection};
-use crate::ports::{Change, Clock, StoreError, TakeError, TakeWriter, Takes};
+use crate::ports::{Change, Classify, Clock, StoreError, TakeError, TakeWriter, Takes};
 use crate::recorder::{Effect, FinalizeReason, Generation, Input, Limits, State, step};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,8 +44,9 @@ impl Default for StartOptions {
 }
 
 /// What the recorder is doing, for display. `recorded` is media time, so pauses never count.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum RecorderStatus {
+    #[default]
     Idle,
     Recording {
         id: RecordingId,
@@ -84,10 +86,19 @@ pub(crate) enum Msg {
     Shutdown,
 }
 
+/// What the actor shares with the facade, under one lock so a reader never sees a take that is
+/// in neither set: the actor adds a take to `sealing` before its status leaves it.
+#[derive(Default)]
+struct Shared {
+    status: RecorderStatus,
+    /// Takes closed and not yet sealed and committed.
+    sealing: BTreeSet<RecordingId>,
+}
+
 /// The facade's end of the actor.
 pub(crate) struct RecorderHandle {
     tx: Sender<Msg>,
-    status: Arc<Mutex<RecorderStatus>>,
+    shared: Arc<Mutex<Shared>>,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -101,16 +112,29 @@ impl RecorderHandle {
     }
 
     pub fn status(&self) -> RecorderStatus {
-        lock(&self.status).clone()
+        lock(&self.shared).status.clone()
     }
 
-    /// Finalizes whatever is recording and waits until it is committed.
+    /// Refuses a take that is being recorded or sealed.
+    pub fn check_not_busy(&self, id: &RecordingId) -> Result<(), DoryError> {
+        let shared = lock(&self.shared);
+        if shared.status.id() == Some(id) {
+            return Err(DoryError::Recording(id.clone()));
+        }
+        if shared.sealing.contains(id) {
+            return Err(DoryError::Saving(id.clone()));
+        }
+        Ok(())
+    }
+
+    /// Finalizes whatever is recording and waits until it is sealed and committed. A second
+    /// caller, on any thread, also returns only once that is done.
     pub fn shutdown(&self) {
-        let Some(thread) = lock(&self.thread).take() else {
-            return;
-        };
-        let _ = self.tx.send(Msg::Shutdown);
-        let _ = thread.join();
+        let mut thread = lock(&self.thread);
+        if let Some(thread) = thread.take() {
+            let _ = self.tx.send(Msg::Shutdown);
+            let _ = thread.join();
+        }
     }
 }
 
@@ -124,7 +148,7 @@ pub(crate) struct Deps {
 
 pub(crate) fn spawn(deps: Deps, options: &Options) -> std::io::Result<RecorderHandle> {
     let (tx, rx) = crossbeam_channel::unbounded();
-    let status = Arc::new(Mutex::new(RecorderStatus::Idle));
+    let shared = Arc::new(Mutex::new(Shared::default()));
     let actor = Actor {
         state: State::idle(),
         limits: options.limits,
@@ -140,7 +164,7 @@ pub(crate) fn spawn(deps: Deps, options: &Options) -> std::io::Result<RecorderHa
         armed: None,
         suffix: 0,
         sealing: Vec::new(),
-        status: Arc::clone(&status),
+        shared: Arc::clone(&shared),
         published: RecorderStatus::Idle,
         tx: tx.clone(),
         deps,
@@ -150,7 +174,7 @@ pub(crate) fn spawn(deps: Deps, options: &Options) -> std::io::Result<RecorderHa
         .spawn(move || actor.run(rx))?;
     Ok(RecorderHandle {
         tx,
-        status,
+        shared,
         thread: Mutex::new(Some(thread)),
     })
 }
@@ -172,6 +196,9 @@ enum Writer {
     Parked(Box<dyn TakeWriter>),
     Running {
         capture: Box<dyn CaptureHandle>,
+        /// Tells the writer thread the device has stopped, so it drains once more and returns
+        /// even if the adapter still holds the sink.
+        stopped: Arc<AtomicBool>,
         thread: JoinHandle<Box<dyn TakeWriter>>,
     },
     /// The writer thread panicked. The file keeps what was last checkpointed.
@@ -199,7 +226,7 @@ struct Actor {
     armed: Option<u64>,
     suffix: u16,
     sealing: Vec<JoinHandle<()>>,
-    status: Arc<Mutex<RecorderStatus>>,
+    shared: Arc<Mutex<Shared>>,
     published: RecorderStatus,
     tx: Sender<Msg>,
     deps: Deps,
@@ -310,39 +337,32 @@ impl Actor {
                 break id;
             }
         };
-        // The row first: recovery reads the layout from it, and a row without audio is harmless.
-        self.deps
-            .db
-            .apply(vec![Change::RecordingCreated(Recording {
-                id: id.clone(),
-                title: options.title,
-                created_at: now,
-                language: options.language.unwrap_or(settings.language),
-                layout: options.layout,
-                take: None,
-            })])?;
-        match self
+        // The audio first: a crash before the row commits leaves files with no row, which startup
+        // deletes, never a row with no audio.
+        let writer = self
             .deps
             .takes
-            .begin(&id, options.layout, self.limits.rate_hz.get())
-        {
-            Ok(writer) => {
-                self.take = Some(Take {
-                    id,
-                    layout: options.layout,
-                    mic: options.mic,
-                    writer: Writer::Parked(writer),
-                });
-                Ok(())
-            }
-            Err(error) => {
-                let _ = self
-                    .deps
-                    .db
-                    .apply(vec![Change::RecordingDeleted(id.clone())]);
-                Err(error.into())
-            }
+            .begin(&id, options.layout, self.limits.rate_hz.get())?;
+        let created = self.deps.db.apply(vec![Change::RecordingCreated(Recording {
+            id: id.clone(),
+            title: options.title,
+            created_at: now,
+            language: options.language.unwrap_or(settings.language),
+            layout: options.layout,
+            take: None,
+        })]);
+        if let Err(error) = created {
+            drop(writer);
+            let _ = self.deps.takes.delete(&id);
+            return Err(error.into());
         }
+        self.take = Some(Take {
+            id,
+            layout: options.layout,
+            mic: options.mic,
+            writer: Writer::Parked(writer),
+        });
+        Ok(())
     }
 
     /// Starts the device with a fresh ring that feeds the same open take. False when it could not.
@@ -373,9 +393,11 @@ impl Actor {
                 return false;
             }
         };
+        let stopped = Arc::new(AtomicBool::new(false));
         let job = WriterJob {
             writer,
             source,
+            stopped: Arc::clone(&stopped),
             generation,
             rate_hz: self.limits.rate_hz,
             actor: self.tx.clone(),
@@ -384,7 +406,11 @@ impl Actor {
         };
         match writer::spawn(job) {
             Ok(thread) => {
-                take.writer = Writer::Running { capture, thread };
+                take.writer = Writer::Running {
+                    capture,
+                    stopped,
+                    thread,
+                };
                 true
             }
             Err(error) => {
@@ -399,14 +425,20 @@ impl Actor {
     }
 
     /// Releases the device, then waits for the writer thread to drain the ring and hand the
-    /// writer back.
+    /// writer back. Once `stop` returns no frame arrives, so the flag set after it marks the last
+    /// drain, whether or not the adapter dropped the sink.
     fn stop_capture(&mut self) {
         let Some(take) = self.take.as_mut() else {
             return;
         };
         take.writer = match std::mem::replace(&mut take.writer, Writer::Lost) {
-            Writer::Running { capture, thread } => {
+            Writer::Running {
+                capture,
+                stopped,
+                thread,
+            } => {
                 capture.stop();
+                stopped.store(true, Ordering::Release);
                 match thread.join() {
                     Ok(writer) => Writer::Parked(writer),
                     Err(_) => {
@@ -438,8 +470,14 @@ impl Actor {
             Writer::Parked(writer) => Some(writer.finish()),
             Writer::Running { .. } | Writer::Lost => None,
         };
+        // Marked before the status leaves this take, so `check_not_busy` always sees one or the
+        // other.
+        lock(&self.shared).sealing.insert(take.id.clone());
         let seal = Seal {
-            id: take.id,
+            busy: Busy {
+                id: take.id,
+                shared: Arc::clone(&self.shared),
+            },
             closed,
             db: self.deps.db.clone(),
             takes: Arc::clone(&self.deps.takes),
@@ -451,6 +489,7 @@ impl Actor {
             .spawn(move || seal.run())
         {
             Ok(thread) => self.sealing.push(thread),
+            // The seal, and its `Busy`, dropped with the failed spawn. Startup seals the WAV.
             Err(error) => self.publish(Event::error("sealing the take", error)),
         }
     }
@@ -488,7 +527,7 @@ impl Actor {
             (State::Grace { recorded, .. }, Some(id)) => RecorderStatus::Grace { id, recorded },
             _ => RecorderStatus::Idle,
         };
-        *lock(&self.status) = status.clone();
+        lock(&self.shared).status = status.clone();
         if !status.same_phase(&self.published) {
             self.published = status.clone();
             self.publish(Event::Recorder(status));
@@ -500,8 +539,25 @@ impl Actor {
     }
 }
 
-struct Seal {
+/// Commits that fail for a transient reason are tried this many times in all, waiting
+/// `COMMIT_RETRY_BASE` before the second and doubling. Startup commits what is still missing.
+const COMMIT_ATTEMPTS: u32 = 6;
+const COMMIT_RETRY_BASE: Duration = Duration::from_millis(50);
+
+/// A take in the `sealing` set. Dropping it, even in a panic, takes it out.
+struct Busy {
     id: RecordingId,
+    shared: Arc<Mutex<Shared>>,
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        lock(&self.shared).sealing.remove(&self.id);
+    }
+}
+
+struct Seal {
+    busy: Busy,
     /// The result of closing the WAV, or `None` when the writer was lost.
     closed: Option<Result<TakeInfo, TakeError>>,
     db: Db,
@@ -512,12 +568,13 @@ struct Seal {
 
 impl Seal {
     fn run(self) {
+        let id = &self.busy.id;
         if let Some(Err(error)) = &self.closed {
             self.db.publish(Event::error("closing the take", error));
         }
-        match self.takes.seal(&self.id) {
+        match self.takes.seal(id) {
             Ok(info) => {
-                if let Err(error) = commit_sealed(&self.db, &self.id, info, self.clock.as_ref()) {
+                if let Err(error) = self.commit(info) {
                     self.db.publish(Event::error("saving the recording", error));
                 }
                 self.nudge.wake();
@@ -527,10 +584,28 @@ impl Seal {
                 // List it with the WAV's length. Startup seals it, because it is still an orphan.
                 if let Some(Ok(wav)) = self.closed {
                     let _ = self.db.apply(vec![Change::RecordingEdited {
-                        id: self.id,
+                        id: id.clone(),
                         edit: RecordingEdit::Take(wav),
                     }]);
                 }
+            }
+        }
+    }
+
+    fn commit(&self, info: TakeInfo) -> Result<(), StoreError> {
+        let mut wait = COMMIT_RETRY_BASE;
+        let mut attempt = 1;
+        loop {
+            match commit_sealed(&self.db, &self.busy.id, info, self.clock.as_ref()) {
+                Err(error)
+                    if attempt < COMMIT_ATTEMPTS
+                        && error.class() == crate::domain::FailureClass::Transient =>
+                {
+                    std::thread::sleep(wait);
+                    wait = wait.saturating_mul(2);
+                    attempt += 1;
+                }
+                result => return result,
             }
         }
     }

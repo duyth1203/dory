@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use dory::{Config, ConfigError, legacy_data_dir};
+use dory::{Config, ConfigError, OpenError, legacy_data_dir};
 use dory_core::domain::RecordingQuery;
 
 fn os(s: &str) -> Option<OsString> {
@@ -36,23 +36,22 @@ fn opens_twice_on_the_same_folder_and_keeps_what_the_first_wrote() {
 }
 
 #[test]
-fn two_handles_can_be_open_at_once() {
+fn a_second_open_of_a_folder_fails_fast_until_the_first_is_dropped() {
     let dir = tempfile::tempdir().unwrap();
     let config = Config::new(dir.path());
-    let a = dory::open(&config).unwrap();
-    let b = dory::open(&config).unwrap();
-    assert!(
-        a.library()
-            .list(&RecordingQuery::default())
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        b.library()
-            .list(&RecordingQuery::default())
-            .unwrap()
-            .is_empty()
-    );
+    let first = dory::open(&config).unwrap();
+    match dory::open(&config) {
+        Err(OpenError::InUse(path)) => assert_eq!(path, dir.path()),
+        other => panic!("expected InUse, got {:?}", other.err()),
+    }
+    assert!(matches!(
+        dory::import_legacy(&config, dir.path()),
+        Err(dory::ImportError::Open(OpenError::InUse(_)))
+    ));
+    let reader = dory::open_library(&config).unwrap();
+    assert!(reader.list(&RecordingQuery::default()).unwrap().is_empty());
+    drop(first);
+    dory::open(&config).expect("the lock goes with the handle");
 }
 
 #[test]
@@ -163,8 +162,8 @@ fn snapshot(dir: &Path) -> Vec<(String, Vec<u8>)> {
 
 #[cfg(feature = "fake-engines")]
 mod fakes {
-    use dory_core::app::Dory;
-    use dory_core::domain::{ChannelLayout, Goal, JobState, RecordingId};
+    use dory_core::app::{Dory, RecorderStatus, StartOptions};
+    use dory_core::domain::{ChannelLayout, Goal, JobState, Ms, RecordingId, TakeContainer};
     use dory_core::models::Stt;
     use dory_core::testing::{block_on, eventually};
 
@@ -186,15 +185,10 @@ mod fakes {
     }
 
     #[test]
-    fn plain_open_has_only_the_stand_in_speech_engine_and_no_summary_model() {
+    fn plain_open_registers_no_engines_yet() {
         let dir = tempfile::tempdir().unwrap();
         let dory = dory::open(&Config::new(dir.path())).unwrap();
-        let stt = block_on(dory.models().list::<Stt>()).unwrap();
-        assert_eq!(stt.len(), 1);
-        assert!(matches!(
-            stt[0].status.availability,
-            dory_core::models::Availability::Unavailable(_)
-        ));
+        assert!(block_on(dory.models().list::<Stt>()).unwrap().is_empty());
         assert!(
             block_on(dory.models().list::<dory_core::models::Llm>())
                 .unwrap()
@@ -202,8 +196,18 @@ mod fakes {
         );
     }
 
-    fn record(dory: &Dory, seconds: u32) -> RecordingId {
-        use dory_core::app::{RecorderStatus, StartOptions};
+    fn recorded(dory: &Dory) -> Option<Ms> {
+        match dory.recorder().status() {
+            RecorderStatus::Recording { recorded, .. } | RecorderStatus::Grace { recorded, .. } => {
+                Some(recorded)
+            }
+            _ => None,
+        }
+    }
+
+    /// Records at least `seconds` of the fake tone and stops. Returns the id and the length the
+    /// recorder reported at the stop, which is what the sealed take must hold.
+    fn record(dory: &Dory, seconds: u32) -> (RecordingId, Ms) {
         dory.recorder()
             .start(StartOptions {
                 layout: ChannelLayout::MicSystem,
@@ -212,33 +216,75 @@ mod fakes {
             .unwrap();
         eventually("recording", || dory.recorder().status().id().is_some());
         let id = dory.recorder().status().id().cloned().unwrap();
-        eventually(
-            "the fake clip to play out",
-            || matches!(dory.recorder().status(), RecorderStatus::Recording { recorded, .. } if recorded.0 >= u64::from(seconds) * 1000),
-        );
+        eventually("the fake clip to play out", || {
+            recorded(dory).is_some_and(|r| r.0 >= u64::from(seconds) * 1000)
+        });
         dory.recorder().stop().unwrap();
-        id
+        eventually("grace", || {
+            matches!(dory.recorder().status(), RecorderStatus::Grace { .. })
+        });
+        (id, recorded(dory).unwrap())
+    }
+
+    #[test]
+    fn a_reader_lists_while_another_handle_records_and_the_live_wav_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::new(dir.path());
+        let recorder = dory::open_with_fake_capture(&config).unwrap();
+        recorder.recorder().start(StartOptions::default()).unwrap();
+        eventually("some audio", || {
+            recorded(&recorder).is_some_and(|r| r.0 >= 300)
+        });
+        let id = recorder.recorder().status().id().cloned().unwrap();
+        let wav = config.takes_dir().join(format!("{id}.wav"));
+
+        assert!(matches!(
+            dory::open_with_fake_engines(&config),
+            Err(OpenError::InUse(_))
+        ));
+        let reader = dory::open_library(&config).unwrap();
+        let rows = reader.list(&RecordingQuery::default()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].recording.id, id);
+        assert_eq!(rows[0].recording.take, None, "still recording");
+        assert!(wav.is_file(), "the live WAV is left alone");
+
+        let before = recorded(&recorder).unwrap();
+        eventually("the recording to go on", || {
+            recorded(&recorder).is_some_and(|r| r.0 >= before.0 + 300)
+        });
+        recorder.recorder().stop().unwrap();
+        eventually("grace", || {
+            matches!(recorder.recorder().status(), RecorderStatus::Grace { .. })
+        });
+        let length = recorded(&recorder).unwrap();
+        drop(recorder);
+
+        let take = reader.recording(&id).unwrap().unwrap().take.unwrap();
+        assert_eq!(take.container, TakeContainer::Flac);
+        assert_eq!(take.duration, length);
+        assert!(!wav.exists());
     }
 
     #[test]
     fn fake_capture_then_fake_engines_reach_a_summary() {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::new(dir.path());
-        let id = {
+        let (id, length) = {
             let dory = dory::open_with_fake_capture(&config).unwrap();
-            let id = record(&dory, 1);
+            let recorded = record(&dory, 1);
             // Dropping `Dory` finalizes the stop and waits for the take to seal.
             drop(dory);
-            id
+            recorded
         };
 
         let dory = dory::open_with_fake_engines(&config).unwrap();
         let row = &dory.library().list(&RecordingQuery::default()).unwrap()[0];
         assert_eq!(row.recording.id, id);
         let take = row.recording.take.expect("sealed");
-        assert_eq!(take.duration.0, 1_000);
+        assert_eq!(take.duration, length);
 
-        // The recording's job blocked on the stand-in engine under the first handle. Opening
+        // The recording's job blocked on the missing engine under the first handle. Opening
         // again re-checks blocked jobs, so it runs with the engines this handle has, and
         // enqueueing again joins it instead of adding a second job.
         dory.pipeline().enqueue(&id, Goal::ALL).unwrap();

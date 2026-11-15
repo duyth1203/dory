@@ -9,15 +9,6 @@ license.workspace = true
 ctrlc = "3.5.2"
 dory = { workspace = true, features = ["fake-engines"] }
 dory-core.workspace = true
-hound.workspace = true
-
-# The capture harness drives the macOS adapter directly: it needs the device graph, the timeline
-# clock, and a forced rebuild, none of which the CaptureBackend port exposes.
-[target.'cfg(target_os = "macos")'.dependencies]
-block2 = "0.6.2"
-dory-macos.workspace = true
-objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "block2", "objc2-core-audio-types"] }
-objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 
 [dev-dependencies]
 tempfile.workspace = true

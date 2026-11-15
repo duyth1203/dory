@@ -363,6 +363,10 @@ impl Takes for MemTakes {
             .collect())
     }
 
+    fn stored(&self) -> Result<Vec<RecordingId>, TakeError> {
+        Ok(lock(&self.takes).keys().cloned().collect())
+    }
+
     fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError> {
         Ok(lock(&self.takes).get(id).map(MemTake::info))
     }

@@ -10,6 +10,9 @@
 //! - `<id>.meta` holds the channel layout, because `clip` is asked for "the mic" by id alone.
 //! - `<id>.legacy` points at an audio file in the old app's folder. That file is read in place and
 //!   is never copied, moved, or deleted.
+//!
+//! [`FILES`] lists every name this adapter writes, so [`Takes::stored`] and [`Takes::delete`]
+//! agree on what belongs to an id.
 
 mod ffmpeg;
 mod flac;
@@ -42,6 +45,19 @@ pub(crate) fn io_err(e: std::io::Error) -> TakeError {
 fn nonzero(rate_hz: u32) -> Result<NonZeroU32, TakeError> {
     NonZeroU32::new(rate_hz).ok_or_else(|| TakeError::Decode("sample rate is zero".into()))
 }
+
+/// Every suffix this adapter writes after `<id>.`, two-part ones first so `a.flac.tmp` is never
+/// read as an id `a.flac` with a suffix `tmp`.
+const FILES: [&str; 8] = [
+    "wav.partial",
+    "flac.tmp",
+    "meta.tmp",
+    "legacy.tmp",
+    "wav",
+    "flac",
+    "meta",
+    "legacy",
+];
 
 fn remove_if_present(path: &Path) -> Result<(), TakeError> {
     match std::fs::remove_file(path) {
@@ -439,6 +455,27 @@ impl Takes for FsTakes {
         Ok(ids)
     }
 
+    fn stored(&self) -> Result<Vec<RecordingId>, TakeError> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(io_err(e)),
+        };
+        let mut ids = std::collections::BTreeSet::new();
+        for entry in entries {
+            let name = entry.map_err(io_err)?.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let id = FILES.iter().find_map(|suffix| {
+                let stem = name.strip_suffix(suffix)?.strip_suffix('.')?;
+                RecordingId::parse(stem).ok()
+            });
+            ids.extend(id);
+        }
+        Ok(ids.into_iter().collect())
+    }
+
     fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError> {
         match self.locate(id)? {
             None => Ok(None),
@@ -505,17 +542,8 @@ impl Takes for FsTakes {
 
     /// Removes this crate's files for `id`. The audio a legacy pointer refers to is never touched.
     fn delete(&self, id: &RecordingId) -> Result<(), TakeError> {
-        for ext in [
-            "wav",
-            "wav.partial",
-            "flac",
-            "flac.tmp",
-            "meta",
-            "meta.tmp",
-            "legacy",
-            "legacy.tmp",
-        ] {
-            remove_if_present(&self.file(id, ext))?;
+        for suffix in FILES {
+            remove_if_present(&self.file(id, suffix))?;
         }
         Ok(())
     }

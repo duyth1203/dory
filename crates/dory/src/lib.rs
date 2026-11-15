@@ -8,22 +8,22 @@ mod clock;
 mod config;
 #[cfg(feature = "fake-engines")]
 mod fake;
-mod pending;
+mod lock;
 mod platform;
 
 use std::path::Path;
 use std::sync::Arc;
 
-use dory_core::app::{Options, Ports};
-use dory_core::models::{Llm, Stt};
+use dory_core::app::{Options, Ports, ReadPorts};
+use dory_core::models::{CatalogError, Llm, Stt};
 use dory_core::ports::capture::CaptureBackend;
 use dory_core::ports::{ModelProvider, StoreError};
 use dory_store::{FsTakes, SqliteStore};
 use thiserror::Error;
 
 pub use clock::SystemClock;
-pub use config::{Config, ConfigError, legacy_data_dir};
-pub use dory_core::app::Dory;
+pub use config::{Config, ConfigError, DATA_DIR_VAR, legacy_data_dir};
+pub use dory_core::app::{Dory, LibraryReader};
 pub use dory_store::{ImportReport, Skipped};
 #[cfg(feature = "fake-engines")]
 pub use fake::{FAKE_LLM, FAKE_STT};
@@ -31,14 +31,27 @@ pub use fake::{FAKE_LLM, FAKE_STT};
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum OpenError {
-    #[error("cannot create {path}")]
+    #[error("cannot create {}", .path.display())]
     DataDir {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "Dory is already running on {}, quit it or set {DATA_DIR_VAR} to another folder",
+        .0.display()
+    )]
+    InUse(std::path::PathBuf),
+    #[error("cannot lock {}", .path.display())]
+    Lock {
         path: std::path::PathBuf,
         #[source]
         source: std::io::Error,
     },
     #[error("cannot open the database")]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
     #[error(transparent)]
     Core(#[from] dory_core::app::OpenError),
 }
@@ -58,11 +71,11 @@ struct Providers {
     llm: Vec<Arc<dyn ModelProvider<Llm>>>,
 }
 
-/// The real engines. The summary list is empty and speech holds a stand-in until P3 adds Sona and
-/// Ollama here, one line each.
+/// The real engines. Both lists are empty until P3 adds Sona and Ollama here, one line each. Until
+/// then a recording's job blocks on `Blocker::NoModel`.
 fn providers() -> Providers {
     Providers {
-        stt: vec![Arc::new(pending::PendingSpeech)],
+        stt: Vec::new(),
         llm: Vec::new(),
     }
 }
@@ -74,13 +87,17 @@ struct Storage {
 }
 
 fn storage(config: &Config) -> Result<Storage, OpenError> {
-    std::fs::create_dir_all(&config.data_dir).map_err(|source| OpenError::DataDir {
-        path: config.data_dir.clone(),
-        source,
-    })?;
+    create_data_dir(config)?;
     Ok(Storage {
         store: Arc::new(SqliteStore::open(config.db_path())?),
         takes: Arc::new(FsTakes::new(config.takes_dir())),
+    })
+}
+
+fn create_data_dir(config: &Config) -> Result<(), OpenError> {
+    std::fs::create_dir_all(&config.data_dir).map_err(|source| OpenError::DataDir {
+        path: config.data_dir.clone(),
+        source,
     })
 }
 
@@ -90,6 +107,9 @@ fn open_with(
     options: Options,
     providers: Providers,
 ) -> Result<Dory, OpenError> {
+    create_data_dir(config)?;
+    // Before anything reads the folder: recovery must never see another process's live take.
+    let lock = lock::DataLock::acquire(&config.data_dir)?;
     let Storage { store, takes } = storage(config)?;
     let ports = Ports {
         store,
@@ -99,14 +119,39 @@ fn open_with(
         stt: providers.stt,
         llm: providers.llm,
         diar: Vec::new(),
+        guard: Some(Box::new(lock)),
     };
     Ok(Dory::open(ports, options)?)
 }
 
+fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryReader, OpenError> {
+    let Storage { store, .. } = storage(config)?;
+    Ok(LibraryReader::open(ReadPorts {
+        store,
+        stt: providers.stt,
+        llm: providers.llm,
+        diar: Vec::new(),
+    })?)
+}
+
 /// Opens Dory on `config.data_dir`: SQLite at `dory.sqlite`, takes under `takes/`, the platform's
-/// capture backend, and the system clock.
+/// capture backend, and the system clock. Holds an exclusive lock on `.lock` in that folder until
+/// the returned `Dory` is dropped, so a second open of the same folder, in this process or
+/// another, fails with [`OpenError::InUse`].
 pub fn open(config: &Config) -> Result<Dory, OpenError> {
     open_with(config, platform::capture(), Options::default(), providers())
+}
+
+/// Opens the library under `config.data_dir` for reading only. It takes no lock and repairs
+/// nothing, so it works while another process records into the same folder.
+pub fn open_library(config: &Config) -> Result<LibraryReader, OpenError> {
+    open_library_with(config, providers())
+}
+
+/// Like [`open_library`], with dory-core's fake speech and summary engines registered.
+#[cfg(feature = "fake-engines")]
+pub fn open_library_with_fake_engines(config: &Config) -> Result<LibraryReader, OpenError> {
+    open_library_with(config, fake::providers())
 }
 
 /// Like [`open`], with dory-core's fake speech and summary engines registered.
@@ -130,8 +175,11 @@ pub fn open_with_fake_capture(config: &Config) -> Result<Dory, OpenError> {
 }
 
 /// Imports the old Tauri app's data folder into the store under `config.data_dir`. The old folder
-/// is only read, and no actors start.
+/// is only read, and no actors start. Holds the data folder's lock while it writes, so it fails
+/// with [`OpenError::InUse`] while Dory runs there.
 pub fn import_legacy(config: &Config, old_data_dir: &Path) -> Result<ImportReport, ImportError> {
+    create_data_dir(config)?;
+    let _lock = lock::DataLock::acquire(&config.data_dir)?;
     let Storage { store, takes } = storage(config)?;
     Ok(dory_store::import_legacy(&store, &takes, old_data_dir)?)
 }

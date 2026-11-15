@@ -3,6 +3,8 @@
 //! this thread while capturing, the recorder actor otherwise.
 
 use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -26,6 +28,9 @@ pub(crate) struct Cadence {
 pub(crate) struct WriterJob {
     pub writer: Box<dyn TakeWriter>,
     pub source: FrameSource,
+    /// Set by the actor once the device has stopped. The adapter may still hold the sink, so the
+    /// writer cannot wait for the sink to drop.
+    pub stopped: Arc<AtomicBool>,
     pub generation: Generation,
     pub rate_hz: NonZeroU32,
     pub actor: Sender<Msg>,
@@ -33,7 +38,7 @@ pub(crate) struct WriterJob {
     pub cadence: Cadence,
 }
 
-/// Runs until the device is stopped and the ring is empty, then returns the writer.
+/// Runs until the device is stopped and the ring is drained, then returns the writer.
 pub(crate) fn spawn(job: WriterJob) -> std::io::Result<JoinHandle<Box<dyn TakeWriter>>> {
     std::thread::Builder::new()
         .name("dory-take-writer".into())
@@ -48,9 +53,10 @@ impl WriterJob {
         let mut last_checkpoint = Instant::now();
         let mut failed = false;
         loop {
-            // Read before draining: once the sink is gone nothing more can arrive, so the drain
-            // below is the last one and catches every frame and every padded overrun.
-            let finished = self.source.is_finished();
+            // Read before draining: once the sink is gone or the device has stopped nothing more
+            // can arrive, so the drain below is the last one and catches every frame and every
+            // padded overrun.
+            let finished = self.source.is_finished() || self.stopped.load(Ordering::Acquire);
             buf.clear();
             self.source.drain(&mut buf);
             if !buf.is_empty() && !failed {

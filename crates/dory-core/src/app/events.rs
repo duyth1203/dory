@@ -1,7 +1,7 @@
 //! Events are hints that something changed. Persisted-state events come only from a committed
 //! change list, through [`Db::apply`], so no actor can write a fact without announcing it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_channel::{Receiver, Sender, TrySendError};
@@ -140,6 +140,28 @@ struct HubInner {
 struct Subscriber {
     tx: Sender<Event>,
     lost: Arc<AtomicBool>,
+    /// Wake-up `Resync`s in the queue.
+    wakeups: Arc<AtomicUsize>,
+}
+
+impl Subscriber {
+    /// Events queued, not counting wake-ups.
+    fn queued(&self) -> usize {
+        self.tx
+            .len()
+            .saturating_sub(self.wakeups.load(Ordering::Acquire))
+    }
+
+    /// Flags the loss, and on the first loss also queues a wake-up `Resync`. The flag alone would
+    /// not wake a receiver that emptied the queue and parked just before it was set.
+    fn lose(&self) {
+        if !self.lost.swap(true, Ordering::AcqRel) {
+            self.wakeups.fetch_add(1, Ordering::AcqRel);
+            if self.tx.try_send(Event::Resync).is_err() {
+                self.wakeups.fetch_sub(1, Ordering::AcqRel);
+            }
+        }
+    }
 }
 
 impl EventHub {
@@ -153,29 +175,36 @@ impl EventHub {
     }
 
     pub fn subscribe(&self) -> Subscription {
-        let (tx, rx) = async_channel::bounded(self.inner.capacity);
+        // Room past capacity for the wake-up `Resync`s that `lose` queues, which never count
+        // against the events a subscriber may fall behind by.
+        let (tx, rx) = async_channel::bounded(self.inner.capacity + 2);
         let lost = Arc::new(AtomicBool::new(false));
+        let wakeups = Arc::new(AtomicUsize::new(0));
         self.subscribers().push(Subscriber {
             tx,
             lost: Arc::clone(&lost),
+            wakeups: Arc::clone(&wakeups),
         });
-        Subscription { rx, lost }
+        Subscription { rx, lost, wakeups }
     }
 
     pub fn publish(&self, event: Event) {
         // Droppable events stop short of the last quarter of the queue, so a burst of levels
         // cannot crowd out a state change.
-        let droppable_limit = self.inner.capacity - self.inner.capacity / 4;
-        let droppable = event.is_droppable();
+        let capacity = self.inner.capacity;
+        let limit = match event.is_droppable() {
+            true => capacity - capacity / 4,
+            false => capacity,
+        };
         let mut subscribers = self.subscribers();
         subscribers.retain(|s| !s.tx.is_closed());
         for subscriber in subscribers.iter() {
-            if droppable && subscriber.tx.len() >= droppable_limit {
-                subscriber.lost.store(true, Ordering::Release);
-                continue;
-            }
-            if let Err(TrySendError::Full(_)) = subscriber.tx.try_send(event.clone()) {
-                subscriber.lost.store(true, Ordering::Release);
+            // Publishers hold the lock, so only the subscriber changes the length meanwhile, and
+            // only downward.
+            if subscriber.queued() >= limit {
+                subscriber.lose();
+            } else if let Err(TrySendError::Full(_)) = subscriber.tx.try_send(event.clone()) {
+                subscriber.lose();
             }
         }
     }
@@ -189,28 +218,61 @@ impl EventHub {
 }
 
 /// One subscriber's queue. After a loss the next receive returns [`Event::Resync`] before the
-/// events still queued. Receives return `None` once `Dory` has shut down and the queue is empty.
+/// events still queued, once per loss. Receives return `None` once `Dory` has shut down and the
+/// queue is empty.
 pub struct Subscription {
     rx: Receiver<Event>,
     lost: Arc<AtomicBool>,
+    wakeups: Arc<AtomicUsize>,
 }
 
 impl Subscription {
     pub fn try_recv(&self) -> Option<Event> {
-        self.take_resync().or_else(|| self.rx.try_recv().ok())
-    }
-
-    pub fn recv_blocking(&self) -> Option<Event> {
-        self.take_resync().or_else(|| self.rx.recv_blocking().ok())
-    }
-
-    pub async fn recv(&self) -> Option<Event> {
-        match self.take_resync() {
-            Some(event) => Some(event),
-            None => self.rx.recv().await.ok(),
+        loop {
+            if let Some(resync) = self.take_resync() {
+                return Some(resync);
+            }
+            if let Some(event) = self.unless_wakeup(self.rx.try_recv().ok()?) {
+                return Some(event);
+            }
         }
     }
 
+    pub fn recv_blocking(&self) -> Option<Event> {
+        loop {
+            if let Some(resync) = self.take_resync() {
+                return Some(resync);
+            }
+            if let Some(event) = self.unless_wakeup(self.rx.recv_blocking().ok()?) {
+                return Some(event);
+            }
+        }
+    }
+
+    pub async fn recv(&self) -> Option<Event> {
+        loop {
+            if let Some(resync) = self.take_resync() {
+                return Some(resync);
+            }
+            if let Some(event) = self.unless_wakeup(self.rx.recv().await.ok()?) {
+                return Some(event);
+            }
+        }
+    }
+
+    /// A queued `Resync` is only ever a wake-up: no publisher sends one otherwise.
+    fn unless_wakeup(&self, event: Event) -> Option<Event> {
+        match event {
+            Event::Resync => {
+                self.wakeups.fetch_sub(1, Ordering::AcqRel);
+                None
+            }
+            event => Some(event),
+        }
+    }
+
+    /// The queued `Resync` only wakes the receiver. The flag is what reports the loss, so a
+    /// queued one whose loss was already reported is skipped above.
     fn take_resync(&self) -> Option<Event> {
         self.lost
             .swap(false, Ordering::AcqRel)
@@ -304,6 +366,22 @@ mod tests {
         assert_eq!(got.len(), 5);
         hub.publish(Event::SettingsChanged);
         assert_eq!(drain(&sub), vec![Event::SettingsChanged]);
+    }
+
+    #[test]
+    fn a_loss_reaches_a_receiver_that_checked_the_flag_before_it_was_set() {
+        let hub = EventHub::new(4);
+        let sub = hub.subscribe();
+        // A receive checks the flag, finds nothing, and is about to wait on the queue. Meanwhile
+        // the queue fills and an event is lost.
+        assert_eq!(sub.take_resync(), None);
+        for _ in 0..5 {
+            hub.publish(Event::SettingsChanged);
+        }
+        // The wait on the queue alone must surface the loss, or the receiver parks past it.
+        let queued: Vec<_> = std::iter::from_fn(|| sub.rx.try_recv().ok()).collect();
+        assert_eq!(queued.len(), 5, "four events and a wake-up: {queued:?}");
+        assert_eq!(queued.last(), Some(&Event::Resync));
     }
 
     #[test]

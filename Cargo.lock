@@ -258,14 +258,9 @@ dependencies = [
 name = "dory-cli"
 version = "0.1.0"
 dependencies = [
- "block2",
  "ctrlc",
  "dory",
  "dory-core",
- "dory-macos",
- "hound",
- "objc2-core-audio",
- "objc2-core-audio-types",
  "tempfile",
 ]
 
@@ -284,8 +279,10 @@ name = "dory-macos"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "ctrlc",
  "dispatch2",
  "dory-core",
+ "hound",
  "objc2",
  "objc2-av-foundation",
  "objc2-core-audio",

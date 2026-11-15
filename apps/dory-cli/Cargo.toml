@@ -1,0 +1,20 @@
+[package]
+name = "dory-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dory-core.workspace = true
+hound.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+ctrlc = "3.5.2"
+dory-macos.workspace = true
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "block2", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+
+[lints]
+workspace = true

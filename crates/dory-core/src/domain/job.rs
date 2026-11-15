@@ -294,7 +294,9 @@ impl Job {
                     true
                 }
                 E::Unblock => {
+                    // A blocked stage never got to do its work, so waiting is not a failed attempt.
                     next.state = S::Queued;
+                    next.attempts = 0;
                     true
                 }
                 E::Retake => {
@@ -436,7 +438,10 @@ mod tests {
             (St::Running { .. }, E::Interrupted) => with(&|j| j.state = St::Queued),
             (St::Running { .. }, E::Cancelled) => with(&|j| j.state = St::Cancelled),
 
-            (St::Blocked { .. }, E::Unblock) => with(&|j| j.state = St::Queued),
+            (St::Blocked { .. }, E::Unblock) => with(&|j| {
+                j.state = St::Queued;
+                j.attempts = 0;
+            }),
             (St::Blocked { .. } | St::Failed { .. } | St::Cancelled, E::Retake) => with(&|j| {
                 j.state = St::Queued;
                 j.attempts = 0;
@@ -791,5 +796,27 @@ mod tests {
         for state in [JobState::Succeeded, JobState::Cancelled] {
             assert!(job(Goal::ALL, &[], state).on(&JobEvent::Promote).is_err());
         }
+    }
+
+    #[test]
+    fn waiting_on_a_blocker_never_uses_up_attempts() {
+        let mut j = job(Goal::ALL, &[], JobState::Queued);
+        for _ in 0..(MAX_ATTEMPTS * 3) {
+            j = j
+                .on(&JobEvent::Started { stage: T })
+                .and_then(|j| {
+                    j.on(&JobEvent::Blocked {
+                        stage: T,
+                        blocker: blocker(),
+                    })
+                })
+                .and_then(|j| j.on(&JobEvent::Unblock))
+                .unwrap();
+        }
+        let interrupted = j
+            .on(&JobEvent::Started { stage: T })
+            .and_then(|j| j.on(&JobEvent::Interrupted))
+            .unwrap();
+        assert_eq!(interrupted.state, JobState::Queued);
     }
 }

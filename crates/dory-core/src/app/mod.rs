@@ -180,6 +180,8 @@ impl Dory {
             ports.clock.as_ref(),
             &mut recovery,
         )?;
+        // A model installed or a server started while the app was closed must free its jobs.
+        pipeline::unblock_all(&db);
 
         let (nudge, wake) = pipeline::nudge_channel();
         let pipeline = pipeline::spawn(

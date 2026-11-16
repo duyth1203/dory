@@ -3,6 +3,8 @@
 
 #![allow(dead_code)]
 
+pub mod views;
+
 use std::sync::Arc;
 
 use dory_core::app::{Dory, Options, Ports};

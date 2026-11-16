@@ -20,7 +20,7 @@ use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
 };
 
-use crate::common::{dory_on, id_of, open, open_fresh, open_with, open_with_prefs, sample_store};
+use crate::common::{dory_on, id_of, open_fresh, open_with, open_with_prefs, sample_store};
 
 fn step(app: &Entity<AppState>, cx: &mut TestAppContext) -> OnboardingStep {
     app.read_with(cx, |app, _| app.onboarding())

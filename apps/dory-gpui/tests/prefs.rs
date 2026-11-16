@@ -50,6 +50,10 @@ fn out_of_range_sizes_fall_back_or_clamp() {
     let prefs = Prefs::read(&dir);
     assert_eq!(prefs.window_size, DEFAULT_WINDOW_SIZE);
     assert_eq!(prefs.sidebar_width, 380.);
+    assert_eq!(
+        prefs.text_scale, 1.0,
+        "a file from before P7 opens at actual size"
+    );
     assert_eq!(clamp_sidebar_width(1.), 240.);
     assert_eq!(clamp_sidebar_width(f32::NAN), DEFAULT_SIDEBAR_WIDTH);
     let _ = std::fs::remove_dir_all(&dir);

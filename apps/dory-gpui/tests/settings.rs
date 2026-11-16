@@ -647,3 +647,124 @@ fn a_job_running_light_says_why_on_its_row(cx: &mut TestAppContext) {
     });
     rig.transcriber.hold(false);
 }
+
+/// A library imported from the old app: one recording read in place from its WebM file.
+struct Upgraded {
+    original: std::path::PathBuf,
+    trash: Arc<FakeTrash>,
+    takes: Arc<MemTakes>,
+    id: RecordingId,
+}
+
+fn upgraded(cx: &mut TestAppContext) -> (Upgraded, AnyWindowHandle, Entity<AppState>) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "dory-gpui-originals-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let old = dir.join("old-app").join("recordings");
+    std::fs::create_dir_all(&old).unwrap();
+    let original = old.join("meeting.webm");
+    std::fs::write(&original, vec![7u8; 3_000_000]).unwrap();
+    let takes = Arc::new(MemTakes::in_dir(dir.join("takes")));
+    std::fs::create_dir_all(dir.join("trash")).unwrap();
+    std::fs::create_dir_all(dir.join("takes")).unwrap();
+    let trash = Arc::new(FakeTrash::new(dir.join("trash")));
+    let id = RecordingId::parse("legacy-meeting").unwrap();
+    let take = takes.link_legacy(&id, &original, Ms(60_000)).unwrap();
+    let store = sample_store();
+    store
+        .apply(vec![Change::RecordingCreated(Recording {
+            id: id.clone(),
+            title: Some("Old meeting".into()),
+            created_at: Timestamp(fixtures::now().timestamp_millis() - 86_400_000),
+            language: LanguagePref::Auto,
+            layout: ChannelLayout::Mixed,
+            take: Some(take),
+        })])
+        .unwrap();
+    let dory = Dory::open(
+        Ports {
+            store,
+            takes: takes.clone(),
+            trash: trash.clone(),
+            capture: Arc::new(FakeCapture::new()),
+            playback: Arc::new(FakePlayback::new()),
+            clock: Arc::new(ManualClock::new(Timestamp(
+                fixtures::now().timestamp_millis(),
+            ))),
+            stt: Vec::new(),
+            llm: Vec::new(),
+            diar: Vec::new(),
+            machine: Arc::new(FakeMachine::default()),
+            guard: None,
+        },
+        Options::default(),
+    )
+    .unwrap();
+    cx.executor().allow_parking();
+    let (main, app) = open_with(cx, dory);
+    (
+        Upgraded {
+            original,
+            trash,
+            takes,
+            id,
+        },
+        main,
+        app,
+    )
+}
+
+#[gpui_kit::test]
+fn storage_moves_the_original_webm_files_to_the_trash_and_undo_puts_them_back(
+    cx: &mut TestAppContext,
+) {
+    let (rig, main, app) = upgraded(cx);
+    let window = open_settings(&app, main, settings_window::Tab::Storage, cx);
+    until(cx, "the originals are listed", |cx| {
+        has(window, "trash-originals", cx)
+    });
+    let line = label(window, "originals-status", cx).unwrap();
+    assert!(
+        line.starts_with("1 original WebM file from the old Dory app, 3 MB."),
+        "{line}"
+    );
+    assert!(rig.original.is_file(), "nothing moves until the user asks");
+
+    click(window, "trash-originals", cx);
+    until(cx, "the move", |cx| has(window, "undo-trash-originals", cx));
+    assert!(!rig.original.exists(), "the WebM file left the old folder");
+    assert_eq!(rig.trash.trashed_files().len(), 1, "it is in the Trash");
+    assert!(
+        rig.takes.legacy_original(&rig.id).unwrap().is_none(),
+        "the recording now reads Dory's own copy"
+    );
+    assert_eq!(
+        label(window, "originals-status", cx).as_deref(),
+        Some("Moved 1 original WebM file to the Trash.")
+    );
+
+    click(window, "undo-trash-originals", cx);
+    until(cx, "the undo", |cx| {
+        !has(window, "undo-trash-originals", cx)
+    });
+    assert!(rig.original.is_file(), "Undo put the file back");
+    assert!(rig.trash.trashed_files().is_empty());
+    until(cx, "the section to hide", |cx| {
+        !has(window, "settings-originals", cx)
+    });
+}
+
+#[gpui_kit::test]
+fn storage_offers_nothing_when_no_webm_files_are_left(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (main, app) = open_with(cx, common::dory_on(sample_store()));
+    let window = open_settings(&app, main, settings_window::Tab::Storage, cx);
+    for _ in 0..20 {
+        render(window, cx);
+    }
+    assert!(!has(window, "settings-originals", cx));
+    assert!(!has(window, "trash-originals", cx));
+}

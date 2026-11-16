@@ -1,0 +1,216 @@
+//! Every view of the app, driven into place one after another, for the checks that must hold on
+//! all of them: the accessibility tree (`a11y_tree.rs`) and the hit targets (`targets.rs`).
+
+use std::num::NonZeroU32;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use dory_core::app::{Dory, Options, Ports, RecorderStatus};
+use dory_core::domain::Timestamp;
+use dory_core::recorder::Limits;
+use dory_core::testing::playback::FakePlayback;
+use dory_core::testing::store::MemStore;
+use dory_core::testing::{FakeCapture, FakeTrash, ManualClock, MemTakes, Step};
+use dory_gpui::app::{AppState, DetailTab};
+use dory_gpui::library::Selection;
+use dory_gpui::prefs::Prefs;
+use dory_gpui::{fixtures, queue_popover, settings_window};
+use gpui_kit::base::test_support::ElementSnapshot;
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
+};
+
+use super::{dory_on, id_of, open_fresh, open_with, open_with_prefs, past_first_run, sample_store};
+
+/// What a check sees of one view: its name and every observed element of its last frame, each
+/// read the way `find` reads it, through the native node a Kit component names as its owner.
+pub struct View {
+    pub name: String,
+    pub elements: Vec<ElementSnapshot>,
+}
+
+fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppContext) -> View {
+    cx.run_until_parked();
+    let elements = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            gpui_kit::base::test_support::snapshots(window)
+                .into_iter()
+                .map(|raw| {
+                    let path = raw.path().to_vec();
+                    let Some((id, scope)) = path.split_last() else {
+                        return raw;
+                    };
+                    gpui_kit::base::test_support::find_all(window, scope, id)
+                        .into_iter()
+                        .find(|resolved| resolved.path() == path.as_slice())
+                        .unwrap_or(raw)
+                })
+                .collect()
+        })
+        .unwrap();
+    View {
+        name: name.into(),
+        elements,
+    }
+}
+
+fn until(cx: &mut TestAppContext, what: &str, mut ok: impl FnMut(&mut TestAppContext) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        cx.run_until_parked();
+        if ok(cx) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn click(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
+    let id = gpui_kit::ElementId::Name(id.to_owned().into());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// First run on an empty library: Welcome, Permissions, Models.
+fn first_run(views: &mut Vec<View>, cx: &mut TestAppContext) {
+    let (window, _) = open_fresh(cx, dory_on(Arc::new(MemStore::new())));
+    views.push(frame("welcome", window, cx));
+    click(window, "onboarding-continue", cx);
+    views.push(frame("permissions", window, cx));
+    click(window, "onboarding-continue", cx);
+    views.push(frame("models step", window, cx));
+    cx.update_window(window, |_, window, cx| {
+        dory_gpui::set_up_summaries::sheet(window, cx)
+    })
+    .unwrap();
+    views.push(frame("set up summaries", window, cx));
+}
+
+/// The library past first run: the start screen, then each kind of detail, then the queue.
+fn library(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
+    let prefs = Prefs {
+        text_scale: scale,
+        ..past_first_run()
+    };
+    let (window, app) = open_with_prefs(cx, dory_on(sample_store()), prefs);
+    views.push(frame("start screen", window, cx));
+    let select = |title: &str, app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.update(cx, |app, cx| app.select(Selection::One(id_of(title)), cx));
+    };
+    select("Design review", &app, cx);
+    views.push(frame("summary tab", window, cx));
+    app.update(cx, |app, cx| app.set_tab(DetailTab::Transcript, cx));
+    views.push(frame("transcript tab", window, cx));
+    app.update(cx, |app, cx| app.set_tab(DetailTab::Summary, cx));
+    select("Hiring debrief", &app, cx);
+    views.push(frame("needs attention", window, cx));
+    select("Weekly sync", &app, cx);
+    views.push(frame("processing", window, cx));
+    cx.update_window(window, |_, window, cx| {
+        queue_popover::open(&app, window, cx)
+    })
+    .unwrap();
+    views.push(frame("processing queue", window, cx));
+}
+
+fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
+    let prefs = Prefs {
+        text_scale: scale,
+        ..past_first_run()
+    };
+    let (_, app) = open_with_prefs(cx, dory_on(sample_store()), prefs);
+    let before = cx.update(|cx| cx.windows());
+    cx.update(|cx| settings_window::open(&app, cx));
+    let window = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .expect("the Settings window opened");
+    for tab in settings_window::Tab::ALL {
+        click(window, &tab.id(), cx);
+        views.push(frame(format!("settings {}", tab.title()), window, cx));
+    }
+}
+
+/// A live take, then the Undo toast after Stop. The fake device sends two seconds of silence, and
+/// the manual clock holds the grace open.
+fn recording(views: &mut Vec<View>, cx: &mut TestAppContext) {
+    let dir = std::env::temp_dir().join(format!(
+        "dory-gpui-views-{}-{}",
+        std::process::id(),
+        views.len()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let capture = Arc::new(FakeCapture::new());
+    capture.push_script((0..20).map(|_| Step::Silence { frames: 800 }).collect());
+    let dory = Dory::open(
+        Ports {
+            store: sample_store(),
+            takes: Arc::new(MemTakes::in_dir(&dir)),
+            trash: Arc::new(FakeTrash::new(&dir)),
+            capture: capture.clone(),
+            playback: Arc::new(FakePlayback::new()),
+            clock: Arc::new(ManualClock::new(Timestamp(
+                fixtures::now().timestamp_millis(),
+            ))),
+            stt: Vec::new(),
+            llm: Vec::new(),
+            diar: Vec::new(),
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
+            guard: None,
+        },
+        Options {
+            limits: Limits {
+                rate_hz: NonZeroU32::new(8_000).unwrap(),
+                ..Limits::default()
+            },
+            clock_poll: Duration::from_millis(2),
+            level_every: Duration::from_millis(10),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    cx.executor().allow_parking();
+    let (window, app) = open_with(cx, dory);
+    app.update(cx, |app, cx| app.start_recording(cx));
+    until(cx, "two seconds recorded", |cx| {
+        app.read_with(cx, |app, cx| {
+            matches!(app.recorder(), RecorderStatus::Recording { .. })
+                && app.live().read(cx).recorded.0 >= 2_000
+        })
+    });
+    views.push(frame("recording", window, cx));
+    app.update(cx, |app, cx| app.stop_recording(cx));
+    until(cx, "grace", |cx| {
+        app.read_with(cx, |app, _| {
+            matches!(app.recorder(), RecorderStatus::Grace { .. })
+        })
+    });
+    views.push(frame("undo toast", window, cx));
+}
+
+fn upgrade(views: &mut Vec<View>, cx: &mut TestAppContext) {
+    let (window, _) = open_fresh(cx, dory_on(sample_store()));
+    views.push(frame("upgrade permissions", window, cx));
+}
+
+/// Every view at the given text scale.
+pub fn every_view(scale: f32, cx: &mut TestAppContext) -> Vec<View> {
+    // Settings probes models and the recorder captures on their own threads.
+    cx.executor().allow_parking();
+    let mut views = Vec::new();
+    if scale == 1.0 {
+        first_run(&mut views, cx);
+        upgrade(&mut views, cx);
+        recording(&mut views, cx);
+    }
+    library(&mut views, scale, cx);
+    settings(&mut views, scale, cx);
+    views
+}

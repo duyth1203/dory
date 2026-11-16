@@ -4,14 +4,14 @@ Dory moves from Tauri 2 and React to a native Rust app built on GPUI, and gets t
 Users get one-action recording without BlackHole, automatic processing, a sidebar and detail layout, export, and keyboard and VoiceOver support. The first platform adapter targets macOS 26.
 The code follows the ports-and-adapters design in `docs/architecture/hexagonal.md`. The new core is built from scratch next to the Tauri app, which keeps running unchanged until P8.
 The rule the program enforces is that no PR lands without unit, live, and perf evidence at its head.
-PR P0 is a go or no-go spike on GPUI accessibility and runs alongside P1. Then P2, P3, P4, P5, P6, P7, and P8 land in that order.
+PR P0 is a go or no-go spike on GPUI accessibility and runs alongside P1. Then P2, P3, P4, P5, P6, P6b, P7, and P8 land in that order. P7 and P8 are built in parallel from P6b, and P8 is verified only after it rebases onto P7.
 If P0 says no-go, P1 to P3 still land unchanged and the operator picks a SwiftUI shell over the same core instead (Appendix B).
 
 ## How to read this
 
 One box is one unit of work. Every box names the evidence that checks it. A nested box is a sub-step of the box above it. Check a box only when its evidence exists, a file, a log line, a screenshot, a test run, or a SHA. The body is a how-to. The appendices explain and record.
 
-The program runs `pstack/skills/poteto-mode/playbooks/autopilot-stack.md`. The root agent builds one linear stack of PRs from P1 to P8 and the operator reviews and lands it. P0 never merges. Its branch and findings feed Appendix A and the operator's go or no-go call.
+The program runs `pstack/skills/poteto-mode/playbooks/autopilot-stack.md`. The root agent builds one linear stack of PRs from P1 to P8 and the operator reviews and lands it. The one exception is the build step of P7 and P8, which runs in parallel; their merge order stays linear. P0 never merges. Its branch and findings feed Appendix A and the operator's go or no-go call.
 
 Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -49,8 +49,9 @@ pstack is a Claude Code plugin, not part of this repo. Paths that start with `ps
   - [ ] P5 after P4.
   - [ ] P6 after P5.
   - [ ] P6b after P6.
-  - [ ] P7 after P6b.
-  - [ ] P8 after P7.
+  - [ ] P7 and P8 after P6b, built in parallel. P8 branches from P6b, not from P7, and never edits a file under `apps/dory-gpui/src/`.
+  - [ ] P8 merges after P7. Before its live and perf lanes and its review gate, P8 rebases onto P7's branch, so every P8 lane runs on a head with P7's fixes. A P8 lane run before that rebase does not count.
+  - [ ] Both P7 and P8 edit the root `Cargo.toml`. P7 owns `[profile.release]` and P8 owns `[workspace] members`, so the rebase is mechanical.
 - [ ] Hold the file boundaries. Each PR's **Files** list is its boundary. A PR that needs a file outside its list stops and asks the root, which either adds a small PR below it in the stack or amends this plan with a logged decision.
 - [ ] Hold the review gate. P4, P5, P6, P6b, P7, and P8 change an interaction. They wait for the operator's review in chat with screenshots and a video before merge.
 
@@ -563,6 +564,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 - [ ] Create `apps/dory-gpui/src/a11y.rs`, `system_prefs.rs`, `tests/a11y_tree.rs`, `tests/contrast.rs`, and `tests/targets.rs`.
 - [ ] Edit every view file under `apps/dory-gpui/src/` that the audit flags.
+- [ ] Edit `apps/dory-gpui/src/onboarding.rs`, `app/setup.rs`, `settings_window.rs`, and `app/models.rs` for the two items moved here from P8.
 - [ ] Edit the root `Cargo.toml` to restore `panic = "abort"` once lane 9 passes.
 
 **Build.**
@@ -573,6 +575,8 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Add text scaling with View > Bigger and View > Smaller from 85% to 200% (A11Y-7).
 - [ ] Add F6 landmark navigation and the rest of the shortcut table from the UX spec.
 - [ ] File upstream issues for GPUI bugs found, with a minimal repro, and link them in Appendix C.
+- [ ] Moved from P8 so P8 never edits a view. Onboarding detects a data folder that already holds recordings imported from the Tauri app and shows upgrading users only the permissions step, because TCC matches the code signature and the new app re-prompts.
+- [ ] Moved from P8. **Settings > Storage** offers **Move original WebM files to Trash** through `Library::trash`'s receipt, with Undo. Nothing deletes them automatically.
 
 **You see.**
 
@@ -580,7 +584,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `tests/a11y_tree.rs` walks the accessibility tree of every view and fails on any focusable element without a role or label. `tests/contrast.rs` checks every theme token pair against 4.5 to 1 (A11Y-8). `tests/targets.rs` fails on any hit target under 24 by 24 points (A11Y-9). Run `cargo test -p dory-gpui`.
+- [ ] `tests/a11y_tree.rs` walks the accessibility tree of every view and fails on any focusable element without a role or label. `tests/contrast.rs` checks every theme token pair against 4.5 to 1 (A11Y-8). `tests/targets.rs` fails on any hit target under 24 by 24 points (A11Y-9). `tests/onboarding.rs` covers the upgrade path showing only permissions, and `tests/settings.rs` covers moving the WebM files to the Trash and Undo. Run `cargo test -p dory-gpui`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
@@ -613,11 +617,11 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Root's clean verdict at the exact head SHA.
 - [ ] Bugbot triage done.
 - [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends P7 to the stack on P6's branch.
+- [ ] The root appends P7 to the stack on P6b's branch.
 
 ## Package the GPUI app and delete Tauri (P8)
 
-**Depends on.** P7.
+**Depends on.** P6b to build. P7 to verify and merge. Rebase onto P7's branch before any live or perf lane.
 
 **Files.**
 
@@ -629,9 +633,8 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 - [ ] `scripts/bundle-macos.sh` builds `Dory.app` with `cargo-packager`, links sherpa-onnx statically, signs with the identity in `DORY_SIGNING_IDENTITY`, and notarizes when credentials exist.
 - [ ] Info.plist carries `NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `LSMinimumSystemVersion` 26.0, and the bundle id `com.dory.app`, so the data folder carries over.
-- [ ] TCC matches the code signature as well as the bundle id. Trunk builds are ad-hoc signed, so the new app re-prompts for the microphone, and System Audio Recording is new in any case. Onboarding detects an existing data folder and shows only the permissions step to upgrading users.
+- [ ] TCC matches the code signature as well as the bundle id. Trunk builds are ad-hoc signed, so the new app re-prompts for the microphone, and System Audio Recording is new in any case. P7 builds the permissions-only onboarding for upgrading users; P8's lane 1 checks it in the bundle.
 - [ ] `legacy_cleanup.rs` runs once on first launch. It finds aggregate devices by UID (`com.dory.aggregate` and `com.dory.multioutput`), never by name. If the default input or output is one of them, it restores from `audio_recording_session.json`, then `audio_output_restore.json`, then the built-in mic and speakers. Then it destroys the two devices and logs every step.
-- [ ] **Settings > Storage** offers **Move original WebM files to Trash**. Nothing deletes them automatically.
 - [ ] Remove the last Tauri callers of core APIs, then delete the Tauri crate in the same PR.
 
 **You see.**

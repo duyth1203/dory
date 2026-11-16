@@ -57,9 +57,9 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
 - **UX-30. Processing stays gentle.** **Settings > Transcription > Processing** has three choices, each with its effect in one line.
   - **Automatic** (default): "Runs fast when the Mac is plugged in and cool. Runs light on battery, in Low Power Mode, when the Mac is hot, and while you record."
   - **Fast**: "Uses up to 4 cores. Finishes soonest, but the fans may spin up and the battery drains faster."
-  - **Light**: "Uses 2 efficiency cores. Takes longer, stays quiet, and is easy on the battery."
-  - Light limits both transcription and summaries.
-  - While a job runs light, the row and the detail pane say why after the stage, for example "Transcribing, 40% · Light, on battery". UX-12's time-left estimate uses the current pace.
+  - **Light**: "Uses 2 cores. Takes longer, stays quieter, and is easier on the battery."
+  - Light limits transcription only. Summaries run at their normal pace: the summary model works mostly on the GPU, and Ollama ignores a thread limit.
+  - While transcription runs light, the row and the detail pane say why after the stage, for example "Transcribing, 40% · Light, on battery". UX-12's time-left estimate uses the current pace.
   - Automatic switches to light at once, and back to fast only after the condition has been clear for 2 minutes, so plugging in and out does not make the work stutter.
 - **UX-27. Live transcript while recording.** **Proposed.** While recording, the detail pane shows draft lines from a streaming on-device recognizer: a timestamp column and the text, with the line still being heard in secondary color. The list is a polite live region. A header reads "Live transcript" with a **Draft** badge, and a footnote says names and punctuation are finished after stop. A card above it says the window can be closed and offers **Hide Live Transcript**, which is remembered. The post-stop pass still runs and replaces the draft, because speaker labels need the whole file. The recognizer runs at low priority behind **Settings > Transcription > Live transcript**, which may default to off on battery. It ships only after a 60-minute call with a video app shows acceptable CPU and energy use.
 

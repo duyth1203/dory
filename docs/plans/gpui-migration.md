@@ -509,9 +509,9 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 - [ ] Name the data shapes first, per `docs/architecture/hexagonal.md`, "Processing pace". `Settings::processing` is `Processing::{Auto, Fast, Light}`, default `Auto`. `Conditions { power: Ac | Battery | Unknown, low_power: bool, thermal: Nominal | Fair | Serious | Critical }`. `Budget { pace: Fast | Light, threads, reason }`.
 - [ ] Write `pace` test-first as a pure function, including the 2-minute hold back to fast.
-- [ ] Add the `Machine` port, `FakeMachine`, and `dory_macos::MacMachine`. Keep all `unsafe` in `machine.rs` with safety notes.
-- [ ] The pipeline worker evaluates the pace before each speech window and each summary pass, calls `set_pace` on its own thread, and passes `threads` to the engines. The current thread count stays the `Fast` count, so nothing gets slower by default.
-- [ ] Sherpa rebuilds its recognizer when `threads` changes. Ollama sends `num_thread` and keeps it for the whole summary stage.
+- [ ] Add the `Machine` port, `FakeMachine`, and `dory_macos::MacMachine`. The port only reads conditions. Keep all `unsafe` in `machine.rs` with safety notes.
+- [ ] The pipeline worker evaluates the pace before each speech window and passes `threads` to the speech engine. The current thread count stays the `Fast` count, so nothing gets slower by default. Light changes the thread count only, never the priority, because engine threads do not inherit a QoS (measured, see `decisions.tsv`).
+- [ ] Sherpa rebuilds its recognizer when `threads` changes. Summaries are not paced, because Ollama ignores `num_thread` (measured).
 - [ ] `Progress` carries the `Budget`. The row and detail pane show the reason (UX-30). Add **Processing** to **Settings > Transcription** (UX-30).
 - [ ] `dory-cli process` takes `--pace fast|light` for the bench. `DORY_MACHINE=battery,low-power,thermal=serious` overrides the conditions for lanes, refused unless `DORY_DATA_DIR` is set, like the `--fake-*` flags.
 
@@ -521,7 +521,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-core/tests/pace.rs` covers every (setting, condition, recording) row, the 2-minute hold with a `ManualClock`, a pace change mid-transcribe that rebuilds once, `threads` reaching both requests, and `set_pace` called before every window. Engine tests check the sherpa rebuild and Ollama's `num_thread`. Run `cargo test --workspace`.
+- [ ] `crates/dory-core/tests/pace.rs` covers every (setting, condition, recording) row, the 2-minute hold with a `ManualClock`, a pace change mid-transcribe that rebuilds once, `threads` reaching `TranscribeRequest`, and a summary pass carrying no light reason. Engine tests check the sherpa rebuild on a threads change. Run `cargo test --workspace`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
@@ -532,8 +532,8 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Lane 5. Set `DORY_MACHINE=thermal=serious`. Save `thermal.png`. Pass when the job runs light with the thermal reason.
 - [ ] Lane 6. Record for 3 minutes while a job transcribes on power. Save `recording-light.png`. Pass when the job runs light during the recording, returns to fast 2 minutes after Stop, and the take has no `CaptureIssue`.
 - [ ] Lane 7. Plug back in, then unplug and replug twice within 2 minutes. Save `hold.txt` from the log. Pass when the pace returns to fast once, 2 minutes after the last plug-in, and the recognizer rebuilds at most twice.
-- [ ] Lane 8. Operator lane. Set **Light** on power and run `sudo powermetrics --samplers cpu_power -i 1000` during transcription. Save `ecores.txt`. Pass when the speech engine's work runs on the efficiency cluster.
-- [ ] Lane 9. Summarize on Light. Save `ollama-threads.txt` from the Ollama server log. Pass when the runner starts with 2 threads.
+- [ ] Lane 8. Set **Light** on power and run `ps -M -p <pid>` during transcription. Save `light-threads.txt`. Pass when the engine has 2 busy threads, both at normal priority.
+- [ ] Lane 9. Summarize with `DORY_MACHINE=battery`. Save `summary-pace.png`. Pass when the transcribe stage shows the light reason, the summary stage shows none, and the summary finishes.
 - [ ] Lane 10. Set **Fast** with `DORY_MACHINE=battery`, then open **Settings > Transcription** by keyboard. Save `settings-processing.png`. Pass when the job runs fast and VoiceOver's label for each choice includes its one-line effect.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.

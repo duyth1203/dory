@@ -481,8 +481,10 @@ impl DetailPane {
             );
         div()
             .flex()
+            .flex_wrap()
             .items_center()
             .gap(px(16.))
+            .gap_y(px(4.))
             .border_b_1()
             .border_color(theme.divider)
             .bg(theme.window_bg)
@@ -579,8 +581,23 @@ pub(crate) fn button(
     on_press: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> a11y::Node {
     let label: SharedString = label.into();
+    spoken_button(id, label.clone(), label, primary, focus, theme, on_press)
+}
+
+/// A [`button`] whose spoken name says more than its short visible text. The spoken name starts
+/// with the visible text, so Voice Control still finds it by what it shows.
+pub(crate) fn spoken_button(
+    id: &'static str,
+    visible: impl Into<SharedString>,
+    spoken: impl Into<SharedString>,
+    primary: bool,
+    focus: &FocusHandle,
+    theme: &Theme,
+    on_press: impl Fn(&mut Window, &mut App) + Clone + 'static,
+) -> a11y::Node {
+    let label: SharedString = visible.into();
     a11y::focusable(
-        a11y::node(id, Role::Button, label.clone()),
+        a11y::node(id, Role::Button, spoken.into()),
         focus,
         theme,
         primary,
@@ -598,6 +615,7 @@ pub(crate) fn button(
     .when(!primary, |b| {
         b.bg(theme.control_bg).border_color(theme.control_border)
     })
+    .flex_none()
     .child(label)
 }
 
@@ -732,6 +750,7 @@ impl DetailPane {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .gap(px(8.))
                     .child(button(
                         "finish-all",

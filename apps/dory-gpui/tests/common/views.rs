@@ -20,21 +20,30 @@ use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
 };
 
-use super::{dory_on, id_of, open_fresh, open_with, open_with_prefs, past_first_run, sample_store};
+use dory_core::ports::capture::{Access, CaptureCaps};
+use dory_gpui::prefs::MIN_WINDOW_SIZE;
+
+use super::{
+    dory_on, dory_with_capture, id_of, open_fresh, open_with, open_with_prefs, past_first_run,
+    sample_store,
+};
 
 /// What a check sees of one view: its name and every observed element of its last frame, each
 /// read the way `find` reads it, through the native node a Kit component names as its owner.
 pub struct View {
     pub name: String,
     pub elements: Vec<ElementSnapshot>,
+    /// The window's content width, for checks that nothing spills past its edge.
+    pub width: f32,
 }
 
 fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppContext) -> View {
     cx.run_until_parked();
-    let elements = cx
+    let (elements, width) = cx
         .update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            gpui_kit::base::test_support::snapshots(window)
+            let width = f32::from(window.viewport_size().width);
+            let elements = gpui_kit::base::test_support::snapshots(window)
                 .into_iter()
                 .map(|raw| {
                     let path = raw.path().to_vec();
@@ -46,12 +55,14 @@ fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppConte
                         .find(|resolved| resolved.path() == path.as_slice())
                         .unwrap_or(raw)
                 })
-                .collect()
+                .collect();
+            (elements, width)
         })
         .unwrap();
     View {
         name: name.into(),
         elements,
+        width,
     }
 }
 
@@ -77,9 +88,19 @@ fn click(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
+/// What a Mac shows on a first launch: the microphone refused once, and System Audio Recording,
+/// which macOS never reports, unknown. Both permission buttons show.
+fn unasked() -> FakeCapture {
+    FakeCapture::new().with_caps(CaptureCaps {
+        microphone: Access::Denied,
+        system_audio: Access::Undetermined,
+        unsupported: None,
+    })
+}
+
 /// First run on an empty library: Welcome, Permissions, Models.
 fn first_run(views: &mut Vec<View>, cx: &mut TestAppContext) {
-    let (window, _) = open_fresh(cx, dory_on(Arc::new(MemStore::new())));
+    let (window, _) = open_fresh(cx, dory_with_capture(Arc::new(MemStore::new()), unasked()));
     views.push(frame("welcome", window, cx));
     click(window, "onboarding-continue", cx);
     views.push(frame("permissions", window, cx));
@@ -93,12 +114,20 @@ fn first_run(views: &mut Vec<View>, cx: &mut TestAppContext) {
 }
 
 /// The library past first run: the start screen, then each kind of detail, then the queue.
-fn library(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
+fn library(views: &mut Vec<View>, scale: f32, window_size: (f32, f32), cx: &mut TestAppContext) {
     let prefs = Prefs {
         text_scale: scale,
+        window_size,
         ..past_first_run()
     };
-    let (window, app) = open_with_prefs(cx, dory_on(sample_store()), prefs);
+    let (window, app) = open_with_prefs(cx, dory_with_capture(sample_store(), unasked()), prefs);
+    let at = if window_size == MIN_WINDOW_SIZE {
+        ", smallest window"
+    } else {
+        ""
+    };
+    let frame =
+        |name: &str, window, cx: &mut TestAppContext| frame(format!("{name}{at}"), window, cx);
     views.push(frame("start screen", window, cx));
     let select = |title: &str, app: &Entity<AppState>, cx: &mut TestAppContext| {
         app.update(cx, |app, cx| app.select(Selection::One(id_of(title)), cx));
@@ -196,8 +225,17 @@ fn recording(views: &mut Vec<View>, cx: &mut TestAppContext) {
 }
 
 fn upgrade(views: &mut Vec<View>, cx: &mut TestAppContext) {
-    let (window, _) = open_fresh(cx, dory_on(sample_store()));
-    views.push(frame("upgrade permissions", window, cx));
+    for (name, window_size) in [
+        ("upgrade permissions", Prefs::default().window_size),
+        ("upgrade permissions, smallest window", MIN_WINDOW_SIZE),
+    ] {
+        let prefs = Prefs {
+            window_size,
+            ..Prefs::default()
+        };
+        let (window, _) = open_with_prefs(cx, dory_with_capture(sample_store(), unasked()), prefs);
+        views.push(frame(name, window, cx));
+    }
 }
 
 /// Every view at the given text scale.
@@ -210,7 +248,10 @@ pub fn every_view(scale: f32, cx: &mut TestAppContext) -> Vec<View> {
         upgrade(&mut views, cx);
         recording(&mut views, cx);
     }
-    library(&mut views, scale, cx);
+    library(&mut views, scale, Prefs::default().window_size, cx);
+    if scale == 1.0 {
+        library(&mut views, scale, MIN_WINDOW_SIZE, cx);
+    }
     settings(&mut views, scale, cx);
     views
 }

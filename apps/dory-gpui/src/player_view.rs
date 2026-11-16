@@ -249,12 +249,14 @@ impl Render for PlayerView {
             .child(time_text);
         let why = unavailable.map(|why| {
             a11y::node("player-unavailable", Role::Status, why.clone())
+                .min_w(px(0.))
                 .text_size(theme.text(12.))
                 .text_color(theme.attention)
                 .child(format!("⚠︎ {why}"))
         });
         let controls = div()
             .flex()
+            .flex_none()
             .items_center()
             .gap(px(8.))
             .child(self.control(Control::Back, playing, &theme))
@@ -275,7 +277,7 @@ impl Render for PlayerView {
                 .rounded(px(14.))
                 .when(theme.shadows, |bar| bar.shadow_md())
                 .child(controls)
-                .child(wave.flex_1().h(px(28.)))
+                .child(wave.flex_1().min_w(px(0.)).h(px(28.)))
                 .child(time)
                 .children(why)
         } else {
@@ -293,7 +295,9 @@ impl Render for PlayerView {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w(px(0.))
                                 .flex()
+                                .flex_wrap()
                                 .items_center()
                                 .gap(px(8.))
                                 .child(time)

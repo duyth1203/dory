@@ -19,7 +19,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::AppState;
-use crate::detail::button;
+use crate::detail::{button, spoken_button};
 use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -238,8 +238,9 @@ pub fn permission_button(
         (Source::SystemAudio, PermissionButton::OpenSystemSettings) => "settings-system-audio",
     };
     let app = app.clone();
-    Some(button(
+    Some(spoken_button(
         id,
+        which.label(),
         format!("{} for {}", which.label(), source_name(source)),
         false,
         focus,
@@ -361,6 +362,7 @@ impl Onboarding {
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
                         .flex()
                         .flex_col()
                         .gap(px(4.))

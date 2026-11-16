@@ -97,3 +97,56 @@ fn every_target_is_at_least_24_points_at_the_smallest_text(cx: &mut TestAppConte
 fn every_target_is_at_least_24_points_at_the_largest_text(cx: &mut TestAppContext) {
     check(2.0, cx);
 }
+
+/// No target spills sideways out of the window or out of an accessible container around it,
+/// where it would be clipped, as the upgrade step's Grant button once was.
+fn contained(scale: f32, cx: &mut TestAppContext) {
+    let mut spilled = Vec::new();
+    let mut checked = 0;
+    for view in every_view(scale, cx) {
+        for element in &view.elements {
+            let target = element.role().is_some_and(|r| TARGETS.contains(&r));
+            if !target || !element.visible() {
+                continue;
+            }
+            checked += 1;
+            let b = element.bounds();
+            let (left, right) = (f32::from(b.origin.x), f32::from(b.origin.x + b.size.width));
+            let name = id(element.path());
+            if left < -0.5 || right > view.width + 0.5 {
+                spilled.push(format!(
+                    "{} at {scale}: {name} spans {left:.0}..{right:.0}, window is {:.0} wide",
+                    view.name, view.width
+                ));
+            }
+            for frame in &view.elements {
+                let encloses = frame.path().len() < element.path().len()
+                    && element.path().starts_with(frame.path());
+                if !encloses || !frame.visible() {
+                    continue;
+                }
+                let f = frame.bounds();
+                let (fl, fr) = (f32::from(f.origin.x), f32::from(f.origin.x + f.size.width));
+                if left < fl - 0.5 || right > fr + 0.5 {
+                    spilled.push(format!(
+                        "{} at {scale}: {name} spans {left:.0}..{right:.0}, outside {} at {fl:.0}..{fr:.0}",
+                        view.name,
+                        id(frame.path())
+                    ));
+                }
+            }
+        }
+    }
+    assert!(checked > 50, "only {checked} targets checked at {scale}");
+    assert!(spilled.is_empty(), "{}", spilled.join("\n"));
+}
+
+#[gpui_kit::test]
+fn every_target_fits_its_window_and_containers_at_actual_size(cx: &mut TestAppContext) {
+    contained(1.0, cx);
+}
+
+#[gpui_kit::test]
+fn every_target_fits_its_window_and_containers_at_the_largest_text(cx: &mut TestAppContext) {
+    contained(2.0, cx);
+}

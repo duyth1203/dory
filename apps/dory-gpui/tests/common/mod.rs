@@ -61,12 +61,18 @@ fn scratch_dir() -> std::path::PathBuf {
 
 /// The store runs the same contract suite as SQLite, search included.
 pub fn dory_on(store: Arc<MemStore>) -> Dory {
+    dory_with_capture(store, FakeCapture::new())
+}
+
+/// As [`dory_on`], with the capture adapter a test sets up, such as one reporting permissions
+/// macOS has not asked about yet.
+pub fn dory_with_capture(store: Arc<MemStore>, capture: FakeCapture) -> Dory {
     let dir = scratch_dir();
     Dory::open(
         Ports {
             store,
             takes: Arc::new(MemTakes::in_dir(&dir)),
-            capture: Arc::new(FakeCapture::new()),
+            capture: Arc::new(capture),
             playback: Arc::new(FakePlayback::new()),
             trash: Arc::new(FakeTrash::new(&dir)),
             clock: Arc::new(ManualClock::new(Timestamp(
@@ -116,7 +122,7 @@ pub fn open_with_prefs(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Default::default(),
-                    size: size(px(1100.), px(720.)),
+                    size: size(px(prefs.window_size.0), px(prefs.window_size.1)),
                 })),
                 ..Default::default()
             },

@@ -33,6 +33,8 @@ use crate::onboarding::OnboardingStep;
 pub const SIDEBAR_WIDTH: RangeInclusive<f32> = 240.0..=380.0;
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
 pub const DEFAULT_WINDOW_SIZE: (f32, f32) = (1100.0, 720.0);
+/// The smallest window every view is laid out and tested at.
+pub const MIN_WINDOW_SIZE: (f32, f32) = (800.0, 560.0);
 /// UX-24's proposed rule: restore the selection only after a short absence.
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(4 * 3600);
 /// How long the state sits still before it is written.
@@ -119,17 +121,17 @@ impl Prefs {
         if disk.version != VERSION {
             return Prefs::default();
         }
-        let side = |v: f32, default: f32| {
+        let side = |v: f32, default: f32, min: f32| {
             if v.is_finite() && WINDOW_SIDE.contains(&v) {
-                v
+                v.max(min)
             } else {
                 default
             }
         };
         Prefs {
             window_size: (
-                side(disk.window_width, DEFAULT_WINDOW_SIZE.0),
-                side(disk.window_height, DEFAULT_WINDOW_SIZE.1),
+                side(disk.window_width, DEFAULT_WINDOW_SIZE.0, MIN_WINDOW_SIZE.0),
+                side(disk.window_height, DEFAULT_WINDOW_SIZE.1, MIN_WINDOW_SIZE.1),
             ),
             sidebar_width: clamp_sidebar_width(disk.sidebar_width),
             last_selection: disk

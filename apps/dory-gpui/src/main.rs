@@ -40,6 +40,10 @@ fn main() -> ExitCode {
                 size(px(width), px(height)),
                 cx,
             ))),
+            window_min_size: Some(size(
+                px(dory_gpui::prefs::MIN_WINDOW_SIZE.0),
+                px(dory_gpui::prefs::MIN_WINDOW_SIZE.1),
+            )),
             ..Default::default()
         };
         let core = dory.borrow_mut().take().expect("the app opens one window");

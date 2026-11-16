@@ -213,6 +213,7 @@ impl Shell {
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
                         .flex()
                         .flex_col()
                         .child(div().text_size(theme.text(13.)).child(name))
@@ -520,6 +521,7 @@ impl Render for Shell {
                     .track_focus(self.region(Region::Detail))
                     .relative()
                     .flex_1()
+                    .min_w(px(0.))
                     .h_full()
                     .flex()
                     .flex_col()

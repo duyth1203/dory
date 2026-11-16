@@ -7,6 +7,7 @@ members = [
     "crates/dory-store",
     "crates/dory-macos",
     "apps/dory-cli",
+    "apps/dory-gpui",
 ]
 exclude = ["src-tauri"]
 
@@ -46,6 +47,8 @@ unsafe_op_in_unsafe_fn = "deny"
 dbg_macro = "deny"
 
 [profile.release]
+# Until P7 proves the accessibility tree stable, a panic in a view unwinds instead of aborting.
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"

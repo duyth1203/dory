@@ -1,0 +1,33 @@
+[package]
+name = "dory-gpui"
+version = "0.1.0"
+description = "The native Dory app on GPUI."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "dory-gpui"
+path = "src/main.rs"
+
+[dependencies]
+dory.workspace = true
+dory-core.workspace = true
+gpui-kit = "=0.9.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSDictionary", "NSValue"] }
+objc2-app-kit = { version = "0.3", features = ["NSColor", "NSColorSpace", "NSAccessibility", "NSAccessibilityConstants", "NSApplication", "NSResponder"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }
+dory-core = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

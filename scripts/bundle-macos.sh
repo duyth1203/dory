@@ -7,8 +7,14 @@
 # so the bundle holds one executable and no dylibs or sidecars.
 #
 # Signing: DORY_SIGNING_IDENTITY (for example "Developer ID Application: Name (TEAMID)") signs
-# with that identity and the hardened runtime. Unset, the app is signed ad hoc, and macOS drops
-# its microphone and audio grants every time it is rebuilt.
+# with that identity and the hardened runtime. Unset, the repo's local git config
+# `dory.signingIdentity` names the identity, which keeps a personal certificate out of the repo:
+#
+#   git config dory.signingIdentity "My Code Signing Certificate"
+#
+# Any stable identity, self-signed included, keeps macOS's microphone and audio grants across
+# rebuilds. With neither set, the app is signed ad hoc and macOS drops those grants on every
+# rebuild.
 #
 # Notarizing: only when a real identity is set and cargo-packager's credentials are in the
 # environment, either APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID, or APPLE_API_KEY,
@@ -23,14 +29,17 @@ command -v cargo-packager >/dev/null || {
 
 target="${CARGO_TARGET_DIR:-target}"
 out="${1:-$target/bundle}"
-identity="${DORY_SIGNING_IDENTITY:--}"
+identity="${DORY_SIGNING_IDENTITY:-$(git config --get dory.signingIdentity || echo -)}"
 version="$(cargo metadata --no-deps --format-version 1 |
   python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="dory-gpui"))')"
 
 if [ "$identity" = "-" ]; then
-  echo "bundle: DORY_SIGNING_IDENTITY is unset, signing ad hoc and skipping notarization" >&2
+  echo "bundle: no signing identity set, signing ad hoc and skipping notarization" >&2
   unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_PATH
-elif [ -z "${APPLE_ID:-}${APPLE_API_KEY:-}" ]; then
+else
+  echo "bundle: signing with \"$identity\"" >&2
+fi
+if [ "$identity" != "-" ] && [ -z "${APPLE_ID:-}${APPLE_API_KEY:-}" ]; then
   echo "bundle: no notarization credentials in the environment, skipping notarization" >&2
 fi
 

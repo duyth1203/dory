@@ -19,7 +19,7 @@ See the [user guide](docs/USER_GUIDE.md) for a walk through the app.
 2. Drag `Dory.app` to Applications and open it.
 3. Follow the three onboarding steps. macOS asks for **Microphone** and **System Audio Recording**.
 
-An ad-hoc signed build loses its permission grants every time it is rebuilt, because macOS ties a grant to the code signature. Set `DORY_SIGNING_IDENTITY` to a Developer ID identity to keep them.
+An ad-hoc signed build loses its permission grants every time it is rebuilt, because macOS ties a grant to the code signature. Any stable signing identity keeps them, a self-signed one included. Name it with `DORY_SIGNING_IDENTITY`, or once per clone with `git config dory.signingIdentity "<identity>"`.
 
 ### Upgrading from the Tauri app
 
@@ -42,7 +42,7 @@ To build a release `Dory.app`:
 scripts/bundle-macos.sh
 ```
 
-The script writes `target/bundle/Dory.app` and signs it. Set `DORY_SIGNING_IDENTITY` to sign with a Developer ID identity. Without it the app is signed ad hoc. With a Developer ID identity and the `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` variables set, cargo-packager also notarizes the app. The script needs `cargo install cargo-packager --locked` once.
+The script writes `target/bundle/Dory.app` and signs it with `DORY_SIGNING_IDENTITY`, or else the identity in `git config dory.signingIdentity`, with the hardened runtime. With neither, the app is signed ad hoc. With a Developer ID identity and the `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` variables set, cargo-packager also notarizes the app. The script needs `cargo install cargo-packager --locked` once.
 
 `DORY_DATA_DIR` moves the data folder. The default is `~/Library/Application Support/com.dory.app/v2`. Set it to a throwaway folder for anything you try by hand.
 

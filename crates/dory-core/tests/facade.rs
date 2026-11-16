@@ -26,8 +26,9 @@ use dory_core::ports::capture::{
     Source,
 };
 use dory_core::ports::{
-    CancelToken, Change, Clip, EngineError, ModelProvider, PlayState, ProvisionError,
-    ProvisionSink, Store, StoreError, StoreRead, TakeError, TakeWriter, Takes, Transcriber,
+    CancelToken, Change, Checkpoint, CheckpointKey, Clip, EngineError, ModelProvider, PlayState,
+    ProvisionError, ProvisionSink, Store, StoreError, StoreRead, TakeError, TakeWriter, Takes,
+    Transcriber,
 };
 use dory_core::recorder::{FinalizeReason, Limits};
 use dory_core::testing::store::MemStore;
@@ -203,6 +204,9 @@ impl StoreRead for HookedStore {
     }
     fn settings(&self) -> Result<Settings, StoreError> {
         self.inner.settings()
+    }
+    fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError> {
+        self.inner.checkpoints(key)
     }
 }
 

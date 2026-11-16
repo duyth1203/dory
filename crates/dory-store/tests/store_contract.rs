@@ -1,8 +1,9 @@
 use dory_core::domain::{
-    ChannelLayout, Goal, JobEvent, JobState, LanguagePref, Priority, Recording, RecordingId,
-    RecordingQuery, Stage, Timestamp,
+    Channel, ChannelLayout, Goal, JobEvent, JobState, LanguagePref, Ms, Priority, Recording,
+    RecordingId, RecordingQuery, Stage, TimeRange, Timestamp,
 };
-use dory_core::ports::{Change, Store, StoreError, StoreRead};
+use dory_core::models::ModelRef;
+use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
 use dory_core::testing::store::{CASES, MemStore, run_store_contract};
 use dory_store::SqliteStore;
 
@@ -99,7 +100,7 @@ fn state_survives_closing_and_reopening_the_database() {
 fn a_new_database_is_wal_and_at_the_latest_schema_version() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(&dir);
-    assert_eq!(store.schema_version().unwrap(), 1);
+    assert_eq!(store.schema_version().unwrap(), 2);
     let conn = rusqlite::Connection::open(dir.path().join("dory.db")).unwrap();
     let mode: String = conn
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))
@@ -115,7 +116,7 @@ fn reopening_does_not_rerun_migrations_or_lose_rows() {
         .unwrap();
     for _ in 0..3 {
         let store = open(&dir);
-        assert_eq!(store.schema_version().unwrap(), 1);
+        assert_eq!(store.schema_version().unwrap(), 2);
         assert_eq!(
             store.recordings(&RecordingQuery::default()).unwrap().len(),
             1
@@ -137,7 +138,7 @@ fn a_database_from_a_newer_build_is_refused_untouched() {
     match SqliteStore::open(&path) {
         Err(StoreError::SchemaTooNew {
             found: 99,
-            supported: 1,
+            supported: 2,
         }) => {}
         other => panic!("expected SchemaTooNew, got {other:?}"),
     }
@@ -168,4 +169,46 @@ fn a_reader_is_not_blocked_by_a_writer_holding_the_database() {
     let rows = store.recordings(&RecordingQuery::default()).unwrap();
     assert_eq!(rows.len(), 1, "readers see committed state only");
     drop(tx);
+}
+
+#[test]
+fn a_version_1_database_migrates_to_checkpoints_and_keeps_its_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../src/sqlite/schema_v1.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version = 1;
+             INSERT INTO recordings (id, created_at, layout) VALUES ('old', 7, 'mic_system');",
+        )
+        .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(
+        store.recording(&rid("old")).unwrap(),
+        Some(recording("old", 7))
+    );
+    let key = CheckpointKey {
+        recording: rid("old"),
+        model: ModelRef::parse("sona/whisper-small").unwrap(),
+        channel: Channel::Mic,
+        language: LanguagePref::Auto,
+    };
+    let checkpoint = Checkpoint {
+        span: TimeRange::new(Ms(0), Ms(30_000)).unwrap(),
+        segments: vec![],
+        detected_language: None,
+    };
+    store
+        .apply(vec![Change::CheckpointSaved {
+            key: key.clone(),
+            checkpoint: checkpoint.clone(),
+        }])
+        .unwrap();
+    drop(store);
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(reopened.checkpoints(&key).unwrap(), vec![checkpoint]);
 }

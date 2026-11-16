@@ -108,19 +108,22 @@ impl Event {
 }
 
 /// The events a committed change list announces.
+/// Checkpoints announce nothing: they are the pipeline's own bookkeeping, and stage progress
+/// already tells a UI how far a run got.
 pub fn change_events(changes: &[Change]) -> Vec<Event> {
     changes
         .iter()
-        .map(|change| match change {
-            Change::RecordingCreated(r) => Event::RecordingAdded(r.id.clone()),
-            Change::RecordingEdited { id, .. } => Event::RecordingChanged(id.clone()),
-            Change::RecordingDeleted(id) => Event::RecordingDeleted(id.clone()),
-            Change::TranscriptReplaced { id, .. } => Event::TranscriptChanged(id.clone()),
-            Change::SpeakerNamesReplaced { id, .. } => Event::SpeakerNamesChanged(id.clone()),
-            Change::SummaryReplaced { id, .. } => Event::SummaryChanged(id.clone()),
-            Change::JobEnqueued { id, .. } => Event::JobEnqueued(id.clone()),
-            Change::Job { job, .. } => Event::JobChanged(*job),
-            Change::SettingsReplaced(_) => Event::SettingsChanged,
+        .filter_map(|change| match change {
+            Change::RecordingCreated(r) => Some(Event::RecordingAdded(r.id.clone())),
+            Change::RecordingEdited { id, .. } => Some(Event::RecordingChanged(id.clone())),
+            Change::RecordingDeleted(id) => Some(Event::RecordingDeleted(id.clone())),
+            Change::TranscriptReplaced { id, .. } => Some(Event::TranscriptChanged(id.clone())),
+            Change::SpeakerNamesReplaced { id, .. } => Some(Event::SpeakerNamesChanged(id.clone())),
+            Change::SummaryReplaced { id, .. } => Some(Event::SummaryChanged(id.clone())),
+            Change::JobEnqueued { id, .. } => Some(Event::JobEnqueued(id.clone())),
+            Change::Job { job, .. } => Some(Event::JobChanged(*job)),
+            Change::SettingsReplaced(_) => Some(Event::SettingsChanged),
+            Change::CheckpointSaved { .. } | Change::CheckpointsCleared(_) => None,
         })
         .collect()
 }

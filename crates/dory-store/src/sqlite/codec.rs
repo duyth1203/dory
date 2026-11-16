@@ -9,7 +9,7 @@ use dory_core::domain::{
 use dory_core::models::{
     Choice, KindTag, Mismatch, ModelId, ModelKind, ModelRef, Unavailable, UnavailableReason,
 };
-use dory_core::ports::StoreError;
+use dory_core::ports::{RawSegment, StoreError};
 use serde_json::{Value, json};
 
 pub(crate) fn corrupt(detail: impl Into<String>) -> StoreError {
@@ -363,4 +363,66 @@ pub(crate) fn blocker_from_db(s: &str) -> Result<Blocker, StoreError> {
         },
         other => return Err(corrupt(format!("unknown blocker {other:?}"))),
     })
+}
+
+/// A checkpoint's segments are only ever read back whole, so they are one JSON text column.
+pub(crate) fn raw_segments_to_db(segments: &[RawSegment]) -> String {
+    Value::Array(
+        segments
+            .iter()
+            .map(|s| {
+                json!({
+                    "start": s.range.start().0,
+                    "end": s.range.end().0,
+                    "text": s.text,
+                    "speaker": s.speaker,
+                    "language": s.language.as_ref().map(LangTag::as_str),
+                })
+            })
+            .collect(),
+    )
+    .to_string()
+}
+
+pub(crate) fn raw_segments_from_db(s: &str) -> Result<Vec<RawSegment>, StoreError> {
+    let v: Value = serde_json::from_str(s).map_err(|e| corrupt(format!("checkpoint: {e}")))?;
+    let items = v
+        .as_array()
+        .ok_or_else(|| corrupt("checkpoint segments are not a list"))?;
+    items
+        .iter()
+        .map(|item| {
+            let ms = |key: &str| {
+                item.get(key)
+                    .and_then(Value::as_u64)
+                    .map(Ms)
+                    .ok_or_else(|| corrupt(format!("checkpoint segment is missing {key:?}")))
+            };
+            Ok(RawSegment {
+                range: TimeRange::new(ms("start")?, ms("end")?)
+                    .ok_or_else(|| corrupt("checkpoint segment ends before it starts"))?,
+                text: item
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| corrupt("checkpoint segment is missing its text"))?
+                    .to_owned(),
+                speaker: match item.get("speaker") {
+                    None | Some(Value::Null) => None,
+                    Some(n) => Some(
+                        n.as_u64()
+                            .and_then(|n| u16::try_from(n).ok())
+                            .ok_or_else(|| corrupt("checkpoint speaker out of range"))?,
+                    ),
+                },
+                language: match item.get("language") {
+                    None | Some(Value::Null) => None,
+                    Some(tag) => {
+                        Some(parse_tag(tag.as_str().ok_or_else(|| {
+                            corrupt("checkpoint language is not text")
+                        })?)?)
+                    }
+                },
+            })
+        })
+        .collect()
 }

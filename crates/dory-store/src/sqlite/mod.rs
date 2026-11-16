@@ -19,7 +19,7 @@ use dory_core::domain::{
     SummaryFlag, TakeInfo, Timestamp, Transcript,
 };
 use dory_core::models::{Diar, Llm, Stt};
-use dory_core::ports::{Change, Store, StoreError, StoreRead};
+use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
     params,
@@ -34,7 +34,7 @@ use codec::{
 };
 
 /// Version `n` of the schema is `MIGRATIONS[n - 1]`. Never edit an entry that has shipped.
-const MIGRATIONS: &[&str] = &[include_str!("schema_v1.sql")];
+const MIGRATIONS: &[&str] = &[include_str!("schema_v1.sql"), include_str!("schema_v2.sql")];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -580,6 +580,48 @@ impl StoreRead for SqliteStore {
             Ok(settings)
         })
     }
+
+    fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError> {
+        self.read(|conn| {
+            let mut stmt = conn
+                .prepare_cached(
+                    "SELECT start_ms, end_ms, detected, segments FROM checkpoints
+                     WHERE recording_id = ?1 AND model = ?2 AND channel = ?3 AND language = ?4
+                     ORDER BY start_ms, end_ms",
+                )
+                .map_err(db)?;
+            let raws = stmt
+                .query_map(
+                    params![
+                        key.recording.as_str(),
+                        key.model.as_str(),
+                        channel_to_db(key.channel),
+                        pref_to_setting(&key.language)
+                    ],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            raws.into_iter()
+                .map(|(start, end, detected, segments)| {
+                    Ok(Checkpoint {
+                        span: range_from_db(Some(start), Some(end))?
+                            .ok_or_else(|| corrupt("checkpoint without a span"))?,
+                        segments: codec::raw_segments_from_db(&segments)?,
+                        detected_language: detected.as_deref().map(codec::parse_tag).transpose()?,
+                    })
+                })
+                .collect()
+        })
+    }
 }
 
 pub(crate) fn load_transcript(
@@ -879,6 +921,34 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
         Change::Job { job, event } => {
             let current = load_job(tx, *job)?.ok_or_else(|| not_found("job", job.0))?;
             write_job(tx, &current.on(event)?)?;
+            Ok(None)
+        }
+        Change::CheckpointSaved { key, checkpoint } => {
+            require_recording(tx, &key.recording)?;
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO checkpoints
+                   (recording_id, model, channel, language, start_ms, end_ms, detected, segments)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(db)?
+            .execute(params![
+                key.recording.as_str(),
+                key.model.as_str(),
+                channel_to_db(key.channel),
+                pref_to_setting(&key.language),
+                to_i64(checkpoint.span.start().0),
+                to_i64(checkpoint.span.end().0),
+                checkpoint.detected_language.as_ref().map(|l| l.to_string()),
+                codec::raw_segments_to_db(&checkpoint.segments),
+            ])
+            .map_err(db)?;
+            Ok(None)
+        }
+        Change::CheckpointsCleared(id) => {
+            tx.prepare_cached("DELETE FROM checkpoints WHERE recording_id = ?1")
+                .map_err(db)?
+                .execute([id.as_str()])
+                .map_err(db)?;
             Ok(None)
         }
         Change::SettingsReplaced(settings) => {

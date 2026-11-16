@@ -6,11 +6,13 @@
 //! handle it. Adapters apply `Change::Job` with [`crate::domain::Job::on`] instead of
 //! re-implementing the state machine.
 
-use super::StoreError;
+use super::{RawSegment, StoreError};
 use crate::domain::{
-    Goal, Job, JobEvent, JobId, Priority, Recording, RecordingEdit, RecordingId, RecordingQuery,
-    RecordingRow, Settings, SpeakerNames, Summary, Timestamp, Transcript,
+    Channel, Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
+    RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange,
+    Timestamp, Transcript,
 };
+use crate::models::ModelRef;
 
 /// Reads are cheap and safe from any thread, including a UI thread.
 pub trait StoreRead: Send + Sync {
@@ -28,6 +30,8 @@ pub trait StoreRead: Send + Sync {
     /// exactly that long.
     fn next_wakeup(&self, now: Timestamp) -> Result<Option<Timestamp>, StoreError>;
     fn settings(&self) -> Result<Settings, StoreError>;
+    /// The finished windows of one transcription run, earliest first.
+    fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError>;
 }
 
 pub trait Store: StoreRead {
@@ -69,4 +73,32 @@ pub enum Change {
         event: JobEvent,
     },
     SettingsReplaced(Settings),
+    /// Replaces the checkpoint of the same run and span.
+    CheckpointSaved {
+        key: CheckpointKey,
+        checkpoint: Checkpoint,
+    },
+    /// Every checkpoint of the recording, whatever run made it. Committed with the transcript
+    /// they built.
+    CheckpointsCleared(RecordingId),
+}
+
+/// The transcription run a checkpoint belongs to. A rerun reuses a checkpoint only when every
+/// field matches, so switching the model or the language starts over.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CheckpointKey {
+    pub recording: RecordingId,
+    pub model: ModelRef,
+    pub channel: Channel,
+    pub language: LanguagePref,
+}
+
+/// What one finished speech window produced, so a rerun after a crash skips it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checkpoint {
+    /// The window on the take's time axis.
+    pub span: TimeRange,
+    /// On the take's time axis, not the window's.
+    pub segments: Vec<RawSegment>,
+    pub detected_language: Option<LangTag>,
 }

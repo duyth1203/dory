@@ -19,16 +19,19 @@
 //!   the title, the transcript text, or the summary. The row's job is the most recently enqueued
 //!   one.
 //! - `next_runnable_job` is Front first, then oldest `created_at` (ties by job id).
+//! - Checkpoints are read per run (recording, model, channel, language), earliest window first. A
+//!   second save of the same run and span replaces the first. Clearing drops every run of one
+//!   recording, and so does deleting the recording. Saving for a missing recording is `NotFound`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};
 
 use crate::domain::{
-    Job, JobEvent, JobId, JobState, Priority, Recording, RecordingEdit, RecordingId,
+    Job, JobEvent, JobId, JobState, Ms, Priority, Recording, RecordingEdit, RecordingId,
     RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, Timestamp,
     Transcript,
 };
-use crate::ports::{Change, Store, StoreError, StoreRead};
+use crate::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
 
 #[derive(Clone, Debug)]
 struct Entry {
@@ -44,6 +47,7 @@ struct State {
     jobs: BTreeMap<JobId, Job>,
     last_job: u64,
     settings: Settings,
+    checkpoints: HashMap<CheckpointKey, BTreeMap<(Ms, Ms), Checkpoint>>,
 }
 
 impl State {
@@ -76,6 +80,7 @@ impl State {
             Change::RecordingDeleted(id) => {
                 self.recordings.remove(&id);
                 self.jobs.retain(|_, job| job.recording != id);
+                self.checkpoints.retain(|key, _| key.recording != id);
             }
             Change::TranscriptReplaced { id, transcript } => {
                 self.entry_mut(&id)?.transcript = Some(transcript);
@@ -117,6 +122,15 @@ impl State {
                 *current = current.on(&event)?;
             }
             Change::SettingsReplaced(settings) => self.settings = settings,
+            Change::CheckpointSaved { key, checkpoint } => {
+                self.entry_mut(&key.recording)?;
+                let span = (checkpoint.span.start(), checkpoint.span.end());
+                self.checkpoints
+                    .entry(key)
+                    .or_default()
+                    .insert(span, checkpoint);
+            }
+            Change::CheckpointsCleared(id) => self.checkpoints.retain(|key, _| key.recording != id),
         }
         Ok(())
     }
@@ -136,6 +150,7 @@ impl MemStore {
                 jobs: BTreeMap::new(),
                 last_job: 0,
                 settings: Settings::default(),
+                checkpoints: HashMap::new(),
             }),
         }
     }
@@ -277,6 +292,15 @@ impl StoreRead for MemStore {
     fn settings(&self) -> Result<Settings, StoreError> {
         Ok(self.state().settings.clone())
     }
+
+    fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError> {
+        Ok(self
+            .state()
+            .checkpoints
+            .get(key)
+            .map(|windows| windows.values().cloned().collect())
+            .unwrap_or_default())
+    }
 }
 
 impl Store for MemStore {
@@ -302,6 +326,7 @@ mod contract {
         Revision, Segment, SpeakerId, Stage, TakeContainer, TakeInfo, TimeRange,
     };
     use crate::models::{Choice, KindTag, ModelRef};
+    use crate::ports::{Checkpoint, CheckpointKey, RawSegment};
 
     type Case = fn(&dyn Store);
 
@@ -360,6 +385,22 @@ mod contract {
         ),
         ("job_ids_are_never_reused", job_ids_unique),
         ("concurrent_applies_all_land", concurrent_applies),
+        (
+            "checkpoints_are_kept_per_run_in_window_order",
+            checkpoints_per_run,
+        ),
+        (
+            "saving_a_window_again_replaces_its_checkpoint",
+            checkpoint_replace,
+        ),
+        (
+            "clearing_checkpoints_drops_every_run_of_that_recording_only",
+            checkpoints_cleared,
+        ),
+        (
+            "checkpoints_need_a_recording_and_go_with_it",
+            checkpoints_follow_the_recording,
+        ),
     ];
 
     /// Runs every case against a fresh store from `make`. Panics with the case name on failure.
@@ -665,6 +706,10 @@ mod contract {
                 priority: Priority::Normal,
                 at: Timestamp(11),
             },
+            Change::CheckpointSaved {
+                key: run("r", "sona/whisper-small", Channel::Mic),
+                checkpoint: checkpoint(0, 1_000, &["hi"]),
+            },
             Change::Job {
                 job: job.id,
                 event: JobEvent::StageDone {
@@ -689,6 +734,12 @@ mod contract {
         assert_eq!(
             store.recordings(&RecordingQuery::default()).unwrap(),
             before
+        );
+        assert_eq!(
+            store
+                .checkpoints(&run("r", "sona/whisper-small", Channel::Mic))
+                .unwrap(),
+            vec![]
         );
     }
 
@@ -1596,6 +1647,170 @@ mod contract {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), THREADS * EACH, "every job got its own id");
+    }
+
+    fn run(id: &str, model: &str, channel: Channel) -> CheckpointKey {
+        CheckpointKey {
+            recording: rid(id),
+            model: ModelRef::parse(model).unwrap(),
+            channel,
+            language: LanguagePref::Auto,
+        }
+    }
+
+    fn range(a: u64, b: u64) -> TimeRange {
+        TimeRange::new(Ms(a), Ms(b)).unwrap()
+    }
+
+    /// A window with one segment per text, spread evenly over it.
+    fn checkpoint(start: u64, end: u64, texts: &[&str]) -> Checkpoint {
+        let step = (end - start) / texts.len().max(1) as u64;
+        Checkpoint {
+            span: range(start, end),
+            segments: texts
+                .iter()
+                .enumerate()
+                .map(|(i, text)| RawSegment {
+                    range: range(start + i as u64 * step, start + (i as u64 + 1) * step),
+                    text: (*text).to_owned(),
+                    speaker: None,
+                    language: None,
+                })
+                .collect(),
+            detected_language: None,
+        }
+    }
+
+    fn save(store: &dyn Store, key: &CheckpointKey, checkpoint: Checkpoint) {
+        store
+            .apply(vec![Change::CheckpointSaved {
+                key: key.clone(),
+                checkpoint,
+            }])
+            .unwrap();
+    }
+
+    fn checkpoints_per_run(store: &dyn Store) {
+        create(store, "r", 10);
+        create(store, "other", 20);
+        let key = run("r", "sona/whisper-small", Channel::System);
+        let full = Checkpoint {
+            span: range(30_000, 60_000),
+            segments: vec![
+                RawSegment {
+                    range: range(30_500, 31_000),
+                    text: "Xin ch\u{e0}o \"b\u{1ea1}n\"".into(),
+                    speaker: Some(3),
+                    language: Some(LangTag::parse("vi").unwrap()),
+                },
+                RawSegment {
+                    range: range(31_000, 31_000),
+                    text: String::new(),
+                    speaker: Some(0),
+                    language: None,
+                },
+            ],
+            detected_language: Some(LangTag::parse("vi").unwrap()),
+        };
+        let empty = Checkpoint {
+            span: range(90_000, 95_000),
+            segments: vec![],
+            detected_language: None,
+        };
+        save(store, &key, empty.clone());
+        save(store, &key, checkpoint(0, 30_000, &["one", "two"]));
+        save(store, &key, full.clone());
+        assert_eq!(
+            store.checkpoints(&key).unwrap(),
+            vec![checkpoint(0, 30_000, &["one", "two"]), full, empty],
+            "earliest window first, every field kept"
+        );
+
+        let others = [
+            run("r", "sona/whisper-large", Channel::System),
+            run("r", "sona/whisper-small", Channel::Mic),
+            CheckpointKey {
+                language: LanguagePref::Pinned(LangTag::parse("en").unwrap()),
+                ..key.clone()
+            },
+            run("other", "sona/whisper-small", Channel::System),
+        ];
+        for other in &others {
+            assert_eq!(store.checkpoints(other).unwrap(), vec![], "{other:?}");
+        }
+        save(store, &others[0], checkpoint(0, 30_000, &["large"]));
+        assert_eq!(
+            store.checkpoints(&others[0]).unwrap(),
+            vec![checkpoint(0, 30_000, &["large"])]
+        );
+        assert_eq!(store.checkpoints(&key).unwrap().len(), 3);
+    }
+
+    fn checkpoint_replace(store: &dyn Store) {
+        create(store, "r", 10);
+        let key = run("r", "sona/whisper-small", Channel::Mic);
+        save(store, &key, checkpoint(0, 30_000, &["first try"]));
+        save(store, &key, checkpoint(0, 30_000, &["second", "try"]));
+        save(store, &key, checkpoint(0, 29_000, &["a different span"]));
+        assert_eq!(
+            store.checkpoints(&key).unwrap(),
+            vec![
+                checkpoint(0, 29_000, &["a different span"]),
+                checkpoint(0, 30_000, &["second", "try"]),
+            ]
+        );
+    }
+
+    fn checkpoints_cleared(store: &dyn Store) {
+        create(store, "r", 10);
+        create(store, "kept", 20);
+        let small = run("r", "sona/whisper-small", Channel::Mic);
+        let large = run("r", "sona/whisper-large", Channel::System);
+        let kept = run("kept", "sona/whisper-small", Channel::Mic);
+        for key in [&small, &large, &kept] {
+            save(store, key, checkpoint(0, 1_000, &["x"]));
+        }
+        store
+            .apply(vec![
+                Change::CheckpointsCleared(rid("r")),
+                Change::TranscriptReplaced {
+                    id: rid("r"),
+                    transcript: transcript(1, &["x"]),
+                },
+            ])
+            .unwrap();
+        assert_eq!(store.checkpoints(&small).unwrap(), vec![]);
+        assert_eq!(store.checkpoints(&large).unwrap(), vec![]);
+        assert_eq!(store.checkpoints(&kept).unwrap().len(), 1);
+        store
+            .apply(vec![Change::CheckpointsCleared(rid("r"))])
+            .unwrap();
+        store
+            .apply(vec![Change::CheckpointsCleared(rid("ghost"))])
+            .unwrap();
+    }
+
+    fn checkpoints_follow_the_recording(store: &dyn Store) {
+        let ghost = run("ghost", "sona/whisper-small", Channel::Mic);
+        assert_not_found(store.apply(vec![Change::CheckpointSaved {
+            key: ghost.clone(),
+            checkpoint: checkpoint(0, 1_000, &["x"]),
+        }]));
+        assert_eq!(store.checkpoints(&ghost).unwrap(), vec![]);
+
+        create(store, "gone", 10);
+        let key = run("gone", "sona/whisper-small", Channel::Mic);
+        save(store, &key, checkpoint(0, 1_000, &["x"]));
+        store
+            .apply(vec![Change::RecordingDeleted(rid("gone"))])
+            .unwrap();
+        assert_eq!(store.checkpoints(&key).unwrap(), vec![]);
+        create(store, "gone", 20);
+        assert_eq!(
+            store.checkpoints(&key).unwrap(),
+            vec![],
+            "no ghost checkpoints from the old life"
+        );
     }
 }
 

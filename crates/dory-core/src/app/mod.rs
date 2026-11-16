@@ -724,6 +724,19 @@ impl Pipeline<'_> {
         self.dory.db.store.job(job)
     }
 
+    /// Every job that is running, queued, or blocked, in the order the queue shows them: the
+    /// running job, then queued jobs as the worker takes them, then blocked ones.
+    pub fn queue(&self) -> Result<Vec<Job>, StoreError> {
+        let mut jobs = pipeline::jobs_where(&self.dory.db, |state| {
+            matches!(
+                state,
+                JobState::Queued | JobState::Running { .. } | JobState::Blocked { .. }
+            )
+        })?;
+        pipeline::queue_order(&mut jobs);
+        Ok(jobs)
+    }
+
     fn enqueue_with(
         &self,
         id: &RecordingId,

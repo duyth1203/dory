@@ -340,6 +340,24 @@ pub(crate) fn unblock_all(db: &Db) {
     }
 }
 
+/// What the queue popover lists: the running job, then the queued ones in the order the worker
+/// takes them (Front first, then oldest), then the blocked ones.
+pub(crate) fn queue_order(jobs: &mut [Job]) {
+    let rank = |state: &JobState| match state {
+        JobState::Running { .. } => 0,
+        JobState::Queued => 1,
+        _ => 2,
+    };
+    jobs.sort_by_key(|j| {
+        (
+            rank(&j.state),
+            std::cmp::Reverse(j.priority),
+            j.created_at,
+            j.id,
+        )
+    });
+}
+
 /// Every job in a state `wanted` accepts. A list row shows only the newest job of a recording,
 /// so this reads each recording's jobs.
 pub(crate) fn jobs_where(
@@ -361,6 +379,30 @@ pub(crate) fn jobs_where(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{Goal, Priority};
+
+    fn job(id: u64, state: JobState, priority: Priority, at: i64) -> Job {
+        let recording = RecordingId::parse(&format!("r{id}")).unwrap();
+        let mut job = Job::new(JobId(id), recording, Goal::ALL, priority, Timestamp(at));
+        job.state = state;
+        job
+    }
+
+    #[test]
+    fn the_queue_lists_running_then_front_then_oldest_then_blocked() {
+        let running = JobState::Running {
+            stage: Stage::Transcribe,
+        };
+        let mut jobs = vec![
+            job(1, JobState::Queued, Priority::Normal, 10),
+            job(2, JobState::Queued, Priority::Normal, 5),
+            job(3, JobState::Queued, Priority::Front, 20),
+            job(4, running, Priority::Normal, 30),
+        ];
+        queue_order(&mut jobs);
+        let ids: Vec<u64> = jobs.iter().map(|j| j.id.0).collect();
+        assert_eq!(ids, [4, 3, 2, 1]);
+    }
 
     #[test]
     fn backoff_doubles_from_the_base_and_is_capped() {

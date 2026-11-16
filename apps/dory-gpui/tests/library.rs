@@ -238,6 +238,7 @@ mod window {
                 takes: Arc::new(MemTakes::new()),
                 capture: Arc::new(FakeCapture::new()),
                 playback: Arc::new(FakePlayback::new()),
+                trash: Arc::new(dory_core::testing::FakeTrash::new(std::env::temp_dir())),
                 clock: Arc::new(ManualClock::new(Timestamp(
                     fixtures::now().timestamp_millis(),
                 ))),

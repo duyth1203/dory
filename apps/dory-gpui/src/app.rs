@@ -10,6 +10,7 @@
 
 mod core;
 mod player;
+mod queue;
 mod record;
 mod session;
 

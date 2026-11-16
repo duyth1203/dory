@@ -199,29 +199,7 @@ impl AppState {
         self.report(done, cx);
     }
 
-    /// The queue's **Move to top** (UX-15) on a recording's job.
-    pub fn move_to_top(&mut self, id: RecordingId, cx: &mut Context<Self>) {
-        let done = self
-            .core
-            .run(cx, move |dory| match dory.library().jobs(&id)?.pop() {
-                Some(job) => dory.pipeline().promote(job.id),
-                None => Ok(()),
-            });
-        self.report(done, cx);
-    }
-
-    /// The queue's **Cancel** (UX-15) on a recording's job.
-    pub fn cancel_job(&mut self, id: RecordingId, cx: &mut Context<Self>) {
-        let done = self
-            .core
-            .run(cx, move |dory| match dory.library().jobs(&id)?.pop() {
-                Some(job) => dory.pipeline().cancel(job.id),
-                None => Ok(()),
-            });
-        self.report(done, cx);
-    }
-
-    fn report<E: std::fmt::Display + 'static>(
+    pub(super) fn report<E: std::fmt::Display + 'static>(
         &mut self,
         done: gpui_kit::Task<Result<(), E>>,
         cx: &mut Context<Self>,

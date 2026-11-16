@@ -1,6 +1,6 @@
 # Dory agent guide
 
-Dory is a local-first macOS meeting recorder. It records audio, transcribes it on-device with the bundled Sona sidecar, and summarizes it with Gemma through Ollama. Every agent session in this repo, local or cloud, Claude or not, follows this file.
+Dory is a local-first macOS meeting recorder. It records audio, transcribes it on-device, and summarizes it with Gemma through Ollama. The old Tauri app used the Sona sidecar, whose repo is gone. The new core transcribes in process through sherpa-onnx (`crates/dory-engines`). Every agent session in this repo, local or cloud, Claude or not, follows this file.
 
 ## Drive every task with pstack
 
@@ -43,7 +43,8 @@ The new code follows `docs/architecture/hexagonal.md`. Read it before you touch 
 - `dory-cli` drives the app headlessly through the `dory` composition root: `import <old-data-dir>`, `list`, `show <id>`, `record`, `process <id> [--fake-engines]`, and `models`. Set `DORY_DATA_DIR` to a throwaway folder for anything you run by hand. The default is `~/Library/Application Support/com.dory.app/v2`, and the old Tauri folder is refused. The `--fake-*` flags are refused unless `DORY_DATA_DIR` is set.
 - One process at a time owns a data folder. `record`, `process`, and `import` lock it, and a second one fails at once with "Dory is already running". `list`, `show`, and `models` only read, so they work while `record` runs.
 - `cargo run -p dory-macos --example dory-capture -- --layout mic-system --seconds 10 --out /tmp/take.wav` records through the macOS adapter directly, for capture debugging. `-- devices` lists the input devices. macOS attributes the permission prompts to the app that launched it.
-- `pnpm prebuild:sona` downloads the Sona sidecars into `src-tauri/binaries/`. Run it once before the first Tauri build.
+- `pnpm prebuild:sona` used to download the Sona sidecars into `src-tauri/binaries/`. Sona's GitHub repo returns 404 since 2026-11-16, so the Tauri app can no longer be built with transcription on a fresh machine.
+- `dory-engines` links sherpa-onnx statically. Its build script downloads a 20.8 MB prebuilt library from the k2-fsa GitHub release on the first build.
 - `pnpm install`, then `pnpm dev`, runs the Tauri app. `src-tauri/` is outside the Cargo workspace until the GPUI app replaces it.
 - `pnpm vite:build` is the only typecheck for the React side.
 - Do not claim a test run that did not happen.

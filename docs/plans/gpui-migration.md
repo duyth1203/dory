@@ -263,7 +263,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Files.**
 
-- [ ] Create `crates/dory-engines/**` with the `Sona` speech provider and the `Ollama` summary provider.
+- [ ] Create `crates/dory-engines/**` with the `Sherpa` speech provider and the `Ollama` summary provider. Sona's repo is gone (404 on 2026-11-16), so speech runs in process through sherpa-onnx instead of a sidecar.
 - [ ] Edit `crates/dory-core/src/pipeline/**` for the worker, windowing, checkpoints, merge, and summary policy.
 - [ ] Add a `Playback` port to `crates/dory-core/src/ports/` and an `AVAudioPlayer` adapter in `crates/dory-macos/src/playback.rs`.
 - [ ] Edit `crates/dory/src/lib.rs` to register the providers.
@@ -271,7 +271,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Build.**
 
-- [ ] `Sona` implements `ModelProvider<Stt>` with one catalog row per whisper.cpp model and a user-file row. It keeps one sidecar process per loaded model and unloads it when idle.
+- [ ] `Sherpa` implements `ModelProvider<Stt>` with rows for Parakeet TDT 0.6B v3 (recommended), Qwen3-ASR 0.6B, and Whisper turbo, each with pros and cons for the UX-28 explainer. It provisions a pinned archive on request and frees the recognizer when the engine is dropped. A measured Tagalog and English run decides which rows stay.
 - [ ] `Ollama` implements `ModelProvider<Llm>` with `gemma4:e4b` and `gemma4:12b` rows. It sets `num_ctx` explicitly and reports it as `context_tokens`.
 - [ ] The pipeline worker resolves models with `resolve`, plans clips from the layout, cuts windows at silence, skips silent windows, checkpoints each window, merges by time, drops mic bleed, and commits the transcript with its job event in one `apply`.
 - [ ] Summaries use one pass or map-reduce from `context_tokens`, in the meeting's main language.
@@ -283,7 +283,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-core/tests/pipeline.rs` covers window planning, silent-window skipping, checkpoint resume after a simulated crash, bleed dedupe, merge order, map-reduce sizing, and `Blocked` for a missing model, all with fakes. `crates/dory-engines/tests/` covers Sona's event parsing and Ollama's request shape against recorded fixtures. Run `cargo test --workspace`.
+- [ ] `crates/dory-core/tests/pipeline.rs` covers window planning, silent-window skipping, checkpoint resume after a simulated crash, bleed dedupe, merge order, map-reduce sizing, and `Blocked` for a missing model, all with fakes. `crates/dory-engines/tests/` covers Sherpa's provisioning and model configs and Ollama's request shape against recorded fixtures. Run `cargo test --workspace`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
@@ -296,7 +296,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Lane 7. Process a 2-hour recording with `gemma4:e4b` and with a forced 4096-token context. Save `map-reduce.png`. Pass when both produce a summary and the log shows map-reduce only for the small context.
 - [ ] Lane 8. Process a French recording with language `Auto`. Save `french.png`. Pass when the transcript and summary are in French.
 - [ ] Lane 9. Run `dory-cli play <id> --seek 5400`. Save `play.png`. Pass when capture of the system output shows audio starting within 200 ms at that position.
-- [ ] Lane 10. Cancel a running job. Save `cancel.png`. Pass when the Sona process exits within 1 second and the job is `Cancelled`.
+- [ ] Lane 10. Cancel a running job. Save `cancel.png`. Pass when transcription stops within 1 second and the job is `Cancelled`.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -564,7 +564,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Build.**
 
-- [ ] `scripts/bundle-macos.sh` builds `Dory.app` with `cargo-packager`, copies the Sona sidecars and ffmpeg, signs with the identity in `DORY_SIGNING_IDENTITY`, and notarizes when credentials exist.
+- [ ] `scripts/bundle-macos.sh` builds `Dory.app` with `cargo-packager`, links sherpa-onnx statically, signs with the identity in `DORY_SIGNING_IDENTITY`, and notarizes when credentials exist.
 - [ ] Info.plist carries `NSMicrophoneUsageDescription`, `NSAudioCaptureUsageDescription`, `LSMinimumSystemVersion` 26.0, and the bundle id `com.dory.app`, so the data folder carries over.
 - [ ] TCC matches the code signature as well as the bundle id. Trunk builds are ad-hoc signed, so the new app re-prompts for the microphone, and System Audio Recording is new in any case. Onboarding detects an existing data folder and shows only the permissions step to upgrading users.
 - [ ] `legacy_cleanup.rs` runs once on first launch. It finds aggregate devices by UID (`com.dory.aggregate` and `com.dory.multioutput`), never by name. If the default input or output is one of them, it restores from `audio_recording_session.json`, then `audio_output_restore.json`, then the built-in mic and speakers. Then it destroys the two devices and logs every step.
@@ -585,7 +585,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Lane 2. After lane 1, read the devices with `system_profiler SPAudioDataType` before and after the head's first launch. Save `devices.png`. Pass when the two Dory UIDs are gone and the default devices are the ones recorded before the trunk install.
 - [ ] Lane 3. Launch the bundle from Finder in a fresh `dorytest` profile. Save `clean-launch.png`. Pass when onboarding starts and the permission prompts name Dory.
 - [ ] Lane 4. Run `codesign --verify --deep --strict Dory.app` and `spctl -a -vv Dory.app`. Save `sign.png`. Pass when both succeed with a Developer ID identity. Without one, the lane is `NOT VERIFIED` and the operator is told that permissions reset on every rebuild.
-- [ ] Lane 5. Record and process a meeting in the bundle. Save `bundle-flow.png`. Pass when the bundled Sona sidecar runs and the summary appears.
+- [ ] Lane 5. Record and process a meeting in the bundle. Save `bundle-flow.png`. Pass when bundled transcription runs and the summary appears.
 - [ ] Lane 6. In a `dorytest` profile where BlackHole was never installed, record with `afplay` playing. Save `no-blackhole.png`. Pass when the system channel RMS is above -30 dBFS.
 - [ ] Lane 7. Run `rg -i 'blackhole|tauri|invoke\(' --glob '!docs/plans/**' --glob '!CHANGELOG*'`. Save `grep.png`. Pass when only the legacy cleanup module and the README upgrade note match.
 - [ ] Lane 8. Follow `README.md` from a fresh clone to a running app in `dorytest`. Save `readme.png`. Pass when every command works as written.

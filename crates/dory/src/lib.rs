@@ -2,7 +2,7 @@
 //! for types and on this crate for [`open`].
 //!
 //! To add an engine, implement `ModelProvider<K>` in its own module and add one line to
-//! [`providers`]. Nothing else changes.
+//! `providers`. Nothing else changes.
 
 mod clock;
 mod config;
@@ -18,11 +18,14 @@ use dory_core::app::{Options, Ports, ReadPorts};
 use dory_core::models::{CatalogError, Llm, Stt};
 use dory_core::ports::capture::CaptureBackend;
 use dory_core::ports::{ModelProvider, StoreError};
+use dory_engines::{Ollama, Sherpa};
 use dory_store::{FsTakes, SqliteStore};
 use thiserror::Error;
 
 pub use clock::SystemClock;
-pub use config::{Config, ConfigError, DATA_DIR_VAR, legacy_data_dir};
+pub use config::{
+    Config, ConfigError, DATA_DIR_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR, legacy_data_dir,
+};
 pub use dory_core::app::{Dory, LibraryReader};
 pub use dory_store::{ImportReport, Skipped};
 #[cfg(feature = "fake-engines")]
@@ -71,12 +74,17 @@ struct Providers {
     llm: Vec<Arc<dyn ModelProvider<Llm>>>,
 }
 
-/// The real engines. Both lists are empty until P3 adds Sona and Ollama here, one line each. Until
-/// then a recording's job blocks on `Blocker::NoModel`.
-fn providers() -> Providers {
+/// The real engines. To add one, push its provider here.
+fn providers(config: &Config) -> Providers {
+    let sherpa = Sherpa::new(config.models_dir().join("sherpa"), Sherpa::RELEASES);
+    let ollama = Ollama::new(&config.ollama_url);
+    let ollama = match config.ollama_num_ctx {
+        Some(n) => ollama.with_num_ctx(n),
+        None => ollama,
+    };
     Providers {
-        stt: Vec::new(),
-        llm: Vec::new(),
+        stt: vec![Arc::new(sherpa)],
+        llm: vec![Arc::new(ollama)],
     }
 }
 
@@ -140,13 +148,18 @@ fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryRea
 /// the returned `Dory` is dropped, so a second open of the same folder, in this process or
 /// another, fails with [`OpenError::InUse`].
 pub fn open(config: &Config) -> Result<Dory, OpenError> {
-    open_with(config, platform::capture(), Options::default(), providers())
+    open_with(
+        config,
+        platform::capture(),
+        Options::default(),
+        providers(config),
+    )
 }
 
 /// Opens the library under `config.data_dir` for reading only. It takes no lock and repairs
 /// nothing, so it works while another process records into the same folder.
 pub fn open_library(config: &Config) -> Result<LibraryReader, OpenError> {
-    open_library_with(config, providers())
+    open_library_with(config, providers(config))
 }
 
 /// Like [`open_library`], with dory-core's fake speech and summary engines registered.
@@ -172,7 +185,7 @@ pub fn open_with_fake_engines(config: &Config) -> Result<Dory, OpenError> {
 pub fn open_with_fake_capture(config: &Config) -> Result<Dory, OpenError> {
     let options = Options::default();
     let capture = Arc::new(fake::ToneCapture::new(options.limits.rate_hz.get()));
-    open_with(config, capture, options, providers())
+    open_with(config, capture, options, providers(config))
 }
 
 /// Imports the old Tauri app's data folder into the store under `config.data_dir`. The old folder

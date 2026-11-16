@@ -24,14 +24,7 @@ fn the_catalog_is_valid_and_explains_every_model() {
     let catalog = Catalog::new(entries.clone()).unwrap();
 
     let ids: Vec<String> = catalog.entries().iter().map(|e| e.id.to_string()).collect();
-    assert_eq!(
-        ids,
-        [
-            "sherpa/parakeet-tdt-0.6b-v3",
-            "sherpa/qwen3-asr-0.6b",
-            "sherpa/whisper-turbo"
-        ]
-    );
+    assert_eq!(ids, ["sherpa/parakeet-tdt-0.6b-v3", "sherpa/whisper-turbo"]);
     let recommended: Vec<_> = entries.iter().filter(|e| e.recommended).collect();
     assert_eq!(recommended.len(), 1);
     assert_eq!(recommended[0].id, id("parakeet-tdt-0.6b-v3"));
@@ -49,7 +42,7 @@ fn the_catalog_is_valid_and_explains_every_model() {
 }
 
 #[test]
-fn a_tagalog_and_english_meeting_fits_qwen3_and_whisper_but_not_parakeet() {
+fn a_tagalog_and_english_meeting_fits_whisper_but_not_parakeet() {
     let dir = tempfile::tempdir().unwrap();
     let entries = provider(dir.path()).catalog();
     let caps = |name: &str| &entries.iter().find(|e| e.id == id(name)).unwrap().caps;
@@ -60,7 +53,6 @@ fn a_tagalog_and_english_meeting_fits_qwen3_and_whisper_but_not_parakeet() {
         input: Ms(3_600_000),
     };
     let mixed = needs(LanguagePref::Auto, &["tl", "en"]);
-    assert_eq!(Stt::fit(caps("qwen3-asr-0.6b"), &mixed), Fit::Yes);
     assert_eq!(Stt::fit(caps("whisper-turbo"), &mixed), Fit::Yes);
     assert_eq!(
         Stt::fit(caps("parakeet-tdt-0.6b-v3"), &mixed),
@@ -69,11 +61,6 @@ fn a_tagalog_and_english_meeting_fits_qwen3_and_whisper_but_not_parakeet() {
 
     for pinned in ["tl", "fil"] {
         let need = needs(LanguagePref::Pinned(tag(pinned)), &[]);
-        assert_eq!(
-            Stt::fit(caps("qwen3-asr-0.6b"), &need),
-            Fit::Yes,
-            "{pinned}"
-        );
         assert_eq!(Stt::fit(caps("whisper-turbo"), &need), Fit::Yes, "{pinned}");
     }
     let english = needs(LanguagePref::Auto, &["en"]);
@@ -86,7 +73,6 @@ fn an_empty_models_folder_needs_each_whole_archive() {
     let sherpa = provider(dir.path());
     let cases = [
         ("parakeet-tdt-0.6b-v3", 487_211_443),
-        ("qwen3-asr-0.6b", 878_702_423),
         ("whisper-turbo", 563_790_207),
     ];
     for (name, bytes) in cases {
@@ -106,7 +92,7 @@ fn an_empty_models_folder_needs_each_whole_archive() {
 fn opening_a_model_that_is_not_downloaded_says_so() {
     let dir = tempfile::tempdir().unwrap();
     let err = provider(dir.path())
-        .open(&id("qwen3-asr-0.6b"), &CancelToken::new())
+        .open(&id("whisper-turbo"), &CancelToken::new())
         .err()
         .unwrap();
     assert!(matches!(err, EngineError::ModelMissing(_)), "{err:?}");

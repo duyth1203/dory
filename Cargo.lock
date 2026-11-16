@@ -434,6 +434,7 @@ name = "dory"
 version = "0.1.0"
 dependencies = [
  "dory-core",
+ "dory-engines",
  "dory-macos",
  "dory-store",
  "tempfile",

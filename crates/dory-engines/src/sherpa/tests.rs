@@ -378,10 +378,6 @@ fn configured_paths(
         ("transducer.encoder", m.transducer.encoder.clone()),
         ("transducer.decoder", m.transducer.decoder.clone()),
         ("transducer.joiner", m.transducer.joiner.clone()),
-        ("qwen3.conv_frontend", m.qwen3_asr.conv_frontend.clone()),
-        ("qwen3.encoder", m.qwen3_asr.encoder.clone()),
-        ("qwen3.decoder", m.qwen3_asr.decoder.clone()),
-        ("qwen3.tokenizer", m.qwen3_asr.tokenizer.clone()),
         ("whisper.encoder", m.whisper.encoder.clone()),
         ("whisper.decoder", m.whisper.decoder.clone()),
         ("tokens", m.tokens.clone().filter(|t| !t.is_empty())),
@@ -392,7 +388,7 @@ fn configured_paths(
 fn each_layout_configures_the_files_its_archive_holds() {
     let dir = PathBuf::from("/m");
     let at = |f: &str| Some(format!("/m/{f}"));
-    let cases: [(Layout, &[(&str, &str)]); 3] = [
+    let cases: [(Layout, &[(&str, &str)]); 2] = [
         (
             Layout::Parakeet,
             &[
@@ -400,15 +396,6 @@ fn each_layout_configures_the_files_its_archive_holds() {
                 ("transducer.decoder", "decoder.int8.onnx"),
                 ("transducer.joiner", "joiner.int8.onnx"),
                 ("tokens", "tokens.txt"),
-            ],
-        ),
-        (
-            Layout::Qwen3,
-            &[
-                ("qwen3.conv_frontend", "conv_frontend.onnx"),
-                ("qwen3.encoder", "encoder.int8.onnx"),
-                ("qwen3.decoder", "decoder.int8.onnx"),
-                ("qwen3.tokenizer", "tokenizer"),
             ],
         ),
         (
@@ -458,9 +445,6 @@ fn pinned_languages_map_to_each_engines_code() {
     let by_name = |name: &str| models.iter().find(|m| m.name == name).unwrap();
     let tag = |s: &str| LangTag::parse(s).unwrap();
     let cases = [
-        ("qwen3-asr-0.6b", "tl", Some("Filipino")),
-        ("qwen3-asr-0.6b", "fil", Some("Filipino")),
-        ("qwen3-asr-0.6b", "en-US", Some("English")),
         ("whisper-turbo", "tl", Some("tl")),
         ("whisper-turbo", "fil", Some("tl")),
         ("whisper-turbo", "jv", Some("jw")),

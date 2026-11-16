@@ -13,6 +13,7 @@ fake-engines = ["dory-core/testing"]
 [dependencies]
 dory-core.workspace = true
 dory-store.workspace = true
+dory-engines.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -4,7 +4,6 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Layout {
     Parakeet,
-    Qwen3,
     WhisperTurbo,
 }
 
@@ -18,14 +17,6 @@ impl Layout {
                 "decoder.int8.onnx",
                 "joiner.int8.onnx",
                 "tokens.txt",
-            ],
-            Layout::Qwen3 => &[
-                "conv_frontend.onnx",
-                "encoder.int8.onnx",
-                "decoder.int8.onnx",
-                "tokenizer/merges.txt",
-                "tokenizer/tokenizer_config.json",
-                "tokenizer/vocab.json",
             ],
             Layout::WhisperTurbo => &[
                 "turbo-encoder.int8.onnx",
@@ -85,41 +76,13 @@ pub(super) fn models() -> Vec<Model> {
             rank: 30,
             summary: "NVIDIA's fast speech model for English and 24 other European languages.",
             pros: &[
-                "The fastest of the three",
+                "About 14 times faster than real time on an M3 Pro, five times faster than Whisper",
                 "Word timestamps, so each sentence gets its own time",
-                "6.19% average error on the Open ASR Leaderboard, the lowest of the three",
+                "7.2% word errors on 43 English FLEURS clips, measured on an M3 Pro",
             ],
             cons: &[
                 "No Tagalog, and no languages outside Europe",
-                "A meeting that mixes Tagalog and English needs Qwen3-ASR or Whisper",
-            ],
-        },
-        Model {
-            name: "qwen3-asr-0.6b",
-            display_name: "Qwen3-ASR 0.6B",
-            archive: Archive {
-                file: "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2",
-                bytes: 878_702_423,
-                sha256: "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96",
-                root: "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
-            },
-            layout: Layout::Qwen3,
-            disk_bytes: 987_015_347,
-            languages: QWEN3_ASR,
-            // Each window is generated as one text with a capped token budget, and 30 seconds of
-            // fast speech stays inside it.
-            window_secs: 30,
-            recommended: false,
-            rank: 20,
-            summary: "Alibaba's multilingual speech model for 30 languages, Filipino among them.",
-            pros: &[
-                "Understands Filipino (Tagalog) and English in one model",
-                "Detects the spoken language by itself",
-                "6.30% average error on the Open ASR Leaderboard",
-            ],
-            cons: &[
-                "Filipino accuracy is unverified. One unofficial FLEURS run (whispernotes.app) measured 20.4% word error, against 9.4% for Whisper turbo",
-                "No timestamps inside a window, so each window is one block of text",
+                "A meeting in Tagalog, or mixing Tagalog and English, needs Whisper",
             ],
         },
         Model {
@@ -141,12 +104,13 @@ pub(super) fn models() -> Vec<Model> {
             summary: "OpenAI's Whisper, with the broadest language list at 100 languages.",
             pros: &[
                 "Covers the most languages, Tagalog included",
+                "14.6% word errors on 37 Tagalog FLEURS clips, measured on an M3 Pro",
+                "6.2% word errors on 43 English FLEURS clips, measured on an M3 Pro",
                 "Detects the spoken language by itself",
             ],
             cons: &[
-                "The slowest of the three",
+                "About 3 times faster than real time on an M3 Pro, five times slower than Parakeet",
                 "Can repeat text over long silence",
-                "7.69% average error on the Open ASR Leaderboard, the highest of the three",
                 "No timestamps inside a window, so each window is one block of text",
             ],
         },
@@ -180,42 +144,6 @@ const PARAKEET_V3: &[(&str, &str)] = &[
     ("sv", "sv"),
     ("ru", "ru"),
     ("uk", "uk"),
-];
-
-/// The 30 languages in github.com/QwenLM/Qwen3-ASR README.md, with the names its prompt takes.
-/// The README tags Filipino `fil`, and `fil` does not cover `tl`, so Tagalog is listed too.
-const QWEN3_ASR: &[(&str, &str)] = &[
-    ("zh", "Chinese"),
-    ("en", "English"),
-    ("yue", "Cantonese"),
-    ("ar", "Arabic"),
-    ("de", "German"),
-    ("fr", "French"),
-    ("es", "Spanish"),
-    ("pt", "Portuguese"),
-    ("id", "Indonesian"),
-    ("it", "Italian"),
-    ("ko", "Korean"),
-    ("ru", "Russian"),
-    ("th", "Thai"),
-    ("vi", "Vietnamese"),
-    ("ja", "Japanese"),
-    ("tr", "Turkish"),
-    ("hi", "Hindi"),
-    ("ms", "Malay"),
-    ("nl", "Dutch"),
-    ("sv", "Swedish"),
-    ("da", "Danish"),
-    ("fi", "Finnish"),
-    ("pl", "Polish"),
-    ("cs", "Czech"),
-    ("fil", "Filipino"),
-    ("tl", "Filipino"),
-    ("fa", "Persian"),
-    ("el", "Greek"),
-    ("hu", "Hungarian"),
-    ("mk", "Macedonian"),
-    ("ro", "Romanian"),
 ];
 
 /// `LANGUAGES` in openai/whisper `whisper/tokenizer.py`: 99 languages plus Cantonese, which

@@ -9,8 +9,8 @@ use dory_core::ports::{
     Transcriber,
 };
 use sherpa_onnx::{
-    OfflineQwen3ASRModelConfig, OfflineRecognizer, OfflineRecognizerConfig,
-    OfflineRecognizerResult, OfflineTransducerModelConfig, OfflineWhisperModelConfig, Wave,
+    OfflineRecognizer, OfflineRecognizerConfig, OfflineRecognizerResult,
+    OfflineTransducerModelConfig, OfflineWhisperModelConfig, Wave,
 };
 
 use super::catalog::{Layout, Model};
@@ -35,20 +35,6 @@ pub(super) fn recognizer_config(
             };
             model.tokens = path("tokens.txt");
             model.model_type = Some("nemo_transducer".into());
-        }
-        Layout::Qwen3 => {
-            model.qwen3_asr = OfflineQwen3ASRModelConfig {
-                conv_frontend: path("conv_frontend.onnx"),
-                encoder: path("encoder.int8.onnx"),
-                decoder: path("decoder.int8.onnx"),
-                tokenizer: path("tokenizer"),
-                // The defaults (512 and 128) cut a 30-second window short. 1024 fits 30 seconds of
-                // audio plus 384 new tokens, which leaves room for fast speech in Tagalog.
-                max_total_len: 1024,
-                max_new_tokens: 384,
-                ..Default::default()
-            };
-            model.tokens = Some(String::new());
         }
         Layout::WhisperTurbo => {
             model.whisper = OfflineWhisperModelConfig {
@@ -159,9 +145,6 @@ impl Transcriber for SherpaEngine {
             }
         };
         let stream = recognizer.create_stream();
-        if let (Layout::Qwen3, Some(code)) = (self.model.layout, code) {
-            stream.set_option("language", code);
-        }
         stream.accept_waveform(rate, wave.samples());
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);

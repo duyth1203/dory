@@ -109,6 +109,22 @@ The bench lands as its own PR, outside the GPUI stack. It can start before GPUI 
 - If the winner is not Sona, remove the Sona sidecar and `.sona-version` in the same PR that makes the new engine the default, so the bundle carries one engine.
 - Language becomes a setting instead of the hardcoded English in `run_sona_transcription`. The default is **Automatic**, and the user can pin one language per recording (UX-26).
 
+## Measured on the operator's Mac (2026-11-16)
+
+The operator's meetings are Tagalog and English. Sona's repo is gone, so the bake-off moved to sherpa-onnx 2.0.1 in process, int8 models, CPU, and up to 4 threads on an M3 Pro. The bench is `crates/dory-engines/examples/wer-bench.rs`. It ran on the first 37 Filipino and 43 English FLEURS test clips, streamed within a 50 MB download budget. Text is lowercased and stripped of punctuation before scoring. The RTFx column is audio seconds per second of compute.
+
+| Model | Tagalog WER, auto | Tagalog WER, pinned `tl` | English WER, auto | RTFx |
+| --- | --- | --- | --- | --- |
+| Parakeet TDT 0.6B v3 | 86.5%, unusable | refused | 7.2% | 14 |
+| Qwen3-ASR 0.6B | 45.4% | 46.5% | 6.8% | 6 |
+| Whisper large-v3 turbo | 14.6% | 14.6% | 6.2% | 3 |
+
+- Qwen3-ASR spells Tagalog phonetically ("tukomento" for "dokumento"), so its errors are real misrecognitions, not a scoring artifact. It is dropped from the catalog. It loses on Tagalog by 31 points and adds nothing for English.
+- Parakeet stays the recommended row for meetings whose languages it covers, because it is about five times faster than Whisper for 1 point more English error.
+- Whisper turbo is what Auto picks once Tagalog is a meeting language.
+- FLEURS is read speech, not meetings. Taglish code-switching inside one sentence is not measured. One code-switch sample in the sherpa agent's live test showed Whisper on auto turning non-English parts into repeated English. Measuring real Taglish meeting audio is the next step before calling this final.
+- 945 Tagalog and 921 English reference words. The Tagalog gap is far outside run-to-run noise. The English differences of 1 point are not.
+
 ## What is not verified yet
 
 - A research agent reported a 404 for Sona's GitHub repository on 2026-11-15. This run did not re-check it. If it holds, Sona's supported engines and its future are unknown, which raises the value of moving off it. `scripts/pre_build.py` downloads Sona release `v0.2.1`, so check that the download URL still works before E0.

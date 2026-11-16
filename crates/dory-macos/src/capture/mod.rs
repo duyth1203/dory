@@ -129,11 +129,13 @@ impl CoreAudioCapture {
 
 impl CaptureBackend for CoreAudioCapture {
     fn probe(&self) -> CaptureCaps {
-        CaptureCaps {
+        let caps = CaptureCaps {
             microphone: permission::microphone(),
             system_audio: system_audio_access(),
             unsupported: unsupported_reason(),
-        }
+        };
+        log_access_change(&caps);
+        caps
     }
 
     fn input_devices(&self) -> Result<Vec<InputDevice>, CaptureError> {
@@ -161,8 +163,9 @@ impl CaptureBackend for CoreAudioCapture {
     fn request_access(&self, source: Source) -> Result<Access, CaptureError> {
         Ok(match source {
             Source::Microphone => permission::request_microphone(),
-            // No public API prompts for System Audio Recording. The first tap read does.
-            Source::SystemAudio => system_audio_access(),
+            Source::SystemAudio => {
+                permission::request_system_audio().map_or_else(system_audio_access, heard_or)
+            }
         })
     }
 
@@ -283,10 +286,29 @@ fn unsupported_reason() -> Option<String> {
 }
 
 fn system_audio_access() -> Access {
+    heard_or(permission::system_audio().unwrap_or(Access::Undetermined))
+}
+
+/// Logs the permissions when they differ from the last probe, so a grant made in System Settings
+/// shows in the log when the app re-probes.
+fn log_access_change(caps: &CaptureCaps) {
+    static LAST: std::sync::Mutex<Option<(Access, Access)>> = std::sync::Mutex::new(None);
+    let now = (caps.microphone, caps.system_audio);
+    let mut last = LAST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *last != Some(now) {
+        *last = Some(now);
+        eprintln!("capture: microphone {:?}, system audio {:?}", now.0, now.1);
+    }
+}
+
+/// A tap that has heard audio this run proves the grant, whatever TCC says.
+fn heard_or(access: Access) -> Access {
     if SYSTEM_AUDIO_HEARD.load(Ordering::Relaxed) {
         Access::Granted
     } else {
-        Access::Undetermined
+        access
     }
 }
 

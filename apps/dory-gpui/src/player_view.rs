@@ -11,19 +11,21 @@
 //! - The waveform is the slider, built with `a11y::slider`: it speaks "12 minutes 30 seconds of
 //!   48 minutes", the arrows move 5 s and Page Up and Page Down 1 min, and Space plays or pauses.
 //!   Clicking or dragging it seeks.
-//! - Waveform peaks need audio data the core does not expose yet, so the bars are evenly spaced
-//!   at one height.
+//! - Each bar's height is the take's loudness there, from `PlayerHandle::waveform`, resampled to
+//!   however many bars fit the width. Until the waveform is read, or when there is no take, every
+//!   bar sits at the silence floor: a calm flat line, never a shape the audio does not have.
 //! - When the audio cannot open (no take, or a file the platform player refuses, such as legacy
 //!   WebM), the player says why next to the time, from `PlayerHandle::unavailable`.
 //!
 //! Playback state lives in `PlayerHandle` (see `app/player.rs`), shared with the transcript view
 //! for click-to-seek. This view only draws it and calls `toggle`, `step`, and `seek`.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dory_core::domain::Ms;
+use dory_core::domain::{Ms, Waveform};
 use gpui_kit::{
     App, Bounds, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render,
@@ -55,11 +57,13 @@ pub struct PlayerView {
     docked: bool,
     shown_at: Option<Instant>,
     wave: Rc<Cell<Bounds<Pixels>>>,
+    painted: Rc<RefCell<Vec<f32>>>,
 }
 
 impl PlayerView {
     pub fn new(player: Entity<PlayerHandle>, cx: &mut Context<Self>) -> Self {
         cx.observe(&player, |_, _, cx| cx.notify()).detach();
+        player.update(cx, |player, cx| player.load_waveform(cx));
         Self {
             player,
             focus: cx.focus_handle(),
@@ -67,7 +71,13 @@ impl PlayerView {
             docked: false,
             shown_at: None,
             wave: Rc::default(),
+            painted: Rc::default(),
         }
+    }
+
+    /// The bar heights of the last frame, each 0..=1 of the waveform's height.
+    pub fn bar_heights(&self) -> Vec<f32> {
+        self.painted.borrow().clone()
     }
 
     pub fn set_docked(&mut self, docked: bool, cx: &mut Context<Self>) {
@@ -110,6 +120,8 @@ impl PlayerView {
         };
         let (played_color, rest_color, head_color) = (theme.accent, theme.wave_rest, theme.text);
         let wave = self.wave.clone();
+        let painted = self.painted.clone();
+        let waveform: Arc<Waveform> = self.player.read(cx).waveform().unwrap_or_default();
         a11y::slider(
             "player",
             "Playback position",
@@ -144,11 +156,12 @@ impl PlayerView {
             canvas(
                 move |bounds, _, _| wave.set(bounds),
                 move |bounds, _, window, _| {
-                    let height = bounds.size.height * 0.5;
-                    let top = bounds.origin.y + (bounds.size.height - height) * 0.5;
                     let head = bounds.origin.x + bounds.size.width * played;
                     let bars = ((bounds.size.width + px(GAP)) / px(BAR + GAP)).floor() as usize;
-                    for i in 0..bars {
+                    let heights = waveform.bars(bars);
+                    for (i, fraction) in heights.iter().enumerate() {
+                        let height = (bounds.size.height * *fraction).max(px(BAR));
+                        let top = bounds.origin.y + (bounds.size.height - height) * 0.5;
                         let x = bounds.origin.x + px(i as f32 * (BAR + GAP));
                         let color = if x < head { played_color } else { rest_color };
                         window.paint_quad(fill(
@@ -156,6 +169,7 @@ impl PlayerView {
                             color,
                         ));
                     }
+                    *painted.borrow_mut() = heights;
                     window.paint_quad(fill(
                         Bounds::new(
                             point(head - px(1.), bounds.origin.y),

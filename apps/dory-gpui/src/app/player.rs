@@ -1,7 +1,8 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use dory_core::app::DoryError;
-use dory_core::domain::{Ms, RecordingId};
+use dory_core::domain::{Ms, RecordingId, Waveform};
 use dory_core::ports::{PlayState, PlaybackError, Player, PlayerStatus, TakeError};
 use gpui_kit::{Context, SharedString, Task};
 
@@ -16,6 +17,9 @@ const POLL: Duration = Duration::from_millis(100);
 /// holds a `Player` of its own, so there is one playhead. The audio opens on the first command,
 /// not on selection, so arrowing through the sidebar opens no files. While playing it polls
 /// the port every 100 ms and notifies only when the status changed; paused, it runs no timer.
+///
+/// The waveform is read off the main thread when the player view asks for it, and again when the
+/// take's length changes, because a take that was still being saved had none to read.
 pub struct PlayerHandle {
     core: Core,
     id: RecordingId,
@@ -24,6 +28,8 @@ pub struct PlayerHandle {
     status: PlayerStatus,
     unavailable: Option<SharedString>,
     poll: Option<Task<()>>,
+    waveform: Option<Arc<Waveform>>,
+    waveform_read: Option<Task<()>>,
 }
 
 impl PlayerHandle {
@@ -39,6 +45,8 @@ impl PlayerHandle {
             },
             unavailable: None,
             poll: None,
+            waveform: None,
+            waveform_read: None,
         }
     }
 
@@ -66,7 +74,35 @@ impl PlayerHandle {
             self.player = None;
             self.unavailable = None;
         }
+        self.waveform = None;
+        self.waveform_read = None;
+        self.load_waveform(cx);
         cx.notify();
+    }
+
+    /// The take's loudness over time, once it has been read. `None` while it loads, when there
+    /// is no take, or when the take cannot be read.
+    pub fn waveform(&self) -> Option<Arc<Waveform>> {
+        self.waveform.clone()
+    }
+
+    /// Starts reading the waveform unless it is read, being read, or there is no take yet.
+    pub fn load_waveform(&mut self, cx: &mut Context<Self>) {
+        if self.waveform.is_some() || self.waveform_read.is_some() || self.duration == Ms(0) {
+            return;
+        }
+        let id = self.id.clone();
+        let read = self.core.run(cx, move |dory| dory.library().waveform(&id));
+        self.waveform_read = Some(cx.spawn(async move |this, cx| {
+            let read = read.await;
+            let _ = this.update(cx, |this, cx| {
+                this.waveform_read = None;
+                if let Ok(waveform) = read {
+                    this.waveform = Some(Arc::new(waveform));
+                    cx.notify();
+                }
+            });
+        }));
     }
 
     pub fn is_playing(&self) -> bool {

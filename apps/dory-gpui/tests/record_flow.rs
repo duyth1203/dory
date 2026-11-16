@@ -349,7 +349,16 @@ fn nothing_is_queued_until_the_grace_ends_and_then_once(cx: &mut TestAppContext)
     assert!(rig.jobs(&id).is_empty(), "queued inside the grace window");
     assert_eq!(
         label(window, "detail-state", cx).as_deref(),
-        Some("Recording saved.")
+        Some("Saving the recording"),
+        "the processing view shows from the moment Stop is pressed"
+    );
+    assert_eq!(
+        label(window, "detail-step-0", cx).as_deref(),
+        Some("Recorded, done")
+    );
+    assert_eq!(
+        label(window, "detail-step-1", cx).as_deref(),
+        Some("Transcript, under way")
     );
 
     end_grace(&rig, &app, cx);

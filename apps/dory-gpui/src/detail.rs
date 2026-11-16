@@ -22,15 +22,17 @@ use chrono::{Local, TimeZone};
 use dory_core::domain::{
     ChannelLayout, Goal, JobState, Recording, RecordingId, RecordingRow, SummaryFlag, Transcript,
 };
+use std::time::Duration;
+
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
-    Anchor, AnchoredPositionMode, AnyElement, App, AppContext as _, Bounds, Context, Entity,
-    FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Pixels, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window, anchored, canvas, deferred, div, point,
-    prelude::FluentBuilder as _, px, relative,
+    Anchor, AnchoredPositionMode, Animation, AnimationExt as _, AnyElement, App, AppContext as _,
+    Bounds, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored,
+    canvas, deferred, div, ease_in_out, point, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
@@ -548,26 +550,161 @@ fn state(
 }
 
 /// `text` is `AppState::status_text`, so the detail and the row say the same (UX-12).
-fn processing(status: RowStatus, text: String, theme: &Theme) -> a11y::Node {
-    let percent = match status {
-        RowStatus::Transcribing(Some(p)) => Some(p.get()),
-        _ => None,
+/// Where a recording is on its way from Stop to a transcript. The detail pane shows the same
+/// processing view through all of it, so Stop never leaves a quiet gap (UX-12).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    Recording,
+    /// The Undo window, then saving the take.
+    Saving,
+    /// Queued behind other jobs, or loading the speech model.
+    Waiting,
+    Transcribing(Option<u8>),
+}
+
+impl Stage {
+    pub fn of(status: RowStatus) -> Stage {
+        match status {
+            RowStatus::Recording => Stage::Recording,
+            RowStatus::Transcribing(p) => Stage::Transcribing(p.map(|p| p.get())),
+            _ => Stage::Waiting,
+        }
+    }
+
+    /// The one line under the steps, which VoiceOver reads as the status.
+    pub fn line(self) -> String {
+        match self {
+            Stage::Recording => "Recording".into(),
+            Stage::Saving => "Saving the recording".into(),
+            Stage::Waiting => "Starting transcription".into(),
+            Stage::Transcribing(None) => "Transcribing".into(),
+            Stage::Transcribing(Some(p)) => format!("Transcribing, {p}%"),
+        }
+    }
+}
+
+/// Recorded, Transcript, Summary: each done, under way, or still to come.
+fn steps(stage: Stage, theme: &Theme) -> a11y::Node {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Step {
+        Done,
+        Now,
+        Next,
+    }
+    let recorded = if stage == Stage::Recording {
+        Step::Now
+    } else {
+        Step::Done
     };
-    state("detail-state", Role::Status, text, None, theme).children(percent.map(|p| {
+    let transcript = match stage {
+        Stage::Recording => Step::Next,
+        Stage::Saving | Stage::Waiting | Stage::Transcribing(_) => Step::Now,
+    };
+    let items = [
+        (
+            if recorded == Step::Done {
+                "Recorded"
+            } else {
+                "Recording"
+            },
+            recorded,
+        ),
+        ("Transcript", transcript),
+        ("Summary", Step::Next),
+    ];
+    let mut row = a11y::node("detail-steps", Role::List, "Progress")
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(8.));
+    for (ix, (name, step)) in items.into_iter().enumerate() {
+        if ix > 0 {
+            row = row.child(div().w(px(20.)).h(px(1.)).bg(theme.divider));
+        }
+        let (glyph, word, color) = match step {
+            Step::Done => ("✓", "done", theme.accent_text),
+            Step::Now => ("●", "under way", theme.accent_text),
+            Step::Next => ("○", "to come", theme.text_secondary),
+        };
+        row = row.child(
+            a11y::node(
+                format!("detail-step-{ix}"),
+                Role::ListItem,
+                format!("{name}, {word}"),
+            )
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .text_size(theme.text(13.))
+            .text_color(color)
+            .when(step == Step::Now, |s| s.font_weight(FontWeight::SEMIBOLD))
+            .child(glyph)
+            .child(
+                div()
+                    .text_color(if step == Step::Next {
+                        theme.text_secondary
+                    } else {
+                        theme.text
+                    })
+                    .child(name),
+            ),
+        );
+    }
+    row
+}
+
+/// The processing view: the steps, the stage line, and a bar that fills with the percent, or
+/// moves while no percent is known yet. With Reduce Motion the unknown bar holds still.
+fn processing(stage: Stage, text: String, reduce_motion: bool, theme: &Theme) -> a11y::Node {
+    let track = || {
         div()
+            .relative()
             .h(px(4.))
             .w_full()
             .max_w(px(320.))
             .rounded(px(2.))
+            .overflow_hidden()
             .bg(theme.wave_track)
-            .child(
-                div()
-                    .h_full()
-                    .rounded(px(2.))
-                    .bg(theme.accent)
-                    .w(relative(f32::from(p) / 100.)),
-            )
-    }))
+    };
+    let bar = match stage {
+        Stage::Transcribing(Some(p)) => track().child(
+            div()
+                .h_full()
+                .rounded(px(2.))
+                .bg(theme.accent)
+                .w(relative(f32::from(p) / 100.)),
+        ),
+        _ if reduce_motion => track(),
+        _ => track().child(
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .w(relative(0.3))
+                .rounded(px(2.))
+                .bg(theme.accent)
+                .with_animation(
+                    "detail-indeterminate",
+                    Animation::new(Duration::from_millis(1400))
+                        .repeat()
+                        .with_easing(ease_in_out),
+                    |bar, delta| bar.left(relative(delta * 1.3 - 0.3)),
+                ),
+        ),
+    };
+    a11y::node("detail-processing", Role::Group, "Processing")
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .py(px(24.))
+        .child(steps(stage, theme))
+        .child(
+            a11y::node("detail-state", Role::Status, text.clone())
+                .text_size(theme.text(15.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text),
+        )
+        .child(bar)
 }
 
 /// A button in the detail column: at least 28 pt tall, accent-filled when `primary`. The resting
@@ -896,21 +1033,24 @@ impl Render for DetailPane {
                     sticky,
                 )
             }
-            Body::Processing(status) => (
-                processing(
-                    *status,
-                    status_text.unwrap_or_else(|| status.label()),
-                    &theme,
-                )
-                .into_any_element(),
-                None,
-            ),
-            Body::Saving => (
-                state(
-                    "detail-state",
-                    Role::Status,
-                    "Recording saved.",
+            Body::Processing(status) => {
+                let stage = Stage::of(*status);
+                // The row's own text adds the time left once it is known; before the first
+                // progress the stage says what is happening.
+                let text = match (stage, status_text) {
+                    (Stage::Transcribing(_), Some(text)) => text,
+                    _ => stage.line(),
+                };
+                (
+                    processing(stage, text, cx.reduce_motion(), &theme).into_any_element(),
                     None,
+                )
+            }
+            Body::Saving => (
+                processing(
+                    Stage::Saving,
+                    Stage::Saving.line(),
+                    cx.reduce_motion(),
                     &theme,
                 )
                 .into_any_element(),

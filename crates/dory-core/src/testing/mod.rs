@@ -27,9 +27,9 @@ use crate::ports::capture::{
 };
 use crate::ports::{
     Activity, CancelToken, Clip, Clock, CompletionRequest, Conditions, Diarizer, EngineError,
-    LanguageModel, Machine, ModelProvider, Moved, ProvisionError, ProvisionSink, RawSegment,
-    SegmentSink, TakeError, TakeWriter, Takes, TextSink, TranscribeOutcome, TranscribeRequest,
-    Transcriber, Trash, TrashError, TrashReceipt, Turn,
+    LanguageModel, LegacyFile, Machine, ModelProvider, Moved, ProvisionError, ProvisionSink,
+    RawSegment, SegmentSink, TakeError, TakeWriter, Takes, TextSink, TranscribeOutcome,
+    TranscribeRequest, Transcriber, Trash, TrashError, TrashReceipt, Turn,
 };
 
 /// A clock that moves only when a test says so.
@@ -522,9 +522,18 @@ impl Takes for MemTakes {
             .map(MemTake::info))
     }
 
-    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError> {
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<LegacyFile>, TakeError> {
         let takes = lock(&self.takes);
-        Ok(self.live(&takes, id).and_then(|take| take.legacy.clone()))
+        Ok(self
+            .live(&takes, id)
+            .and_then(|take| take.legacy.clone())
+            .map(|path| LegacyFile {
+                bytes: std::fs::metadata(&path)
+                    .ok()
+                    .filter(|meta| meta.is_file())
+                    .map(|meta| meta.len()),
+                path,
+            }))
     }
 
     fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {

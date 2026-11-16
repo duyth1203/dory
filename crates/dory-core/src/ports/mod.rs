@@ -27,5 +27,6 @@ pub use playback::{
 pub use provider::{ModelProvider, ProvisionSink};
 pub use speech::{RawSegment, SegmentSink, TranscribeOutcome, TranscribeRequest, Transcriber};
 pub use store::{Change, Checkpoint, CheckpointKey, Store, StoreRead};
+pub use takes::LegacyFile;
 pub use takes::{Activity, Clip, TakeWriter, Takes};
 pub use trash::{Moved, Trash, TrashError, TrashReceipt};

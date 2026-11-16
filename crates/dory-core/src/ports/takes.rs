@@ -49,8 +49,8 @@ pub trait Takes: Send + Sync {
     fn import(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError>;
 
     /// The old app's audio file a legacy pointer refers to, or `None` when `id` has no pointer.
-    /// The file may be gone: this reports what the pointer says, not what is on disk.
-    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError>;
+    /// The file may be gone, which [`LegacyFile::bytes`] says.
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<LegacyFile>, TakeError>;
 
     /// Copies the audio a legacy pointer refers to in as this adapter's own take, then removes the
     /// pointer. The original is never touched. The pointer goes last, so a crash at any point
@@ -67,6 +67,15 @@ pub trait Takes: Send + Sync {
     /// would remove, and no others. A legacy take lists only Dory's own pointer, never the old
     /// app's audio it points at. Empty when `id` has no files.
     fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError>;
+}
+
+/// What a legacy pointer refers to. The adapter reads the size, so the core never touches the
+/// file system.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LegacyFile {
+    pub path: PathBuf,
+    /// `None` when the file is gone.
+    pub bytes: Option<u64>,
 }
 
 /// Appends to an open take. The same writer survives pause and the undo grace, because a resume

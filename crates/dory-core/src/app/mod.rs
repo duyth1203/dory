@@ -750,17 +750,13 @@ impl Library<'_> {
     }
 
     fn original_of(&self, id: RecordingId) -> Result<Option<Original>, DoryError> {
-        let Some(path) = self.dory.takes.legacy_original(&id)? else {
-            return Ok(None);
-        };
-        Ok(std::fs::metadata(&path)
-            .ok()
-            .filter(|meta| meta.is_file())
-            .map(|meta| Original {
+        Ok(self.dory.takes.legacy_original(&id)?.and_then(|file| {
+            Some(Original {
                 id,
-                path,
-                bytes: meta.len(),
-            }))
+                bytes: file.bytes?,
+                path: file.path,
+            })
+        }))
     }
 
     /// Corrects a row that says WebM over a take that has been copied in.

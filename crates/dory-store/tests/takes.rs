@@ -923,7 +923,14 @@ fn adopting_a_legacy_wav_copies_it_in_as_a_flac_take_and_leaves_the_original_alo
     let dir = tempfile::tempdir().unwrap();
     let (takes, id, old) = linked_wav(dir.path(), "old");
     let before = std::fs::read(&old).unwrap();
-    assert_eq!(takes.legacy_original(&id).unwrap().as_deref(), Some(&*old));
+    assert_eq!(
+        takes
+            .legacy_original(&id)
+            .unwrap()
+            .map(|f| f.path)
+            .as_deref(),
+        Some(&*old)
+    );
 
     let info = takes.adopt(&id).unwrap();
     assert_eq!(
@@ -934,7 +941,7 @@ fn adopting_a_legacy_wav_copies_it_in_as_a_flac_take_and_leaves_the_original_alo
             duration: Ms(3_000)
         }
     );
-    assert_eq!(takes.legacy_original(&id).unwrap(), None);
+    assert_eq!(takes.legacy_original(&id).unwrap().map(|f| f.path), None);
     assert_eq!(names(&takes, &id), ["old.flac", "old.meta"]);
     assert_eq!(takes.inspect(&id).unwrap(), Some(info));
     assert_eq!(
@@ -1005,7 +1012,7 @@ fn a_crash_after_the_flac_landed_and_before_the_pointer_went_is_finished_by_a_se
     );
 
     assert_eq!(takes.adopt(&id).unwrap(), done);
-    assert_eq!(takes.legacy_original(&id).unwrap(), None);
+    assert_eq!(takes.legacy_original(&id).unwrap().map(|f| f.path), None);
     assert_eq!(names(&takes, &id), ["late.flac", "late.meta"]);
     assert!(old.is_file());
 }
@@ -1017,6 +1024,13 @@ fn adopting_without_the_original_fails_and_keeps_the_pointer() {
     std::fs::remove_file(&old).unwrap();
 
     assert!(matches!(takes.adopt(&id), Err(TakeError::Missing(_))));
-    assert_eq!(takes.legacy_original(&id).unwrap().as_deref(), Some(&*old));
+    assert_eq!(
+        takes
+            .legacy_original(&id)
+            .unwrap()
+            .map(|f| f.path)
+            .as_deref(),
+        Some(&*old)
+    );
     assert_eq!(names(&takes, &id), ["lost.legacy"]);
 }

@@ -26,9 +26,9 @@ use dory_core::ports::capture::{
     Source,
 };
 use dory_core::ports::{
-    CancelToken, Change, Checkpoint, CheckpointKey, Clip, EngineError, ModelProvider, PlayState,
-    ProvisionError, ProvisionSink, Store, StoreError, StoreRead, TakeError, TakeWriter, Takes,
-    Transcriber,
+    CancelToken, Change, Checkpoint, CheckpointKey, Clip, EngineError, LegacyFile, ModelProvider,
+    PlayState, ProvisionError, ProvisionSink, Store, StoreError, StoreRead, TakeError, TakeWriter,
+    Takes, Transcriber,
 };
 use dory_core::recorder::{FinalizeReason, Limits};
 use dory_core::testing::store::MemStore;
@@ -302,7 +302,7 @@ impl Takes for HookedTakes {
     fn import(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError> {
         self.inner.import(id, source)
     }
-    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError> {
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<LegacyFile>, TakeError> {
         self.inner.legacy_original(id)
     }
     fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
@@ -1737,7 +1737,7 @@ fn trashing_originals_keeps_every_recording_playable_and_undo_puts_the_files_bac
 
     for id in [&first, &second] {
         assert_eq!(container_of(&dory, id), TakeContainer::Flac);
-        assert_eq!(rig.takes.legacy_original(id).unwrap(), None);
+        assert_eq!(rig.takes.legacy_original(id).unwrap().map(|f| f.path), None);
         let clip = rig.takes.clip(id, Channel::Mixed, None).unwrap();
         assert_eq!(clip.duration, Ms(20_000));
         assert!(library.player(id).is_ok());

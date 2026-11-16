@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use dory_core::domain::{
     Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
 };
-use dory_core::ports::{Activity, Clip, TakeError, TakeWriter, Takes};
+use dory_core::ports::{Activity, Clip, LegacyFile, TakeError, TakeWriter, Takes};
 
 use pcm::{FlacReader, FrameReader, HoundReader, OwnWavReader, Pick};
 use resample::{Downsampler, TARGET_RATE_HZ};
@@ -592,8 +592,14 @@ impl Takes for FsTakes {
         self.convert(id, source)
     }
 
-    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError> {
-        Ok(self.legacy_link(id)?.map(|link| link.path))
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<LegacyFile>, TakeError> {
+        Ok(self.legacy_link(id)?.map(|link| LegacyFile {
+            bytes: std::fs::metadata(&link.path)
+                .ok()
+                .filter(|meta| meta.is_file())
+                .map(|meta| meta.len()),
+            path: link.path,
+        }))
     }
 
     /// Everything the pointer's removal waits on is a complete file: `flac` and `wav` only appear

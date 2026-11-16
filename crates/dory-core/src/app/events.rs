@@ -46,12 +46,13 @@ pub enum Event {
         reason: FinalizeReason,
     },
 
-    /// Also sent when a window or pass starts, so a change of budget shows within one window.
+    /// Also sent when a window starts, so a change of budget shows within one window. A stage
+    /// that runs unlimited, like the summary, has no budget.
     StageProgress {
         job: JobId,
         stage: Stage,
         fraction: Fraction,
-        budget: Budget,
+        budget: Option<Budget>,
     },
     /// A segment as the engine produced it, before the transcript commits.
     DraftSegment {

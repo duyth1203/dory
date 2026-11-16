@@ -78,7 +78,7 @@ pub(crate) struct StageCx<'a> {
     pub cancel: &'a CancelToken,
     pub settings: &'a Settings,
     pub now_mono: u64,
-    /// The budget for the next window or pass, with its pace already applied to this thread.
+    /// The budget for the next transcribe window.
     pub pace: &'a mut dyn FnMut() -> Budget,
 }
 
@@ -423,7 +423,7 @@ impl Progress<'_> {
             job: self.job.id,
             stage: Stage::Transcribe,
             fraction: Fraction::new(done / self.total.max(1) as f32),
-            budget: self.budget,
+            budget: Some(self.budget),
         });
     }
 
@@ -506,7 +506,6 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .ok_or_else(|| permanent("the summary model left the catalog"))?;
     let names = store.speaker_names(id).map_err(failed)?;
     let lines = summary::transcript_lines(&transcript, &names);
-    let stage_budget = (cx.pace)();
     let llm = cx
         .engines
         .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)
@@ -515,30 +514,26 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         db: cx.db,
         job: cx.job,
     };
-    let budget = std::cell::Cell::new(stage_budget);
     let mut publish = |fraction: Fraction| {
         cx.db.publish(Event::StageProgress {
             job: cx.job.id,
             stage: Stage::Summarize,
             fraction,
-            budget: budget.get(),
+            budget: None,
         });
     };
     publish(Fraction::new(0.0));
-    let pace = cx.pace;
     let text = summary::summarize(
         &lines,
         language.as_ref(),
         context,
         &|text| llm.count_tokens(text),
         &mut |call| {
-            budget.set(pace());
             let request = CompletionRequest {
                 system: call.system,
                 user: call.user,
                 max_output_tokens: call.max_output_tokens,
                 temperature: 0.2,
-                threads: stage_budget.threads(),
             };
             match call.pass {
                 Pass::Summary => llm.complete(&request, &mut drafts, cx.cancel),

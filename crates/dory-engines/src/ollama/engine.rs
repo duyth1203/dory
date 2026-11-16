@@ -46,7 +46,6 @@ impl LanguageModel for OllamaModel {
                 num_ctx: self.num_ctx,
                 temperature: req.temperature,
                 num_predict: req.max_output_tokens,
-                num_thread: req.threads,
             },
         };
         let mut text = String::new();

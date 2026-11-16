@@ -108,7 +108,7 @@ fn row_status_reads_the_job_the_recorder_and_progress() {
     let forty = Progress {
         stage: Stage::Transcribe,
         fraction: Fraction::new(0.4),
-        budget: dory_core::app::Budget::Fast { threads: 4 },
+        budget: Some(dory_core::app::Budget::Fast { threads: 4 }),
     };
     let weekly = row("Weekly sync");
     assert_eq!(

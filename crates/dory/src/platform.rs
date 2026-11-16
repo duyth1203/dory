@@ -28,14 +28,12 @@ pub fn machine() -> Arc<dyn Machine> {
     Arc::new(Unsupported)
 }
 
-/// Reports nothing it cannot read, so Automatic runs fast, and leaves threads as they are.
+/// Reports nothing it cannot read, so Automatic runs fast.
 #[cfg(not(target_os = "macos"))]
 impl Machine for Unsupported {
     fn conditions(&self) -> dory_core::ports::Conditions {
         dory_core::ports::Conditions::default()
     }
-
-    fn set_pace(&self, _: dory_core::ports::Pace) {}
 }
 
 #[cfg(not(target_os = "macos"))]

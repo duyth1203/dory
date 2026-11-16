@@ -15,7 +15,7 @@ mod trash;
 #[cfg(target_os = "macos")]
 pub use capture::{CaptureGraph, CoreAudioCapture, CoreAudioHandle, PcmFormat, TimelineClock};
 #[cfg(target_os = "macos")]
-pub use machine::{MacMachine, thread_qos};
+pub use machine::MacMachine;
 #[cfg(target_os = "macos")]
 pub use playback::AvPlayback;
 #[cfg(target_os = "macos")]

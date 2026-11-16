@@ -144,7 +144,7 @@ pub fn finish_estimate(audio: Ms, rate: Option<Rate>) -> String {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Run {
     pub stage: Stage,
-    pub pace: Pace,
+    pub pace: Option<Pace>,
     pub from: Fraction,
     pub at_ms: u64,
 }
@@ -185,7 +185,7 @@ pub const PACE_CHOICES: [PaceChoice; 3] = [
         setting: Processing::Light,
         id: "processing-light",
         label: "Light",
-        effect: "Uses 2 efficiency cores. Takes longer, stays quiet, and is easy on the battery.",
+        effect: "Uses 2 cores. Takes longer, stays quieter, and is easier on the battery.",
     },
 ];
 

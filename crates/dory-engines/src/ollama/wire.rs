@@ -20,7 +20,6 @@ pub(super) struct Options {
     pub num_ctx: u32,
     pub temperature: f32,
     pub num_predict: u32,
-    pub num_thread: u8,
 }
 
 #[derive(Deserialize)]

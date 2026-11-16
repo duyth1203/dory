@@ -56,7 +56,7 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
                     budget,
                     ..
                 } => {
-                    if last_budget != Some(budget) {
+                    if let Some(budget) = budget.filter(|b| last_budget != Some(*b)) {
                         last_budget = Some(budget);
                         println!("  pace {}", view::budget(budget));
                     }

@@ -288,7 +288,7 @@ impl AppState {
         let light = self
             .progress
             .get(&row.recording.id)
-            .and_then(|p| p.budget.reason())
+            .and_then(|p| p.budget?.reason())
             .filter(|_| matches!(status, RowStatus::Transcribing(_) | RowStatus::Summarizing));
         match light {
             Some(reason) => format!("{words} · {}", processing::light_label(reason)),
@@ -309,7 +309,7 @@ impl AppState {
         let now = self.epoch.elapsed().as_millis() as u64;
         let fresh = Run {
             stage: progress.stage,
-            pace: progress.budget.pace(),
+            pace: progress.budget.map(dory_core::app::Budget::pace),
             from: progress.fraction,
             at_ms: now,
         };

@@ -2,15 +2,13 @@
 pub trait Machine: Send + Sync {
     /// Power source, Low Power Mode, and thermal state. Never prompts.
     fn conditions(&self) -> Conditions;
-    /// Applies to the calling thread only. Engines also get the pace's thread count.
-    fn set_pace(&self, pace: Pace);
 }
 
 /// How hard the pipeline works.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pace {
     Fast,
-    /// Fewer threads at background priority, which macOS keeps on the efficiency cores.
+    /// Two threads at normal priority.
     Light,
 }
 

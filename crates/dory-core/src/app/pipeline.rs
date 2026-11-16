@@ -124,7 +124,7 @@ pub(crate) fn spawn(
     })
 }
 
-/// Decides the budget for each window or pass and applies its pace to the worker's thread.
+/// Decides the budget for each window.
 struct Pacing {
     pacer: Pacer,
     machine: Arc<dyn Machine>,
@@ -142,14 +142,12 @@ impl Pacing {
                 .settings()
                 .map_or(Processing::Auto, |s| s.processing)
         });
-        let budget = self.pacer.next(
+        self.pacer.next(
             setting,
             self.machine.conditions(),
             self.recorder.busy(),
             self.clock.monotonic_ms(),
-        );
-        self.machine.set_pace(budget.pace());
-        budget
+        )
     }
 }
 

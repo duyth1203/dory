@@ -115,8 +115,8 @@ impl Percent {
 pub struct Progress {
     pub stage: Stage,
     pub fraction: Fraction,
-    /// The pace the stage runs at, so the row can say why it runs light (UX-30).
-    pub budget: Budget,
+    /// The pace the stage runs at, so the row can say why it runs light (UX-30). The summary has none.
+    pub budget: Option<Budget>,
 }
 
 /// The status a sidebar row shows: always a glyph and a word (A11Y-8).

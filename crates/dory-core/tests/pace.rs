@@ -194,10 +194,9 @@ fn fast_and_light_settings_ignore_the_hold() {
     );
 }
 
-/// What one engine call saw: how many `set_pace` calls came before it and the threads it was given.
+/// What one engine call saw: the threads it was given.
 #[derive(Clone, Debug)]
 struct Seen {
-    paces_before: usize,
     threads: u8,
 }
 
@@ -217,7 +216,6 @@ impl Transcriber for Watching {
     ) -> Result<TranscribeOutcome, EngineError> {
         let mut seen = self.seen.lock().unwrap();
         seen.push(Seen {
-            paces_before: self.machine.paces().len(),
             threads: req.threads,
         });
         if self.unplug_during == Some(seen.len() - 1) {
@@ -332,7 +330,7 @@ fn finish(dory: &Dory, id: &RecordingId, goal: Goal) {
     });
 }
 
-fn budgets(events: &dory_core::app::Subscription, of: Stage) -> Vec<Budget> {
+fn budgets(events: &dory_core::app::Subscription, of: Stage) -> Vec<Option<Budget>> {
     std::iter::from_fn(|| events.try_recv())
         .filter_map(|e| match e {
             Event::StageProgress { stage, budget, .. } if stage == of => Some(budget),
@@ -359,37 +357,13 @@ fn a_pace_change_mid_transcribe_changes_threads_once_from_the_next_window() {
         "one change, so one rebuild"
     );
     assert!(
-        budgets(&events, Stage::Transcribe).contains(&light(LightReason::Battery)),
+        budgets(&events, Stage::Transcribe).contains(&Some(light(LightReason::Battery))),
         "progress says why it runs light"
     );
 }
 
 #[test]
-fn set_pace_runs_on_the_worker_before_every_window() {
-    let rig = Rig::new(cool_on_ac(), None);
-    let id = rig.seed(120);
-    let dory = rig.open(None);
-    finish(&dory, &id, Goal::TRANSCRIBE);
-
-    let seen = rig.seen();
-    assert_eq!(seen.len(), 4);
-    let before: Vec<usize> = seen.iter().map(|s| s.paces_before).collect();
-    assert!(before[0] >= 1, "{before:?}");
-    assert!(
-        before.windows(2).all(|w| w[0] < w[1]),
-        "a set_pace between every two windows: {before:?}"
-    );
-    let paces = rig.machine.paces();
-    assert!(
-        paces
-            .iter()
-            .all(|p| p.pace == Pace::Fast && p.thread.as_deref() == Some("dory-pipeline")),
-        "{paces:?}"
-    );
-}
-
-#[test]
-fn threads_reach_both_requests_and_fast_keeps_todays_count() {
+fn threads_reach_the_speech_requests_and_the_summary_reports_no_budget() {
     for (processing, want) in [
         (Processing::Fast, fast_count()),
         (Processing::Light, LIGHT_THREADS),
@@ -402,20 +376,11 @@ fn threads_reach_both_requests_and_fast_keeps_todays_count() {
 
         let speech: Vec<u8> = rig.seen().iter().map(|s| s.threads).collect();
         assert_eq!(speech, [want, want], "{processing:?}");
-        let summary: Vec<u8> = rig.llm.prompts().iter().map(|p| p.threads).collect();
-        assert!(!summary.is_empty());
-        assert!(
-            summary.iter().all(|t| *t == want),
-            "{processing:?}: {summary:?}"
-        );
+        assert!(!rig.llm.prompts().is_empty());
         let shown = budgets(&events, Stage::Summarize);
-        let expected = match processing {
-            Processing::Light => light(LightReason::Chosen),
-            _ => Budget::Fast { threads: want },
-        };
         assert!(
-            !shown.is_empty() && shown.iter().all(|b| *b == expected),
-            "{processing:?}: {shown:?}"
+            !shown.is_empty() && shown.iter().all(Option::is_none),
+            "{processing:?}: the summary runs unlimited, {shown:?}"
         );
     }
 }
@@ -455,9 +420,5 @@ fn automatic_runs_light_while_the_recorder_is_busy() {
         rig.seen().iter().map(|s| s.threads).collect::<Vec<_>>(),
         [LIGHT_THREADS]
     );
-    assert!(budgets(&events, Stage::Transcribe).contains(&light(LightReason::Recording)));
-    assert!(
-        rig.machine.paces().iter().any(|p| p.pace == Pace::Light),
-        "the worker's thread went to background"
-    );
+    assert!(budgets(&events, Stage::Transcribe).contains(&Some(light(LightReason::Recording))));
 }

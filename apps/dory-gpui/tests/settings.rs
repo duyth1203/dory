@@ -573,7 +573,7 @@ fn processing_saves_by_click_and_keyboard_and_speaks_each_effect(cx: &mut TestAp
     for (id, name, effect) in [
         ("processing-auto", "Automatic", "Runs light on battery"),
         ("processing-fast", "Fast", "Uses up to 4 cores."),
-        ("processing-light", "Light", "Uses 2 efficiency cores."),
+        ("processing-light", "Light", "Uses 2 cores."),
     ] {
         let spoken = label(window, id, cx).unwrap();
         assert!(

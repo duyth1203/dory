@@ -115,7 +115,7 @@ pub trait Clock: Send + Sync { fn now(&self) -> Timestamp; fn monotonic_ms(&self
 // The machine the pipeline runs on. One adapter per platform.
 pub trait Machine: Send + Sync {
     fn conditions(&self) -> Conditions;                                // power, Low Power Mode, thermal state; no prompts
-    fn set_pace(&self, pace: Pace);                                    // applies to the calling thread and threads it creates
+    fn set_pace(&self, pace: Pace);                                    // applies to the calling thread only
 }
 ```
 
@@ -137,7 +137,7 @@ pub trait Machine: Send + Sync {
 | --- | --- | --- |
 | `CaptureBackend` | `dory_macos::CoreAudioCapture` | A global stereo process tap that excludes Dory's own process, plus the chosen mic, in one private aggregate device. The default output device is the clock source. The mic gets drift compensation. One IOProc downmixes the tap to mono and pushes `[mic, system]`. Pure Rust through `objc2-core-audio`. |
 | `CaptureBackend` | `dory_core::testing::FakeCapture` | Scripted frames for tests. |
-| `Machine` | `dory_macos::MacMachine`, `dory_core::testing::FakeMachine` | `conditions` reads the power source through IOKit, and Low Power Mode and the thermal state through `NSProcessInfo`. `set_pace(Light)` sets the calling thread's QoS to background, which macOS keeps on the efficiency cores; `Fast` restores the default QoS. Other platforms get a no-op adapter that reports `Unknown` from the composition root, so `Auto` runs fast there. |
+| `Machine` | `dory_macos::MacMachine`, `dory_core::testing::FakeMachine` | `conditions` reads the power source through IOKit, and Low Power Mode and the thermal state through `NSProcessInfo`. `set_pace(Light)` sets the calling thread's QoS to background, which macOS keeps on the efficiency cores; `Fast` restores the QoS the thread had before. Threads the paced thread creates later do not inherit it: on macOS 26 a `pthread_create` child of a background thread starts at DEFAULT (measured with `examples/dory-machine`), so onnxruntime's pool threads are limited by `threads`, not by QoS. `DORY_MACHINE` swaps in fixed conditions for lanes. Other platforms get a no-op adapter that reports `Unknown` from the composition root, so `Auto` runs fast there. |
 | `Trash` | `dory_macos::MacTrash`, `dory_core::testing::FakeTrash` | `NSFileManager trashItemAtURL`. The receipt keeps each original and trashed path, and `put_back` renames them back. Other platforms get `Unsupported` from the composition root. |
 | `Store`, `Takes` | `dory_store::{SqliteStore, FsTakes}` | SQLite with one writer connection. Takes are files: crash-tolerant WAV during recording, FLAC after sealing. |
 | `ModelProvider<Stt>` | `dory_engines::Sona`, `dory_engines::Sherpa`, `dory_macos::AppleSpeech` | Apple Speech declares `FixedLocale` caps, so `Auto` resolves past it unless the recording pins a supported locale. |
@@ -169,13 +169,13 @@ The queue is the store. The worker takes `next_runnable_job(now)`, publishes the
 
 ## Processing pace
 
-`pace` (core policy) is a pure function, `pace(setting: Processing, now: Conditions, recording: bool, last: Option<(Pace, Timestamp)>, at: Timestamp) -> Budget`, where `Budget { pace: Pace, threads: u8, reason: Option<LightReason> }`.
+`pace` (core policy, `app/pace.rs`) is `Pacer::next(setting: Processing, now: Conditions, recording: bool, at_mono_ms) -> Budget`, a pure step whose only memory is the last light condition Automatic saw and when. `Budget` is `Fast { threads } | Light { reason: LightReason }`, so a fast budget cannot carry a reason. `LightReason` is `Chosen | Battery | LowPower | Hot | Recording`.
 
-- `Fast` and `Light` settings return that pace whatever the conditions.
-- `Auto` returns `Light` when on battery, in Low Power Mode, at thermal state serious or critical, or while the recorder is not idle. The first matching condition is the `reason`. Otherwise it returns `Fast`, but only after no condition has held for 2 minutes. Before that it keeps `Light`.
+- `Fast` and `Light` settings return that pace whatever the conditions. `Light` says `Chosen`.
+- `Auto` returns `Light` when on battery, in Low Power Mode, at thermal state serious or critical, or while the recorder is not idle. The first matching condition is the `reason`. Otherwise it returns `Fast`, but only after no condition has held for 2 minutes on the monotonic clock. Before that it keeps `Light` with the last condition's reason.
 - `Fast` uses `min(4, available cores)` threads, today's count. `Light` uses 2.
 
-The worker evaluates `pace` before each speech window and each summary pass, calls `Machine::set_pace`, and passes `threads` in `TranscribeRequest` and `CompletionRequest`. An engine that holds a thread pool rebuilds it when `threads` changes; the 2-minute hold bounds those rebuilds. Ollama is a separate process, so `set_pace` cannot reach it: the adapter sends `threads` as the `num_thread` option and keeps it fixed for one summary stage, because Ollama reloads the model when it changes (unverified). `Progress` carries the `Budget`, so the UI can say why a job runs light.
+The worker evaluates the budget at the start of each stage, before each speech window that runs the engine, and before each summary pass, rereading the setting each time. Each evaluation calls `Machine::set_pace` on the worker's thread and publishes `StageProgress` with the `Budget`, so a change shows within one window. `threads` goes in `TranscribeRequest` per window. Sherpa builds its recognizer on the first window and rebuilds it when `threads` or the Whisper language changes; the 2-minute hold bounds those rebuilds. `CompletionRequest::threads` is the stage's first budget for every pass of that stage, because a server engine may reload its model when it changes; Ollama sends it as `num_thread`. Measured on Ollama 0.40.16 with the MLX runner (Gemma 4 E4B on the GPU), `num_thread` neither reloads the model nor changes the runner's CPU or speed, so Light does not limit summaries there. `Options::processing` (the CLI's `--pace`) overrides the setting for a bench.
 
 ## Threads
 
@@ -185,7 +185,7 @@ The worker evaluates `pace` before each speech window and each summary pass, cal
 | Take writer (core) | Drains the ring into the `TakeWriter`, pads overruns, reports `Wrote { total_frames }` (a running total, so no chunk size loses time) to the recorder. Exits after one last drain once the actor flags that `CaptureHandle::stop` returned, so an adapter that keeps the sink cannot hang it. |
 | Recorder actor (core) | Recorder state, the `CaptureHandle`, the `TakeWriter`, the grace deadline, and the set of takes being sealed. `Library::delete` refuses a take in that set, so a seal never lands after its row is gone. |
 | Seal threads (core) | One per finished take: WAV to FLAC, then the commit, retried with backoff while the store reports a transient error. What still fails is finished by the next start. |
-| Pipeline worker (core) | The running job, loaded engines (one per kind, unloaded when idle), and the current `Pace`. It calls `Machine::set_pace` on itself before each window or pass, so engine threads it creates inherit the QoS. |
+| Pipeline worker (core) | The running job, loaded engines (one per kind, unloaded when idle), and the current `Pace`. It calls `Machine::set_pace` on itself before each window or pass. Engine threads it creates do not inherit that QoS on macOS, so `threads` is what bounds them. It reads whether the recorder is busy through a shared view of the recorder's status, so the recorder starts first. |
 | Provision threads | One per download. |
 | UI | Nothing in core. Calls the facade and receives events. |
 

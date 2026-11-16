@@ -14,8 +14,8 @@ use crossbeam_channel::{Receiver, Sender};
 
 use crate::capture::FrameSink;
 use crate::domain::{
-    Channel, ChannelLayout, Fraction, LangSet, LangTag, LanguagePref, Ms, RecordingId,
-    TakeContainer, TakeInfo, TimeRange, Timestamp,
+    Channel, ChannelLayout, Fraction, LangSet, LangTag, LanguagePref, LevelMeter, Levels, Ms,
+    RecordingId, TakeContainer, TakeInfo, TimeRange, Timestamp,
 };
 use crate::models::{
     Availability, Diar, DiarCaps, DiarizationSupport, LangSupport, Llm, LlmCaps, ModelEntry,
@@ -559,6 +559,14 @@ impl Takes for MemTakes {
         let info = take.info();
         takes.insert(id.clone(), take);
         Ok(info)
+    }
+
+    fn levels(&self, id: &RecordingId) -> Result<Levels, TakeError> {
+        self.readable(id, |take| {
+            let mut meter = LevelMeter::new(take.frames(), take.layout.channel_count());
+            meter.feed(&take.samples);
+            meter.finish()
+        })
     }
 
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {

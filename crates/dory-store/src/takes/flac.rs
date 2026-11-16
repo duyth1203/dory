@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;
 
+use dory_core::domain::{LevelMeter, Levels};
 use dory_core::ports::TakeError;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::{BitRepr, Stream};
@@ -12,8 +13,8 @@ use flacenc::config::Encoder;
 use flacenc::error::Verify;
 use flacenc::source::{Context, Fill, FrameBuf};
 
-use super::io_err;
 use super::pcm::{FlacReader, FrameReader, OwnWavReader};
+use super::{io_err, levels};
 
 const BLOCK: usize = 4096;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -46,8 +47,11 @@ impl Digest {
     }
 }
 
-pub(crate) fn encode(src: &mut OwnWavReader, dest: &Path) -> Result<Digest, TakeError> {
+/// Also measures the take's levels, since this pass reads every sample anyway.
+pub(crate) fn encode(src: &mut OwnWavReader, dest: &Path) -> Result<(Digest, Levels), TakeError> {
     let channels = src.channels();
+    let mut meter = LevelMeter::new(src.total_frames(), channels);
+    let mut scratch = Vec::new();
     let rate = src.rate_hz();
     let config = Encoder::default().into_verified().map_err(enc_err)?;
     let mut stream = Stream::new(rate as usize, channels, 16).map_err(enc_err)?;
@@ -72,6 +76,7 @@ pub(crate) fn encode(src: &mut OwnWavReader, dest: &Path) -> Result<Digest, Take
             break;
         }
         digest.add(&pcm, channels);
+        levels::feed(&mut meter, &pcm, &mut scratch);
         wide.clear();
         wide.extend(pcm.iter().map(|s| i32::from(*s)));
         buffers.fill_interleaved(&wide).map_err(enc_err)?;
@@ -110,7 +115,7 @@ pub(crate) fn encode(src: &mut OwnWavReader, dest: &Path) -> Result<Digest, Take
     file.seek(SeekFrom::Start(0)).map_err(io_err)?;
     file.write_all(&header).map_err(io_err)?;
     file.sync_all().map_err(io_err)?;
-    Ok(digest)
+    Ok((digest, meter.finish()))
 }
 
 /// The `fLaC` marker and the STREAMINFO block, which has a fixed size, so it can be rewritten in

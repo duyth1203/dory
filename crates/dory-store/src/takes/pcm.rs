@@ -13,6 +13,8 @@ use super::io_err;
 pub(crate) trait FrameReader {
     fn channels(&self) -> usize;
     fn rate_hz(&self) -> u32;
+    /// Frames in the whole file, as its header says, or `None` when it does not say.
+    fn length_frames(&self) -> Option<u64>;
     /// Replaces `out` with up to `max_frames` interleaved frames. Returns the frame count, zero
     /// at the end of the file.
     fn read_frames(&mut self, out: &mut Vec<i16>, max_frames: usize) -> Result<usize, TakeError>;
@@ -84,6 +86,7 @@ pub(crate) struct OwnWavReader {
     file: BufReader<File>,
     channels: usize,
     rate_hz: u32,
+    length: u64,
     frames_left: u64,
     bytes: Vec<u8>,
 }
@@ -98,6 +101,7 @@ impl OwnWavReader {
             file: BufReader::with_capacity(1 << 16, file),
             channels: usize::from(header.channels),
             rate_hz: header.rate_hz,
+            length: frames_left,
             frames_left,
             bytes: Vec::new(),
         })
@@ -115,6 +119,10 @@ impl FrameReader for OwnWavReader {
 
     fn rate_hz(&self) -> u32 {
         self.rate_hz
+    }
+
+    fn length_frames(&self) -> Option<u64> {
+        Some(self.length)
     }
 
     fn read_frames(&mut self, out: &mut Vec<i16>, max_frames: usize) -> Result<usize, TakeError> {
@@ -188,6 +196,10 @@ impl FrameReader for HoundReader {
 
     fn rate_hz(&self) -> u32 {
         self.spec.sample_rate
+    }
+
+    fn length_frames(&self) -> Option<u64> {
+        Some(u64::from(self.reader.duration()))
     }
 
     fn read_frames(&mut self, out: &mut Vec<i16>, max_frames: usize) -> Result<usize, TakeError> {
@@ -269,6 +281,10 @@ impl FrameReader for FlacReader {
 
     fn rate_hz(&self) -> u32 {
         self.rate_hz
+    }
+
+    fn length_frames(&self) -> Option<u64> {
+        self.total_frames()
     }
 
     fn read_frames(&mut self, out: &mut Vec<i16>, max_frames: usize) -> Result<usize, TakeError> {

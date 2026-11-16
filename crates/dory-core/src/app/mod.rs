@@ -42,7 +42,7 @@ use recorder::{Msg, RecorderHandle, commit_sealed};
 use crate::domain::{
     Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority, Processing,
     Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerId,
-    SpeakerNames, Summary, TakeContainer, Transcript,
+    SpeakerNames, Summary, TakeContainer, Transcript, Waveform,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -826,6 +826,14 @@ impl Library<'_> {
             duration: take.duration,
         };
         Ok(self.dory.playback.open(&source)?)
+    }
+
+    /// The take's loudness over time as bar heights for the player. Blocking: the first call on
+    /// a take whose levels are not kept yet reads the whole take. Refused while it is being
+    /// recorded or sealed, because the file is still changing.
+    pub fn waveform(&self, id: &RecordingId) -> Result<Waveform, DoryError> {
+        self.dory.recorder.check_not_busy(id)?;
+        Ok(Waveform::from_levels(&self.dory.takes.levels(id)?))
     }
 
     fn edit(&self, id: &RecordingId, edit: RecordingEdit) -> Result<(), DoryError> {

@@ -12,10 +12,10 @@ use dory_core::app::{
 };
 use dory_core::capture::FrameSink;
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, Goal, Job, JobEvent, JobId, JobState, LangTag, Ms, Priority,
-    Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision, Segment,
-    Settings, SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange,
-    Timestamp, Transcript,
+    Blocker, Channel, ChannelLayout, Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms,
+    Priority, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision,
+    Segment, Settings, SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange,
+    Timestamp, Transcript, Waveform,
 };
 use dory_core::models::{
     Availability, CatalogError, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId,
@@ -311,6 +311,9 @@ impl Takes for HookedTakes {
             hook(id)?;
         }
         self.inner.adopt(id)
+    }
+    fn levels(&self, id: &RecordingId) -> Result<Levels, TakeError> {
+        self.inner.levels(id)
     }
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
         self.inner.playback_path(id)
@@ -1408,6 +1411,44 @@ fn a_player_opens_on_the_sealed_take_with_its_layout_and_refuses_a_take_being_sa
         Err(DoryError::Recording(_))
     ));
     assert_eq!(rig.playback.opened().len(), 1);
+}
+
+#[test]
+fn a_waveform_rises_where_the_take_is_loud_and_is_refused_while_recording() {
+    let rig = Rig::new();
+    let id = RecordingId::parse("waved").unwrap();
+    let mut writer = rig
+        .takes
+        .begin(&id, ChannelLayout::MicSystem, RATE)
+        .unwrap();
+    let second = RATE as usize * 2;
+    writer.write(&vec![0.0; second * 5]).unwrap();
+    let speech: Vec<f32> = (0..second * 5)
+        .map(|i| 0.3 * (i as f32 * 0.07).sin() * (i % 2) as f32)
+        .collect();
+    writer.write(&speech).unwrap();
+    writer.finish().unwrap();
+    let take = rig.takes.seal(&id).unwrap();
+    rig.store
+        .apply(vec![Change::RecordingCreated(recording(&id, Some(take)))])
+        .unwrap();
+    let dory = rig.open();
+
+    let wave = dory.library().waveform(&id).unwrap();
+    let heights = wave.heights();
+    assert_eq!(heights.len(), dory_core::domain::BUCKETS);
+    let (silent, loud) = heights.split_at(heights.len() / 2);
+    assert!(silent.iter().all(|h| *h == Waveform::FLOOR), "{silent:?}");
+    assert!(loud.iter().all(|h| *h > 0.9), "{loud:?}");
+
+    rig.capture.push_script(seconds(1));
+    dory.recorder().start(StartOptions::default()).unwrap();
+    eventually("recording", || dory.recorder().status().id().is_some());
+    let recording = dory.recorder().status().id().cloned().unwrap();
+    assert!(matches!(
+        dory.library().waveform(&recording),
+        Err(DoryError::Recording(_))
+    ));
 }
 
 /// A recording with a transcript, a summary, and a named speaker, as a finished job leaves it.

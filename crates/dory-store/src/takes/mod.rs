@@ -10,12 +10,16 @@
 //! - `<id>.meta` holds the channel layout, because `clip` is asked for "the mic" by id alone.
 //! - `<id>.legacy` points at an audio file in the old app's folder. That file is read in place and
 //!   is never moved or deleted. [`Takes::adopt`] copies it in as a FLAC take and drops the pointer.
+//! - `<id>.levels` keeps the take's measured loudness. Sealing writes it from the pass that
+//!   encodes the FLAC. A take sealed without one, or a legacy take, gets it on the first
+//!   [`Takes::levels`]. It is a cache: losing it costs one more pass, never audio.
 //!
 //! [`FILES`] lists every name this adapter writes, so [`Takes::stored`] and [`Takes::delete`]
 //! agree on what belongs to an id.
 
 mod ffmpeg;
 mod flac;
+mod levels;
 mod meta;
 mod pcm;
 mod resample;
@@ -27,7 +31,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use dory_core::domain::{
-    Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
+    Channel, ChannelLayout, Levels, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
 };
 use dory_core::ports::{Activity, Clip, LegacyFile, TakeError, TakeWriter, Takes};
 
@@ -50,15 +54,17 @@ fn nonzero(rate_hz: u32) -> Result<NonZeroU32, TakeError> {
 
 /// Every suffix this adapter writes after `<id>.`, two-part ones first so `a.flac.tmp` is never
 /// read as an id `a.flac` with a suffix `tmp`.
-const FILES: [&str; 8] = [
+const FILES: [&str; 10] = [
     "wav.partial",
     "flac.tmp",
     "meta.tmp",
     "legacy.tmp",
+    "levels.tmp",
     "wav",
     "flac",
     "meta",
     "legacy",
+    "levels",
 ];
 
 fn remove_if_present(path: &Path) -> Result<(), TakeError> {
@@ -195,7 +201,7 @@ impl FsTakes {
         };
         if self.legacy_link(id).ok().flatten().as_ref() != Some(&link) {
             std::fs::create_dir_all(&self.dir).map_err(io_err)?;
-            meta::write_atomic(&self.file(id, "legacy"), &link.to_text()).map_err(io_err)?;
+            meta::write_atomic(&self.file(id, "legacy"), link.to_text()).map_err(io_err)?;
         }
         Ok(link.info())
     }
@@ -276,17 +282,24 @@ impl FsTakes {
         }
 
         remove_if_present(&tmp)?;
-        let digest = flac::encode(&mut reader, &tmp)?;
+        let (digest, measured) = flac::encode(&mut reader, &tmp)?;
         if let Err(e) = flac::verify(&tmp, digest, channels, rate_hz) {
             let _ = std::fs::remove_file(&tmp);
             return Err(e);
         }
         std::fs::rename(&tmp, &flac).map_err(io_err)?;
+        self.keep_levels(id, &measured);
         if let Ok(dir) = File::open(&self.dir) {
             let _ = dir.sync_all();
         }
         remove_if_present(wav)?;
         Self::flac_info(&flac)
+    }
+
+    /// A failed write is dropped: the levels are measured again on the next request, and a seal
+    /// or a read must not fail over a cache.
+    fn keep_levels(&self, id: &RecordingId, levels: &Levels) {
+        let _ = meta::write_atomic(&self.file(id, "levels"), levels::encode(levels));
     }
 
     /// Converts `source` into this id's FLAC, by its extension. The caller has claimed the id.
@@ -361,7 +374,7 @@ impl Takes for FsTakes {
         if self.locate(id)?.is_some() {
             return Err(TakeError::Exists(id.clone()));
         }
-        meta::write_atomic(&self.file(id, "meta"), &meta::layout_text(layout)).map_err(io_err)?;
+        meta::write_atomic(&self.file(id, "meta"), meta::layout_text(layout)).map_err(io_err)?;
         match WavTake::create(&self.file(id, "wav"), layout.channel_count(), rate_hz) {
             Ok(take) => Ok(Box::new(take)),
             Err(TakeError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -586,7 +599,7 @@ impl Takes for FsTakes {
         }
         meta::write_atomic(
             &self.file(id, "meta"),
-            &meta::layout_text(ChannelLayout::Mixed),
+            meta::layout_text(ChannelLayout::Mixed),
         )
         .map_err(io_err)?;
         self.convert(id, source)
@@ -621,7 +634,7 @@ impl Takes for FsTakes {
             }
             meta::write_atomic(
                 &self.file(id, "meta"),
-                &meta::layout_text(ChannelLayout::Mixed),
+                meta::layout_text(ChannelLayout::Mixed),
             )
             .map_err(io_err)?;
             self.convert(id, &link.path)?
@@ -630,6 +643,35 @@ impl Takes for FsTakes {
         remove_if_present(&self.file(id, "flac.tmp"))?;
         remove_if_present(&self.file(id, "wav.partial"))?;
         Ok(info)
+    }
+
+    /// An open WAV is measured but not kept, because it may still grow. A take trashed while it
+    /// was being measured is given no file once its audio is gone, so a restore finds the place
+    /// free.
+    fn levels(&self, id: &RecordingId) -> Result<Levels, TakeError> {
+        let kept = self.file(id, "levels");
+        match std::fs::read(&kept) {
+            Ok(bytes) => {
+                if let Some(levels) = levels::decode(&bytes) {
+                    return Ok(levels);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_err(e)),
+        }
+        let scratch = tempfile::Builder::new()
+            .prefix("dory-levels-")
+            .tempdir()
+            .map_err(io_err)?;
+        let (mut reader, _) = self.open_reader(id, scratch.path())?;
+        let measured = levels::measure(reader.as_mut())?;
+        if matches!(
+            self.locate(id)?,
+            Some(Located::Flac(_) | Located::Legacy(_))
+        ) {
+            self.keep_levels(id, &measured);
+        }
+        Ok(measured)
     }
 
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {

@@ -2,9 +2,10 @@ use std::f32::consts::TAU;
 use std::path::Path;
 
 use dory_core::domain::{
-    Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
+    BUCKETS, Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange, Waveform,
 };
-use dory_core::ports::{Activity, TakeError, Takes};
+use dory_core::ports::{Activity, TakeError, Takes, Trash as _};
+use dory_core::testing::FakeTrash;
 use dory_store::FsTakes;
 
 fn rid(s: &str) -> RecordingId {
@@ -861,7 +862,10 @@ fn files_lists_what_delete_removes_for_one_id_and_never_a_legacy_audio_file() {
         names
     };
     assert_eq!(names(&open), ["open.meta", "open.wav"]);
-    assert_eq!(names(&sealed), ["sealed.flac", "sealed.meta"]);
+    assert_eq!(
+        names(&sealed),
+        ["sealed.flac", "sealed.levels", "sealed.meta"]
+    );
     assert_eq!(names(&half), ["half.flac.tmp", "half.meta"]);
     assert_eq!(names(&linked), ["linked.legacy"]);
     assert_eq!(names(&rid("none")), Vec::<String>::new());
@@ -942,7 +946,7 @@ fn adopting_a_legacy_wav_copies_it_in_as_a_flac_take_and_leaves_the_original_alo
         }
     );
     assert_eq!(takes.legacy_original(&id).unwrap().map(|f| f.path), None);
-    assert_eq!(names(&takes, &id), ["old.flac", "old.meta"]);
+    assert_eq!(names(&takes, &id), ["old.flac", "old.levels", "old.meta"]);
     assert_eq!(takes.inspect(&id).unwrap(), Some(info));
     assert_eq!(
         std::fs::read(&old).unwrap(),
@@ -994,7 +998,10 @@ fn adopting_cleans_up_what_a_crashed_attempt_left() {
     let info = takes.adopt(&id).unwrap();
     assert_eq!(info.container, TakeContainer::Flac);
     assert_eq!(info.duration, Ms(3_000));
-    assert_eq!(names(&takes, &id), ["crashed.flac", "crashed.meta"]);
+    assert_eq!(
+        names(&takes, &id),
+        ["crashed.flac", "crashed.levels", "crashed.meta"]
+    );
 }
 
 #[test]
@@ -1013,7 +1020,10 @@ fn a_crash_after_the_flac_landed_and_before_the_pointer_went_is_finished_by_a_se
 
     assert_eq!(takes.adopt(&id).unwrap(), done);
     assert_eq!(takes.legacy_original(&id).unwrap().map(|f| f.path), None);
-    assert_eq!(names(&takes, &id), ["late.flac", "late.meta"]);
+    assert_eq!(
+        names(&takes, &id),
+        ["late.flac", "late.levels", "late.meta"]
+    );
     assert!(old.is_file());
 }
 
@@ -1033,4 +1043,112 @@ fn adopting_without_the_original_fails_and_keeps_the_pointer() {
         Some(&*old)
     );
     assert_eq!(names(&takes, &id), ["lost.legacy"]);
+}
+
+/// Ten seconds of `[mic, system]`: a 0.5 tone on the mic for the first five, then silence.
+fn loud_then_silent(takes: &FsTakes, id: &RecordingId) {
+    let rate = 16_000;
+    let frames = rate as usize * 10;
+    let mic = tone(440.0, rate, 0.0, 5.0, 0.5, frames);
+    let system = vec![0.0; frames];
+    let mut writer = takes.begin(id, ChannelLayout::MicSystem, rate).unwrap();
+    write_in_chunks(&mut *writer, &interleave(&[&mic, &system]), 2, rate);
+    writer.finish().unwrap();
+    takes.seal(id).unwrap();
+}
+
+#[test]
+fn sealing_keeps_levels_that_are_high_where_the_take_is_loud_and_floor_where_it_is_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("halves");
+    loud_then_silent(&takes, &id);
+    assert!(
+        dir.path().join("halves.levels").is_file(),
+        "sealing measured the levels"
+    );
+
+    let levels = takes.levels(&id).unwrap();
+    let (loud, silent) = levels.as_slice().split_at(BUCKETS / 2);
+    assert_eq!(levels.as_slice().len(), BUCKETS);
+    let tone_rms = 0.5 / 2f32.sqrt();
+    assert!(loud.iter().all(|l| (l - tone_rms).abs() < 0.02), "{loud:?}");
+    assert!(silent.iter().all(|l| *l == 0.), "{silent:?}");
+
+    let wave = Waveform::from_levels(&levels);
+    let (loud, silent) = wave.heights().split_at(BUCKETS / 2);
+    assert!(loud.iter().all(|h| *h > 0.99), "{loud:?}");
+    assert!(silent.iter().all(|h| *h == Waveform::FLOOR), "{silent:?}");
+}
+
+#[test]
+fn a_take_without_kept_levels_measures_them_on_first_request_and_reuses_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (takes, id, old) = linked_wav(dir.path(), "lazy");
+    let kept = takes.dir().join("lazy.levels");
+    assert!(!kept.exists());
+
+    let first = takes.levels(&id).unwrap();
+    assert_eq!(first.as_slice().len(), BUCKETS);
+    assert!(first.as_slice().iter().all(|l| *l > 0.3), "{first:?}");
+    assert!(kept.is_file(), "the first request kept what it measured");
+    assert_eq!(names(&takes, &id), ["lazy.legacy", "lazy.levels"]);
+
+    std::fs::remove_file(&old).unwrap();
+    assert_eq!(
+        takes.levels(&id).unwrap(),
+        first,
+        "the second request reads the kept file, not the audio, which is gone"
+    );
+
+    std::fs::write(&kept, b"torn").unwrap();
+    assert!(
+        matches!(takes.levels(&id), Err(TakeError::Missing(_))),
+        "a torn file is measured again, from the audio"
+    );
+}
+
+#[test]
+fn an_open_take_is_measured_but_not_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("open");
+    let mut writer = takes.begin(&id, ChannelLayout::MicOnly, 16_000).unwrap();
+    writer.write(&vec![0.5; 16_000]).unwrap();
+    writer.checkpoint().unwrap();
+
+    assert_eq!(takes.levels(&id).unwrap().as_slice().len(), BUCKETS);
+    assert!(!dir.path().join("open.levels").exists());
+}
+
+#[test]
+fn trash_and_put_back_move_the_levels_with_the_audio_and_delete_removes_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let trash_dir = dir.path().join("trash");
+    std::fs::create_dir_all(&trash_dir).unwrap();
+    let trash = FakeTrash::new(&trash_dir);
+    let id = rid("undo");
+    loud_then_silent(&takes, &id);
+    let kept = takes.dir().join("undo.levels");
+    let before = std::fs::read(&kept).unwrap();
+    assert_eq!(
+        names(&takes, &id),
+        ["undo.flac", "undo.levels", "undo.meta"]
+    );
+
+    let receipt = trash.move_to_trash(&takes.files(&id).unwrap()).unwrap();
+    assert!(takes.files(&id).unwrap().is_empty());
+    assert!(!kept.exists());
+
+    trash.put_back(&receipt).unwrap();
+    assert_eq!(std::fs::read(&kept).unwrap(), before);
+    assert_eq!(
+        names(&takes, &id),
+        ["undo.flac", "undo.levels", "undo.meta"]
+    );
+
+    takes.delete(&id).unwrap();
+    assert!(!kept.exists());
+    assert!(takes.stored().unwrap().is_empty());
 }

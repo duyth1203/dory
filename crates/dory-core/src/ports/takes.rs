@@ -6,7 +6,7 @@ use std::any::Any;
 use std::path::{Path, PathBuf};
 
 use super::TakeError;
-use crate::domain::{Channel, ChannelLayout, Ms, RecordingId, TakeInfo, TimeRange};
+use crate::domain::{Channel, ChannelLayout, Levels, Ms, RecordingId, TakeInfo, TimeRange};
 
 pub trait Takes: Send + Sync {
     /// Creates the WAV that capture appends to. Fails with `Exists` if the id has a take.
@@ -57,6 +57,11 @@ pub trait Takes: Send + Sync {
     /// leaves the legacy take readable and a second call completes. With no pointer and an own
     /// take present, returns that take's info.
     fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError>;
+
+    /// How loud the take is over time, the louder channel per bucket, measured in one pass with
+    /// constant memory. A sealed take's levels are kept beside it, as one of its [`Takes::files`],
+    /// so the pass runs once per take.
+    fn levels(&self, id: &RecordingId) -> Result<Levels, TakeError>;
 
     /// A stable path for playback and "reveal in Finder". Not for engines.
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError>;

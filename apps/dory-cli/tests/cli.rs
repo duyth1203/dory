@@ -190,16 +190,70 @@ fn records_from_the_fake_capture_then_processes_with_fake_engines() {
 fn models_lists_each_kind_and_the_fakes_when_asked() {
     let env = Env::new();
     let plain = env.ok(&["models"]);
+    for id in [
+        "sherpa/parakeet-tdt-0.6b-v3",
+        "sherpa/whisper-turbo",
+        "ollama/gemma4:e4b",
+        "ollama/gemma4:12b",
+    ] {
+        assert!(plain.contains(id), "missing {id} in\n{plain}");
+    }
     assert_eq!(
         plain.matches("(none registered)").count(),
-        3,
-        "no engines are registered yet:\n{plain}"
+        1,
+        "only speakers has no engine yet:\n{plain}"
     );
+    let about = env.ok(&["models", "--about"]);
+    assert!(about.contains("No Tagalog"), "{about}");
     let fake = env.ok(&["models", "--fake-engines"]);
     assert!(
         fake.contains("fake/stt") && fake.contains("fake/llm"),
         "{fake}"
     );
+}
+
+#[test]
+fn meeting_languages_steer_auto_away_from_models_without_them() {
+    let env = Env::new();
+    assert_eq!(env.ok(&["languages"]).trim(), "meeting languages: any");
+    assert_eq!(
+        env.ok(&["languages", "tl", "en"]).trim(),
+        "meeting languages: tl, en"
+    );
+    let rows = env.ok(&["models"]);
+    let parakeet = rows
+        .lines()
+        .find(|l| l.contains("sherpa/parakeet-tdt-0.6b-v3"))
+        .unwrap();
+    assert!(parakeet.contains("language"), "{parakeet}");
+    assert_eq!(
+        env.ok(&["languages", "--clear"]).trim(),
+        "meeting languages: any"
+    );
+}
+
+#[test]
+fn choosing_a_model_pins_it_and_refuses_one_not_in_the_catalog() {
+    let env = Env::new();
+    env.ok(&["models", "choose", "stt", "sherpa/whisper-turbo"]);
+    let chosen = env.ok(&["models"]);
+    assert!(
+        chosen
+            .lines()
+            .any(|l| l.starts_with('*') && l.contains("sherpa/whisper-turbo")),
+        "{chosen}"
+    );
+    assert!(
+        !env.run(&["models", "choose", "stt", "sherpa/nope"])
+            .status
+            .success()
+    );
+    assert!(
+        !env.run(&["models", "choose", "video", "auto"])
+            .status
+            .success()
+    );
+    env.ok(&["models", "choose", "stt", "auto"]);
 }
 
 #[test]

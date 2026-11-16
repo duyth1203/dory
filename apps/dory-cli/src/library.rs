@@ -140,13 +140,13 @@ fn job_line(job: Option<&Job>) -> String {
 
 pub fn models(config: &Config, args: &ModelsArgs) -> Result<(), String> {
     let lib = open_library(config, args.fake_engines)?;
-    print_kind::<Stt>(&lib, "speech to text")?;
-    print_kind::<Llm>(&lib, "summaries")?;
-    print_kind::<Diar>(&lib, "speakers")?;
+    print_kind::<Stt>(&lib, "speech to text", args.about)?;
+    print_kind::<Llm>(&lib, "summaries", args.about)?;
+    print_kind::<Diar>(&lib, "speakers", args.about)?;
     Ok(())
 }
 
-fn print_kind<K: AppKind>(lib: &LibraryReader, title: &str) -> Result<(), String> {
+fn print_kind<K: AppKind>(lib: &LibraryReader, title: &str, about: bool) -> Result<(), String> {
     println!("{title}");
     let rows: Vec<ModelRow<K>> = block_on(lib.models::<K>()).map_err(crate::chain)?;
     if rows.is_empty() {
@@ -162,6 +162,9 @@ fn print_kind<K: AppKind>(lib: &LibraryReader, title: &str) -> Result<(), String
             view::availability(&row.status.availability),
             view::fit(&row.fit),
         );
+        if about {
+            print!("{}", view::about(&entry.about, entry.disk_bytes));
+        }
     }
     Ok(())
 }

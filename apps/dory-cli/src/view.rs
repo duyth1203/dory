@@ -195,6 +195,36 @@ pub fn latest_job(jobs: Vec<Job>) -> Option<Job> {
     jobs.into_iter().max_by_key(|j| j.id)
 }
 
+/// A model's explainer, indented under its row: what the UX-28 popover shows.
+pub fn about(about: &dory_core::models::ModelAbout, disk_bytes: Option<u64>) -> String {
+    let mut text = format!("    {}\n", about.summary);
+    for pro in &about.pros {
+        text.push_str(&format!("    + {pro}\n"));
+    }
+    for con in &about.cons {
+        text.push_str(&format!("    - {con}\n"));
+    }
+    if let Some(bytes) = disk_bytes {
+        text.push_str(&format!("    {:.1} GB on disk\n", bytes as f64 / 1e9));
+    }
+    text
+}
+
+/// One progress line, in 5% steps so a long download prints about twenty lines.
+pub fn provision_progress(event: &dory_core::app::Event) -> String {
+    match event {
+        dory_core::app::Event::ProvisionProgress {
+            step, done, total, ..
+        } => match total {
+            Some(total) if *total > 0 => {
+                format!("{step} {}%", done * 100 / total / 5 * 5)
+            }
+            _ => format!("{step} {:.0} MB", *done as f64 / 1e6),
+        },
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use dory_core::domain::{Revision, TimeRange};

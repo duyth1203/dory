@@ -185,14 +185,24 @@ mod fakes {
     }
 
     #[test]
-    fn plain_open_registers_no_engines_yet() {
+    fn plain_open_registers_sherpa_and_ollama_with_models_under_the_data_folder() {
         let dir = tempfile::tempdir().unwrap();
         let dory = dory::open(&Config::new(dir.path())).unwrap();
-        assert!(block_on(dory.models().list::<Stt>()).unwrap().is_empty());
-        assert!(
-            block_on(dory.models().list::<dory_core::models::Llm>())
-                .unwrap()
-                .is_empty()
+        let stt: Vec<String> = block_on(dory.models().list::<Stt>())
+            .unwrap()
+            .iter()
+            .map(|r| r.status.entry.id.to_string())
+            .collect();
+        assert_eq!(stt, ["sherpa/parakeet-tdt-0.6b-v3", "sherpa/whisper-turbo"]);
+        let llm: Vec<String> = block_on(dory.models().list::<dory_core::models::Llm>())
+            .unwrap()
+            .iter()
+            .map(|r| r.status.entry.id.to_string())
+            .collect();
+        assert_eq!(llm, ["ollama/gemma4:e4b", "ollama/gemma4:12b"]);
+        assert_eq!(
+            Config::new(dir.path()).models_dir(),
+            dir.path().join("models")
         );
     }
 

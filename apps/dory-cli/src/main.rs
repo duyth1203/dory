@@ -7,6 +7,7 @@ mod library;
 mod play;
 mod process;
 mod record;
+mod settings;
 mod view;
 mod wait;
 
@@ -22,7 +23,10 @@ const USAGE: &str = "usage:
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--fake-engines]
   dory-cli play ID [--seek SECONDS]
-  dory-cli models [--fake-engines]
+  dory-cli models [--about] [--fake-engines]
+  dory-cli models choose stt|llm|diar auto|off|MODEL_ID
+  dory-cli models provision stt|llm|diar MODEL_ID
+  dory-cli languages [TAG...|--clear]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
 The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.";
@@ -38,8 +42,16 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| library::list(&c, &a))),
             Some("show") => args::ShowArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| library::show(&c, &a))),
-            Some("models") => args::ModelsArgs::parse(rest)
-                .and_then(|a| config().and_then(|c| library::models(&c, &a))),
+            Some("models") => match rest.first().map(String::as_str) {
+                Some("choose") => args::ChooseArgs::parse(&rest[1..])
+                    .and_then(|a| config().and_then(|c| settings::choose(&c, &a))),
+                Some("provision") => args::ProvisionArgs::parse(&rest[1..])
+                    .and_then(|a| config().and_then(|c| settings::provision(&c, &a))),
+                _ => args::ModelsArgs::parse(rest)
+                    .and_then(|a| config().and_then(|c| library::models(&c, &a))),
+            },
+            Some("languages") => args::LanguagesArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::languages(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
             Some("play") => {

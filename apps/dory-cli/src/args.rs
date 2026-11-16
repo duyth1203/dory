@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use dory_core::domain::{ChannelLayout, Ms, RecordingId};
+use dory_core::domain::{ChannelLayout, LangTag, Ms, RecordingId};
 use dory_core::ports::capture::MicSelection;
 
 #[derive(Debug, PartialEq)]
@@ -109,16 +109,105 @@ impl PlayArgs {
 #[derive(Debug, PartialEq)]
 pub struct ModelsArgs {
     pub fake_engines: bool,
+    /// Prints each model's explainer: what it is, what it is good at, and what to watch out for.
+    pub about: bool,
 }
 
 impl ModelsArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut parsed = Self {
+            fake_engines: false,
+            about: false,
+        };
+        for arg in args {
+            match arg.as_str() {
+                "--fake-engines" => parsed.fake_engines = true,
+                "--about" => parsed.about = true,
+                _ => return Err("models takes --fake-engines and --about".into()),
+            }
+        }
+        Ok(parsed)
+    }
+}
+
+/// Which model list a setting applies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KindArg {
+    Stt,
+    Llm,
+    Diar,
+}
+
+impl KindArg {
+    fn parse(word: &str) -> Result<Self, String> {
+        match word {
+            "stt" | "speech" => Ok(Self::Stt),
+            "llm" | "summary" => Ok(Self::Llm),
+            "diar" | "speakers" => Ok(Self::Diar),
+            other => Err(format!(
+                "{other:?} is not a model kind: use stt, llm, or diar"
+            )),
+        }
+    }
+}
+
+/// `models choose KIND auto|off|ID`. The choice stays a string here because its type depends on
+/// the kind, which the command resolves.
+#[derive(Debug, PartialEq)]
+pub struct ChooseArgs {
+    pub kind: KindArg,
+    pub choice: String,
+}
+
+impl ChooseArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
         match args {
-            [] => Ok(Self {
-                fake_engines: false,
+            [kind, choice] => Ok(Self {
+                kind: KindArg::parse(kind)?,
+                choice: choice.clone(),
             }),
-            [flag] if flag == "--fake-engines" => Ok(Self { fake_engines: true }),
-            _ => Err("models takes only --fake-engines".into()),
+            _ => Err("models choose takes a kind and auto, off, or a model id".into()),
+        }
+    }
+}
+
+/// `models provision KIND ID`.
+#[derive(Debug, PartialEq)]
+pub struct ProvisionArgs {
+    pub kind: KindArg,
+    pub id: String,
+}
+
+impl ProvisionArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [kind, id] => Ok(Self {
+                kind: KindArg::parse(kind)?,
+                id: id.clone(),
+            }),
+            _ => Err("models provision takes a kind and a model id".into()),
+        }
+    }
+}
+
+/// `languages [TAG...]` prints the meeting languages, or replaces them. `languages --clear`
+/// removes them all.
+#[derive(Debug, PartialEq)]
+pub enum LanguagesArgs {
+    Show,
+    Set(Vec<LangTag>),
+}
+
+impl LanguagesArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [] => Ok(Self::Show),
+            [flag] if flag == "--clear" => Ok(Self::Set(Vec::new())),
+            tags => tags
+                .iter()
+                .map(|t| LangTag::parse(t).map_err(|e| e.to_string()))
+                .collect::<Result<_, _>>()
+                .map(Self::Set),
         }
     }
 }
@@ -242,5 +331,38 @@ mod tests {
                 .unwrap()
                 .fake_engines
         );
+        assert!(ModelsArgs::parse(&words("--about")).unwrap().about);
+    }
+
+    #[test]
+    fn model_settings_and_meeting_languages_parse() {
+        assert_eq!(
+            ChooseArgs::parse(&words("stt sherpa/whisper-turbo")).unwrap(),
+            ChooseArgs {
+                kind: KindArg::Stt,
+                choice: "sherpa/whisper-turbo".into()
+            }
+        );
+        assert!(ChooseArgs::parse(&words("video auto")).is_err());
+        assert!(ChooseArgs::parse(&words("stt")).is_err());
+        assert_eq!(
+            ProvisionArgs::parse(&words("llm ollama/gemma4:e4b"))
+                .unwrap()
+                .kind,
+            KindArg::Llm
+        );
+        assert_eq!(LanguagesArgs::parse(&[]).unwrap(), LanguagesArgs::Show);
+        assert_eq!(
+            LanguagesArgs::parse(&words("tl en")).unwrap(),
+            LanguagesArgs::Set(vec![
+                LangTag::parse("tl").unwrap(),
+                LangTag::parse("en").unwrap()
+            ])
+        );
+        assert_eq!(
+            LanguagesArgs::parse(&words("--clear")).unwrap(),
+            LanguagesArgs::Set(Vec::new())
+        );
+        assert!(LanguagesArgs::parse(&words("not_a_tag!")).is_err());
     }
 }

@@ -34,7 +34,8 @@ use dory_core::recorder::{FinalizeReason, Limits};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
     FakeCapture, FakeLanguageModel, FakeLlmProvider, FakePlayback, FakeSttProvider,
-    FakeTranscriber, ManualClock, MemTakes, Step, block_on, eventually, llm_entry, stt_entry,
+    FakeTranscriber, FakeTrash, ManualClock, MemTakes, Step, block_on, eventually, llm_entry,
+    stt_entry,
 };
 
 const RATE: u32 = 8_000;
@@ -48,6 +49,9 @@ struct Rig {
     /// What `Dory` sees: `store` and `takes` behind hooks a test can install.
     hooked_store: Arc<HookedStore>,
     hooked_takes: Arc<HookedTakes>,
+    trash: Arc<FakeTrash>,
+    /// Holds the take markers and the fake trash.
+    _scratch: tempfile::TempDir,
     capture: Arc<FakeCapture>,
     playback: Arc<FakePlayback>,
     clock: Arc<ManualClock>,
@@ -80,8 +84,14 @@ impl Rig {
         );
         let llm = Arc::new(FakeLanguageModel::new(SUMMARY));
         let store = Arc::new(MemStore::new());
-        let takes = MemTakes::new();
+        let scratch = tempfile::tempdir().unwrap();
+        let (takes_dir, trash_dir) = (scratch.path().join("takes"), scratch.path().join("trash"));
+        std::fs::create_dir_all(&takes_dir).unwrap();
+        std::fs::create_dir_all(&trash_dir).unwrap();
+        let takes = MemTakes::in_dir(takes_dir);
         Rig {
+            trash: Arc::new(FakeTrash::new(trash_dir)),
+            _scratch: scratch,
             hooked_store: Arc::new(HookedStore {
                 inner: store.clone(),
                 before: Mutex::new(None),
@@ -115,6 +125,7 @@ impl Rig {
         Ports {
             store: self.hooked_store.clone(),
             takes: self.hooked_takes.clone(),
+            trash: self.trash.clone(),
             capture: self.capture.clone(),
             playback: self.playback.clone(),
             clock: self.clock.clone(),
@@ -285,6 +296,9 @@ impl Takes for HookedTakes {
     }
     fn delete(&self, id: &RecordingId) -> Result<(), TakeError> {
         self.inner.delete(id)
+    }
+    fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError> {
+        self.inner.files(id)
     }
 }
 
@@ -1373,4 +1387,263 @@ fn a_player_opens_on_the_sealed_take_with_its_layout_and_refuses_a_take_being_sa
         Err(DoryError::Recording(_))
     ));
     assert_eq!(rig.playback.opened().len(), 1);
+}
+
+/// A recording with a transcript, a summary, and a named speaker, as a finished job leaves it.
+fn processed(dory: &Dory, rig: &Rig, name: &str) -> RecordingId {
+    let id = rig.seed(name);
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for_job(dory, &id, JobState::Succeeded);
+    let speaker = dory.library().transcript(&id).unwrap().unwrap().segments[0].speaker;
+    dory.library()
+        .rename_speaker(&id, speaker, Some("Ana".into()))
+        .unwrap();
+    dory.library()
+        .set_title(&id, Some("Weekly sync".into()))
+        .unwrap();
+    id
+}
+
+fn library_is_empty(dory: &Dory) -> bool {
+    dory.library()
+        .list(&RecordingQuery::default())
+        .unwrap()
+        .is_empty()
+}
+
+#[test]
+fn trash_then_restore_brings_back_the_row_transcript_summary_names_and_audio() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "weekly");
+    let library = dory.library();
+    let before = (
+        library.recording(&id).unwrap().unwrap(),
+        library.transcript(&id).unwrap().unwrap(),
+        library.summary(&id).unwrap().unwrap(),
+        library.speaker_names(&id).unwrap(),
+    );
+    assert!(!before.3.names.is_empty());
+    let frames = rig.takes.frames(&id);
+    assert!(frames.is_some());
+
+    let trashed = library.trash(&id).unwrap();
+    assert_eq!((trashed.id(), trashed.title()), (&id, Some("Weekly sync")));
+    assert!(library_is_empty(&dory));
+    assert_eq!(library.transcript(&id).unwrap(), None);
+    assert!(library.jobs(&id).unwrap().is_empty());
+    assert!(rig.takes.stored().unwrap().is_empty(), "the audio left");
+    assert_eq!(rig.trash.trashed_files().len(), 1, "and went to the trash");
+
+    assert_eq!(library.restore(trashed).unwrap(), id);
+    let after = (
+        library.recording(&id).unwrap().unwrap(),
+        library.transcript(&id).unwrap().unwrap(),
+        library.summary(&id).unwrap().unwrap(),
+        library.speaker_names(&id).unwrap(),
+    );
+    assert_eq!(after, before);
+    assert_eq!(rig.takes.frames(&id), frames);
+    assert!(rig.trash.trashed_files().is_empty());
+    assert!(library.player(&id).is_ok(), "the audio plays again");
+    assert!(
+        library.jobs(&id).unwrap().is_empty(),
+        "jobs are not restored"
+    );
+}
+
+#[test]
+fn trash_refuses_a_take_being_recorded_or_sealed() {
+    let rig = Rig::new();
+    let gate = Gate::new();
+    let at_seal = gate.clone();
+    rig.hooked_takes.on_seal(move |_| {
+        at_seal.pass();
+        Ok(())
+    });
+    let dory = rig.open();
+    let id = record(&dory, &rig, 2);
+    assert!(matches!(
+        dory.library().trash(&id),
+        Err(DoryError::Recording(busy)) if busy == id
+    ));
+
+    stop_for_good(&dory, &rig);
+    gate.wait_reached("the seal to start");
+    assert!(matches!(
+        dory.library().trash(&id),
+        Err(DoryError::Saving(busy)) if busy == id
+    ));
+    gate.open();
+    eventually("the sealed take to commit", || {
+        take_of(&dory, &id).is_some_and(|t| t.container == TakeContainer::Flac)
+    });
+    assert!(rig.trash.trashed_files().is_empty(), "nothing moved");
+    assert!(dory.library().trash(&id).is_ok());
+}
+
+#[test]
+fn trashing_an_unknown_recording_moves_nothing() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let missing = RecordingId::parse("never-existed").unwrap();
+    assert!(matches!(
+        dory.library().trash(&missing),
+        Err(DoryError::Store(StoreError::NotFound(_)))
+    ));
+}
+
+#[test]
+fn trash_cancels_a_running_job_and_the_restored_recording_can_be_processed_again() {
+    let rig = Rig::new();
+    let id = rig.seed("mid-stage");
+    rig.transcriber.hold(true);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the engine to run", || rig.transcriber.is_running());
+
+    let trashed = dory.library().trash(&id).unwrap();
+    eventually("the engine to stop", || !rig.transcriber.is_running());
+    rig.transcriber.hold(false);
+    assert!(library_is_empty(&dory));
+    assert!(dory.library().jobs(&id).unwrap().is_empty());
+
+    dory.library().restore(trashed).unwrap();
+    assert_eq!(dory.library().transcript(&id).unwrap(), None);
+    assert!(
+        dory.library().jobs(&id).unwrap().is_empty(),
+        "the cancelled job is not restored"
+    );
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for_job(&dory, &id, JobState::Succeeded);
+    assert!(dory.library().transcript(&id).unwrap().is_some());
+}
+
+#[test]
+fn a_trash_that_refuses_leaves_the_recording_whole() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "refused");
+    rig.trash.fail_moves(true);
+
+    assert!(matches!(
+        dory.library().trash(&id),
+        Err(DoryError::Trash(_))
+    ));
+    assert!(dory.library().recording(&id).unwrap().is_some());
+    assert!(dory.library().transcript(&id).unwrap().is_some());
+    assert!(rig.takes.frames(&id).is_some());
+}
+
+#[test]
+fn a_failed_delete_commit_puts_the_files_back() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "commit-fails");
+    rig.hooked_store.before(|changes| {
+        match changes
+            .iter()
+            .any(|c| matches!(c, Change::RecordingDeleted(_)))
+        {
+            true => Err(unavailable()),
+            false => Ok(()),
+        }
+    });
+
+    assert!(dory.library().trash(&id).is_err());
+    assert!(dory.library().recording(&id).unwrap().is_some());
+    assert!(rig.takes.frames(&id).is_some(), "the audio is back");
+    assert!(rig.trash.trashed_files().is_empty());
+}
+
+#[test]
+fn restoring_after_the_trash_was_emptied_fails_and_creates_no_row() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "emptied");
+    let trashed = dory.library().trash(&id).unwrap();
+    for file in rig.trash.trashed_files() {
+        std::fs::remove_file(file).unwrap();
+    }
+
+    assert!(matches!(
+        dory.library().restore(trashed),
+        Err(DoryError::Trash(_))
+    ));
+    assert!(library_is_empty(&dory));
+}
+
+#[test]
+fn restoring_over_a_recording_with_the_same_id_is_refused() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "twice");
+    let trashed = dory.library().trash(&id).unwrap();
+    rig.store
+        .apply(vec![Change::RecordingCreated(recording(&id, None))])
+        .unwrap();
+
+    assert!(matches!(
+        dory.library().restore(trashed),
+        Err(DoryError::Exists(same)) if same == id
+    ));
+    assert_eq!(rig.trash.trashed_files().len(), 1, "the files stay trashed");
+}
+
+#[test]
+fn a_restore_whose_commit_fails_puts_the_files_back_in_the_trash() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "restore-fails");
+    let trashed = dory.library().trash(&id).unwrap();
+    rig.hooked_store.before(|changes| {
+        match changes
+            .iter()
+            .any(|c| matches!(c, Change::RecordingCreated(_)))
+        {
+            true => Err(unavailable()),
+            false => Ok(()),
+        }
+    });
+
+    assert!(dory.library().restore(trashed).is_err());
+    assert!(library_is_empty(&dory));
+    assert!(rig.takes.stored().unwrap().is_empty());
+    assert_eq!(rig.trash.trashed_files().len(), 1);
+}
+
+#[test]
+fn a_crash_between_putting_the_files_back_and_the_commit_loses_the_recording_at_next_start() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = processed(&dory, &rig, "crash-window");
+    let trashed = dory.library().trash(&id).unwrap();
+    rig.hooked_store.before(|changes| {
+        if changes
+            .iter()
+            .any(|c| matches!(c, Change::RecordingCreated(_)))
+        {
+            panic!("the process dies before the restore commits");
+        }
+        Ok(())
+    });
+
+    let died = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dory.library().restore(trashed)
+    }));
+    assert!(died.is_err());
+    drop(dory);
+    rig.hooked_store.before(|_| Ok(()));
+    assert_eq!(
+        rig.takes.stored().unwrap(),
+        vec![id.clone()],
+        "the audio is back in place"
+    );
+    assert!(rig.trash.trashed_files().is_empty());
+    assert_eq!(rig.store.recording(&id).unwrap(), None, "with no row");
+
+    let dory = rig.open();
+    assert_eq!(dory.recovery().deleted_orphans, vec![id.clone()]);
+    assert!(rig.takes.stored().unwrap().is_empty());
+    assert!(library_is_empty(&dory));
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use dory_core::ports::Playback;
 use dory_core::ports::capture::CaptureBackend;
+use dory_core::ports::{Playback, Trash};
 
 #[cfg(target_os = "macos")]
 pub fn capture() -> Arc<dyn CaptureBackend> {
@@ -11,6 +11,33 @@ pub fn capture() -> Arc<dyn CaptureBackend> {
 #[cfg(target_os = "macos")]
 pub fn playback() -> Arc<dyn Playback> {
     Arc::new(dory_macos::AvPlayback::new())
+}
+
+#[cfg(target_os = "macos")]
+pub fn trash() -> Arc<dyn Trash> {
+    Arc::new(dory_macos::MacTrash::new())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn trash() -> Arc<dyn Trash> {
+    Arc::new(Unsupported)
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Trash for Unsupported {
+    fn move_to_trash(
+        &self,
+        _: &[std::path::PathBuf],
+    ) -> Result<dory_core::ports::TrashReceipt, dory_core::ports::TrashError> {
+        Err(dory_core::ports::TrashError::Unsupported)
+    }
+
+    fn put_back(
+        &self,
+        _: &dory_core::ports::TrashReceipt,
+    ) -> Result<(), dory_core::ports::TrashError> {
+        Err(dory_core::ports::TrashError::Unsupported)
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

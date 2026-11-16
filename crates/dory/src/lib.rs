@@ -122,6 +122,7 @@ fn open_with(
     let ports = Ports {
         store,
         takes,
+        trash: platform::trash(),
         capture,
         playback: platform::playback(),
         clock: Arc::new(SystemClock::new()),

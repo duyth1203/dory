@@ -17,7 +17,7 @@ objc2-avf-audio = { version = "0.3.2", default-features = false, features = ["st
 objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "block2", "dispatch2", "objc2", "objc2-core-audio-types", "objc2-foundation", "HostTime"] }
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary", "CFString", "CFNumber", "CFArray"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSValue", "NSUUID", "NSString", "NSProcessInfo", "NSURL", "NSError"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSValue", "NSUUID", "NSString", "NSProcessInfo", "NSURL", "NSError", "NSFileManager"] }
 
 # The capture harness (`examples/dory-capture`) writes WAV files and stops on Ctrl-C.
 [target.'cfg(target_os = "macos")'.dev-dependencies]

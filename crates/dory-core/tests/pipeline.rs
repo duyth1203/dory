@@ -90,6 +90,7 @@ impl Rig {
         let ports = Ports {
             store: self.store.clone(),
             takes: Arc::new(self.takes.clone()),
+            trash: Arc::new(dory_core::testing::FakeTrash::new(std::env::temp_dir())),
             capture: Arc::new(FakeCapture::new()),
             clock: self.clock.clone(),
             stt: vec![self.stt.clone()],

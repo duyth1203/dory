@@ -11,6 +11,7 @@ mod provider;
 mod speech;
 mod store;
 mod takes;
+mod trash;
 
 pub use cancel::CancelToken;
 pub use clock::Clock;
@@ -25,3 +26,4 @@ pub use provider::{ModelProvider, ProvisionSink};
 pub use speech::{RawSegment, SegmentSink, TranscribeOutcome, TranscribeRequest, Transcriber};
 pub use store::{Change, Checkpoint, CheckpointKey, Store, StoreRead};
 pub use takes::{Activity, Clip, TakeWriter, Takes};
+pub use trash::{Moved, Trash, TrashError, TrashReceipt};

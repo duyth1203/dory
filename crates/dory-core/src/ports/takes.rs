@@ -52,6 +52,11 @@ pub trait Takes: Send + Sync {
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError>;
 
     fn delete(&self, id: &RecordingId) -> Result<(), TakeError>;
+
+    /// Every file this adapter keeps for `id`, in whatever state: the files [`Takes::delete`]
+    /// would remove, and no others. A legacy take lists only Dory's own pointer, never the old
+    /// app's audio it points at. Empty when `id` has no files.
+    fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError>;
 }
 
 /// Appends to an open take. The same writer survives pause and the undo grace, because a resume

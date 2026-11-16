@@ -603,4 +603,12 @@ impl Takes for FsTakes {
         }
         Ok(())
     }
+
+    fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError> {
+        Ok(FILES
+            .iter()
+            .map(|suffix| self.file(id, suffix))
+            .filter(|path| path.exists())
+            .collect())
+    }
 }

@@ -48,7 +48,7 @@ use crate::ports::capture::{
 };
 use crate::ports::{
     Change, Clock, ModelProvider, Playback, PlaybackError, PlaybackSource, Player, ProvisionError,
-    Store, StoreError, StoreRead, TakeError, Takes,
+    Store, StoreError, StoreRead, TakeError, Takes, Trash, TrashError, TrashReceipt,
 };
 use crate::recorder::{Input, Limits};
 
@@ -56,6 +56,7 @@ use crate::recorder::{Input, Limits};
 pub struct Ports {
     pub store: Arc<dyn Store>,
     pub takes: Arc<dyn Takes>,
+    pub trash: Arc<dyn Trash>,
     pub capture: Arc<dyn CaptureBackend>,
     pub playback: Arc<dyn Playback>,
     pub clock: Arc<dyn Clock>,
@@ -141,12 +142,37 @@ pub enum DoryError {
     Take(#[from] TakeError),
     #[error(transparent)]
     Invalid(#[from] InvalidInput),
+    #[error(transparent)]
+    Trash(#[from] TrashError),
+    #[error("{0} is already in the library")]
+    Exists(RecordingId),
     #[error("{0} is being recorded")]
     Recording(RecordingId),
     #[error("{0} is still being saved, try again in a moment")]
     Saving(RecordingId),
     #[error(transparent)]
     RecorderGone(#[from] RecorderGone),
+}
+
+/// A recording in the system trash, with everything [`Library::restore`] needs to bring it back.
+/// It lives in memory only, so undo works until the process ends. Apps see its id and title.
+#[derive(Debug)]
+pub struct Trashed {
+    recording: Recording,
+    transcript: Option<Transcript>,
+    summary: Option<Summary>,
+    names: SpeakerNames,
+    receipt: TrashReceipt,
+}
+
+impl Trashed {
+    pub fn id(&self) -> &RecordingId {
+        &self.recording.id
+    }
+
+    pub fn title(&self) -> Option<&str> {
+        self.recording.title.as_deref()
+    }
 }
 
 /// What startup found and repaired after the last run.
@@ -167,6 +193,7 @@ pub struct Dory {
     db: Db,
     reader: LibraryReader,
     takes: Arc<dyn Takes>,
+    trash: Arc<dyn Trash>,
     playback: Arc<dyn Playback>,
     capture: Arc<dyn CaptureBackend>,
     clock: Arc<dyn Clock>,
@@ -240,6 +267,7 @@ impl Dory {
             },
             db,
             takes: ports.takes,
+            trash: ports.trash,
             playback: ports.playback,
             capture: ports.capture,
             clock: ports.clock,
@@ -491,6 +519,99 @@ impl Library<'_> {
             Ok(()) | Err(TakeError::Missing(_)) => Ok(()),
             Err(error) => Err(error.into()),
         }
+    }
+
+    /// Moves the recording to the system trash and returns what [`Library::restore`] needs to
+    /// bring it back. Refused while it is being recorded or sealed, like [`Library::delete`].
+    ///
+    /// Queued, running, and blocked jobs are cancelled first, so no stage output lands after the
+    /// transcript and summary are read. A restored recording has no job: enqueue one to process
+    /// it again. Checkpoints of an unfinished transcription are dropped, not restored.
+    ///
+    /// The files move before the row goes. A crash in between leaves a row whose audio is in the
+    /// trash, which the user can put back by hand, never audio that startup sweeps away.
+    pub fn trash(&self, id: &RecordingId) -> Result<Trashed, DoryError> {
+        let dory = self.dory;
+        dory.recorder.check_not_busy(id)?;
+        let store = &dory.db.store;
+        let recording = store
+            .recording(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+        for job in store.jobs_for(id)?.into_iter().filter(|j| !j.is_terminal()) {
+            match dory.pipeline().cancel(job.id) {
+                // The job finished between the read and the cancel, which is as good.
+                Ok(()) | Err(DoryError::Store(StoreError::IllegalTransition(_))) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let transcript = store.transcript(id)?;
+        let summary = store.summary(id)?;
+        let names = store.speaker_names(id)?;
+        let receipt = dory.trash.move_to_trash(&dory.takes.files(id)?)?;
+        if let Err(error) = dory.db.apply(vec![Change::RecordingDeleted(id.clone())]) {
+            let _ = dory.trash.put_back(&receipt);
+            return Err(error.into());
+        }
+        Ok(Trashed {
+            recording,
+            transcript,
+            summary,
+            names,
+            receipt,
+        })
+    }
+
+    /// Undoes [`Library::trash`]. The files go back first, then the row, the transcript, the
+    /// summary, and the speaker names return in one commit.
+    ///
+    /// A crash between the two steps leaves the audio in place with no row, and the next start
+    /// deletes it: startup removes every file whose recording is gone. The recording is then
+    /// lost for good. The window is the time of one store commit. If the commit fails without a
+    /// crash, the files go back to the trash, and the error says the restore failed.
+    ///
+    /// The trashed copy is spent whatever happens. Fails with [`DoryError::Exists`] if the id is
+    /// in the library again, and with a [`TrashError`] if the files left the trash or their old
+    /// place is taken. Nothing has moved in either case.
+    pub fn restore(&self, trashed: Trashed) -> Result<RecordingId, DoryError> {
+        let dory = self.dory;
+        let Trashed {
+            recording,
+            transcript,
+            summary,
+            names,
+            receipt,
+        } = trashed;
+        let id = recording.id.clone();
+        if dory.db.store.recording(&id)?.is_some() {
+            return Err(DoryError::Exists(id));
+        }
+        dory.trash.put_back(&receipt)?;
+        let mut changes = vec![Change::RecordingCreated(recording)];
+        if let Some(transcript) = transcript {
+            changes.push(Change::TranscriptReplaced {
+                id: id.clone(),
+                transcript,
+            });
+        }
+        if let Some(summary) = summary {
+            changes.push(Change::SummaryReplaced {
+                id: id.clone(),
+                summary,
+            });
+        }
+        if names != SpeakerNames::default() {
+            changes.push(Change::SpeakerNamesReplaced {
+                id: id.clone(),
+                names,
+            });
+        }
+        if let Err(error) = dory.db.apply(changes) {
+            if let Ok(files) = dory.takes.files(&id) {
+                let _ = dory.trash.move_to_trash(&files);
+            }
+            return Err(error.into());
+        }
+        Ok(id)
     }
 
     /// Adds an audio file as a new recording with one mixed channel. The file is copied in, so

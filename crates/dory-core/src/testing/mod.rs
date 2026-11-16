@@ -27,8 +27,9 @@ use crate::ports::capture::{
 };
 use crate::ports::{
     Activity, CancelToken, Clip, Clock, CompletionRequest, Diarizer, EngineError, LanguageModel,
-    ModelProvider, ProvisionError, ProvisionSink, RawSegment, SegmentSink, TakeError, TakeWriter,
-    Takes, TextSink, TranscribeOutcome, TranscribeRequest, Transcriber, Turn,
+    ModelProvider, Moved, ProvisionError, ProvisionSink, RawSegment, SegmentSink, TakeError,
+    TakeWriter, Takes, TextSink, TranscribeOutcome, TranscribeRequest, Transcriber, Trash,
+    TrashError, TrashReceipt, Turn,
 };
 
 /// A clock that moves only when a test says so.
@@ -244,10 +245,15 @@ type SpeechByChannel = HashMap<(RecordingId, Channel), Vec<TimeRange>>;
 
 /// A [`Takes`] that keeps samples in memory. A writer dropped without `finish` leaves its take
 /// open, the way a crash leaves a WAV behind, so `orphans` lists it.
+///
+/// With [`MemTakes::in_dir`], each take also owns one real marker file, and the take exists only
+/// while that file does. Moving the marker away, as a [`FakeTrash`] does, makes the take vanish,
+/// and moving it back brings the samples back.
 #[derive(Clone, Default)]
 pub struct MemTakes {
     takes: Arc<Mutex<BTreeMap<RecordingId, MemTake>>>,
     activity: Arc<Mutex<SpeechByChannel>>,
+    marker_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -282,13 +288,53 @@ impl MemTakes {
         Self::default()
     }
 
+    /// Like [`MemTakes::new`], with a marker file per take under `dir`, which must exist.
+    pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            marker_dir: Some(dir.into()),
+            ..Self::default()
+        }
+    }
+
     /// Whole frames written to the take, or `None` if there is none.
     pub fn frames(&self, id: &RecordingId) -> Option<u64> {
-        lock(&self.takes).get(id).map(MemTake::frames)
+        let takes = lock(&self.takes);
+        self.live(&takes, id).map(MemTake::frames)
     }
 
     pub fn is_sealed(&self, id: &RecordingId) -> bool {
-        lock(&self.takes).get(id).is_some_and(|t| t.sealed)
+        let takes = lock(&self.takes);
+        self.live(&takes, id).is_some_and(|t| t.sealed)
+    }
+
+    fn marker(&self, id: &RecordingId) -> Option<PathBuf> {
+        self.marker_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{id}.take")))
+    }
+
+    fn live<'a>(
+        &self,
+        takes: &'a BTreeMap<RecordingId, MemTake>,
+        id: &RecordingId,
+    ) -> Option<&'a MemTake> {
+        takes
+            .get(id)
+            .filter(|_| self.marker(id).is_none_or(|marker| marker.exists()))
+    }
+
+    fn claim(
+        &self,
+        takes: &BTreeMap<RecordingId, MemTake>,
+        id: &RecordingId,
+    ) -> Result<(), TakeError> {
+        if self.live(takes, id).is_some() {
+            return Err(TakeError::Exists(id.clone()));
+        }
+        if let Some(marker) = self.marker(id) {
+            std::fs::write(&marker, id.as_str()).map_err(TakeError::Io)?;
+        }
+        Ok(())
     }
 
     /// Where someone talks on one channel, in take time, as a VAD would report it. Clips of a
@@ -302,8 +348,11 @@ impl MemTakes {
     }
 
     fn with<T>(&self, id: &RecordingId, f: impl FnOnce(&mut MemTake) -> T) -> Result<T, TakeError> {
-        lock(&self.takes)
+        let mut takes = lock(&self.takes);
+        let live = self.live(&takes, id).is_some();
+        takes
             .get_mut(id)
+            .filter(|_| live)
             .map(f)
             .ok_or_else(|| TakeError::Missing(id.clone()))
     }
@@ -317,9 +366,7 @@ impl Takes for MemTakes {
         rate_hz: u32,
     ) -> Result<Box<dyn TakeWriter>, TakeError> {
         let mut takes = lock(&self.takes);
-        if takes.contains_key(id) {
-            return Err(TakeError::Exists(id.clone()));
-        }
+        self.claim(&takes, id)?;
         takes.insert(
             id.clone(),
             MemTake {
@@ -400,26 +447,31 @@ impl Takes for MemTakes {
     }
 
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError> {
-        Ok(lock(&self.takes)
+        let takes = lock(&self.takes);
+        Ok(takes
             .iter()
-            .filter(|(_, take)| !take.sealed)
+            .filter(|(id, take)| !take.sealed && self.live(&takes, id).is_some())
             .map(|(id, _)| id.clone())
             .collect())
     }
 
     fn stored(&self) -> Result<Vec<RecordingId>, TakeError> {
-        Ok(lock(&self.takes).keys().cloned().collect())
+        let takes = lock(&self.takes);
+        Ok(takes
+            .keys()
+            .filter(|id| self.live(&takes, id).is_some())
+            .cloned()
+            .collect())
     }
 
     fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError> {
-        Ok(lock(&self.takes).get(id).map(MemTake::info))
+        let takes = lock(&self.takes);
+        Ok(self.live(&takes, id).map(MemTake::info))
     }
 
     fn import(&self, id: &RecordingId, _source: &Path) -> Result<TakeInfo, TakeError> {
         let mut takes = lock(&self.takes);
-        if takes.contains_key(id) {
-            return Err(TakeError::Exists(id.clone()));
-        }
+        self.claim(&takes, id)?;
         let take = MemTake {
             layout: ChannelLayout::Mixed,
             rate_hz: 16_000,
@@ -437,7 +489,21 @@ impl Takes for MemTakes {
 
     fn delete(&self, id: &RecordingId) -> Result<(), TakeError> {
         lock(&self.takes).remove(id);
+        if let Some(marker) = self.marker(id) {
+            match std::fs::remove_file(marker) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(TakeError::Io(e)),
+                _ => {}
+            }
+        }
         Ok(())
+    }
+
+    fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError> {
+        Ok(self
+            .marker(id)
+            .filter(|marker| marker.exists())
+            .into_iter()
+            .collect())
     }
 }
 
@@ -468,6 +534,102 @@ impl TakeWriter for MemTakeWriter {
 
     fn finish(self: Box<Self>) -> Result<TakeInfo, TakeError> {
         self.takes.with(&self.id, |take| take.info())
+    }
+}
+
+/// A [`Trash`] that moves files into a folder the test owns, and back. Each trashing gets its own
+/// numbered subfolder, so two files with one name never collide.
+pub struct FakeTrash {
+    dir: PathBuf,
+    next: AtomicU64,
+    fail_move: AtomicBool,
+}
+
+impl FakeTrash {
+    /// `dir` must exist.
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            next: AtomicU64::new(0),
+            fail_move: AtomicBool::new(false),
+        }
+    }
+
+    /// Makes every later `move_to_trash` fail, as a trash that refuses the files would.
+    pub fn fail_moves(&self, fail: bool) {
+        self.fail_move.store(fail, Ordering::SeqCst);
+    }
+
+    /// Everything in the trash folder, however deep.
+    pub fn trashed_files(&self) -> Vec<PathBuf> {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else {
+                    out.push(path);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.dir, &mut out);
+        out.sort();
+        out
+    }
+}
+
+fn move_err(path: &Path, source: std::io::Error) -> TrashError {
+    TrashError::Io {
+        path: path.to_owned(),
+        source,
+    }
+}
+
+impl Trash for FakeTrash {
+    fn move_to_trash(&self, paths: &[PathBuf]) -> Result<TrashReceipt, TrashError> {
+        if self.fail_move.load(Ordering::SeqCst) {
+            return Err(TrashError::Platform("the fake trash refuses".into()));
+        }
+        if paths.is_empty() {
+            return Ok(TrashReceipt::default());
+        }
+        let slot = self
+            .dir
+            .join(self.next.fetch_add(1, Ordering::SeqCst).to_string());
+        std::fs::create_dir_all(&slot).map_err(|e| move_err(&slot, e))?;
+        let mut moved = Vec::new();
+        for original in paths {
+            let trashed = slot.join(original.file_name().unwrap_or_default());
+            if let Err(e) = std::fs::rename(original, &trashed) {
+                let _ = self.put_back(&TrashReceipt::new(moved));
+                return Err(move_err(original, e));
+            }
+            moved.push(Moved {
+                original: original.clone(),
+                trashed,
+            });
+        }
+        Ok(TrashReceipt::new(moved))
+    }
+
+    fn put_back(&self, receipt: &TrashReceipt) -> Result<(), TrashError> {
+        for item in receipt.moved() {
+            if !item.trashed.exists() {
+                return Err(TrashError::Missing(item.trashed.clone()));
+            }
+            if item.original.exists() {
+                return Err(TrashError::Occupied(item.original.clone()));
+            }
+        }
+        for item in receipt.moved() {
+            std::fs::rename(&item.trashed, &item.original)
+                .map_err(|e| move_err(&item.original, e))?;
+        }
+        Ok(())
     }
 }
 

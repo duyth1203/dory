@@ -821,3 +821,58 @@ fn stored_lists_every_id_with_files_in_any_state_and_delete_clears_each() {
         "deleting a legacy pointer never touches the old app's file"
     );
 }
+
+#[test]
+fn files_lists_what_delete_removes_for_one_id_and_never_a_legacy_audio_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes_dir = dir.path().join("takes");
+    let takes = FsTakes::new(&takes_dir);
+    let old = dir.path().join("old.webm");
+    std::fs::write(&old, b"legacy audio").unwrap();
+
+    let open = rid("open");
+    drop(takes.begin(&open, ChannelLayout::MicOnly, 16_000).unwrap());
+    let sealed = rid("sealed");
+    takes
+        .begin(&sealed, ChannelLayout::MicSystem, 16_000)
+        .unwrap()
+        .finish()
+        .unwrap();
+    takes.seal(&sealed).unwrap();
+    let half = rid("half");
+    std::fs::write(takes_dir.join("half.flac.tmp"), b"half").unwrap();
+    std::fs::write(takes_dir.join("half.meta"), b"layout=mic\n").unwrap();
+    let linked = rid("linked");
+    takes
+        .link_legacy(&linked, &old, TakeContainer::LegacyWebm, 48_000, Ms(5))
+        .unwrap();
+
+    let names = |id: &RecordingId| {
+        let mut names: Vec<String> = takes
+            .files(id)
+            .unwrap()
+            .iter()
+            .map(|path| {
+                assert_eq!(path.parent(), Some(takes_dir.as_path()));
+                path.file_name().unwrap().to_string_lossy().into_owned()
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(names(&open), ["open.meta", "open.wav"]);
+    assert_eq!(names(&sealed), ["sealed.flac", "sealed.meta"]);
+    assert_eq!(names(&half), ["half.flac.tmp", "half.meta"]);
+    assert_eq!(names(&linked), ["linked.legacy"]);
+    assert_eq!(names(&rid("none")), Vec::<String>::new());
+
+    for id in [&open, &sealed, &half, &linked] {
+        let listed = takes.files(id).unwrap();
+        assert!(listed.iter().all(|path| path.is_file()));
+        takes.delete(id).unwrap();
+        assert!(listed.iter().all(|path| !path.exists()), "{id}");
+        assert!(takes.files(id).unwrap().is_empty());
+    }
+    assert_eq!(std::fs::read_dir(&takes_dir).unwrap().count(), 0);
+    assert_eq!(std::fs::read(&old).unwrap(), b"legacy audio");
+}

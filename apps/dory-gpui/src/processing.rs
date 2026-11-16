@@ -227,6 +227,7 @@ mod tests {
             error: JobError {
                 class: FailureClass::Permanent,
                 message: "The summary model isn't installed.".into(),
+                cause: dory_core::domain::FailureCause::Other,
             },
         };
         assert_eq!(
@@ -336,6 +337,7 @@ mod tests {
             error: JobError {
                 class: FailureClass::Permanent,
                 message: "broke".into(),
+                cause: dory_core::domain::FailureCause::Other,
             },
         });
         before[2].job = Some(JobState::Succeeded);

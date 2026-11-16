@@ -116,6 +116,7 @@ fn states_store() -> Arc<MemStore> {
                     error: JobError {
                         class: FailureClass::Permanent,
                         message: "The upload broke.".into(),
+                        cause: dory_core::domain::FailureCause::Other,
                     },
                 },
             },

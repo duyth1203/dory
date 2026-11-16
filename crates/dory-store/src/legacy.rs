@@ -18,9 +18,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use dory_core::domain::{
-    Channel, ChannelLayout, FailureClass, Goal, JobError, JobEvent, JobId, JobState, LanguagePref,
-    Ms, Priority, Recording, RecordingEdit, RecordingId, Revision, Segment, SpeakerId, Stage,
-    Summary, TakeContainer, TakeInfo, Timestamp, Transcript,
+    Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobError, JobEvent, JobId, JobState,
+    LanguagePref, Ms, Priority, Recording, RecordingEdit, RecordingId, Revision, Segment,
+    SpeakerId, Stage, Summary, TakeContainer, TakeInfo, Timestamp, Transcript,
 };
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, StoreError};
@@ -400,6 +400,7 @@ pub(crate) fn plan_job(
                     message: error
                         .unwrap_or("failed in the previous version of Dory")
                         .to_owned(),
+                    cause: FailureCause::Other,
                 },
             });
             Some(normal(Goal::ALL, events))

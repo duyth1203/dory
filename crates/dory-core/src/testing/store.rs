@@ -322,8 +322,9 @@ mod contract {
 
     use super::*;
     use crate::domain::{
-        Blocker, Channel, ChannelLayout, FailureClass, Goal, JobError, LangTag, LanguagePref, Ms,
-        Processing, Revision, Segment, SpeakerId, Stage, TakeContainer, TakeInfo, TimeRange,
+        Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobError, LangTag,
+        LanguagePref, Ms, Processing, Revision, Segment, SpeakerId, Stage, TakeContainer, TakeInfo,
+        TimeRange,
     };
     use crate::models::{Choice, KindTag, ModelRef};
     use crate::ports::{Checkpoint, CheckpointKey, RawSegment};
@@ -502,6 +503,7 @@ mod contract {
         JobError {
             class: FailureClass::Permanent,
             message: "boom".into(),
+            cause: FailureCause::Other,
         }
     }
 
@@ -1272,17 +1274,18 @@ mod contract {
             .into_iter()
             .map(|blocker| vec![JobEvent::Blocked { stage: t, blocker }])
             .collect();
-        for class in [
-            FailureClass::Cancelled,
-            FailureClass::Transient,
-            FailureClass::NeedsUser,
-            FailureClass::Permanent,
+        for (class, cause) in [
+            (FailureClass::Cancelled, FailureCause::Other),
+            (FailureClass::Transient, FailureCause::Crashed),
+            (FailureClass::NeedsUser, FailureCause::DiskFull),
+            (FailureClass::Permanent, FailureCause::AudioUnreadable),
         ] {
             cases.push(vec![JobEvent::Failed {
                 stage: t,
                 error: JobError {
                     class,
                     message: "multi\nline \u{2018}message\u{2019}".into(),
+                    cause,
                 },
             }]);
         }

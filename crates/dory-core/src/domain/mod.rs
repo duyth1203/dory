@@ -9,7 +9,7 @@ mod time;
 mod transcript;
 mod waveform;
 
-pub use error::{FailureClass, InvalidInput};
+pub use error::{FailureCause, FailureClass, InvalidInput};
 pub use ids::{JobId, RecordingId, Revision};
 pub use job::{
     Blocker, Goal, IllegalTransition, Job, JobError, JobEvent, JobState, MAX_ATTEMPTS, Priority,

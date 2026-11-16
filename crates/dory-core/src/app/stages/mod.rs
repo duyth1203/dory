@@ -12,8 +12,9 @@ use super::events::{Db, Event};
 use super::models::{Engines, Registries};
 use super::pace::Budget;
 use crate::domain::{
-    Blocker, Channel, ChannelLayout, FailureClass, Fraction, Job, JobError, LangTag, LanguagePref,
-    Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, TimeRange, Transcript,
+    Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Fraction, Job, JobError, LangTag,
+    LanguagePref, Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, TimeRange,
+    Transcript,
 };
 use crate::models::{
     Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
@@ -36,6 +37,7 @@ pub(crate) fn failed(error: impl Classify + std::fmt::Display) -> StageError {
     StageError::Failed(JobError {
         class: error.class(),
         message: error.to_string(),
+        cause: error.cause(),
     })
 }
 
@@ -43,6 +45,7 @@ fn permanent(message: &str) -> StageError {
     StageError::Failed(JobError {
         class: FailureClass::Permanent,
         message: message.to_owned(),
+        cause: FailureCause::Other,
     })
 }
 
@@ -153,9 +156,13 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .recording(id)
         .map_err(failed)?
         .ok_or_else(|| permanent("the recording was deleted"))?;
-    let take = recording
-        .take
-        .ok_or_else(|| permanent("the recording has no audio"))?;
+    let take = recording.take.ok_or_else(|| {
+        StageError::Failed(JobError {
+            class: FailureClass::Permanent,
+            message: "the recording has no audio".into(),
+            cause: FailureCause::AudioUnreadable,
+        })
+    })?;
     let plan = plan_clips(recording.layout);
     let any_diarized = plan
         .iter()

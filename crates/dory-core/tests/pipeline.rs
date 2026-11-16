@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use dory_core::app::{Dory, Event, Options, Ports};
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, Goal, JobEvent, JobState, LanguagePref, Ms, Recording,
-    RecordingId, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
+    Blocker, Channel, ChannelLayout, FailureCause, Goal, JobEvent, JobState, LanguagePref, Ms,
+    Recording, RecordingId, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
 };
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId, Stt,
@@ -753,6 +753,39 @@ fn a_missing_summary_model_blocks_the_summary_after_the_transcript_commits() {
     );
     assert!(dory.library().transcript(&id).unwrap().is_some());
     assert_eq!(rig.llm.prompts(), vec![]);
+}
+
+#[test]
+fn audio_the_take_cannot_give_fails_the_job_as_unreadable() {
+    let rig = Rig::new(
+        FakeTranscriber::new(),
+        vec![stt(STT, DiarizationSupport::Native, WINDOW)],
+        llm(8_192),
+    );
+    let id = RecordingId::parse("no-system-channel").unwrap();
+    let mut writer = rig.takes.begin(&id, ChannelLayout::MicOnly, RATE).unwrap();
+    writer.write(&vec![0.0; 10 * RATE as usize]).unwrap();
+    writer.finish().unwrap();
+    let take = rig.takes.seal(&id).unwrap();
+    rig.store
+        .apply(vec![Change::RecordingCreated(Recording {
+            id: id.clone(),
+            title: None,
+            created_at: Timestamp(1_000),
+            language: LanguagePref::Auto,
+            layout: ChannelLayout::SystemOnly,
+            take: Some(take),
+        })])
+        .unwrap();
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    eventually("the job to fail", || {
+        matches!(job_state(&dory, &id), Some(JobState::Failed { .. }))
+    });
+    let Some(JobState::Failed { error, .. }) = job_state(&dory, &id) else {
+        unreachable!()
+    };
+    assert_eq!(error.cause, FailureCause::AudioUnreadable, "{error:?}");
 }
 
 #[test]

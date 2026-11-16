@@ -29,3 +29,16 @@ pub enum FailureClass {
     NeedsUser,
     Permanent,
 }
+
+/// What a failure means to the user, so the app can say what to do about it (UX-13). The class
+/// decides whether the core retries; the cause decides the sentence and the button.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailureCause {
+    /// The disk has no room for the work.
+    DiskFull,
+    /// The take is missing or cannot be decoded.
+    AudioUnreadable,
+    /// The engine or the whole process died partway.
+    Crashed,
+    Other,
+}

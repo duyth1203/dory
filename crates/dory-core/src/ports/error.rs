@@ -3,13 +3,17 @@ use std::error::Error as StdError;
 use thiserror::Error;
 
 use super::capture::CaptureError;
-use crate::domain::{FailureClass, IllegalTransition, LangTag, RecordingId};
+use crate::domain::{FailureCause, FailureClass, IllegalTransition, LangTag, RecordingId};
 
 type Source = Box<dyn StdError + Send + Sync>;
 
 /// Maps an adapter error to what the core should do about it.
 pub trait Classify {
     fn class(&self) -> FailureClass;
+
+    fn cause(&self) -> FailureCause {
+        FailureCause::Other
+    }
 }
 
 #[derive(Debug, Error)]
@@ -67,6 +71,16 @@ impl Classify for TakeError {
             }
         }
     }
+
+    fn cause(&self) -> FailureCause {
+        match self {
+            TakeError::DiskFull => FailureCause::DiskFull,
+            TakeError::Missing(_) | TakeError::Decode(_) | TakeError::ConverterMissing(_) => {
+                FailureCause::AudioUnreadable
+            }
+            TakeError::Io(_) | TakeError::Exists(_) => FailureCause::Other,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -97,6 +111,13 @@ impl Classify for ProvisionError {
                 FailureClass::NeedsUser
             }
             ProvisionError::Other(_) => FailureClass::Permanent,
+        }
+    }
+
+    fn cause(&self) -> FailureCause {
+        match self {
+            ProvisionError::DiskFull { .. } => FailureCause::DiskFull,
+            _ => FailureCause::Other,
         }
     }
 }
@@ -135,6 +156,13 @@ impl Classify for EngineError {
                 FailureClass::NeedsUser
             }
             EngineError::InputRejected(_) | EngineError::Other { .. } => FailureClass::Permanent,
+        }
+    }
+
+    fn cause(&self) -> FailureCause {
+        match self {
+            EngineError::Crashed(_) => FailureCause::Crashed,
+            _ => FailureCause::Other,
         }
     }
 }
@@ -203,6 +231,30 @@ mod tests {
         ];
         for (err, want) in cases {
             assert_eq!(err.class(), want, "{err}");
+        }
+    }
+
+    #[test]
+    fn causes_name_what_the_user_can_act_on() {
+        use FailureCause::*;
+        let id = RecordingId::parse("r").unwrap();
+        let cases: Vec<(Box<dyn Classify>, FailureCause)> = vec![
+            (Box::new(TakeError::DiskFull), DiskFull),
+            (Box::new(ProvisionError::DiskFull { needed: 1 }), DiskFull),
+            (Box::new(TakeError::Decode("x".into())), AudioUnreadable),
+            (Box::new(TakeError::Missing(id.clone())), AudioUnreadable),
+            (
+                Box::new(TakeError::ConverterMissing("ffmpeg".into())),
+                AudioUnreadable,
+            ),
+            (Box::new(EngineError::Crashed("x".into())), Crashed),
+            (Box::new(TakeError::Io(io())), Other),
+            (Box::new(TakeError::Exists(id)), Other),
+            (Box::new(EngineError::InputRejected("x".into())), Other),
+            (Box::new(StoreError::Corrupt("x".into())), Other),
+        ];
+        for (ix, (err, want)) in cases.into_iter().enumerate() {
+            assert_eq!(err.cause(), want, "case {ix}");
         }
     }
 

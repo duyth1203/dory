@@ -187,6 +187,7 @@ impl Sample {
         JobError {
             class: FailureClass::Permanent,
             message: "The summary model isn't installed.".into(),
+            cause: dory_core::domain::FailureCause::Other,
         }
     }
 

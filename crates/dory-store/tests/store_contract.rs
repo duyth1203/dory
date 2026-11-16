@@ -53,7 +53,7 @@ fn every_contract_case_runs_on_sqlite_by_name() {
 }
 
 /// The schema version this build migrates to.
-const LATEST: u32 = 3;
+const LATEST: u32 = 4;
 
 #[test]
 fn state_survives_closing_and_reopening_the_database() {

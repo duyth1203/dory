@@ -3,8 +3,8 @@
 //! has no wildcard arm, so adding a variant stops compiling here until the format says what to do.
 
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, FailureClass, Goal, JobError, LangTag, LanguagePref, Ms,
-    Stage, TakeContainer, TimeRange,
+    Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobError, LangTag,
+    LanguagePref, Ms, Stage, TakeContainer, TimeRange,
 };
 use dory_core::models::{
     Choice, KindTag, Mismatch, ModelId, ModelKind, ModelRef, Unavailable, UnavailableReason,
@@ -125,14 +125,36 @@ pub(crate) fn class_from_db(s: &str) -> Result<FailureClass, StoreError> {
     })
 }
 
+pub(crate) fn cause_to_db(cause: FailureCause) -> &'static str {
+    match cause {
+        FailureCause::DiskFull => "disk_full",
+        FailureCause::AudioUnreadable => "audio_unreadable",
+        FailureCause::Crashed => "crashed",
+        FailureCause::Other => "other",
+    }
+}
+
+/// Rows that failed before schema v4 have no cause, which reads as `Other`.
+fn cause_from_db(s: Option<&str>) -> Result<FailureCause, StoreError> {
+    Ok(match s {
+        None | Some("other") => FailureCause::Other,
+        Some("disk_full") => FailureCause::DiskFull,
+        Some("audio_unreadable") => FailureCause::AudioUnreadable,
+        Some("crashed") => FailureCause::Crashed,
+        Some(other) => return Err(corrupt(format!("unknown failure cause {other:?}"))),
+    })
+}
+
 pub(crate) fn error_from_db(
     class: Option<String>,
     message: Option<String>,
+    cause: Option<&str>,
 ) -> Result<JobError, StoreError> {
     let class = class.ok_or_else(|| corrupt("failed job without an error class"))?;
     Ok(JobError {
         class: class_from_db(&class)?,
         message: message.unwrap_or_default(),
+        cause: cause_from_db(cause)?,
     })
 }
 

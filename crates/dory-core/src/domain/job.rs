@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use super::{FailureClass, JobId, RecordingId, Timestamp};
+use super::{FailureCause, FailureClass, JobId, RecordingId, Timestamp};
 use crate::models::{KindTag, Mismatch, ModelRef, Unavailable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -107,6 +107,7 @@ pub enum JobState {
 pub struct JobError {
     pub class: FailureClass,
     pub message: String,
+    pub cause: FailureCause,
 }
 
 /// Why a stage cannot proceed without the user. Persisted, so the UI can offer the fix after a
@@ -282,6 +283,7 @@ impl Job {
                                     "interrupted {} times while running, the process stopped before the stage finished",
                                     self.attempts
                                 ),
+                                cause: FailureCause::Crashed,
                             },
                         }
                     } else {
@@ -384,6 +386,7 @@ mod tests {
         JobError {
             class: FailureClass::Permanent,
             message: "boom".into(),
+            cause: FailureCause::Other,
         }
     }
 
@@ -764,6 +767,7 @@ mod tests {
         };
         assert_eq!(*stage, T);
         assert_eq!(error.class, FailureClass::Permanent);
+        assert_eq!(error.cause, FailureCause::Crashed);
         assert!(error.message.contains("interrupted"), "{}", error.message);
         assert!(j.is_terminal());
 

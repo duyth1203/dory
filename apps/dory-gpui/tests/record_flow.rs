@@ -496,6 +496,7 @@ fn try_again_retries_a_failed_job(cx: &mut TestAppContext) {
                 error: JobError {
                     class: FailureClass::Permanent,
                     message: "The upload broke.".into(),
+                    cause: dory_core::domain::FailureCause::Other,
                 },
             },
         ],

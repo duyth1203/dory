@@ -26,11 +26,11 @@ use rusqlite::{
 };
 
 use codec::{
-    blocker_from_db, blocker_to_db, channel_from_db, channel_to_db, choice_from_db, choice_to_db,
-    class_to_db, container_from_db, container_to_db, corrupt, done_from_db, done_to_db,
-    error_from_db, goal_from_db, goal_to_db, language_from_db, language_to_db, layout_from_db,
-    layout_to_db, ms_from_db, parse_model_ref, pref_from_setting, pref_to_setting, range_from_db,
-    stage_from_db, stage_to_db, tags_from_db, tags_to_db, to_i64,
+    blocker_from_db, blocker_to_db, cause_to_db, channel_from_db, channel_to_db, choice_from_db,
+    choice_to_db, class_to_db, container_from_db, container_to_db, corrupt, done_from_db,
+    done_to_db, error_from_db, goal_from_db, goal_to_db, language_from_db, language_to_db,
+    layout_from_db, layout_to_db, ms_from_db, parse_model_ref, pref_from_setting, pref_to_setting,
+    range_from_db, stage_from_db, stage_to_db, tags_from_db, tags_to_db, to_i64,
 };
 
 /// Version `n` of the schema is `MIGRATIONS[n - 1]`. Never edit an entry that has shipped.
@@ -38,6 +38,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_v1.sql"),
     include_str!("schema_v2.sql"),
     include_str!("schema_v3.sql"),
+    include_str!("schema_v4.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -176,7 +177,8 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 // ---- rows ---------------------------------------------------------------------------------
 
 const JOB_COLUMNS: &str = "id, recording_id, goal, done, state, stage, blocker, error_class, \
-                           error_message, priority, attempts, not_before, created_at, run_fast";
+                           error_message, priority, attempts, not_before, created_at, run_fast, \
+                           error_cause";
 
 struct RawState {
     state: String,
@@ -184,6 +186,7 @@ struct RawState {
     blocker: Option<String>,
     error_class: Option<String>,
     error_message: Option<String>,
+    error_cause: Option<String>,
 }
 
 struct RawJob {
@@ -211,6 +214,7 @@ fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
             blocker: row.get(6)?,
             error_class: row.get(7)?,
             error_message: row.get(8)?,
+            error_cause: row.get(14)?,
         },
         priority: row.get(9)?,
         attempts: row.get(10)?,
@@ -242,7 +246,11 @@ fn decode_state(raw: RawState) -> Result<JobState, StoreError> {
         "succeeded" => JobState::Succeeded,
         "failed" => JobState::Failed {
             stage: stage()?,
-            error: error_from_db(raw.error_class.clone(), raw.error_message.clone())?,
+            error: error_from_db(
+                raw.error_class.clone(),
+                raw.error_message.clone(),
+                raw.error_cause.as_deref(),
+            )?,
         },
         "cancelled" => JobState::Cancelled,
         other => return Err(corrupt(format!("unknown job state {other:?}"))),
@@ -274,6 +282,7 @@ struct StateColumns {
     blocker: Option<String>,
     error_class: Option<&'static str>,
     error_message: Option<String>,
+    error_cause: Option<&'static str>,
 }
 
 fn encode_state(state: &JobState) -> StateColumns {
@@ -283,6 +292,7 @@ fn encode_state(state: &JobState) -> StateColumns {
         blocker: None,
         error_class: None,
         error_message: None,
+        error_cause: None,
     };
     match state {
         JobState::Queued => plain("queued"),
@@ -300,6 +310,7 @@ fn encode_state(state: &JobState) -> StateColumns {
             stage: Some(stage_to_db(*stage)),
             error_class: Some(class_to_db(error.class)),
             error_message: Some(error.message.clone()),
+            error_cause: Some(cause_to_db(error.cause)),
             ..plain("failed")
         },
         JobState::Cancelled => plain("cancelled"),
@@ -414,7 +425,8 @@ impl StoreRead for SqliteStore {
             let mut stmt = conn
                 .prepare_cached(&format!(
                     "SELECT {RECORDING_COLUMNS}, t.revision, s.transcript_revision,
-                            j.state, j.stage, j.blocker, j.error_class, j.error_message
+                            j.state, j.stage, j.blocker, j.error_class, j.error_message,
+                            j.error_cause
                      FROM recordings r
                      LEFT JOIN transcripts t ON t.recording_id = r.id
                      LEFT JOIN summaries s ON s.recording_id = r.id
@@ -434,6 +446,7 @@ impl StoreRead for SqliteStore {
                             blocker: row.get(12)?,
                             error_class: row.get(13)?,
                             error_message: row.get(14)?,
+                            error_cause: row.get(15)?,
                         }),
                     };
                     Ok((
@@ -1061,7 +1074,8 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
         .prepare_cached(
             "UPDATE jobs SET goal = ?2, done = ?3, state = ?4, stage = ?5, blocker = ?6,
                              error_class = ?7, error_message = ?8, priority = ?9, attempts = ?10,
-                             not_before = ?11, created_at = ?12, run_fast = ?13
+                             not_before = ?11, created_at = ?12, run_fast = ?13,
+                             error_cause = ?14
              WHERE id = ?1",
         )
         .map_err(db)?
@@ -1079,6 +1093,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             job.not_before.map(|t| t.0),
             job.created_at.0,
             job.run_fast,
+            columns.error_cause,
         ])
         .map_err(db)?;
     if changed == 0 {

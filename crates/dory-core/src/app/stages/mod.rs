@@ -1,25 +1,28 @@
 //! What the transcribe and summarize stages do. Each returns the changes to commit with its
 //! `StageDone`, or why it could not finish.
 //!
-//! P1 runs each clip in one engine call. Windowing at silence, checkpoints, mic bleed dedupe, and
-//! map-reduce summaries come later.
+//! Transcribe plans every clip's windows first, so progress covers the whole job. Each finished
+//! window is checkpointed on its own, and a rerun skips the windows its run already finished.
 
-use std::fmt::Write as _;
+mod merge;
+mod summary;
+mod windows;
 
-use super::events::{Event, EventHub};
+use super::events::{Db, Event};
 use super::models::{Engines, Registries};
 use crate::domain::{
-    Blocker, Channel, ChannelLayout, FailureClass, Fraction, Job, JobError, LangTag, Ms, Revision,
-    Segment, Settings, SpeakerId, SpeakerNames, Stage, Summary, TimeRange, Transcript,
+    Blocker, Channel, ChannelLayout, FailureClass, Fraction, Job, JobError, LangTag, LanguagePref,
+    Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, TimeRange, Transcript,
 };
 use crate::models::{
     Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
     ModelId, ModelKind, ModelRef, Resolution, Stt, SttNeeds,
 };
 use crate::ports::{
-    CancelToken, Change, Classify, Clip, CompletionRequest, EngineError, RawSegment, SegmentSink,
-    StoreRead, Takes, TextSink, TranscribeRequest, Turn,
+    CancelToken, Change, Checkpoint, CheckpointKey, Classify, Clip, CompletionRequest, EngineError,
+    RawSegment, SegmentSink, Takes, TextSink, TranscribeRequest, Transcriber, Turn,
 };
+use summary::{Pass, SummaryError};
 
 /// Why a stage stopped short.
 #[derive(Debug)]
@@ -67,11 +70,10 @@ fn settle<K: ModelKind>(resolution: Resolution<K>) -> Result<Option<ModelId<K>>,
 
 pub(crate) struct StageCx<'a> {
     pub job: &'a Job,
-    pub store: &'a dyn StoreRead,
+    pub db: &'a Db,
     pub takes: &'a dyn Takes,
     pub models: &'a Registries,
     pub engines: &'a mut Engines,
-    pub hub: &'a EventHub,
     pub cancel: &'a CancelToken,
     pub settings: &'a Settings,
     pub now_mono: u64,
@@ -119,10 +121,33 @@ pub(crate) fn plan_clips(layout: ChannelLayout) -> Vec<ClipPlan> {
     }
 }
 
+/// One clip's share of a transcription run.
+struct ClipRun {
+    plan: ClipPlan,
+    whole: Clip,
+    /// The engine separates speakers itself, so the clip goes in one call.
+    diarize: bool,
+    windows: Vec<TimeRange>,
+    key: CheckpointKey,
+    saved: Vec<Checkpoint>,
+}
+
+/// What every window of a run asks the engine for.
+struct WindowCx<'a> {
+    job: &'a Job,
+    db: &'a Db,
+    takes: &'a dyn Takes,
+    cancel: &'a CancelToken,
+    stt: &'a dyn Transcriber,
+    model: &'a ModelRef,
+    language: &'a LanguagePref,
+    hint: Option<&'a str>,
+}
+
 fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let id = &cx.job.recording;
-    let recording = cx
-        .store
+    let store = cx.db.store.as_ref();
+    let recording = store
         .recording(id)
         .map_err(failed)?
         .ok_or_else(|| permanent("the recording was deleted"))?;
@@ -145,11 +170,13 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     };
     let stt_id = settle(cx.models.get::<Stt>().resolve(&cx.settings.stt, &needs))?
         .ok_or(StageError::Blocked(Blocker::NoModel { kind: KindTag::Stt }))?;
-    let native = cx
+    let caps = cx
         .models
         .get::<Stt>()
         .entry(&stt_id)
-        .is_some_and(|e| e.caps.diarization == DiarizationSupport::Native);
+        .map(|e| e.caps.clone())
+        .ok_or_else(|| permanent("the speech model left the catalog"))?;
+    let native = caps.diarization == DiarizationSupport::Native;
     let diar_id = if any_diarized && !native {
         settle(
             cx.models
@@ -174,80 +201,162 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         None => None,
     };
 
+    let model = stt_id.erase();
+    let mut runs = Vec::new();
+    for clip_plan in plan {
+        let whole = cx.takes.clip(id, clip_plan.channel, None).map_err(failed)?;
+        let diarize = native && matches!(clip_plan.speakers, Speakers::Diarized { .. });
+        let cap = if diarize { None } else { caps.window };
+        let key = CheckpointKey {
+            recording: id.clone(),
+            model: model.clone(),
+            channel: clip_plan.channel,
+            language: recording.language.clone(),
+        };
+        runs.push(ClipRun {
+            plan: clip_plan,
+            windows: windows::plan_windows(whole.duration, &whole.activity, cap),
+            saved: store.checkpoints(&key).map_err(failed)?,
+            whole,
+            diarize,
+            key,
+        });
+    }
+
+    let wx = WindowCx {
+        job: cx.job,
+        db: cx.db,
+        takes: cx.takes,
+        cancel: cx.cancel,
+        stt: stt.as_ref(),
+        model: &model,
+        language: &recording.language,
+        hint: recording.title.as_deref(),
+    };
+    let total = runs
+        .iter()
+        .flat_map(|r| &r.windows)
+        .map(|w| w.len().0)
+        .sum();
+    let mut progress = Progress {
+        db: cx.db,
+        job: cx.job,
+        total,
+        done: 0,
+    };
     let mut segments = Vec::new();
     let mut languages = Vec::new();
-    let clips = plan.len() as f32;
-    for (index, clip_plan) in plan.iter().enumerate() {
-        let clip = cx.takes.clip(id, clip_plan.channel, None).map_err(failed)?;
-        let mut sink = Drafts {
-            hub: cx.hub,
-            job: cx.job,
-            clip: &clip,
-            plan: *clip_plan,
-            base: index as f32 / clips,
-            scale: 1.0 / clips,
-            raw: Vec::new(),
-        };
-        let request = TranscribeRequest {
-            clip: &clip,
-            language: recording.language.clone(),
-            diarize: native && matches!(clip_plan.speakers, Speakers::Diarized { .. }),
-            hint: recording.title.as_deref(),
-        };
-        let outcome = stt
-            .transcribe(&request, &mut sink, cx.cancel)
-            .map_err(engine_failed(stt_id.erase()))?;
-        let raw = sink.raw;
-        let turns = match (&diarizer, clip_plan.speakers) {
-            (Some((model, diarizer)), Speakers::Diarized { .. }) => Some(
+    for run in &runs {
+        let mut raw = Vec::new();
+        for span in &run.windows {
+            let checkpoint = match run.saved.iter().find(|c| c.span == *span) {
+                Some(saved) => {
+                    for segment in &saved.segments {
+                        publish_draft(cx.db, cx.job, run.plan, segment.clone());
+                    }
+                    saved.clone()
+                }
+                None => transcribe_window(&wx, run, *span, &mut progress)?,
+            };
+            progress.finished(span.len());
+            languages.extend(
+                checkpoint
+                    .segments
+                    .iter()
+                    .filter_map(|s| s.language.clone().or(checkpoint.detected_language.clone())),
+            );
+            raw.extend(checkpoint.segments);
+        }
+        let turns = match (&diarizer, run.plan.speakers) {
+            (Some((model, diarizer)), Speakers::Diarized { .. }) if !raw.is_empty() => Some(
                 diarizer
-                    .diarize(&clip, &mut |_| {}, cx.cancel)
+                    .diarize(&run.whole, &mut |_| {}, cx.cancel)
                     .map_err(engine_failed(model.clone()))?,
             ),
             _ => None,
         };
-        languages.extend(
-            raw.iter()
-                .filter_map(|s| s.language.clone().or(outcome.detected_language.clone())),
-        );
-        segments.extend(place(raw, &clip, clip_plan.speakers, turns.as_deref()));
+        segments.extend(place(raw, run.plan, turns.as_deref()));
     }
-    segments.sort_by_key(|s| s.range.map(|r| r.start()));
     if languages.is_empty()
-        && let crate::domain::LanguagePref::Pinned(tag) = &recording.language
+        && let LanguagePref::Pinned(tag) = &recording.language
     {
         languages.push(tag.clone());
     }
 
-    let revision = cx
-        .store
+    let revision = store
         .transcript(id)
         .map_err(failed)?
         .map_or(Revision(0), |t| t.revision);
-    Ok(vec![Change::TranscriptReplaced {
-        id: id.clone(),
-        transcript: Transcript {
-            revision: Revision(revision.0 + 1),
-            segments,
-            detected_languages: rank_languages(languages),
-            produced_by: stt_id.erase(),
+    Ok(vec![
+        Change::CheckpointsCleared(id.clone()),
+        Change::TranscriptReplaced {
+            id: id.clone(),
+            transcript: Transcript {
+                revision: Revision(revision.0 + 1),
+                segments: merge::merge(segments),
+                detected_languages: rank_languages(languages),
+                produced_by: model,
+            },
         },
-    }])
+    ])
 }
 
-/// Turns one clip's raw segments into transcript segments on the take's time axis. Diarized
-/// speakers are numbered by first appearance, because an engine's indices are arbitrary and only
-/// hold within one call. A diarizer's turns, when given, decide the speaker by largest overlap.
-pub(crate) fn place(
-    raw: Vec<RawSegment>,
-    clip: &Clip,
-    speakers: Speakers,
-    turns: Option<&[Turn]>,
-) -> Vec<Segment> {
+/// Runs one window through the engine and checkpoints what it produced.
+fn transcribe_window(
+    wx: &WindowCx<'_>,
+    run: &ClipRun,
+    span: TimeRange,
+    progress: &mut Progress<'_>,
+) -> Result<Checkpoint, StageError> {
+    let fetched;
+    let clip = if span.start() == Ms(0) && span.end() == run.whole.duration {
+        &run.whole
+    } else {
+        fetched = wx
+            .takes
+            .clip(&wx.job.recording, run.plan.channel, Some(span))
+            .map_err(failed)?;
+        &fetched
+    };
+    let mut sink = Drafts {
+        plan: run.plan,
+        origin: clip.origin,
+        window: span.len(),
+        progress,
+        raw: Vec::new(),
+    };
+    let request = TranscribeRequest {
+        clip,
+        language: wx.language.clone(),
+        diarize: run.diarize,
+        hint: wx.hint,
+    };
+    let outcome = wx
+        .stt
+        .transcribe(&request, &mut sink, wx.cancel)
+        .map_err(engine_failed(wx.model.clone()))?;
+    let checkpoint = Checkpoint {
+        span,
+        segments: sink.raw,
+        detected_language: outcome.detected_language,
+    };
+    wx.db
+        .apply(vec![Change::CheckpointSaved {
+            key: run.key.clone(),
+            checkpoint: checkpoint.clone(),
+        }])
+        .map_err(failed)?;
+    Ok(checkpoint)
+}
+
+/// Turns one clip's raw segments, already on the take's time axis, into transcript segments.
+/// Diarized speakers are numbered by first appearance across the whole clip, because an engine's
+/// indices are arbitrary. A diarizer's turns, when given, decide the speaker by largest overlap.
+pub(crate) fn place(raw: Vec<RawSegment>, plan: ClipPlan, turns: Option<&[Turn]>) -> Vec<Segment> {
     let mut seen: Vec<u16> = Vec::new();
     raw.into_iter()
         .map(|segment| {
-            let speaker = match speakers {
+            let speaker = match plan.speakers {
                 Speakers::Fixed(id) => id,
                 Speakers::Diarized { first } => {
                     let index = turns
@@ -262,9 +371,9 @@ pub(crate) fn place(
                 }
             };
             Segment {
-                range: Some(segment.range.shifted(clip.origin)),
+                range: Some(segment.range),
                 speaker,
-                channel: clip.channel,
+                channel: plan.channel,
                 text: segment.text.trim().to_owned(),
             }
         })
@@ -293,41 +402,75 @@ fn rank_languages(tags: Vec<LangTag>) -> Vec<LangTag> {
     counts.into_iter().map(|(t, _)| t).collect()
 }
 
-struct Drafts<'a> {
-    hub: &'a EventHub,
+/// Transcription progress as the share of planned speech done, over every clip of the job.
+struct Progress<'a> {
+    db: &'a Db,
     job: &'a Job,
-    clip: &'a Clip,
-    plan: ClipPlan,
-    base: f32,
-    scale: f32,
-    raw: Vec<RawSegment>,
+    total: u64,
+    done: u64,
 }
 
-impl SegmentSink for Drafts<'_> {
-    fn progress(&mut self, fraction: Fraction) {
-        self.hub.publish(Event::StageProgress {
+impl Progress<'_> {
+    fn publish(&self, done: f32) {
+        self.db.publish(Event::StageProgress {
             job: self.job.id,
             stage: Stage::Transcribe,
-            fraction: Fraction::new(self.base + fraction.get() * self.scale),
+            fraction: Fraction::new(done / self.total.max(1) as f32),
         });
     }
 
+    fn within(&self, window: Ms, fraction: Fraction) {
+        self.publish(self.done as f32 + window.0 as f32 * fraction.get());
+    }
+
+    fn finished(&mut self, window: Ms) {
+        self.done += window.0;
+        self.publish(self.done as f32);
+    }
+}
+
+fn publish_draft(db: &Db, job: &Job, plan: ClipPlan, segment: RawSegment) {
+    if let Some(draft) = place(vec![segment], plan, None).pop() {
+        db.publish(Event::DraftSegment {
+            job: job.id,
+            segment: draft,
+        });
+    }
+}
+
+struct Drafts<'p, 'a> {
+    plan: ClipPlan,
+    origin: Ms,
+    window: Ms,
+    progress: &'p mut Progress<'a>,
+    /// On the take's time axis.
+    raw: Vec<RawSegment>,
+}
+
+impl SegmentSink for Drafts<'_, '_> {
+    fn progress(&mut self, fraction: Fraction) {
+        self.progress.within(self.window, fraction);
+    }
+
     fn segment(&mut self, segment: RawSegment) {
-        if let Some(draft) = place(vec![segment.clone()], self.clip, self.plan.speakers, None).pop()
-        {
-            self.hub.publish(Event::DraftSegment {
-                job: self.job.id,
-                segment: draft,
-            });
-        }
+        let segment = RawSegment {
+            range: segment.range.shifted(self.origin),
+            ..segment
+        };
+        publish_draft(
+            self.progress.db,
+            self.progress.job,
+            self.plan,
+            segment.clone(),
+        );
         self.raw.push(segment);
     }
 }
 
 fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let id = &cx.job.recording;
-    let transcript = cx
-        .store
+    let store = cx.db.store.as_ref();
+    let transcript = store
         .transcript(id)
         .map_err(failed)?
         .ok_or_else(|| permanent("there is no transcript to summarize"))?;
@@ -338,25 +481,53 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let Some(llm_id) = settle(cx.models.get::<Llm>().resolve(&cx.settings.llm, &needs))? else {
         return Ok(Vec::new());
     };
-    let names = cx.store.speaker_names(id).map_err(failed)?;
-    let prompt = SummaryPrompt::new(&transcript, &names);
+    let context = cx
+        .models
+        .get::<Llm>()
+        .entry(&llm_id)
+        .map(|e| e.caps.context_tokens)
+        .ok_or_else(|| permanent("the summary model left the catalog"))?;
+    let names = store.speaker_names(id).map_err(failed)?;
+    let lines = summary::transcript_lines(&transcript, &names);
     let llm = cx
         .engines
         .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)
         .map_err(engine_failed(llm_id.erase()))?;
-    let request = CompletionRequest {
-        system: &prompt.system,
-        user: &prompt.user,
-        max_output_tokens: 1024,
-        temperature: 0.2,
-    };
-    let mut sink = SummaryDrafts {
-        hub: cx.hub,
+    let mut drafts = SummaryDrafts {
+        db: cx.db,
         job: cx.job,
     };
-    let text = llm
-        .complete(&request, &mut sink, cx.cancel)
-        .map_err(engine_failed(llm_id.erase()))?;
+    let text = summary::summarize(
+        &lines,
+        language.as_ref(),
+        context,
+        &|text| llm.count_tokens(text),
+        &mut |call| {
+            let request = CompletionRequest {
+                system: call.system,
+                user: call.user,
+                max_output_tokens: call.max_output_tokens,
+                temperature: 0.2,
+            };
+            match call.pass {
+                Pass::Summary => llm.complete(&request, &mut drafts, cx.cancel),
+                Pass::Notes => llm.complete(&request, &mut Discard, cx.cancel),
+            }
+        },
+        &mut |fraction| {
+            cx.db.publish(Event::StageProgress {
+                job: cx.job.id,
+                stage: Stage::Summarize,
+                fraction,
+            });
+        },
+    )
+    .map_err(|error| match error {
+        SummaryError::Engine(error) => engine_failed(llm_id.erase())(error),
+        SummaryError::ContextTooSmall => {
+            permanent("the summary model's context window is too small for its instructions")
+        }
+    })?;
     Ok(vec![Change::SummaryReplaced {
         id: id.clone(),
         summary: Summary {
@@ -369,68 +540,28 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
 }
 
 struct SummaryDrafts<'a> {
-    hub: &'a EventHub,
+    db: &'a Db,
     job: &'a Job,
 }
 
 impl TextSink for SummaryDrafts<'_> {
     fn text(&mut self, piece: &str) {
-        self.hub.publish(Event::DraftSummary {
+        self.db.publish(Event::DraftSummary {
             job: self.job.id,
             text: piece.to_owned(),
         });
     }
 }
 
-pub(crate) struct SummaryPrompt {
-    pub system: String,
-    pub user: String,
-}
+/// Notes are a step toward the summary, not a draft of it.
+struct Discard;
 
-impl SummaryPrompt {
-    pub fn new(transcript: &Transcript, names: &SpeakerNames) -> SummaryPrompt {
-        let language = match transcript.main_language() {
-            Some(tag) => format!("the language with BCP 47 tag {tag}"),
-            None => "the language the meeting was held in".to_owned(),
-        };
-        let system = format!(
-            "You summarize meeting transcripts. Write the whole summary, headings included, in \
-             {language}. Use Markdown with three sections in this order: key points, decisions, \
-             and action items. Give each action item its owner when the transcript names one. \
-             Write \"None\" under a section with nothing to report. Use only what the transcript \
-             says."
-        );
-        let mut user = String::new();
-        for segment in &transcript.segments {
-            if let Some(range) = segment.range {
-                let secs = range.start().0 / 1000;
-                let _ = write!(user, "[{:02}:{:02}] ", secs / 60, secs % 60);
-            }
-            let _ = writeln!(
-                user,
-                "{}: {}",
-                speaker_label(segment, names, transcript.revision),
-                segment.text
-            );
-        }
-        SummaryPrompt { system, user }
-    }
-}
-
-fn speaker_label(segment: &Segment, names: &SpeakerNames, revision: Revision) -> String {
-    match names.name_of(segment.speaker, revision) {
-        Some(name) => name.to_owned(),
-        None if segment.speaker == SpeakerId::LOCAL && segment.channel == Channel::Mic => {
-            "Me".to_owned()
-        }
-        None => format!("Speaker {}", segment.speaker.0),
-    }
+impl TextSink for Discard {
+    fn text(&mut self, _: &str) {}
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
 
     fn r(a: u64, b: u64) -> TimeRange {
@@ -446,15 +577,8 @@ mod tests {
         }
     }
 
-    fn clip(channel: Channel, origin: u64) -> Clip {
-        Clip::new(
-            PathBuf::from("x"),
-            channel,
-            Ms(60_000),
-            Ms(origin),
-            crate::ports::Activity::Unmeasured,
-            None,
-        )
+    fn plan(channel: Channel, speakers: Speakers) -> ClipPlan {
+        ClipPlan { channel, speakers }
     }
 
     #[test]
@@ -463,14 +587,8 @@ mod tests {
         assert_eq!(
             mic_system,
             vec![
-                ClipPlan {
-                    channel: Channel::Mic,
-                    speakers: Speakers::Fixed(SpeakerId::LOCAL)
-                },
-                ClipPlan {
-                    channel: Channel::System,
-                    speakers: Speakers::Diarized { first: 1 }
-                },
+                plan(Channel::Mic, Speakers::Fixed(SpeakerId::LOCAL)),
+                plan(Channel::System, Speakers::Diarized { first: 1 }),
             ]
         );
         for layout in [
@@ -489,23 +607,18 @@ mod tests {
     fn diarized_speakers_are_renumbered_by_first_appearance_after_the_local_user() {
         let segments = place(
             vec![
-                raw(0, 10, Some(7)),
-                raw(10, 20, Some(3)),
-                raw(20, 30, Some(7)),
-                raw(30, 40, None),
+                raw(1_000, 1_010, Some(7)),
+                raw(1_010, 1_020, Some(3)),
+                raw(1_020, 1_030, Some(7)),
+                raw(1_030, 1_040, None),
             ],
-            &clip(Channel::System, 1_000),
-            Speakers::Diarized { first: 1 },
+            plan(Channel::System, Speakers::Diarized { first: 1 }),
             None,
         );
         let speakers: Vec<u16> = segments.iter().map(|s| s.speaker.0).collect();
         assert_eq!(speakers, vec![1, 2, 1, 3]);
-        assert_eq!(
-            segments[0].range,
-            Some(r(1_000, 1_010)),
-            "shifted to take time"
-        );
-        assert_eq!(segments[0].text, "0");
+        assert_eq!(segments[0].range, Some(r(1_000, 1_010)));
+        assert_eq!(segments[0].text, "1000");
         assert!(segments.iter().all(|s| s.channel == Channel::System));
     }
 
@@ -513,8 +626,7 @@ mod tests {
     fn a_fixed_speaker_ignores_engine_indices() {
         let segments = place(
             vec![raw(0, 10, Some(4))],
-            &clip(Channel::Mic, 0),
-            Speakers::Fixed(SpeakerId::LOCAL),
+            plan(Channel::Mic, Speakers::Fixed(SpeakerId::LOCAL)),
             None,
         );
         assert_eq!(segments[0].speaker, SpeakerId::LOCAL);
@@ -534,8 +646,7 @@ mod tests {
         ];
         let segments = place(
             vec![raw(0, 10, Some(1)), raw(10, 30, Some(1))],
-            &clip(Channel::System, 0),
-            Speakers::Diarized { first: 1 },
+            plan(Channel::System, Speakers::Diarized { first: 1 }),
             Some(&turns),
         );
         let speakers: Vec<u16> = segments.iter().map(|s| s.speaker.0).collect();
@@ -548,36 +659,6 @@ mod tests {
         assert_eq!(
             rank_languages(vec![t("en"), t("vi"), t("vi"), t("fr"), t("en"), t("vi")]),
             vec![t("vi"), t("en"), t("fr")]
-        );
-    }
-
-    #[test]
-    fn the_prompt_names_the_language_and_labels_speakers() {
-        let segment = |speaker: u16, channel, start: u64, text: &str| Segment {
-            range: Some(r(start, start + 1_000)),
-            speaker: SpeakerId(speaker),
-            channel,
-            text: text.into(),
-        };
-        let transcript = Transcript {
-            revision: Revision(2),
-            segments: vec![
-                segment(0, Channel::Mic, 0, "Ship it Friday."),
-                segment(1, Channel::System, 65_000, "Agreed."),
-                segment(2, Channel::System, 70_000, "I'll write the notes."),
-            ],
-            detected_languages: vec![LangTag::parse("vi").unwrap()],
-            produced_by: ModelRef::parse("fake/stt").unwrap(),
-        };
-        let mut names = SpeakerNames::default();
-        names.rename(Revision(2), SpeakerId(2), Some("Ana".into()));
-        let prompt = SummaryPrompt::new(&transcript, &names);
-        assert!(prompt.system.contains("BCP 47 tag vi"));
-        assert!(prompt.system.contains("decisions"));
-        assert!(prompt.system.contains("action items"));
-        assert_eq!(
-            prompt.user,
-            "[00:00] Me: Ship it Friday.\n[01:05] Speaker 1: Agreed.\n[01:10] Ana: I'll write the notes.\n"
         );
     }
 }

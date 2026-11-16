@@ -18,17 +18,17 @@ use crate::domain::{
     TakeContainer, TakeInfo, TimeRange, Timestamp,
 };
 use crate::models::{
-    Availability, DiarizationSupport, LangSupport, Llm, LlmCaps, ModelEntry, ModelId, ModelKind,
-    ProviderId, Stt, SttCaps,
+    Availability, Diar, DiarCaps, DiarizationSupport, LangSupport, Llm, LlmCaps, ModelEntry,
+    ModelId, ModelKind, ProviderId, Stt, SttCaps,
 };
 use crate::ports::capture::{
     Access, CaptureBackend, CaptureCaps, CaptureError, CaptureHandle, CaptureIssue, CaptureSpec,
     InputDevice, Source,
 };
 use crate::ports::{
-    Activity, CancelToken, Clip, Clock, CompletionRequest, EngineError, LanguageModel,
+    Activity, CancelToken, Clip, Clock, CompletionRequest, Diarizer, EngineError, LanguageModel,
     ModelProvider, ProvisionError, ProvisionSink, RawSegment, SegmentSink, TakeError, TakeWriter,
-    Takes, TextSink, TranscribeOutcome, TranscribeRequest, Transcriber,
+    Takes, TextSink, TranscribeOutcome, TranscribeRequest, Transcriber, Turn,
 };
 
 /// A clock that moves only when a test says so.
@@ -240,11 +240,14 @@ impl Drop for FakeHandle {
     }
 }
 
+type SpeechByChannel = HashMap<(RecordingId, Channel), Vec<TimeRange>>;
+
 /// A [`Takes`] that keeps samples in memory. A writer dropped without `finish` leaves its take
 /// open, the way a crash leaves a WAV behind, so `orphans` lists it.
 #[derive(Clone, Default)]
 pub struct MemTakes {
     takes: Arc<Mutex<BTreeMap<RecordingId, MemTake>>>,
+    activity: Arc<Mutex<SpeechByChannel>>,
 }
 
 #[derive(Clone, Debug)]
@@ -286,6 +289,16 @@ impl MemTakes {
 
     pub fn is_sealed(&self, id: &RecordingId) -> bool {
         lock(&self.takes).get(id).is_some_and(|t| t.sealed)
+    }
+
+    /// Where someone talks on one channel, in take time, as a VAD would report it. Clips of a
+    /// channel with none set report `Activity::Unmeasured`.
+    pub fn set_activity(&self, id: &RecordingId, channel: Channel, spans: &[(u64, u64)]) {
+        let spans = spans
+            .iter()
+            .map(|&(a, b)| TimeRange::new(Ms(a), Ms(b)).expect("start before end"))
+            .collect();
+        lock(&self.activity).insert((id.clone(), channel), spans);
     }
 
     fn with<T>(&self, id: &RecordingId, f: impl FnOnce(&mut MemTake) -> T) -> Result<T, TakeError> {
@@ -345,12 +358,28 @@ impl Takes for MemTakes {
         })??;
         let origin = span.map_or(Ms(0), |s| s.start());
         let duration = span.map_or(info.duration, |s| s.len());
+        let end = Ms(origin.0 + duration.0);
+        let activity = match lock(&self.activity).get(&(id.clone(), channel)) {
+            None => Activity::Unmeasured,
+            Some(spans) => Activity::Speech(
+                spans
+                    .iter()
+                    .filter_map(|s| {
+                        TimeRange::new(
+                            Ms(s.start().max(origin).0 - origin.0),
+                            Ms(s.end().min(end).0.saturating_sub(origin.0)),
+                        )
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            ),
+        };
         Ok(Clip::new(
             PathBuf::from(format!("mem/{id}/{channel:?}")),
             channel,
             duration,
             origin,
-            Activity::Unmeasured,
+            activity,
             None,
         ))
     }
@@ -523,20 +552,35 @@ impl<K: ModelKind> ModelProvider<K> for FakeProvider<K> {
     }
 }
 
-/// A speech engine that returns scripted segments per channel.
-#[derive(Default)]
+/// A speech engine that returns scripted segments per channel. A call returns the segments that
+/// start inside its clip, on the clip's time axis, the way an engine reads only the audio it gets.
 pub struct FakeTranscriber {
     segments: HashMap<Channel, Vec<RawSegment>>,
     detected: Option<LangTag>,
-    hold: AtomicBool,
+    /// Calls from this index on wait until they are cancelled.
+    hold_from: AtomicUsize,
     running: AtomicBool,
     calls: Mutex<Vec<TranscribeCall>>,
+}
+
+impl Default for FakeTranscriber {
+    fn default() -> Self {
+        Self {
+            segments: HashMap::new(),
+            detected: None,
+            hold_from: AtomicUsize::new(usize::MAX),
+            running: AtomicBool::new(false),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
 }
 
 /// What one `transcribe` call asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TranscribeCall {
     pub channel: Channel,
+    /// The clip on the take's time axis.
+    pub span: TimeRange,
     pub language: LanguagePref,
     pub diarize: bool,
 }
@@ -546,7 +590,7 @@ impl FakeTranscriber {
         Self::default()
     }
 
-    /// `(start_ms, end_ms, engine speaker, text)` for clips of `channel`.
+    /// `(start_ms, end_ms, engine speaker, text)` on the take's time axis, for clips of `channel`.
     pub fn with_segments(mut self, channel: Channel, segments: &[(u64, u64, u16, &str)]) -> Self {
         let raw = segments
             .iter()
@@ -567,7 +611,12 @@ impl FakeTranscriber {
 
     /// While held, `transcribe` waits until it is cancelled.
     pub fn hold(&self, hold: bool) {
-        self.hold.store(hold, Ordering::SeqCst);
+        self.hold_from(if hold { 0 } else { usize::MAX });
+    }
+
+    /// Holds the call with index `call`, counted over every call so far, and every later one.
+    pub fn hold_from(&self, call: usize) {
+        self.hold_from.store(call, Ordering::SeqCst);
     }
 
     pub fn is_running(&self) -> bool {
@@ -586,23 +635,40 @@ impl Transcriber for FakeTranscriber {
         sink: &mut dyn SegmentSink,
         cancel: &CancelToken,
     ) -> Result<TranscribeOutcome, EngineError> {
-        lock(&self.calls).push(TranscribeCall {
-            channel: req.clip.channel,
-            language: req.language.clone(),
-            diarize: req.diarize,
-        });
+        let origin = req.clip.origin;
+        let end = Ms(origin.0 + req.clip.duration.0);
+        let index = {
+            let mut calls = lock(&self.calls);
+            calls.push(TranscribeCall {
+                channel: req.clip.channel,
+                span: TimeRange::new(origin, end).expect("start before end"),
+                language: req.language.clone(),
+                diarize: req.diarize,
+            });
+            calls.len() - 1
+        };
         self.running.store(true, Ordering::SeqCst);
-        while self.hold.load(Ordering::SeqCst) && !cancel.is_cancelled() {
+        while index >= self.hold_from.load(Ordering::SeqCst) && !cancel.is_cancelled() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let result = if cancel.is_cancelled() {
             Err(EngineError::Cancelled)
         } else {
-            let segments = self
+            let segments: Vec<RawSegment> = self
                 .segments
                 .get(&req.clip.channel)
-                .cloned()
-                .unwrap_or_default();
+                .into_iter()
+                .flatten()
+                .filter(|s| s.range.start() >= origin && s.range.start() < end)
+                .map(|s| RawSegment {
+                    range: TimeRange::new(
+                        Ms(s.range.start().0 - origin.0),
+                        Ms(s.range.end().0 - origin.0),
+                    )
+                    .expect("start before end"),
+                    ..s.clone()
+                })
+                .collect();
             let total = segments.len().max(1) as f32;
             for (i, segment) in segments.into_iter().enumerate() {
                 sink.segment(segment);
@@ -617,10 +683,19 @@ impl Transcriber for FakeTranscriber {
     }
 }
 
-/// A summary model that answers every prompt with the same text and keeps the prompts.
+/// A summary model that answers every prompt with the same text and keeps the prompts. Tokens
+/// are words.
 pub struct FakeLanguageModel {
     reply: String,
-    prompts: Mutex<Vec<(String, String)>>,
+    prompts: Mutex<Vec<Completion>>,
+}
+
+/// One completion asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Completion {
+    pub system: String,
+    pub user: String,
+    pub max_output_tokens: u32,
 }
 
 impl FakeLanguageModel {
@@ -631,8 +706,7 @@ impl FakeLanguageModel {
         }
     }
 
-    /// `(system, user)` for each completion asked for.
-    pub fn prompts(&self) -> Vec<(String, String)> {
+    pub fn prompts(&self) -> Vec<Completion> {
         lock(&self.prompts).clone()
     }
 }
@@ -651,11 +725,74 @@ impl LanguageModel for FakeLanguageModel {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
-        lock(&self.prompts).push((req.system.to_owned(), req.user.to_owned()));
+        lock(&self.prompts).push(Completion {
+            system: req.system.to_owned(),
+            user: req.user.to_owned(),
+            max_output_tokens: req.max_output_tokens,
+        });
         for piece in self.reply.split_inclusive(' ') {
             sink.text(piece);
         }
         Ok(self.reply.clone())
+    }
+}
+
+/// A speaker separator that returns scripted turns and keeps the clips it was given.
+pub struct FakeDiarizer {
+    turns: Vec<Turn>,
+    calls: Mutex<Vec<(Channel, TimeRange)>>,
+}
+
+pub type FakeDiarProvider = FakeProvider<Diar>;
+
+impl FakeDiarizer {
+    /// `(start_ms, end_ms, speaker)` relative to the clip.
+    pub fn new(turns: &[(u64, u64, u16)]) -> Self {
+        Self {
+            turns: turns
+                .iter()
+                .map(|&(a, b, speaker)| Turn {
+                    range: TimeRange::new(Ms(a), Ms(b)).expect("start before end"),
+                    speaker,
+                })
+                .collect(),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// The channel and the take-time span of each clip diarized.
+    pub fn calls(&self) -> Vec<(Channel, TimeRange)> {
+        lock(&self.calls).clone()
+    }
+}
+
+impl Diarizer for FakeDiarizer {
+    fn diarize(
+        &self,
+        clip: &Clip,
+        _progress: &mut dyn FnMut(Fraction),
+        cancel: &CancelToken,
+    ) -> Result<Vec<Turn>, EngineError> {
+        if cancel.is_cancelled() {
+            return Err(EngineError::Cancelled);
+        }
+        let span = TimeRange::new(clip.origin, Ms(clip.origin.0 + clip.duration.0))
+            .expect("start before end");
+        lock(&self.calls).push((clip.channel, span));
+        Ok(self.turns.clone())
+    }
+}
+
+/// A speaker separator for any number of speakers.
+pub fn diar_entry(id: &str) -> ModelEntry<Diar> {
+    ModelEntry {
+        id: id.parse().expect("a valid model id"),
+        display_name: id.to_owned(),
+        about: Default::default(),
+        caps: DiarCaps { max_speakers: None },
+        recommended: false,
+        rank: 0,
+        disk_bytes: None,
     }
 }
 

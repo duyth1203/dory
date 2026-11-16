@@ -212,11 +212,10 @@ impl Worker {
                 stage,
                 StageCx {
                     job: &running,
-                    store: self.deps.db.store.as_ref(),
+                    db: &self.deps.db,
                     takes: self.deps.takes.as_ref(),
                     models: &self.deps.models,
                     engines: &mut self.engines,
-                    hub: &self.deps.db.hub,
                     cancel: &cancel,
                     settings: &settings,
                     now_mono: self.deps.clock.monotonic_ms(),

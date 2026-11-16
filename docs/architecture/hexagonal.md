@@ -148,10 +148,11 @@ The queue is the store. The worker takes `next_runnable_job(now)`, publishes the
 
 1. Resolve the speech model and, if it lacks native diarization, the diarizer.
 2. Plan clips from the layout. `MicSystem` gives a mic clip (speaker is the local user, no diarization) and a system clip (diarized). Other layouts give one clip.
-3. Cut each clip into windows at silence, up to the engine's `WindowPref`. Skip silent windows, which makes the mic track cheap during long remote talks. Append each window's segments to a checkpoint, so a crash resumes at the last finished window. Engines with native diarization run the whole clip in one window, because speaker ids only hold within one call. Those runs are marked not resumable, and the UI shows it.
-4. Merge by time, drop mic segments that duplicate system speech (speaker bleed), and commit the transcript with `revision + 1`.
+3. Cut each clip into windows at silence, up to the engine's `SttCaps::window`. `Takes::clip` reports `Activity`: `Speech(spans)` from the adapter's energy VAD, or `Unmeasured`, which counts the whole clip as speech. A measured silent clip gets no engine call at all, which makes the mic track cheap during long remote talks. Windows hold whole runs of speech and end at a silence; speech longer than the cap with no silence in it is cut into equal pieces. Engines with native diarization run the whole diarized clip in one window, because speaker ids only hold within one call, so those runs only resume at a clip boundary.
+4. After each window, commit its segments as `Change::CheckpointSaved`, keyed by recording, model, channel, and language. A rerun reads `StoreRead::checkpoints` for its key and skips every window already saved, so another model or language never reuses them. Diarized speakers are numbered by first appearance across the whole clip once every window is in.
+5. Merge by time, drop mic segments that repeat system speech (speaker bleed: system speech covers at least half the mic segment's time, and at least 60% of its normalized words appear in that speech in order), and commit the transcript with `revision + 1`, together with `Change::CheckpointsCleared` and the stage's `StageDone`.
 
-`summarize` (core policy): build the prompt in the meeting's main language, then run one pass or a map-reduce sized from `context_tokens`.
+`summarize` (core policy): build the prompt in the meeting's main language, then run one pass or a map-reduce sized from `context_tokens`. One pass when `count(system) + count(transcript) + min(1024, context / 4) + 64 <= context`. Otherwise the transcript lines are packed into chunks of at most `context - count(notes system) - min(512, context / 8) - 64` tokens, each chunk becomes notes, and the notes become the three-section summary. Notes that still do not fit are merged in groups first, as many rounds as it takes. Only the last pass streams drafts.
 
 ## Threads
 

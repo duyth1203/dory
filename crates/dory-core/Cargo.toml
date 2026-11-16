@@ -21,3 +21,7 @@ workspace = true
 [[test]]
 name = "facade"
 required-features = ["testing"]
+
+[[test]]
+name = "pipeline"
+required-features = ["testing"]

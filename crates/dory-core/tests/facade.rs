@@ -140,7 +140,7 @@ impl Rig {
             .takes
             .begin(&id, ChannelLayout::MicSystem, RATE)
             .unwrap();
-        writer.write(&vec![0.0; RATE as usize * 2]).unwrap();
+        writer.write(&vec![0.0; RATE as usize * 2 * 20]).unwrap();
         writer.finish().unwrap();
         let take = self.takes.seal(&id).unwrap();
         self.store
@@ -538,11 +538,15 @@ fn records_with_a_pause_and_an_undo_then_processes_to_a_summary() {
     assert_eq!(summary.language, Some(vi));
     let prompts = rig.llm.prompts();
     assert_eq!(prompts.len(), 1);
-    assert!(prompts[0].0.contains("tag vi"), "{}", prompts[0].0);
     assert!(
-        prompts[0].1.contains("Me: Ship it Friday."),
+        prompts[0].system.contains("tag vi"),
         "{}",
-        prompts[0].1
+        prompts[0].system
+    );
+    assert!(
+        prompts[0].user.contains("Me: Ship it Friday."),
+        "{}",
+        prompts[0].user
     );
 
     let seen = drain(&events);

@@ -1,25 +1,26 @@
-//! Export and copy (UX-4, UX-23). Stub for agent 3, who owns this file together with
-//! `menus.rs` and `prefs.rs`.
+//! Export and copy (UX-4, UX-23).
 //!
-//! Agent 3 builds, without editing any other file:
-//! - `render`: pure, tested without a window. Markdown is the title, the metadata line, the
-//!   summary, then the transcript as `**Label** [12:24]` turns. Text is the same without
-//!   markup. SRT numbers each segment (not each turn) with `00:12:24,000 --> 00:12:27,500`
-//!   from `Segment.range`, and returns `ExportBlocked::Untimed` when `Transcript::is_timed`
-//!   is false (legacy transcripts) and `NoTranscript` when there is none.
-//! - `export`: `cx.prompt_for_new_path` with `suggested_name`, then write off the UI thread.
-//!   Failures surface as a notification, never a panic.
-//! - `copy`: the summary Markdown or the transcript text to the clipboard.
+//! `render` is pure and turns a `Detail` into a document. Markdown is the title, the metadata
+//! line, the summary, then the transcript as `**Label** [12:24]` turns. Text is the same without
+//! markup. SRT numbers each segment (not each turn) with `00:12:24,000 --> 00:12:27,500`. Names
+//! come from `Detail.turns` and the speaker names, so an export always matches what the
+//! transcript tab shows.
 //!
-//! The shell calls `export` and `copy` from the window-root handlers of the `Export*` and
-//! `Copy*` actions, with the selected session's `Detail`. Names come from `Detail.turns`, so an
-//! export always matches what the transcript tab shows.
+//! `export` asks for a path with the native save panel and writes off the UI thread. `copy`
+//! puts the summary Markdown or the transcript text on the clipboard. A failure becomes a
+//! status line through `AppState::say`, never a panic.
 
+use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use gpui_kit::{App, Window};
+use chrono::{DateTime, FixedOffset, Local, TimeZone as _};
+use dory_core::domain::{Ms, Segment};
+use gpui_kit::{App, ClipboardItem, Entity};
 
-use crate::app::Detail;
+use crate::a11y;
+use crate::app::{AppState, Detail, Turn, speaker_label};
+use crate::library::{local, short_duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -35,34 +36,269 @@ pub enum ExportBlocked {
     Untimed,
 }
 
+impl ExportBlocked {
+    pub fn message(self) -> &'static str {
+        match self {
+            ExportBlocked::NoTranscript => "There is nothing to export yet.",
+            ExportBlocked::Untimed => {
+                "This transcript has no times, so it cannot be exported as SRT."
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyWhat {
     Summary,
     Transcript,
 }
 
-pub fn render(_format: ExportFormat, _detail: &Detail) -> Result<String, ExportBlocked> {
-    Err(ExportBlocked::NoTranscript)
+impl ExportFormat {
+    pub fn extension(self) -> &'static str {
+        match self {
+            ExportFormat::Markdown => "md",
+            ExportFormat::Text => "txt",
+            ExportFormat::Srt => "srt",
+        }
+    }
 }
 
+/// Renders in the Mac's current time zone, at the recording's own moment so a daylight saving
+/// change does not shift the date.
+pub fn render(format: ExportFormat, detail: &Detail) -> Result<String, ExportBlocked> {
+    let at = Local
+        .timestamp_millis_opt(detail.recording.created_at.0)
+        .earliest()
+        .map_or_else(|| FixedOffset::east_opt(0).unwrap(), |t| *t.offset());
+    render_in(format, detail, &at)
+}
+
+pub fn render_in(
+    format: ExportFormat,
+    detail: &Detail,
+    tz: &FixedOffset,
+) -> Result<String, ExportBlocked> {
+    match format {
+        ExportFormat::Srt => srt(detail),
+        ExportFormat::Markdown | ExportFormat::Text => {
+            if detail.transcript.is_none() && detail.summary.is_none() {
+                return Err(ExportBlocked::NoTranscript);
+            }
+            Ok(document(format == ExportFormat::Markdown, detail, tz))
+        }
+    }
+}
+
+fn title(detail: &Detail, tz: &FixedOffset) -> String {
+    match detail.recording.title.as_deref().map(str::trim) {
+        Some(title) if !title.is_empty() => title.to_owned(),
+        _ => format!(
+            "Recording {}",
+            local(detail.recording.created_at, tz).format("%-d %b, %H:%M")
+        ),
+    }
+}
+
+fn metadata(detail: &Detail, tz: &FixedOffset) -> String {
+    let at: DateTime<FixedOffset> = local(detail.recording.created_at, tz);
+    let mut parts = vec![at.format("%-d %B %Y, %H:%M").to_string()];
+    if let Some(take) = detail.recording.take {
+        parts.push(short_duration(take.duration));
+    }
+    let speakers = detail.transcript.as_ref().map_or(0, |t| t.speakers().len());
+    if speakers > 0 {
+        parts.push(if speakers == 1 {
+            "1 speaker".to_owned()
+        } else {
+            format!("{speakers} speakers")
+        });
+    }
+    parts.join(" · ")
+}
+
+fn document(markdown: bool, detail: &Detail, tz: &FixedOffset) -> String {
+    let mut out = String::new();
+    let title = title(detail, tz);
+    let meta = metadata(detail, tz);
+    if markdown {
+        let _ = write!(out, "# {title}\n\n{meta}\n");
+    } else {
+        let _ = write!(out, "{title}\n{meta}\n");
+    }
+    if let Some(summary) = &detail.summary {
+        if markdown {
+            let _ = write!(out, "\n## Summary\n\n{}\n", summary.markdown.trim());
+        } else {
+            let _ = write!(out, "\nSummary\n\n{}\n", plain(&summary.markdown));
+        }
+    }
+    if detail.transcript.is_some() {
+        out.push_str(if markdown {
+            "\n## Transcript\n"
+        } else {
+            "\nTranscript\n"
+        });
+        out.push_str(&turns_text(markdown, &detail.turns));
+    }
+    out
+}
+
+fn turns_text(markdown: bool, turns: &[Turn]) -> String {
+    let mut out = String::new();
+    for turn in turns {
+        let stamp = turn
+            .range
+            .map(|range| format!(" [{}]", a11y::clock(range.start())))
+            .unwrap_or_default();
+        if markdown {
+            let _ = write!(out, "\n**{}**{stamp}\n{}\n", turn.label, turn.text);
+        } else {
+            let _ = write!(out, "\n{}{stamp}\n{}\n", turn.label, turn.text);
+        }
+    }
+    out
+}
+
+/// The summary without Markdown marks: headings and paragraphs as lines, list items as "- ".
+fn plain(markdown: &str) -> String {
+    use gpui_kit::Role;
+    let mut out = String::new();
+    for block in a11y::markdown_blocks(markdown) {
+        match block.role {
+            Role::ListItem => {
+                let _ = writeln!(out, "- {}", block.text);
+            }
+            Role::Heading => {
+                let _ = write!(out, "\n{}\n", block.text);
+            }
+            _ => {
+                let _ = writeln!(out, "{}", block.text);
+            }
+        }
+    }
+    out.trim().to_owned()
+}
+
+fn srt(detail: &Detail) -> Result<String, ExportBlocked> {
+    let Some(transcript) = detail
+        .transcript
+        .as_ref()
+        .filter(|t| !t.segments.is_empty())
+    else {
+        return Err(ExportBlocked::NoTranscript);
+    };
+    if !transcript.is_timed() {
+        return Err(ExportBlocked::Untimed);
+    }
+    let mut out = String::new();
+    for (
+        ix,
+        Segment {
+            range,
+            speaker,
+            channel,
+            text,
+        },
+    ) in transcript.segments.iter().enumerate()
+    {
+        let Some(range) = range else { continue };
+        let label = speaker_label(*speaker, *channel, transcript, &detail.names);
+        let _ = write!(
+            out,
+            "{}\n{} --> {}\n{label}: {}\n\n",
+            ix + 1,
+            srt_time(range.start()),
+            srt_time(range.end()),
+            text.trim(),
+        );
+    }
+    Ok(out)
+}
+
+/// `HH:MM:SS,mmm`.
+pub fn srt_time(at: Ms) -> String {
+    let ms = at.0;
+    format!(
+        "{:02}:{:02}:{:02},{:03}",
+        ms / 3_600_000,
+        ms % 3_600_000 / 60_000,
+        ms % 60_000 / 1000,
+        ms % 1000
+    )
+}
+
+/// What the save panel offers as the file name.
 pub fn suggested_name(detail: &Detail, format: ExportFormat) -> String {
     let stem = detail
         .recording
         .title
-        .clone()
-        .unwrap_or_else(|| detail.recording.id.to_string());
-    let ext = match format {
-        ExportFormat::Markdown => "md",
-        ExportFormat::Text => "txt",
-        ExportFormat::Srt => "srt",
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map_or_else(|| detail.recording.id.to_string(), safe_stem);
+    format!("{stem}.{}", format.extension())
+}
+
+fn safe_stem(title: &str) -> String {
+    title.replace(['/', ':', '\\'], "-")
+}
+
+pub fn export(app: &Entity<AppState>, detail: Arc<Detail>, format: ExportFormat, cx: &mut App) {
+    let text = match render(format, &detail) {
+        Ok(text) => text,
+        Err(blocked) => {
+            app.update(cx, |app, cx| app.say(blocked.message(), cx));
+            return;
+        }
     };
-    format!("{stem}.{ext}")
+    let name = suggested_name(&detail, format);
+    let directory = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Documents"))
+        .filter(|dir| dir.is_dir())
+        .unwrap_or_else(std::env::temp_dir);
+    let picked = cx.prompt_for_new_path(&directory, Some(&name));
+    let app = app.clone();
+    cx.spawn(async move |cx| {
+        let path = match picked.await {
+            Ok(Ok(Some(path))) => path,
+            Ok(Ok(None)) | Err(_) => return,
+            Ok(Err(error)) => {
+                app.update(cx, |app, cx| {
+                    app.say(format!("Could not open the save panel: {error}"), cx)
+                });
+                return;
+            }
+        };
+        let shown = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let write = cx
+            .background_executor()
+            .spawn(async move { std::fs::write(&path, text) });
+        let message = match write.await {
+            Ok(()) => format!("Exported {shown}."),
+            Err(error) => format!("Could not write {shown}: {error}"),
+        };
+        app.update(cx, |app, cx| app.say(message, cx));
+    })
+    .detach();
 }
 
-pub fn export(_detail: Arc<Detail>, format: ExportFormat, _window: &mut Window, _cx: &mut App) {
-    eprintln!("export {format:?}: agent 3 wires this");
-}
-
-pub fn copy(_detail: &Detail, what: CopyWhat, _cx: &mut App) {
-    eprintln!("copy {what:?}: agent 3 wires this");
+/// Does nothing when the recording has no such text.
+pub fn copy(detail: &Detail, what: CopyWhat, cx: &mut App) {
+    let text = match what {
+        CopyWhat::Summary => detail.summary.as_ref().map(|s| s.markdown.clone()),
+        CopyWhat::Transcript => detail
+            .transcript
+            .as_ref()
+            .map(|_| turns_text(false, &detail.turns).trim().to_owned()),
+    };
+    if let Some(text) = text {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        a11y::announce(match what {
+            CopyWhat::Summary => "Summary copied",
+            CopyWhat::Transcript => "Transcript copied",
+        });
+    }
 }

@@ -46,6 +46,7 @@ fn main() -> ExitCode {
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {
             let (state, shell) = dory_gpui::build(core, prefs, window, cx);
             prefs::watch(&state, &config, window, cx);
+            menus::watch(&state, cx);
             shell
         });
         if let Err(error) = opened {

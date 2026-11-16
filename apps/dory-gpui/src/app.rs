@@ -12,7 +12,7 @@ mod session;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use dory_core::app::{Dory, Event, RecorderStatus};
+use dory_core::app::{Dory, Event, RecorderStatus, Trashed};
 use dory_core::domain::{JobId, RecordingId, RecordingRow};
 use dory_core::ports::capture::{Access, CaptureCaps};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
@@ -42,6 +42,16 @@ pub struct Sources {
     pub system_audio: Access,
 }
 
+/// How long a status line stays up.
+pub const NOTICE_TTL: Duration = Duration::from_secs(8);
+
+/// The one-line status under the detail pane (UX-22). `undo` adds the Undo button.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub text: SharedString,
+    pub undo: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppEvent {
     SelectionChanged,
@@ -67,6 +77,12 @@ pub struct AppState {
     session: Option<Entity<Session>>,
     loaded: bool,
     error: Option<SharedString>,
+    /// Newest last. In memory only, so Undo works until the app quits.
+    trashed: Vec<Trashed>,
+    notice: Option<Notice>,
+    notice_generation: u64,
+    /// Set by Undo so the restored row is selected once the reload that lists it lands.
+    reselect: Option<RecordingId>,
     rows_generation: u64,
     search_generation: u64,
     _pump: Task<()>,
@@ -129,6 +145,10 @@ impl AppState {
             session: None,
             loaded: false,
             error: None,
+            trashed: Vec::new(),
+            notice: None,
+            notice_generation: 0,
+            reselect: None,
             rows_generation: 0,
             search_generation: 0,
             _pump: pump,
@@ -249,21 +269,104 @@ impl AppState {
         cx.notify();
     }
 
-    /// Deletes for good: the core has no Trash yet (UX-22 needs one). When the core announces
+    /// Moves the recording to the macOS Trash and keeps what Undo needs. When the core announces
     /// the delete, the selection moves to the next row, else the previous, else none.
     pub fn delete(&mut self, id: RecordingId, cx: &mut Context<Self>) {
-        let delete = self.core.run(cx, move |dory| {
-            dory.library().delete(&id).map_err(|e| e.to_string())
+        let trash = self.core.run(cx, move |dory| {
+            dory.library().trash(&id).map_err(|e| e.to_string())
         });
         cx.spawn(async move |this, cx| {
-            if let Err(error) = delete.await {
-                let _ = this.update(cx, |state, cx| {
-                    state.error = Some(error.into());
-                    cx.notify();
-                });
-            }
+            let _ = match trash.await {
+                Ok(trashed) => this.update(cx, |state, cx| {
+                    state.trashed.push(trashed);
+                    state.show(
+                        Notice {
+                            text: "Moved to Trash.".into(),
+                            undo: true,
+                        },
+                        cx,
+                    );
+                }),
+                Err(error) => this.update(cx, |state, cx| state.fail(error, cx)),
+            };
         })
         .detach();
+    }
+
+    /// The Move to Trash command: the selected recording.
+    pub fn delete_selection(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.selection.id().cloned() {
+            self.delete(id, cx);
+        }
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.trashed.is_empty()
+    }
+
+    /// Puts the latest trashed recording back and selects it.
+    pub fn undo_delete(&mut self, cx: &mut Context<Self>) {
+        let Some(trashed) = self.trashed.pop() else {
+            return;
+        };
+        let restore = self.core.run(cx, move |dory| {
+            dory.library().restore(trashed).map_err(|e| e.to_string())
+        });
+        cx.spawn(async move |this, cx| {
+            let _ = match restore.await {
+                Ok(id) => this.update(cx, |state, cx| {
+                    state.reselect = Some(id);
+                    state.show(
+                        Notice {
+                            text: "Restored from the Trash.".into(),
+                            undo: false,
+                        },
+                        cx,
+                    );
+                    state.reload(cx);
+                }),
+                Err(error) => this.update(cx, |state, cx| state.fail(error, cx)),
+            };
+        })
+        .detach();
+    }
+
+    pub fn notice(&self) -> Option<&Notice> {
+        self.notice.as_ref()
+    }
+
+    /// A status line without Undo, for an export or a failed write.
+    pub fn say(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.show(
+            Notice {
+                text: text.into(),
+                undo: false,
+            },
+            cx,
+        );
+    }
+
+    fn fail(&mut self, error: String, cx: &mut Context<Self>) {
+        self.say(error.clone(), cx);
+        self.error = Some(error.into());
+    }
+
+    fn show(&mut self, notice: Notice, cx: &mut Context<Self>) {
+        crate::a11y::announce(&notice.text);
+        self.notice = Some(notice);
+        self.notice_generation += 1;
+        let generation = self.notice_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_TTL).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.notice_generation == generation {
+                    state.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// The toolbar's Record button. Recording is P5's work, so it only says so.
@@ -291,6 +394,9 @@ impl AppState {
                 }
                 state.loaded = true;
                 cx.emit(AppEvent::RowsReloaded);
+                if let Some(id) = state.reselect.take() {
+                    state.select(Selection::One(id), cx);
+                }
                 cx.notify();
             });
         })

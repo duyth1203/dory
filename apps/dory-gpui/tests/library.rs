@@ -213,7 +213,19 @@ mod window {
 
     /// A real `Dory` over the core's in-memory store, seeded with the section 6 samples. The
     /// store runs the same contract suite as SQLite, search included.
+    fn scratch_dir() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "dory-gpui-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create the scratch dir");
+        dir
+    }
+
     fn sample_dory() -> Dory {
+        let dir = scratch_dir();
         let store = Arc::new(MemStore::new());
         let mut changes = Vec::new();
         for sample in &SAMPLES {
@@ -235,10 +247,10 @@ mod window {
         Dory::open(
             Ports {
                 store,
-                takes: Arc::new(MemTakes::new()),
+                takes: Arc::new(MemTakes::in_dir(&dir)),
                 capture: Arc::new(FakeCapture::new()),
                 playback: Arc::new(FakePlayback::new()),
-                trash: Arc::new(dory_core::testing::FakeTrash::new(std::env::temp_dir())),
+                trash: Arc::new(dory_core::testing::FakeTrash::new(&dir)),
                 clock: Arc::new(ManualClock::new(Timestamp(
                     fixtures::now().timestamp_millis(),
                 ))),
@@ -365,6 +377,38 @@ mod window {
     }
 
     #[gpui_kit::test]
+    fn delete_moves_to_the_trash_with_an_undo_that_restores_and_selects(cx: &mut TestAppContext) {
+        let (_, app) = open(cx);
+        let id = id_of("Design review");
+        app.update(cx, |app, cx| app.select(Selection::One(id.clone()), cx));
+        app.update(cx, |app, cx| app.delete_selection(cx));
+        cx.run_until_parked();
+        assert!(!titles(&app, cx).contains(&"Design review".to_owned()));
+        let notice = app
+            .read_with(cx, |app, _| app.notice().cloned())
+            .expect("a notice");
+        assert!(notice.undo, "{notice:?}");
+        assert!(app.read_with(cx, |app, _| app.can_undo()));
+
+        app.update(cx, |app, cx| app.undo_delete(cx));
+        cx.run_until_parked();
+        assert!(titles(&app, cx).contains(&"Design review".to_owned()));
+        assert_eq!(
+            app.read_with(cx, |app, _| app.selection.clone()),
+            Selection::One(id)
+        );
+        assert!(!app.read_with(cx, |app, _| app.can_undo()));
+        assert!(!app.read_with(cx, |app, _| app.notice().unwrap().undo));
+
+        cx.executor().advance_clock(dory_gpui::app::NOTICE_TTL);
+        cx.run_until_parked();
+        assert!(
+            app.read_with(cx, |app, _| app.notice().is_none()),
+            "the notice clears"
+        );
+    }
+
+    #[gpui_kit::test]
     fn the_start_screen_has_focus_and_tab_walks_sidebar_then_toolbar(cx: &mut TestAppContext) {
         let (window, _) = open(cx);
         cx.update_window(window, |_, window, cx| {
@@ -374,10 +418,11 @@ mod window {
             assert_eq!(start.label(), Some("Start Recording"));
             assert_eq!(start.focused(), Some(true), "focused at launch");
 
-            let order: [ElementId; 5] = [
+            let order: [ElementId; 6] = [
                 "search".into(),
                 "filter".into(),
                 "recordings".into(),
+                "sidebar-resize".into(),
                 "record".into(),
                 "start-recording".into(),
             ];

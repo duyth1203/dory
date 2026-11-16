@@ -31,6 +31,7 @@ pub struct Shell {
     detail: Option<Entity<DetailPane>>,
     start_focus: FocusHandle,
     record_focus: FocusHandle,
+    undo_focus: FocusHandle,
     grant_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -60,6 +61,7 @@ impl Shell {
             detail: None,
             start_focus,
             record_focus: cx.focus_handle(),
+            undo_focus: cx.focus_handle(),
             grant_focus: cx.focus_handle(),
             _subscriptions: vec![on_select, on_app, on_appearance],
         }
@@ -313,14 +315,18 @@ impl Shell {
                     export::copy(&detail, CopyWhat::Transcript, cx);
                 }
             }))
-            .on_action(cx.listener(|this, _: &ExportMarkdown, window, cx| {
-                this.export(ExportFormat::Markdown, window, cx)
+            .on_action(cx.listener(|this, _: &ExportMarkdown, _, cx| {
+                this.export(ExportFormat::Markdown, cx)
             }))
-            .on_action(cx.listener(|this, _: &ExportText, window, cx| {
-                this.export(ExportFormat::Text, window, cx)
+            .on_action(
+                cx.listener(|this, _: &ExportText, _, cx| this.export(ExportFormat::Text, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ExportSrt, _, cx| this.export(ExportFormat::Srt, cx)))
+            .on_action(cx.listener(|this, _: &MoveToTrash, _, cx| {
+                this.app.update(cx, |app, cx| app.delete_selection(cx))
             }))
-            .on_action(cx.listener(|this, _: &ExportSrt, window, cx| {
-                this.export(ExportFormat::Srt, window, cx)
+            .on_action(cx.listener(|this, _: &UndoTrash, _, cx| {
+                this.app.update(cx, |app, cx| app.undo_delete(cx))
             }))
             .on_action(cx.listener(|this, _: &FilterAll, _, cx| {
                 this.app
@@ -345,10 +351,45 @@ impl Shell {
         self.app.read(cx).session()?.read(cx).detail()
     }
 
-    fn export(&self, format: ExportFormat, window: &mut Window, cx: &mut Context<Self>) {
+    fn export(&self, format: ExportFormat, cx: &mut Context<Self>) {
         if let Some(detail) = self.selected_detail(cx) {
-            export::export(detail, format, window, cx);
+            export::export(&self.app, detail, format, cx);
         }
+    }
+
+    fn status_line(&self, theme: &Theme, cx: &Context<Self>) -> Option<impl IntoElement + use<>> {
+        let app = self.app.read(cx);
+        let notice = app.notice()?;
+        let (text, undo) = (notice.text.clone(), notice.undo);
+        let target = self.app.clone();
+        Some(
+            a11y::node("status", Role::Status, text.clone())
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .h(px(32.))
+                .px(px(16.))
+                .text_size(theme.text(13.))
+                .text_color(theme.text_secondary)
+                .child(text)
+                .when(undo, |line| {
+                    line.child(
+                        a11y::focusable(
+                            a11y::node("undo", Role::Button, "Undo"),
+                            &self.undo_focus,
+                            theme,
+                            false,
+                        )
+                        .aria_keyshortcuts("Command-Z")
+                        .on_click(move |_, _, cx| target.update(cx, |app, cx| app.undo_delete(cx)))
+                        .px(px(8.))
+                        .rounded(px(6.))
+                        .text_color(theme.accent_text)
+                        .child("Undo"),
+                    )
+                }),
+        )
     }
 }
 
@@ -357,6 +398,7 @@ impl Render for Shell {
         let theme = Theme::get(cx);
         let narrow = window.viewport_size().width < px(NARROW_WINDOW);
         let side_padding = if narrow { 24. } else { 48. };
+        let status = self.status_line(&theme, cx);
         let page = match &self.detail {
             Some(detail) => detail.clone().into_any_element(),
             None => self.start_screen(&theme, cx).into_any_element(),
@@ -397,7 +439,8 @@ impl Render for Shell {
                                     .pb(px(32.))
                                     .child(page),
                             ),
-                    ),
+                    )
+                    .children(status),
             );
         self.with_actions(root, cx)
     }

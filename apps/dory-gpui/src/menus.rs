@@ -1,47 +1,190 @@
 //! The menu bar and key bindings for P4's commands (UX-21), and the recording context menu.
-//! Stub for agent 3, who owns this file together with `export.rs` and `prefs.rs`.
 //!
-//! Agent 3 builds, without editing any other file:
-//! - `install`: `cx.set_menus` with Dory, File, Edit, View, Recording, Window, and Help, every
-//!   item dispatching an action from `crate::actions` with the shortcut from the table in
-//!   `docs/plans/ux-redesign.md`, and `cx.bind_keys` for the same shortcuts. Space for
-//!   `TogglePlayback` binds with a context that excludes text inputs, so it still types a space.
-//!   The minimal version below only quits and binds what the shell needs to be usable.
-//! - `recording_menu`: the row context menu and the detail pane's "⋯" menu (handoff section 4):
-//!   Rename, Copy Summary, Copy Transcript, Export, Show in Finder, Move to Trash. Every item
-//!   is an action; Move to Trash waits for a core Trash API (UX-22), so leave it disabled.
+//! `install` binds the shortcuts of the table in `docs/plans/ux-redesign.md` and sets the menus
+//! once. `watch` rebuilds them when what the commands need changes: a recording is selected, its
+//! detail has a summary or a transcript, SRT is possible, or there is something to undo. Every
+//! item dispatches an action from `crate::actions`, and the window root handles it, so a menu
+//! item, a shortcut, and a button all take one path. Recording items P5 will wire stay disabled.
 //!
-//! The shell calls `install` once from `main` and `recording_menu` from each sidebar row.
+//! Space for `TogglePlayback` is not bound here. A binding without a context would also take
+//! Space from a focused button and from the search field, so the player owns that key.
+
+use std::cell::Cell;
+use std::rc::Rc;
 
 use dory_core::domain::RecordingId;
+use gpui_kit::component::input;
 use gpui_kit::component::menu::PopupMenu;
-use gpui_kit::{App, KeyBinding, Menu, MenuItem, Window};
+use gpui_kit::{App, Entity, Global, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window};
 
-use crate::actions::{
-    CopySummary, CopyTranscript, ExportMarkdown, Find, NewRecording, Quit, ShowSummary,
-    ShowTranscript,
-};
+use crate::actions::*;
+use crate::app::AppState;
+use crate::library::Selection;
+
+/// What the commands need to know to be enabled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MenuState {
+    pub has_selection: bool,
+    pub has_summary: bool,
+    pub has_transcript: bool,
+    /// The transcript has times for every segment, which SRT needs.
+    pub srt: bool,
+    pub can_undo: bool,
+}
+
+pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
+    let detail = app.session().and_then(|session| session.read(cx).detail());
+    let transcript = detail.as_ref().and_then(|d| d.transcript.as_ref());
+    MenuState {
+        has_selection: app.selection != Selection::None,
+        has_summary: detail.as_ref().is_some_and(|d| d.summary.is_some()),
+        has_transcript: transcript.is_some(),
+        srt: transcript.is_some_and(|t| !t.segments.is_empty() && t.is_timed()),
+        can_undo: app.can_undo(),
+    }
+}
+
+pub fn build(state: MenuState) -> Vec<Menu> {
+    let exportable = state.has_summary || state.has_transcript;
+    let undo = if state.can_undo {
+        "Undo Move to Trash"
+    } else {
+        "Undo"
+    };
+    vec![
+        Menu::new("Dory").items([
+            MenuItem::os_submenu("Services", SystemMenuType::Services),
+            MenuItem::separator(),
+            MenuItem::action("Quit Dory", Quit),
+        ]),
+        Menu::new("File").items([
+            MenuItem::action("New Recording", NewRecording).disabled(true),
+            MenuItem::separator(),
+            MenuItem::action("Export as Markdown…", ExportMarkdown).disabled(!exportable),
+            MenuItem::action("Export as Text…", ExportText).disabled(!exportable),
+            MenuItem::action("Export as SRT…", ExportSrt).disabled(!state.srt),
+            MenuItem::separator(),
+            MenuItem::action("Copy Summary", CopySummary).disabled(!state.has_summary),
+            MenuItem::action("Copy Transcript", CopyTranscript).disabled(!state.has_transcript),
+            MenuItem::separator(),
+            MenuItem::action("Move to Trash", MoveToTrash).disabled(!state.has_selection),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::action(undo, UndoTrash).disabled(!state.can_undo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+            MenuItem::separator(),
+            MenuItem::action("Find", Find),
+        ]),
+        Menu::new("View").items([
+            MenuItem::action("Show Summary", ShowSummary).disabled(!state.has_selection),
+            MenuItem::action("Show Transcript", ShowTranscript).disabled(!state.has_selection),
+            MenuItem::separator(),
+            MenuItem::action("Show All Recordings", FilterAll),
+            MenuItem::action("Show Processing", FilterProcessing),
+            MenuItem::action("Show Needs Attention", FilterNeedsAttention),
+            MenuItem::action("Show Done", FilterDone),
+        ]),
+        Menu::new("Recording").items([
+            MenuItem::action("New Recording", NewRecording).disabled(true),
+            MenuItem::action("Pause Recording", PauseRecording).disabled(true),
+            MenuItem::action("Stop Recording", StopRecording).disabled(true),
+            MenuItem::separator(),
+            MenuItem::action("Play or Pause", TogglePlayback).disabled(!state.has_selection),
+        ]),
+        Menu::new("Window").items([
+            MenuItem::action("Minimize", Minimize),
+            MenuItem::action("Zoom", Zoom),
+        ]),
+        Menu::new("Help").items([MenuItem::action("Dory Help", ShowHelp).disabled(true)]),
+    ]
+}
 
 pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-shift-r", NewRecording, None),
+        KeyBinding::new("cmd-shift-p", PauseRecording, None),
+        KeyBinding::new("cmd-.", StopRecording, None),
         KeyBinding::new("cmd-f", Find, None),
         KeyBinding::new("cmd-1", ShowSummary, None),
         KeyBinding::new("cmd-2", ShowTranscript, None),
         KeyBinding::new("cmd-e", ExportMarkdown, None),
         KeyBinding::new("cmd-shift-c", CopySummary, None),
+        KeyBinding::new("cmd-backspace", MoveToTrash, None),
+        KeyBinding::new("cmd-z", UndoTrash, None),
+        KeyBinding::new("cmd-m", Minimize, None),
     ]);
-    cx.set_menus([Menu::new("Dory").items([MenuItem::action("Quit Dory", Quit)])]);
+    cx.on_action(|_: &Minimize, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.minimize_window());
+        }
+    });
+    cx.on_action(|_: &Zoom, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.zoom_window());
+        }
+    });
+    cx.set_menus(build(MenuState::default()));
 }
 
+/// The app the context menu acts on, held so a right-click can select its row first.
+struct Target(Entity<AppState>);
+
+impl Global for Target {}
+
+/// Keeps the menus in step with `app`. Called once by `main` after the window opens.
+pub fn watch(app: &Entity<AppState>, cx: &mut App) {
+    cx.set_global(Target(app.clone()));
+    let shown = Rc::new(Cell::new(MenuState::default()));
+    let refresh = {
+        let app = app.clone();
+        let shown = shown.clone();
+        Rc::new(move |cx: &mut App| {
+            let state = menu_state(app.read(cx), cx);
+            if shown.replace(state) != state {
+                cx.set_menus(build(state));
+            }
+        })
+    };
+    let session = Rc::new(Cell::new(None));
+    cx.observe(app, {
+        let refresh = refresh.clone();
+        move |app, cx| {
+            let current = app.read(cx).session().cloned();
+            let id = current.as_ref().map(|s| s.entity_id());
+            if session.replace(id) != id
+                && let Some(current) = current
+            {
+                let refresh = refresh.clone();
+                cx.observe(&current, move |_, cx| refresh(cx)).detach();
+            }
+            refresh(cx);
+        }
+    })
+    .detach();
+}
+
+/// The row context menu and the detail pane's "⋯" menu. Right-clicking a row selects it first,
+/// as a Mac source list does, so every item acts on the row the menu came from.
 pub fn recording_menu(
     menu: PopupMenu,
-    _id: &RecordingId,
+    id: &RecordingId,
     _window: &mut Window,
-    _cx: &mut App,
+    cx: &mut App,
 ) -> PopupMenu {
+    if let Some(Target(app)) = cx.try_global::<Target>().map(|t| Target(t.0.clone())) {
+        app.update(cx, |app, cx| app.select(Selection::One(id.clone()), cx));
+    }
     menu.menu("Copy Summary", Box::new(CopySummary))
         .menu("Copy Transcript", Box::new(CopyTranscript))
-        .menu("Export…", Box::new(ExportMarkdown))
+        .separator()
+        .menu("Export as Markdown…", Box::new(ExportMarkdown))
+        .menu("Export as Text…", Box::new(ExportText))
+        .menu("Export as SRT…", Box::new(ExportSrt))
+        .separator()
+        .menu("Move to Trash", Box::new(MoveToTrash))
 }

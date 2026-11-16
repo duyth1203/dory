@@ -34,7 +34,11 @@ use codec::{
 };
 
 /// Version `n` of the schema is `MIGRATIONS[n - 1]`. Never edit an entry that has shipped.
-const MIGRATIONS: &[&str] = &[include_str!("schema_v1.sql"), include_str!("schema_v2.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("schema_v1.sql"),
+    include_str!("schema_v2.sql"),
+    include_str!("schema_v3.sql"),
+];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -172,7 +176,7 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 // ---- rows ---------------------------------------------------------------------------------
 
 const JOB_COLUMNS: &str = "id, recording_id, goal, done, state, stage, blocker, error_class, \
-                           error_message, priority, attempts, not_before, created_at";
+                           error_message, priority, attempts, not_before, created_at, run_fast";
 
 struct RawState {
     state: String,
@@ -192,6 +196,7 @@ struct RawJob {
     attempts: i64,
     not_before: Option<i64>,
     created_at: i64,
+    run_fast: bool,
 }
 
 fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
@@ -211,6 +216,7 @@ fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
         attempts: row.get(10)?,
         not_before: row.get(11)?,
         created_at: row.get(12)?,
+        run_fast: row.get(13)?,
     })
 }
 
@@ -255,6 +261,7 @@ fn decode_job(raw: RawJob) -> Result<Job, StoreError> {
             1 => Priority::Front,
             other => return Err(corrupt(format!("unknown priority {other}"))),
         },
+        run_fast: raw.run_fast,
         attempts: u8::try_from(raw.attempts).map_err(|_| corrupt("job attempts out of range"))?,
         not_before: raw.not_before.map(Timestamp),
         created_at: Timestamp(raw.created_at),
@@ -1054,7 +1061,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
         .prepare_cached(
             "UPDATE jobs SET goal = ?2, done = ?3, state = ?4, stage = ?5, blocker = ?6,
                              error_class = ?7, error_message = ?8, priority = ?9, attempts = ?10,
-                             not_before = ?11, created_at = ?12
+                             not_before = ?11, created_at = ?12, run_fast = ?13
              WHERE id = ?1",
         )
         .map_err(db)?
@@ -1071,6 +1078,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             i64::from(job.attempts),
             job.not_before.map(|t| t.0),
             job.created_at.0,
+            job.run_fast,
         ])
         .map_err(db)?;
     if changed == 0 {

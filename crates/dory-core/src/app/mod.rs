@@ -883,6 +883,12 @@ impl Pipeline<'_> {
         self.event(job, JobEvent::Promote)
     }
 
+    /// Use Fast This Time (UX-30): runs this one job fast from its next speech window, whatever
+    /// the setting and the Mac's conditions, without changing the setting.
+    pub fn run_fast(&self, job: JobId) -> Result<(), DoryError> {
+        self.event(job, JobEvent::RunFast)
+    }
+
     pub fn job(&self, job: JobId) -> Result<Option<Job>, StoreError> {
         self.dory.db.store.job(job)
     }

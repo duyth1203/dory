@@ -1,7 +1,7 @@
 //! The processing pace (UX-30): the pure policy over every setting, condition, and recorder
 //! state, the 2-minute hold, and the worker applying it before each window and pass.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use dory_core::app::{
@@ -200,11 +200,19 @@ struct Seen {
     threads: u8,
 }
 
-/// A speech engine that records what each call saw, and unplugs the Mac during one call.
+/// A speech engine that records what each call saw, and unplugs the Mac during one call. With a
+/// gate, it says when it reaches that call and waits there until the test lets it go on.
 struct Watching {
     machine: Arc<FakeMachine>,
     unplug_during: Option<usize>,
     seen: Mutex<Vec<Seen>>,
+    gate: Mutex<Option<Gate>>,
+}
+
+struct Gate {
+    at: usize,
+    reached: mpsc::Sender<()>,
+    resume: mpsc::Receiver<()>,
 }
 
 impl Transcriber for Watching {
@@ -220,6 +228,12 @@ impl Transcriber for Watching {
         });
         if self.unplug_during == Some(seen.len() - 1) {
             self.machine.set(on_battery());
+        }
+        let call = seen.len() - 1;
+        drop(seen);
+        if let Some(gate) = self.gate.lock().unwrap().as_ref().filter(|g| g.at == call) {
+            gate.reached.send(()).unwrap();
+            gate.resume.recv().unwrap();
         }
         sink.segment(RawSegment {
             range: TimeRange::new(Ms(0), Ms(1_000)).unwrap(),
@@ -251,6 +265,7 @@ impl Rig {
                 machine: machine.clone(),
                 unplug_during,
                 seen: Mutex::new(Vec::new()),
+                gate: Mutex::new(None),
             }),
             machine,
             llm: Arc::new(FakeLanguageModel::new("## Key points\n- Ship it.")),
@@ -295,7 +310,11 @@ impl Rig {
 
     /// A sealed mic-only recording of `seconds`, cut into 30-second windows.
     fn seed(&self, seconds: u64) -> RecordingId {
-        let id = RecordingId::parse("paced").unwrap();
+        self.seed_as("paced", seconds)
+    }
+
+    fn seed_as(&self, name: &str, seconds: u64) -> RecordingId {
+        let id = RecordingId::parse(name).unwrap();
         let layout = ChannelLayout::MicOnly;
         let mut writer = self.takes.begin(&id, layout, 1_000).unwrap();
         writer.write(&vec![0.1; seconds as usize * 1_000]).unwrap();
@@ -421,4 +440,65 @@ fn automatic_runs_light_while_the_recorder_is_busy() {
         [LIGHT_THREADS]
     );
     assert!(budgets(&events, Stage::Transcribe).contains(&Some(light(LightReason::Recording))));
+}
+
+#[test]
+fn use_fast_this_time_runs_that_job_fast_from_the_next_window_and_no_other() {
+    let rig = Rig::new(on_battery(), None);
+    let id = rig.seed(120);
+    let (reached_tx, reached) = mpsc::channel();
+    let (resume, resume_rx) = mpsc::channel();
+    *rig.engine.gate.lock().unwrap() = Some(Gate {
+        at: 1,
+        reached: reached_tx,
+        resume: resume_rx,
+    });
+    let dory = rig.open(None);
+    let events = dory.events();
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    reached
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the engine reaches window 2");
+    let job = dory.library().jobs(&id).unwrap()[0].id;
+    dory.pipeline().run_fast(job).unwrap();
+    assert!(
+        dory.pipeline().job(job).unwrap().unwrap().run_fast,
+        "the job records that it runs fast"
+    );
+    resume.send(()).unwrap();
+    eventually("the job to succeed", || {
+        dory.library().jobs(&id).unwrap().pop().map(|j| j.state) == Some(JobState::Succeeded)
+    });
+
+    let fast = fast_count();
+    let threads: Vec<u8> = rig.seen().iter().map(|s| s.threads).collect();
+    assert_eq!(
+        threads,
+        [LIGHT_THREADS, LIGHT_THREADS, fast, fast],
+        "on battery until the override, fast after it"
+    );
+    let shown = budgets(&events, Stage::Transcribe);
+    assert_eq!(
+        shown.last(),
+        Some(&Some(Budget::Fast { threads: fast })),
+        "progress stops saying why it runs light: {shown:?}"
+    );
+
+    let other = rig.seed_as("next", 30);
+    finish(&dory, &other, Goal::TRANSCRIBE);
+    assert_eq!(
+        rig.seen().last().map(|s| s.threads),
+        Some(LIGHT_THREADS),
+        "the next job follows the setting again"
+    );
+}
+
+#[test]
+fn use_fast_this_time_is_refused_once_the_job_is_done() {
+    let rig = Rig::new(on_battery(), None);
+    let id = rig.seed(30);
+    let dory = rig.open(None);
+    finish(&dory, &id, Goal::TRANSCRIBE);
+    let job = dory.library().jobs(&id).unwrap()[0].id;
+    assert!(dory.pipeline().run_fast(job).is_err());
 }

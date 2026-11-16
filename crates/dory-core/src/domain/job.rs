@@ -74,6 +74,9 @@ pub struct Job {
     pub done: Vec<Stage>,
     pub state: JobState,
     pub priority: Priority,
+    /// The user chose Use Fast This Time (UX-30): this job transcribes at Fast whatever the
+    /// setting and the Mac's conditions. Other jobs keep following the setting.
+    pub run_fast: bool,
     /// Starts of the current stage. Reset when a stage finishes or the user retries.
     pub attempts: u8,
     /// Retry backoff. The worker skips the job until then.
@@ -162,6 +165,9 @@ pub enum JobEvent {
     /// the worker is not an error, and the wish holds when the job is queued again. Illegal once
     /// the job is terminal.
     Promote,
+    /// Use Fast This Time. Accepted while the job runs or waits, like `Promote`, and kept when
+    /// the job is queued again.
+    RunFast,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -186,6 +192,7 @@ impl Job {
             done: Vec::new(),
             state: JobState::Queued,
             priority,
+            run_fast: false,
             attempts: 0,
             not_before: None,
             created_at,
@@ -222,6 +229,10 @@ impl Job {
                 }
                 E::Promote => {
                     next.priority = Priority::Front;
+                    true
+                }
+                E::RunFast => {
+                    next.run_fast = true;
                     true
                 }
                 E::Cancelled => {
@@ -282,6 +293,10 @@ impl Job {
                     next.priority = Priority::Front;
                     true
                 }
+                E::RunFast => {
+                    next.run_fast = true;
+                    true
+                }
                 E::Cancelled => {
                     next.state = S::Cancelled;
                     true
@@ -291,6 +306,10 @@ impl Job {
             S::Blocked { .. } => match event {
                 E::Promote => {
                     next.priority = Priority::Front;
+                    true
+                }
+                E::RunFast => {
+                    next.run_fast = true;
                     true
                 }
                 E::Unblock => {
@@ -350,6 +369,7 @@ mod tests {
             done: done.to_vec(),
             state,
             priority: Priority::Normal,
+            run_fast: false,
             attempts: 0,
             not_before: None,
             created_at: Timestamp(0),
@@ -399,6 +419,9 @@ mod tests {
             }),
             (St::Queued | St::Running { .. } | St::Blocked { .. }, E::Promote) => {
                 with(&|j| j.priority = Priority::Front)
+            }
+            (St::Queued | St::Running { .. } | St::Blocked { .. }, E::RunFast) => {
+                with(&|j| j.run_fast = true)
             }
             (St::Queued, E::Cancelled) => with(&|j| j.state = St::Cancelled),
 
@@ -478,9 +501,10 @@ mod tests {
             JobEvent::Unblock => 7,
             JobEvent::Retake => 8,
             JobEvent::Promote => 9,
+            JobEvent::RunFast => 10,
         }
     }
-    const EVENT_VARIANTS: usize = 10;
+    const EVENT_VARIANTS: usize = 11;
 
     fn all_states() -> Vec<JobState> {
         vec![
@@ -529,6 +553,7 @@ mod tests {
             JobEvent::Unblock,
             JobEvent::Retake,
             JobEvent::Promote,
+            JobEvent::RunFast,
         ]
     }
 
@@ -796,6 +821,20 @@ mod tests {
         for state in [JobState::Succeeded, JobState::Cancelled] {
             assert!(job(Goal::ALL, &[], state).on(&JobEvent::Promote).is_err());
         }
+    }
+
+    #[test]
+    fn run_fast_survives_a_retry_and_a_wait() {
+        let fast = job(Goal::ALL, &[], running(T))
+            .on(&JobEvent::RunFast)
+            .and_then(|j| {
+                j.on(&JobEvent::Retry {
+                    not_before: Timestamp(5),
+                })
+            })
+            .and_then(|j| j.on(&JobEvent::RunFast))
+            .unwrap();
+        assert_eq!((fast.state, fast.run_fast), (JobState::Queued, true));
     }
 
     #[test]

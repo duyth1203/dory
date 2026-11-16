@@ -52,6 +52,9 @@ fn every_contract_case_runs_on_sqlite_by_name() {
     }
 }
 
+/// The schema version this build migrates to.
+const LATEST: u32 = 3;
+
 #[test]
 fn state_survives_closing_and_reopening_the_database() {
     let dir = tempfile::tempdir().unwrap();
@@ -70,12 +73,18 @@ fn state_survives_closing_and_reopening_the_database() {
             .unwrap();
         let job = store.jobs_for(&rid("r")).unwrap().remove(0);
         store
-            .apply(vec![Change::Job {
-                job: job.id,
-                event: JobEvent::Started {
-                    stage: Stage::Transcribe,
+            .apply(vec![
+                Change::Job {
+                    job: job.id,
+                    event: JobEvent::Started {
+                        stage: Stage::Transcribe,
+                    },
                 },
-            }])
+                Change::Job {
+                    job: job.id,
+                    event: JobEvent::RunFast,
+                },
+            ])
             .unwrap();
     }
     let store = open(&dir);
@@ -85,13 +94,14 @@ fn state_survives_closing_and_reopening_the_database() {
     );
     let job = store.jobs_for(&rid("r")).unwrap().remove(0);
     assert_eq!(
-        (job.state, job.priority, job.attempts),
+        (job.state, job.priority, job.attempts, job.run_fast),
         (
             JobState::Running {
                 stage: Stage::Transcribe
             },
             Priority::Front,
-            1
+            1,
+            true
         )
     );
 }
@@ -100,7 +110,7 @@ fn state_survives_closing_and_reopening_the_database() {
 fn a_new_database_is_wal_and_at_the_latest_schema_version() {
     let dir = tempfile::tempdir().unwrap();
     let store = open(&dir);
-    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(store.schema_version().unwrap(), LATEST);
     let conn = rusqlite::Connection::open(dir.path().join("dory.db")).unwrap();
     let mode: String = conn
         .query_row("PRAGMA journal_mode", [], |r| r.get(0))
@@ -116,7 +126,7 @@ fn reopening_does_not_rerun_migrations_or_lose_rows() {
         .unwrap();
     for _ in 0..3 {
         let store = open(&dir);
-        assert_eq!(store.schema_version().unwrap(), 2);
+        assert_eq!(store.schema_version().unwrap(), LATEST);
         assert_eq!(
             store.recordings(&RecordingQuery::default()).unwrap().len(),
             1
@@ -138,7 +148,7 @@ fn a_database_from_a_newer_build_is_refused_untouched() {
     match SqliteStore::open(&path) {
         Err(StoreError::SchemaTooNew {
             found: 99,
-            supported: 2,
+            supported: LATEST,
         }) => {}
         other => panic!("expected SchemaTooNew, got {other:?}"),
     }
@@ -186,7 +196,7 @@ fn a_version_1_database_migrates_to_checkpoints_and_keeps_its_rows() {
         .unwrap();
     }
     let store = SqliteStore::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 2);
+    assert_eq!(store.schema_version().unwrap(), LATEST);
     assert_eq!(
         store.recording(&rid("old")).unwrap(),
         Some(recording("old", 7))

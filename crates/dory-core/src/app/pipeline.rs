@@ -135,13 +135,22 @@ struct Pacing {
 }
 
 impl Pacing {
-    /// Reads the setting again each time, so a change applies from the next window.
-    fn budget(&mut self) -> Budget {
-        let setting = self.processing.unwrap_or_else(|| {
-            self.store
-                .settings()
-                .map_or(Processing::Auto, |s| s.processing)
-        });
+    /// Reads the setting and the job again each time, so a change of either applies from the
+    /// next window. A job the user ran fast is Fast whatever the setting says.
+    fn budget(&mut self, job: JobId) -> Budget {
+        let run_fast = self
+            .store
+            .job(job)
+            .is_ok_and(|j| j.is_some_and(|j| j.run_fast));
+        let setting = if run_fast {
+            Processing::Fast
+        } else {
+            self.processing.unwrap_or_else(|| {
+                self.store
+                    .settings()
+                    .map_or(Processing::Auto, |s| s.processing)
+            })
+        };
         self.pacer.next(
             setting,
             self.machine.conditions(),
@@ -247,6 +256,7 @@ impl Worker {
             return;
         }
 
+        let id = job.id;
         let outcome = match self.deps.db.store.settings() {
             Ok(settings) => stages::run(
                 stage,
@@ -259,7 +269,7 @@ impl Worker {
                     cancel: &cancel,
                     settings: &settings,
                     now_mono: self.deps.clock.monotonic_ms(),
-                    pace: &mut || self.pacing.budget(),
+                    pace: &mut || self.pacing.budget(id),
                 },
             ),
             Err(error) => Err(stages::failed(error)),

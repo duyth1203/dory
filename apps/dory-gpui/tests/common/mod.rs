@@ -85,6 +85,14 @@ pub fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
 }
 
 pub fn open_with(cx: &mut TestAppContext, dory: Dory) -> (AnyWindowHandle, Entity<AppState>) {
+    open_with_prefs(cx, dory, Prefs::default())
+}
+
+pub fn open_with_prefs(
+    cx: &mut TestAppContext,
+    dory: Dory,
+    prefs: Prefs,
+) -> (AnyWindowHandle, Entity<AppState>) {
     cx.update(gpui_kit::init);
     let opened = cx.update(|cx| {
         let mut state = None;
@@ -98,7 +106,7 @@ pub fn open_with(cx: &mut TestAppContext, dory: Dory) -> (AnyWindowHandle, Entit
             },
             cx,
             |window, cx| {
-                let (app, shell) = dory_gpui::build(dory, Prefs::default(), window, cx);
+                let (app, shell) = dory_gpui::build(dory, prefs, window, cx);
                 state = Some(app);
                 shell
             },

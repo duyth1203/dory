@@ -13,14 +13,15 @@ mod player;
 mod queue;
 mod record;
 mod session;
+mod setup;
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use dory_core::app::{Dory, Event, RecorderStatus, Trashed};
-use dory_core::domain::{JobId, RecordingId, RecordingRow};
+use dory_core::domain::{JobId, RecordingId, RecordingQuery, RecordingRow, Settings};
 use dory_core::models::ModelRef;
-use dory_core::ports::capture::{Access, CaptureCaps};
+use dory_core::ports::capture::{Access, Source};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 pub use player::PlayerHandle;
@@ -29,6 +30,7 @@ pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 
 use self::core::Core;
 use crate::library::{Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal};
+use crate::onboarding::OnboardingStep;
 use crate::prefs::Prefs;
 use crate::processing::{Rate, Run};
 use crate::record_control::Live;
@@ -43,7 +45,8 @@ pub enum DetailTab {
     Transcript,
 }
 
-/// What the start screen's sources card shows (UX-6), probed once at launch with no prompts.
+/// What the start screen's sources card and onboarding show (UX-6, UX-16), probed at launch and
+/// whenever the window comes back to the front, with no prompts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sources {
     pub microphone: Access,
@@ -113,7 +116,10 @@ pub struct AppState {
     downloads: HashMap<ModelRef, Download>,
     /// Speech and speaker models by id, for "Download <model>".
     models: HashMap<ModelRef, ModelInfo>,
-    auto_process: bool,
+    /// The core's settings as last announced.
+    settings: Settings,
+    /// Sources whose macOS prompt is up.
+    asking: HashSet<Source>,
     epoch: Instant,
     _pump: Task<()>,
 }
@@ -122,11 +128,22 @@ impl EventEmitter<AppEvent> for AppState {}
 impl EventEmitter<Saved> for AppState {}
 
 impl AppState {
-    pub fn new(dory: Dory, prefs: Prefs, cx: &mut Context<Self>) -> Self {
+    pub fn new(dory: Dory, mut prefs: Prefs, cx: &mut Context<Self>) -> Self {
         let events = dory.events();
         let recorder = dory.recorder().status();
-        let probe = dory.recorder().probe();
-        let devices = dory.recorder().input_devices();
+        if prefs.onboarding.is_none() {
+            // One indexed row, once per install, before the first frame, so a first run never
+            // flashes the start screen.
+            let one = RecordingQuery {
+                text: None,
+                limit: Some(1),
+            };
+            let has_recordings = dory.library().list(&one).is_ok_and(|rows| !rows.is_empty());
+            prefs.onboarding = Some(OnboardingStep::resolve(None, has_recordings));
+        }
+        if let Some(step) = prefs.onboarding {
+            eprintln!("onboarding: {}", step.as_str());
+        }
         let core = Core::new(dory);
         record::load_models(&core, cx);
         record::load_settings(&core, cx);
@@ -142,27 +159,6 @@ impl AppState {
                 }
             }
         });
-        cx.spawn(async move |this, cx| {
-            let caps = probe.await.unwrap_or(CaptureCaps {
-                microphone: Access::Unsupported,
-                system_audio: Access::Unsupported,
-                unsupported: None,
-            });
-            let microphone_name = devices
-                .await
-                .ok()
-                .and_then(|d| d.into_iter().find(|d| d.is_default))
-                .map(|d| d.name);
-            let _ = this.update(cx, |state, cx| {
-                state.sources = Some(Sources {
-                    microphone: caps.microphone,
-                    microphone_name,
-                    system_audio: caps.system_audio,
-                });
-                cx.notify();
-            });
-        })
-        .detach();
         let mut state = Self {
             core,
             recordings: Vec::new(),
@@ -192,11 +188,13 @@ impl AppState {
             rate: None,
             downloads: HashMap::new(),
             models: HashMap::new(),
-            auto_process: true,
+            settings: Settings::default(),
+            asking: HashSet::new(),
             epoch: Instant::now(),
             _pump: pump,
         };
         state.reload(cx);
+        state.reprobe(cx);
         state
     }
 

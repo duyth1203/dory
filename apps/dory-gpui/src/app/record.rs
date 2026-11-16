@@ -80,7 +80,7 @@ pub(super) fn load_settings(core: &Core, cx: &mut Context<AppState>) {
     cx.spawn(async move |this, cx| {
         if let Ok(settings) = settings.await {
             let _ = this.update(cx, |state, cx| {
-                state.auto_process = settings.auto_process;
+                state.settings = settings;
                 cx.notify();
             });
         }
@@ -121,7 +121,7 @@ impl AppState {
 
     /// Settings > Transcription > Process recordings automatically (UX-11).
     pub fn auto_process(&self) -> bool {
-        self.auto_process
+        self.settings.auto_process
     }
 
     /// The toolbar button, File > New Recording, the start screen, and the menu-bar extra.

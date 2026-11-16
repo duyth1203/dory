@@ -1,7 +1,7 @@
 //! The detail pane for a selected recording (UX-2 to UX-4).
 //!
 //! Inside the shell's centered 720 pt column, top to bottom: the editable title (30 bold, saved
-//! with `Session::set_title`), the metadata line (date, duration, layout, detected languages; 14
+//! with `Session::set_title`), the metadata line (date, duration, detected languages, layout; 14
 //! secondary), the player, then [`Body`]: the tab row and tab content, or the state that takes
 //! their place. The page scrolls as one surface, the shell's.
 //!
@@ -113,7 +113,8 @@ where
     library::title(&row, tz)
 }
 
-/// "Thu 12 Nov 2026, 10:30 · 48 min · Mic and system audio · English".
+/// "Thu 12 Nov 2026, 10:30 · 48 min · English · Mic and system audio". The detected language sits
+/// next to the duration (UX-26).
 pub fn meta_line<Tz: TimeZone>(
     recording: &Recording,
     transcript: Option<&Transcript>,
@@ -130,6 +131,12 @@ where
     if let Some(take) = recording.take {
         parts.push(library::short_duration(take.duration));
     }
+    let languages: Vec<String> = transcript
+        .map(|t| t.detected_languages.iter().map(language_name).collect())
+        .unwrap_or_default();
+    if !languages.is_empty() {
+        parts.push(languages.join(" and "));
+    }
     parts.push(
         match recording.layout {
             ChannelLayout::MicSystem => "Mic and system audio",
@@ -139,33 +146,42 @@ where
         }
         .to_owned(),
     );
-    let languages: Vec<String> = transcript
-        .map(|t| t.detected_languages.iter().map(language_name).collect())
-        .unwrap_or_default();
-    if !languages.is_empty() {
-        parts.push(languages.join(" and "));
-    }
     parts.join(" · ")
 }
 
-fn language_name(tag: &dory_core::domain::LangTag) -> String {
-    match tag.primary() {
-        "en" => "English",
-        "fr" => "French",
-        "de" => "German",
-        "es" => "Spanish",
-        "it" => "Italian",
-        "pt" => "Portuguese",
-        "nl" => "Dutch",
-        "vi" => "Vietnamese",
-        "ja" => "Japanese",
-        "zh" => "Chinese",
-        "ko" => "Korean",
-        "ru" => "Russian",
-        _ => return tag.to_string(),
-    }
-    .to_owned()
+/// The languages **Re-transcribe in…** offers, by primary subtag, in menu order.
+pub const LANGUAGES: [(&str, &str); 14] = [
+    ("en", "English"),
+    ("zh", "Chinese"),
+    ("nl", "Dutch"),
+    ("tl", "Filipino"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("es", "Spanish"),
+    ("th", "Thai"),
+    ("vi", "Vietnamese"),
+];
+
+/// "French" for `fr-FR`, or the tag itself for a language outside [`LANGUAGES`].
+pub fn language_name(tag: &dory_core::domain::LangTag) -> String {
+    let primary = match tag.primary() {
+        "fil" => "tl",
+        other => other,
+    };
+    LANGUAGES
+        .iter()
+        .find(|(code, _)| *code == primary)
+        .map_or_else(|| tag.to_string(), |(_, name)| (*name).to_owned())
 }
+
+/// UX-17: a recording made before its speech model is on this Mac is kept, not failed.
+pub const WAITS_FOR_MODEL: &str =
+    "The recording is saved and waits in the queue. It transcribes once the model is on this Mac.";
 
 /// Where the column, the player card, and the tab row sat in the last prepaint.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -549,7 +565,7 @@ fn processing(status: RowStatus, text: String, theme: &Theme) -> a11y::Node {
 }
 
 /// A button in the detail column: 28 pt tall, accent-filled when `primary`.
-fn button(
+pub(crate) fn button(
     id: &'static str,
     label: impl Into<SharedString>,
     primary: bool,
@@ -903,7 +919,7 @@ impl Render for DetailPane {
                         "detail-state",
                         Role::Group,
                         problem.text.clone(),
-                        None,
+                        matches!(problem.fix, Fix::Download(_)).then(|| WAITS_FOR_MODEL.into()),
                         &theme,
                     ))
                     .children(fix)
@@ -1057,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn the_meta_line_has_date_duration_layout_and_languages() {
+    fn the_meta_line_has_date_duration_languages_and_layout() {
         let mut done = detail("Design review");
         assert_eq!(
             meta_line(&done.recording, done.transcript.as_ref(), &fixtures::zone()),
@@ -1071,7 +1087,7 @@ mod tests {
         ];
         assert_eq!(
             meta_line(&done.recording, done.transcript.as_ref(), &fixtures::zone()),
-            "Thu 12 Nov 2026, 10:30 · 48 min · Mic and system audio · English and French"
+            "Thu 12 Nov 2026, 10:30 · 48 min · English and French · Mic and system audio"
         );
     }
 }

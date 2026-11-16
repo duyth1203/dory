@@ -6,6 +6,7 @@
 //! item dispatches an action from `crate::actions`, and the window root handles it, so a menu
 //! item, a shortcut, and a button all take one path. The Recording menu follows the recorder:
 //! New Recording while idle, Pause or Resume and Stop while a take is live, Undo Stop in grace.
+//! Its **Re-transcribe in…** submenu and the row menu's offer Automatic and [`LANGUAGES`] (UX-26).
 //!
 //! Space for `TogglePlayback` is not bound here. A binding without a context would also take
 //! Space from a focused button and from the search field, so the player owns that key.
@@ -17,10 +18,13 @@ use dory_core::app::RecorderStatus;
 use dory_core::domain::RecordingId;
 use gpui_kit::component::input;
 use gpui_kit::component::menu::PopupMenu;
-use gpui_kit::{App, Entity, Global, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window};
+use gpui_kit::{
+    App, Context, Entity, Global, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window,
+};
 
 use crate::actions::*;
 use crate::app::AppState;
+use crate::detail::LANGUAGES;
 use crate::library::Selection;
 
 /// What the commands need to know to be enabled.
@@ -85,6 +89,8 @@ pub fn build(state: MenuState) -> Vec<Menu> {
     };
     vec![
         Menu::new("Dory").items([
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
             MenuItem::separator(),
             MenuItem::action("Quit Dory", Quit),
@@ -126,6 +132,11 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Stop Recording", StopRecording).disabled(!live),
             MenuItem::action("Undo Stop", UndoStop).disabled(state.recorder != Recorder::Grace),
             MenuItem::separator(),
+            MenuItem::submenu(
+                Menu::new("Re-transcribe in").items(retranscribe_choices().map(
+                    |(name, action)| MenuItem::action(name, action).disabled(!state.has_selection),
+                )),
+            ),
             MenuItem::action("Play or Pause", TogglePlayback).disabled(!state.has_selection),
         ]),
         Menu::new("Window").items([
@@ -152,6 +163,7 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("cmd-backspace", MoveToTrash, None),
         KeyBinding::new("cmd-z", UndoTrash, None),
         KeyBinding::new("cmd-m", Minimize, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {
@@ -174,6 +186,11 @@ impl Global for Target {}
 /// Keeps the menus in step with `app`. Called once by `main` after the window opens.
 pub fn watch(app: &Entity<AppState>, cx: &mut App) {
     cx.set_global(Target(app.clone()));
+    // Global rather than at the window root, so Command-Comma also works from the Settings window.
+    cx.on_action(|_: &OpenSettings, cx| {
+        let app = cx.global::<Target>().0.clone();
+        crate::settings_window::open(&app, cx);
+    });
     let shown = Rc::new(Cell::new(MenuState::default()));
     let refresh = {
         let app = app.clone();
@@ -208,12 +225,17 @@ pub fn watch(app: &Entity<AppState>, cx: &mut App) {
 pub fn recording_menu(
     menu: PopupMenu,
     id: &RecordingId,
-    _window: &mut Window,
-    cx: &mut App,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
 ) -> PopupMenu {
-    if let Some(Target(app)) = cx.try_global::<Target>().map(|t| Target(t.0.clone())) {
+    let target = cx.try_global::<Target>().map(|t| t.0.clone());
+    if let Some(app) = &target {
         app.update(cx, |app, cx| app.select(Selection::One(id.clone()), cx));
     }
+    let current = target.and_then(|app| {
+        let session = app.read(cx).session()?.read(cx).detail()?;
+        Some(session.recording.language.clone())
+    });
     menu.menu("Copy Summary", Box::new(CopySummary))
         .menu("Copy Transcript", Box::new(CopyTranscript))
         .separator()
@@ -221,5 +243,26 @@ pub fn recording_menu(
         .menu("Export as Text…", Box::new(ExportText))
         .menu("Export as SRT…", Box::new(ExportSrt))
         .separator()
+        .submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
+            retranscribe_choices().fold(menu, |menu, (name, action)| {
+                let checked = current.as_ref().is_some_and(|c| action.picks(c));
+                menu.menu_with_check(name, checked, Box::new(action))
+            })
+        })
+        .separator()
         .menu("Move to Trash", Box::new(MoveToTrash))
+}
+
+/// Automatic, then each language of [`LANGUAGES`].
+pub fn retranscribe_choices() -> impl Iterator<Item = (&'static str, RetranscribeIn)> {
+    std::iter::once(("Automatic", RetranscribeIn { language: None })).chain(LANGUAGES.iter().map(
+        |(code, name)| {
+            (
+                *name,
+                RetranscribeIn {
+                    language: Some(*code),
+                },
+            )
+        },
+    ))
 }

@@ -1,6 +1,6 @@
-//! The window root: direction C's layout, the toolbar (UX-5), the start screen (UX-6), and the
-//! window-level handlers for every action in `crate::actions`, so a command works whatever has
-//! focus and no view has to know who owns it.
+//! The window root: direction C's layout, the toolbar (UX-5), the start screen (UX-6), first run
+//! (UX-16) in its place until onboarding is done, and the window-level handlers for every action
+//! in `crate::actions`, so a command works whatever has focus and no view has to know who owns it.
 //!
 //! Layout: the sidebar is a panel inset 8 pt from the top, left, and bottom edges. To its right,
 //! a 52 pt toolbar holds only the record control, and below it the page scrolls one centered
@@ -13,7 +13,7 @@ use gpui_kit::{
     Window, div, prelude::FluentBuilder as _, px,
 };
 
-use dory_core::ports::capture::Access;
+use dory_core::ports::capture::Source;
 
 use crate::a11y;
 use crate::actions::*;
@@ -21,6 +21,7 @@ use crate::app::{AppEvent, AppState, DetailTab};
 use crate::detail::DetailPane;
 use crate::export::{self, CopyWhat, ExportFormat};
 use crate::library::StatusFilter;
+use crate::onboarding::{self, Onboarding, OnboardingStep};
 use crate::record_control::{self, RecordControl};
 use crate::sidebar::Sidebar;
 use crate::theme::{self, Theme};
@@ -32,10 +33,13 @@ pub struct Shell {
     sidebar: Entity<Sidebar>,
     detail: Option<Entity<DetailPane>>,
     record: Entity<RecordControl>,
+    onboarding: Entity<Onboarding>,
+    /// The step the last frame showed, so finishing first run focuses Start Recording.
+    step: OnboardingStep,
     start_focus: FocusHandle,
     undo_focus: FocusHandle,
     undo_stop_focus: FocusHandle,
-    grant_focus: FocusHandle,
+    grant_focus: [FocusHandle; 2],
     _subscriptions: Vec<Subscription>,
 }
 
@@ -43,6 +47,8 @@ impl Shell {
     pub fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| Sidebar::new(app.clone(), window, cx));
         let record = cx.new(|cx| RecordControl::new(app.clone(), cx));
+        let onboarding = cx.new(|cx| Onboarding::new(app.clone(), cx));
+        let step = app.read(cx).onboarding();
         let on_select = cx.subscribe_in(&app, window, |this, app, event: &AppEvent, window, cx| {
             if *event == AppEvent::SelectionChanged {
                 this.detail = app.read(cx).session().cloned().map(|session| {
@@ -64,20 +70,37 @@ impl Shell {
         let on_focus_lost = cx.on_focus_lost(window, |this, window, cx| {
             let target = match this.detail {
                 Some(_) => this.sidebar.read(cx).list_focus().clone(),
+                None if this.app.read(cx).onboarding() != OnboardingStep::Done => {
+                    this.onboarding.read(cx).primary_focus().clone()
+                }
                 None => this.start_focus.clone(),
             };
             window.focus(&target, cx);
+        });
+        // Coming back from System Settings is the moment a permission changes (UX-16).
+        let on_activation = cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.app.update(cx, |app, cx| app.reprobe(cx));
+            }
         });
         Self {
             app,
             sidebar,
             detail: None,
             record,
+            onboarding,
+            step,
             start_focus,
             undo_focus: cx.focus_handle(),
             undo_stop_focus: cx.focus_handle(),
-            grant_focus: cx.focus_handle(),
-            _subscriptions: vec![on_select, on_app, on_appearance, on_focus_lost],
+            grant_focus: [cx.focus_handle(), cx.focus_handle()],
+            _subscriptions: vec![
+                on_select,
+                on_app,
+                on_appearance,
+                on_focus_lost,
+                on_activation,
+            ],
         }
     }
 
@@ -115,17 +138,15 @@ impl Shell {
                 .text_size(theme.text(12.))
                 .child(key)
         };
-        let source_row = |name: &'static str, device: Option<String>, access: Option<Access>| {
-            let (status, ready) = match access {
-                Some(Access::Granted) => ("Ready", true),
-                Some(Access::Undetermined) => ("Asked when you record", true),
-                Some(Access::Denied) => ("Not allowed", false),
-                Some(Access::Unsupported) => ("Not available on this Mac", false),
-                None => ("Checking", true),
+        let source_row = |source: Source, device: Option<String>, focus: &FocusHandle| {
+            let name = match source {
+                Source::Microphone => "Microphone",
+                Source::SystemAudio => "System audio",
             };
+            let status = onboarding::permission_row(source, app.permission(source));
             let label = match &device {
-                Some(device) => format!("{name}, {device}, {status}"),
-                None => format!("{name}, {status}"),
+                Some(device) => format!("{name}, {device}, {}", status.word),
+                None => format!("{name}, {}", status.word),
             };
             a11y::node(format!("source-{name}"), Role::ListItem, label)
                 .flex()
@@ -145,39 +166,19 @@ impl Shell {
                                 .child(d)
                         })),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(4.))
-                        .text_size(theme.text(12.))
-                        .text_color(if ready {
-                            theme.text_secondary
-                        } else {
-                            theme.attention
-                        })
-                        .child(if ready { "✓" } else { "▲" })
-                        .child(status),
-                )
-                .when(!ready && access == Some(Access::Denied), |row| {
-                    row.child(
-                        a11y::focusable(
-                            a11y::node(
-                                format!("grant-{name}"),
-                                Role::Button,
-                                format!("Grant {name}"),
-                            ),
-                            &self.grant_focus,
-                            theme,
-                            false,
-                        )
-                        .px(px(10.))
-                        .rounded(px(6.))
-                        .bg(theme.control_bg)
-                        .on_click(|_, _, _| eprintln!("grant: onboarding (P6) wires this"))
-                        .child("Grant"),
-                    )
+                .child(onboarding::permission_status(status, theme))
+                .when(status.attention, |row| {
+                    row.children(onboarding::permission_button(
+                        &self.app, source, focus, theme, cx,
+                    ))
                 })
         };
+        let microphone = source_row(
+            Source::Microphone,
+            sources.as_ref().and_then(|s| s.microphone_name.clone()),
+            &self.grant_focus[0],
+        );
+        let system_audio = source_row(Source::SystemAudio, None, &self.grant_focus[1]);
         div()
             .flex()
             .flex_col()
@@ -249,16 +250,8 @@ impl Shell {
                     .bg(theme.card_bg)
                     .border_1()
                     .border_color(theme.card_border)
-                    .child(source_row(
-                        "Microphone",
-                        sources.as_ref().and_then(|s| s.microphone_name.clone()),
-                        sources.as_ref().map(|s| s.microphone),
-                    ))
-                    .child(source_row(
-                        "System audio",
-                        None,
-                        sources.as_ref().map(|s| s.system_audio),
-                    )),
+                    .child(microphone)
+                    .child(system_audio),
             )
     }
 
@@ -343,6 +336,10 @@ impl Shell {
                 this.app
                     .update(cx, |app, cx| app.set_filter(StatusFilter::Done, cx))
             }))
+            .on_action(cx.listener(|this, action: &RetranscribeIn, _, cx| {
+                this.app
+                    .update(cx, |app, cx| app.retranscribe_selection(action.pref(), cx))
+            }))
     }
 
     fn selected_detail(&self, cx: &Context<Self>) -> Option<std::sync::Arc<crate::app::Detail>> {
@@ -408,8 +405,13 @@ impl Render for Shell {
                     .justify_center()
                     .child(toast)
             });
+        let step = self.app.read(cx).onboarding();
+        if std::mem::replace(&mut self.step, step) != step && step == OnboardingStep::Done {
+            window.focus(&self.start_focus, cx);
+        }
         let page = match &self.detail {
             Some(detail) => detail.clone().into_any_element(),
+            None if step != OnboardingStep::Done => self.onboarding.clone().into_any_element(),
             None => self.start_screen(&theme, cx).into_any_element(),
         };
         let root = div()

@@ -26,7 +26,7 @@ async-channel.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSString", "NSDictionary", "NSValue", "NSBundle", "NSError", "NSObject", "NSThread"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSLocale", "NSDictionary", "NSValue", "NSBundle", "NSError", "NSObject", "NSThread"] }
 objc2-app-kit = { version = "0.3", features = ["NSColor", "NSColorSpace", "NSAccessibility", "NSAccessibilityConstants", "NSApplication", "NSResponder", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSMenu", "NSMenuItem", "NSWindow", "NSRunningApplication", "NSCell", "NSButtonCell", "NSActionCell"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "bitflags", "UNError", "UNNotification", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationSound", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 

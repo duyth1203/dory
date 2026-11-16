@@ -1,4 +1,4 @@
-//! Window state that survives a relaunch (UX-24).
+//! Window state that survives a relaunch (UX-24), and the first-run step (UX-16).
 //!
 //! It lives in a versioned JSON file at `<data_dir>/ui-prefs.json`, not in the macOS config
 //! folder. `DORY_DATA_DIR` then isolates it, so a test lane or a copied library never touches the
@@ -7,7 +7,7 @@
 //!
 //! `watch` restores the selection on the first list of rows (only after a short absence, see
 //! [`RESTORE_WITHIN`]) and saves with a debounce whenever the window size, the sidebar width, or
-//! the selection changes, and once more on quit with the quit time.
+//! the selection or the onboarding step changes, and once more on quit with the quit time.
 
 use std::cell::RefCell;
 use std::io;
@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::a11y;
 use crate::app::{AppEvent, AppState};
 use crate::library::Selection;
+use crate::onboarding::OnboardingStep;
 
 pub const SIDEBAR_WIDTH: RangeInclusive<f32> = 240.0..=380.0;
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
@@ -49,6 +50,8 @@ pub struct Prefs {
     pub sidebar_width: f32,
     pub last_selection: Option<RecordingId>,
     pub quit_at: Option<Timestamp>,
+    /// `None` in a file from before onboarding, until `AppState` resolves it against the library.
+    pub onboarding: Option<OnboardingStep>,
 }
 
 impl Default for Prefs {
@@ -58,6 +61,7 @@ impl Default for Prefs {
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             last_selection: None,
             quit_at: None,
+            onboarding: None,
         }
     }
 }
@@ -71,6 +75,7 @@ struct Disk {
     sidebar_width: f32,
     last_selection: Option<String>,
     quit_at_ms: Option<i64>,
+    onboarding: Option<String>,
 }
 
 impl Default for Disk {
@@ -88,6 +93,7 @@ impl From<&Prefs> for Disk {
             sidebar_width: prefs.sidebar_width,
             last_selection: prefs.last_selection.as_ref().map(ToString::to_string),
             quit_at_ms: prefs.quit_at.map(|t| t.0),
+            onboarding: prefs.onboarding.map(|step| step.as_str().to_owned()),
         }
     }
 }
@@ -124,6 +130,7 @@ impl Prefs {
                 .last_selection
                 .and_then(|id| RecordingId::parse(&id).ok()),
             quit_at: disk.quit_at_ms.map(Timestamp),
+            onboarding: disk.onboarding.as_deref().and_then(OnboardingStep::parse),
         }
     }
 
@@ -138,10 +145,11 @@ impl Prefs {
     }
 
     /// Everything but the quit time, which only a real quit sets.
-    fn same_window_state(&self, other: &Prefs) -> bool {
+    fn same_saved_state(&self, other: &Prefs) -> bool {
         self.window_size == other.window_size
             && self.sidebar_width == other.sidebar_width
             && self.last_selection == other.last_selection
+            && self.onboarding == other.onboarding
     }
 }
 
@@ -201,9 +209,10 @@ impl Render for BoundsWatcher {
 
 /// Called once by `main` after the window opens.
 pub fn watch(app: &Entity<AppState>, config: &dory::Config, window: &mut Window, cx: &mut App) {
+    // Compared with the file, not the launch prefs, so a step resolved at launch is saved at once.
     let persist = Rc::new(RefCell::new(Persist {
         dir: config.data_dir.clone(),
-        saved: app.read(cx).prefs.clone(),
+        saved: Prefs::read(&config.data_dir),
         generation: 0,
         decided: false,
         _bounds: None,
@@ -229,7 +238,7 @@ pub fn watch(app: &Entity<AppState>, config: &dory::Config, window: &mut Window,
         move |app, cx| {
             let current = app.read(cx).prefs.clone();
             let mut state = persist.borrow_mut();
-            if current.same_window_state(&state.saved) {
+            if current.same_saved_state(&state.saved) {
                 return;
             }
             state.generation += 1;

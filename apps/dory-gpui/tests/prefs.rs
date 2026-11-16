@@ -20,6 +20,7 @@ fn prefs_round_trip_through_the_file() {
         sidebar_width: 280.,
         last_selection: None,
         quit_at: Some(Timestamp(5)),
+        onboarding: Some(dory_gpui::onboarding::OnboardingStep::Models),
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);

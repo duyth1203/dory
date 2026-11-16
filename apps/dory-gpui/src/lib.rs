@@ -11,6 +11,10 @@
 //! - P5 record flow: `record_control`, `processing`, and the record and processing parts of the
 //!   shell files above. P5's other agents: `notify`, `queue_popover`, `status_item`, and
 //!   `set_up_summaries`.
+//! - P6 (onboarding and configuration): `onboarding` and the shell files above; a parallel agent
+//!   owns `settings_window`, `models_view`, and `set_up_summaries`, wired only through
+//!   `settings_window::open`, `models_view::speech_step`, `models_view::meeting_languages_picker`,
+//!   and `set_up_summaries::sheet`.
 //!
 //! Each agent-owned file's doc comment is its contract.
 
@@ -22,7 +26,9 @@ pub mod export;
 pub mod fixtures;
 pub mod library;
 pub mod menus;
+pub mod models_view;
 pub mod notify;
+pub mod onboarding;
 pub mod platform;
 pub mod player_view;
 pub mod prefs;
@@ -30,6 +36,7 @@ pub mod processing;
 pub mod queue_popover;
 pub mod record_control;
 pub mod set_up_summaries;
+pub mod settings_window;
 pub mod shell;
 pub mod sidebar;
 pub mod status_item;

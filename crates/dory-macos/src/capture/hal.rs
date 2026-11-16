@@ -179,8 +179,10 @@ fn get_ids(
     let raw = get_bytes(object, selector, GLOBAL)?;
     let bytes: &[u8] = as_bytes(&raw);
     Ok(bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_ne_bytes(*c))
         .collect())
 }
 

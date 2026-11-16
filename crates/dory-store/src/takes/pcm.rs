@@ -129,8 +129,10 @@ impl FrameReader for OwnWavReader {
         self.file.read_exact(&mut self.bytes).map_err(io_err)?;
         out.extend(
             self.bytes
-                .chunks_exact(2)
-                .map(|b| i16::from_le_bytes([b[0], b[1]])),
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|b| i16::from_le_bytes(*b)),
         );
         self.frames_left -= frames as u64;
         Ok(frames)

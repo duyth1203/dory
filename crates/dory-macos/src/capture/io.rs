@@ -556,7 +556,12 @@ mod tests {
     fn drain(source: &mut FrameSource) -> (Vec<(f32, f32)>, Vec<CaptureIssue>) {
         let mut out = Vec::new();
         source.drain(&mut out);
-        let frames = out.chunks_exact(2).map(|f| (f[0], f[1])).collect();
+        let frames = out
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[m, s]| (m, s))
+            .collect();
         (frames, source.issues().collect())
     }
 

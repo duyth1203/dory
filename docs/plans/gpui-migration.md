@@ -653,7 +653,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Lane 4. Run `codesign --verify --deep --strict Dory.app` and `spctl -a -vv Dory.app`. Save `sign.png`. Pass when both succeed with a Developer ID identity. Without one, the lane is `NOT VERIFIED` and the operator is told that permissions reset on every rebuild.
 - [ ] Lane 5. Record and process a meeting in the bundle. Save `bundle-flow.png`. Pass when bundled transcription runs and the summary appears.
 - [ ] Lane 6. In a `dorytest` profile where BlackHole was never installed, record with `afplay` playing. Save `no-blackhole.png`. Pass when the system channel RMS is above -30 dBFS.
-- [ ] Lane 7. Run `rg -i 'blackhole|tauri|invoke\(' --glob '!docs/plans/**' --glob '!CHANGELOG*'`. Save `grep.png`. Pass when only the legacy cleanup module and the README upgrade note match.
+- [ ] Lane 7. Run `rg -i 'blackhole|tauri|invoke\(' --glob '!docs/plans/**' --glob '!CHANGELOG*' --glob '!Cargo.lock'`. Save `grep.png`. Pass when only the legacy cleanup module and the README upgrade note match.
 - [ ] Lane 8. Follow `README.md` from a fresh clone to a running app in `dorytest`. Save `readme.png`. Pass when every command works as written.
 - [ ] Lane 9. Operator lane. Quit during processing, reboot `dorytest`, and relaunch. Save `reboot.png`. Pass when the job resumes.
 - [ ] Lane 10. Record 2 hours and process it in the bundle. Save `soak.png`. Pass when RSS over the process tree stays under the P4 idle number plus the loaded model size and no error is logged.

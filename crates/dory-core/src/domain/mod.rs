@@ -7,6 +7,7 @@ mod recording;
 mod settings;
 mod time;
 mod transcript;
+mod waveform;
 
 pub use error::{FailureClass, InvalidInput};
 pub use ids::{JobId, RecordingId, Revision};
@@ -22,3 +23,4 @@ pub use recording::{
 pub use settings::{Processing, Settings};
 pub use time::{Fraction, TimeRange, Timestamp};
 pub use transcript::{Segment, SpeakerId, SpeakerNames, Summary, Transcript};
+pub use waveform::{BUCKETS, LevelMeter, Levels, Waveform};

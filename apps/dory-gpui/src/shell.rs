@@ -8,9 +8,9 @@
 //! toast for a stopped recording floats 28 pt above the bottom of that column (UX-9).
 
 use gpui_kit::{
-    AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement,
-    ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, div, prelude::FluentBuilder as _, px,
+    App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
+    IntoElement, ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use dory_core::ports::capture::Source;
@@ -28,6 +28,29 @@ use crate::theme::{self, Theme};
 
 const NARROW_WINDOW: f32 = 900.0;
 
+/// The landmarks F6 and Shift-F6 move between, in visual order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    Sidebar,
+    Toolbar,
+    Detail,
+}
+
+impl Region {
+    pub const ALL: [Region; 3] = [Region::Sidebar, Region::Toolbar, Region::Detail];
+
+    /// The next region forward, or back, wrapping around.
+    pub fn step(self, forward: bool) -> Region {
+        let ix = Region::ALL.iter().position(|r| *r == self).unwrap_or(0);
+        let n = Region::ALL.len();
+        Region::ALL[if forward {
+            (ix + 1) % n
+        } else {
+            (ix + n - 1) % n
+        }]
+    }
+}
+
 pub struct Shell {
     app: Entity<AppState>,
     sidebar: Entity<Sidebar>,
@@ -40,6 +63,8 @@ pub struct Shell {
     undo_focus: FocusHandle,
     undo_stop_focus: FocusHandle,
     grant_focus: [FocusHandle; 2],
+    /// One per [`Region`], on the landmark's container, to tell which one holds focus.
+    regions: [FocusHandle; 3],
     _subscriptions: Vec<Subscription>,
 }
 
@@ -59,9 +84,7 @@ impl Shell {
             }
         });
         let on_app = cx.observe(&app, |_, _, cx| cx.notify());
-        let on_appearance = cx.observe_window_appearance(window, |_, window, cx| {
-            theme::sync(window, cx);
-        });
+        let on_appearance = cx.observe_window_appearance(window, |_, _, cx| theme::sync(cx));
         let start_focus = cx.focus_handle();
         // Nothing has focus at launch otherwise, and Tab does nothing (spike finding 4).
         window.focus(&start_focus, cx);
@@ -94,6 +117,7 @@ impl Shell {
             undo_focus: cx.focus_handle(),
             undo_stop_focus: cx.focus_handle(),
             grant_focus: [cx.focus_handle(), cx.focus_handle()],
+            regions: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
             _subscriptions: vec![
                 on_select,
                 on_app,
@@ -104,9 +128,42 @@ impl Shell {
         }
     }
 
+    fn region(&self, region: Region) -> &FocusHandle {
+        &self.regions[Region::ALL.iter().position(|r| *r == region).unwrap_or(0)]
+    }
+
+    /// The region holding focus, or `None` when focus is outside all three. The detail region is
+    /// the whole column right of the sidebar, toolbar included, so the toolbar is tested first.
+    fn current_region(&self, window: &Window, cx: &App) -> Option<Region> {
+        Region::ALL
+            .into_iter()
+            .find(|region| self.region(*region).contains_focused(window, cx))
+    }
+
+    /// F6 and Shift-F6: focus the first control of the next landmark.
+    fn move_region(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let target = match self.current_region(window, cx) {
+            Some(region) => region.step(forward),
+            None => Region::Sidebar,
+        };
+        let focus = match target {
+            Region::Sidebar => self.sidebar.read(cx).list_focus().clone(),
+            Region::Toolbar => self.record.read(cx).first_focus(cx),
+            Region::Detail => match &self.detail {
+                Some(detail) => detail.read(cx).first_focus().clone(),
+                None if self.app.read(cx).onboarding() != OnboardingStep::Done => {
+                    self.onboarding.read(cx).primary_focus().clone()
+                }
+                None => self.start_focus.clone(),
+            },
+        };
+        window.focus(&focus, cx);
+    }
+
     fn toolbar(&self) -> impl IntoElement {
         a11y::node("toolbar", Role::Toolbar, "Toolbar")
-            .h(px(52.))
+            .track_focus(self.region(Region::Toolbar))
+            .min_h(px(52.))
             .flex_none()
             .flex()
             .items_center()
@@ -126,7 +183,7 @@ impl Shell {
         let keycap = |key: &'static str| {
             div()
                 .min_w(px(22.))
-                .h(px(22.))
+                .min_h(px(22.))
                 .px(px(6.))
                 .flex()
                 .items_center()
@@ -167,7 +224,7 @@ impl Shell {
                         })),
                 )
                 .child(onboarding::permission_status(status, theme))
-                .when(status.attention, |row| {
+                .when(status.button.is_some(), |row| {
                     row.children(onboarding::permission_button(
                         &self.app, source, focus, theme, cx,
                     ))
@@ -232,7 +289,7 @@ impl Shell {
                     .child(line),
             )
             .child(
-                div()
+                a11y::node("start-shortcut", Role::Label, "Shortcut, Shift Command R")
                     .flex()
                     .gap(px(4.))
                     .child(keycap("⇧"))
@@ -241,7 +298,8 @@ impl Shell {
             )
             .child(
                 a11y::node("sources", Role::List, "Sources")
-                    .w(px(360.))
+                    .w(theme.text(360.))
+                    .max_w_full()
                     .flex()
                     .flex_col()
                     .px(px(16.))
@@ -340,6 +398,17 @@ impl Shell {
                 this.app
                     .update(cx, |app, cx| app.retranscribe_selection(action.pref(), cx))
             }))
+            .on_action(cx.listener(|this, _: &Rename, window, cx| {
+                if let Some(detail) = &this.detail {
+                    detail.update(cx, |detail, cx| detail.edit_title(window, cx));
+                }
+            }))
+            .on_action(
+                cx.listener(|this, _: &NextRegion, window, cx| this.move_region(true, window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &PreviousRegion, window, cx| {
+                this.move_region(false, window, cx)
+            }))
     }
 
     fn selected_detail(&self, cx: &Context<Self>) -> Option<std::sync::Arc<crate::app::Detail>> {
@@ -363,7 +432,7 @@ impl Shell {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .h(px(32.))
+                .min_h(px(32.))
                 .px(px(16.))
                 .text_size(theme.text(13.))
                 .text_color(theme.text_secondary)
@@ -371,13 +440,18 @@ impl Shell {
                 .when(undo, |line| {
                     line.child(
                         a11y::focusable(
-                            a11y::node("undo", Role::Button, "Undo"),
+                            a11y::node("undo", Role::Button, "Undo move to Trash"),
                             &self.undo_focus,
                             theme,
                             false,
                         )
                         .aria_keyshortcuts("Command-Z")
                         .on_click(move |_, _, cx| target.update(cx, |app, cx| app.undo_delete(cx)))
+                        .min_h(px(28.))
+                        .min_w(px(28.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .px(px(8.))
                         .rounded(px(6.))
                         .text_color(theme.accent_text)
@@ -440,6 +514,7 @@ impl Render for Shell {
             .font_family(".SystemUIFont")
             .child(
                 div()
+                    .track_focus(self.region(Region::Sidebar))
                     .h_full()
                     .flex_none()
                     .pl(px(8.))
@@ -448,6 +523,7 @@ impl Render for Shell {
             )
             .child(
                 div()
+                    .track_focus(self.region(Region::Detail))
                     .relative()
                     .flex_1()
                     .h_full()

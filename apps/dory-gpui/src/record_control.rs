@@ -14,7 +14,7 @@ use dory_core::domain::Ms;
 use gpui_kit::{
     Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, div, px,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
@@ -37,19 +37,6 @@ impl Live {
     pub fn left(&self) -> Option<Ms> {
         self.cap_at
             .map(|cap| Ms(cap.0.saturating_sub(self.recorded.0)))
-    }
-}
-
-/// What VoiceOver says when the recorder moves (A11Y-4). The cap and a failed start say their
-/// own words from the events that carry the reason.
-pub fn announcement(from: &RecorderStatus, to: &RecorderStatus) -> Option<&'static str> {
-    use RecorderStatus::*;
-    match (from, to) {
-        (Idle, Recording { .. }) => Some("Recording started"),
-        (Recording { .. }, Paused { .. }) => Some("Recording paused"),
-        (Paused { .. } | Grace { .. }, Recording { .. }) => Some("Recording resumed"),
-        (Recording { .. } | Paused { .. }, Grace { .. }) => Some("Recording stopped"),
-        _ => None,
     }
 }
 
@@ -109,6 +96,16 @@ impl RecordControl {
         }
     }
 
+    /// Where F6 lands in the toolbar: Record while idle, else Pause.
+    pub fn first_focus(&self, cx: &gpui_kit::App) -> FocusHandle {
+        match self.app.read(cx).recorder() {
+            RecorderStatus::Recording { .. } | RecorderStatus::Paused { .. } => {
+                self.pause_focus.clone()
+            }
+            _ => self.record_focus.clone(),
+        }
+    }
+
     fn record_button(&self, theme: &Theme, cx: &mut Context<Self>) -> a11y::Node {
         let app = self.app.clone();
         a11y::focusable(
@@ -125,14 +122,17 @@ impl RecordControl {
                 cx.stop_propagation();
             }
         }))
-        .h(px(28.))
+        .min_h(px(28.))
         .px(px(12.))
         .flex()
         .items_center()
         .gap(px(6.))
         .rounded(px(14.))
         .bg(theme.control_bg)
-        .shadow_xs()
+        .when(theme.shadows, |b| b.shadow_xs())
+        .when(theme.high_contrast, |b| {
+            b.border_color(theme.control_border)
+        })
         .text_size(theme.text(13.))
         .font_weight(FontWeight::MEDIUM)
         .child(div().size(px(10.)).rounded_full().bg(theme.record_red))
@@ -162,13 +162,14 @@ impl RecordControl {
                 cx.stop_propagation();
             }
         }))
-        .size(px(28.))
+        .min_w(px(28.))
+        .min_h(px(28.))
+        .px(px(4.))
         .flex()
         .items_center()
         .justify_center()
         .rounded_full()
         .bg(theme.control_bg)
-        .border_1()
         .border_color(theme.control_border)
         .text_size(theme.text(12.))
         .child(round.glyph)
@@ -196,10 +197,15 @@ impl Render for RecordControl {
             return div().child(self.record_button(&theme, cx));
         }
         let paused = matches!(status, RecorderStatus::Paused { .. });
-        let fill = if live.cap_at.is_some() {
-            theme.attention
+        let (fill, on_fill) = if live.cap_at.is_some() {
+            (theme.attention, theme.on_attention)
         } else {
-            theme.record_red
+            (theme.record_red, theme.on_record)
+        };
+        let off = if live.cap_at.is_some() {
+            crate::theme::blend(on_fill, fill, 0.4)
+        } else {
+            theme.meter_off
         };
         let lit = if paused || cx.reduce_motion() {
             0
@@ -216,21 +222,27 @@ impl Render for RecordControl {
                     .w(px(3.))
                     .h(px(4. + 2. * bar as f32))
                     .rounded(px(1.))
-                    .bg(gpui_kit::white().opacity(if bar < lit { 1.0 } else { 0.4 }))
+                    .bg(if bar < lit { on_fill } else { off })
             }));
+        let text = pill_text(&status, &live);
+        let text = if theme.differentiate_without_color && !paused {
+            format!("Recording, {text}")
+        } else {
+            text
+        };
         let pill = a11y::node("record-pill", Role::Status, pill_label(&status, &live))
-            .h(px(28.))
+            .min_h(px(28.))
             .px(px(12.))
             .flex()
             .items_center()
             .gap(px(8.))
             .rounded(px(14.))
             .bg(fill)
-            .text_color(gpui_kit::white())
+            .text_color(on_fill)
             .text_size(theme.text(13.))
             .font_weight(FontWeight::MEDIUM)
-            .child(div().size(px(8.)).rounded_full().bg(gpui_kit::white()))
-            .child(pill_text(&status, &live))
+            .child(div().size(px(8.)).rounded_full().bg(on_fill))
+            .child(text)
             .child(meter);
         let (pause_label, pause_glyph) = if paused {
             ("Resume recording", "▶")
@@ -285,13 +297,17 @@ pub fn undo_toast(
             .flex()
             .items_center()
             .gap(px(12.))
-            .h(px(36.))
+            .min_h(px(36.))
             .px(px(14.))
+            .py(px(4.))
             .rounded(px(10.))
             .bg(theme.toast_bg)
-            .text_color(gpui_kit::white())
+            .text_color(theme.toast_text)
             .text_size(theme.text(13.))
-            .shadow_lg()
+            .when(theme.shadows, |toast| toast.shadow_lg())
+            .when(theme.high_contrast, |toast| {
+                toast.border_1().border_color(theme.toast_text)
+            })
             .child("Recording saved")
             .child(
                 a11y::focusable(
@@ -301,6 +317,11 @@ pub fn undo_toast(
                     false,
                 )
                 .on_click(move |_, _, cx| target.update(cx, |app, cx| app.undo_stop(cx)))
+                .min_h(px(28.))
+                .min_w(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
                 .px(px(8.))
                 .rounded(px(6.))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -308,7 +329,7 @@ pub fn undo_toast(
             )
             .child(
                 div()
-                    .text_color(gpui_kit::white().opacity(0.7))
+                    .text_color(theme.toast_text_secondary)
                     .child(format!("{seconds} s")),
             ),
     )
@@ -350,19 +371,32 @@ mod tests {
     }
 
     #[test]
-    fn voiceover_hears_start_pause_resume_and_stop() {
+    fn voiceover_hears_start_pause_resume_and_save() {
         let id = RecordingId::parse("rec-1").unwrap();
         let at = |phase: fn(RecordingId, Ms) -> RecorderStatus| phase(id.clone(), Ms(0));
         let recording = at(|id, recorded| RecorderStatus::Recording { id, recorded });
         let paused = at(|id, recorded| RecorderStatus::Paused { id, recorded });
         let grace = at(|id, recorded| RecorderStatus::Grace { id, recorded });
         let idle = RecorderStatus::Idle;
-        assert_eq!(announcement(&idle, &recording), Some("Recording started"));
-        assert_eq!(announcement(&recording, &paused), Some("Recording paused"));
-        assert_eq!(announcement(&paused, &recording), Some("Recording resumed"));
-        assert_eq!(announcement(&recording, &grace), Some("Recording stopped"));
-        assert_eq!(announcement(&grace, &recording), Some("Recording resumed"));
-        assert_eq!(announcement(&grace, &idle), None);
+        let said = |from, to| a11y::Announcement::of_recorder(from, to).map(|a| a.text());
+        assert_eq!(
+            said(&idle, &recording).as_deref(),
+            Some("Recording started")
+        );
+        assert_eq!(
+            said(&recording, &paused).as_deref(),
+            Some("Recording paused")
+        );
+        assert_eq!(
+            said(&paused, &recording).as_deref(),
+            Some("Recording resumed")
+        );
+        assert_eq!(said(&recording, &grace).as_deref(), Some("Recording saved"));
+        assert_eq!(
+            said(&grace, &recording).as_deref(),
+            Some("Recording resumed")
+        );
+        assert_eq!(said(&grace, &idle), None);
     }
 
     #[test]

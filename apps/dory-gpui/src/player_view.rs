@@ -28,7 +28,7 @@ use gpui_kit::{
     App, Bounds, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, Render,
     Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div, fill,
-    point, px, size,
+    point, prelude::FluentBuilder as _, px, size,
 };
 
 use crate::a11y::{self, Node};
@@ -210,14 +210,18 @@ impl PlayerView {
         .font_weight(FontWeight::SEMIBOLD);
         if filled {
             button
-                .size(px(40.))
+                .min_w(px(40.))
+                .min_h(px(40.))
+                .px(px(4.))
                 .bg(theme.accent)
                 .text_color(theme.on_accent)
                 .text_size(theme.text(15.))
                 .child(glyph)
         } else {
             button
-                .size(px(32.))
+                .min_w(px(32.))
+                .min_h(px(32.))
+                .px(px(4.))
                 .text_color(theme.text)
                 .text_size(theme.text(13.))
                 .child(glyph)
@@ -254,7 +258,7 @@ impl Render for PlayerView {
             a11y::node("player-unavailable", Role::Status, why.clone())
                 .text_size(theme.text(12.))
                 .text_color(theme.attention)
-                .child(why)
+                .child(format!("⚠︎ {why}"))
         });
         let controls = div()
             .flex()
@@ -270,13 +274,13 @@ impl Render for PlayerView {
             .border_1()
             .border_color(theme.card_border);
         if self.docked {
-            root.h(px(52.))
+            root.min_h(px(52.))
                 .flex()
                 .items_center()
                 .gap(px(12.))
                 .px(px(12.))
                 .rounded(px(14.))
-                .shadow_md()
+                .when(theme.shadows, |bar| bar.shadow_md())
                 .child(controls)
                 .child(wave.flex_1().h(px(28.)))
                 .child(time)

@@ -81,11 +81,24 @@ pub fn dory_on(store: Arc<MemStore>) -> Dory {
     .expect("open Dory on the samples")
 }
 
+/// The samples, past first run.
 pub fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
-    open_with(cx, dory_on(sample_store()))
+    open_with_prefs(cx, dory_on(sample_store()), past_first_run())
+}
+
+pub fn past_first_run() -> Prefs {
+    Prefs {
+        onboarding: Some(dory_gpui::onboarding::OnboardingStep::Done),
+        ..Prefs::default()
+    }
 }
 
 pub fn open_with(cx: &mut TestAppContext, dory: Dory) -> (AnyWindowHandle, Entity<AppState>) {
+    open_with_prefs(cx, dory, past_first_run())
+}
+
+/// No UI prefs file yet, as on a first launch.
+pub fn open_fresh(cx: &mut TestAppContext, dory: Dory) -> (AnyWindowHandle, Entity<AppState>) {
     open_with_prefs(cx, dory, Prefs::default())
 }
 

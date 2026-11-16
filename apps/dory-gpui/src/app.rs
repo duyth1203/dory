@@ -30,6 +30,7 @@ pub use record::{Download, ModelInfo};
 pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 
 use self::core::Core;
+pub use self::models::{Originals, count};
 use crate::library::{Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal};
 use crate::onboarding::OnboardingStep;
 use crate::prefs::Prefs;
@@ -121,6 +122,8 @@ pub struct AppState {
     settings: Settings,
     /// Sources whose macOS prompt is up.
     asking: HashSet<Source>,
+    /// Settings > Storage's old-app WebM files (P7, moved from P8).
+    originals: Originals,
     epoch: Instant,
     _pump: Task<()>,
 }
@@ -191,6 +194,7 @@ impl AppState {
             models: HashMap::new(),
             settings: Settings::default(),
             asking: HashSet::new(),
+            originals: Originals::Unread,
             epoch: Instant::now(),
             _pump: pump,
         };
@@ -303,6 +307,18 @@ impl AppState {
 
     pub fn set_filter(&mut self, filter: StatusFilter, cx: &mut Context<Self>) {
         self.filter = filter;
+        cx.notify();
+    }
+
+    /// View > Bigger and Smaller (A11Y-7): saved with the window state, applied to the theme.
+    pub fn set_text_scale(&mut self, scale: f32, cx: &mut Context<Self>) {
+        let scale = crate::theme::clamp_text_scale(scale);
+        if self.prefs.text_scale == scale {
+            return;
+        }
+        self.prefs.text_scale = scale;
+        crate::theme::set_display(|display| display.text_scale = scale, cx);
+        crate::a11y::announce(&format!("Text size {}%", (scale * 100.).round() as u32));
         cx.notify();
     }
 

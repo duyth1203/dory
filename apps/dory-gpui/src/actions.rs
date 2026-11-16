@@ -34,6 +34,12 @@ gpui_kit::actions!(
         FilterNeedsAttention,
         FilterDone,
         OpenSettings,
+        Rename,
+        Bigger,
+        Smaller,
+        ActualSize,
+        NextRegion,
+        PreviousRegion,
     ]
 );
 

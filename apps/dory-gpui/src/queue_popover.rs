@@ -45,7 +45,7 @@ pub(crate) fn pill_button(
                 cx.stop_propagation();
             }
         })
-        .h(px(28.))
+        .min_h(px(28.))
         .px(px(12.))
         .flex()
         .items_center()
@@ -109,8 +109,8 @@ pub fn lines(
 }
 
 pub fn open(app: &Entity<AppState>, window: &mut Window, cx: &mut App) {
-    let panel = cx.new(|cx| QueuePanel::new(app.clone(), cx));
     let close = cx.focus_handle();
+    let panel = cx.new(|cx| QueuePanel::new(app.clone(), close.clone(), cx));
     window.open_dialog(cx, move |dialog, _, cx| {
         let theme = Theme::get(cx);
         let done = pill_button(
@@ -137,6 +137,9 @@ enum Jobs {
 
 struct QueuePanel {
     app: Entity<AppState>,
+    /// Done. The pressed button may vanish with its row, so focus moves here, not behind the
+    /// dialog.
+    close: FocusHandle,
     jobs: Jobs,
     focus: HashMap<(JobId, bool), FocusHandle>,
     generation: u64,
@@ -145,10 +148,11 @@ struct QueuePanel {
 }
 
 impl QueuePanel {
-    fn new(app: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    fn new(app: Entity<AppState>, close: FocusHandle, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&app, |this, _, cx| this.refresh(cx));
         let mut this = Self {
             app,
+            close,
             jobs: Jobs::Loading,
             focus: HashMap::new(),
             generation: 0,
@@ -247,15 +251,19 @@ impl Render for QueuePanel {
             let promote_focus = self.focus_for(job, true, cx);
             let cancel_focus = self.focus_for(job, false, cx);
             let on_promote = {
-                let app = self.app.clone();
-                move |_: &mut Window, cx: &mut App| {
-                    app.update(cx, |app, cx| app.promote_job(job, cx))
+                let (app, close, title) = (self.app.clone(), self.close.clone(), title.clone());
+                move |window: &mut Window, cx: &mut App| {
+                    app.update(cx, |app, cx| app.promote_job(job, cx));
+                    a11y::announce(&format!("Moved {title} to the top"));
+                    window.focus(&close, cx);
                 }
             };
             let on_cancel = {
-                let app = self.app.clone();
-                move |_: &mut Window, cx: &mut App| {
-                    app.update(cx, |app, cx| app.cancel_job(job, cx))
+                let (app, close, title) = (self.app.clone(), self.close.clone(), title.clone());
+                move |window: &mut Window, cx: &mut App| {
+                    app.update(cx, |app, cx| app.cancel_job(job, cx));
+                    a11y::announce(&format!("Cancelled {title}"));
+                    window.focus(&close, cx);
                 }
             };
             list = list.child(

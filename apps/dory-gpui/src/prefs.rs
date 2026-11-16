@@ -7,7 +7,8 @@
 //!
 //! `watch` restores the selection on the first list of rows (only after a short absence, see
 //! [`RESTORE_WITHIN`]) and saves with a debounce whenever the window size, the sidebar width, or
-//! the selection or the onboarding step changes, and once more on quit with the quit time.
+//! the selection, the onboarding step, or the text scale changes, and once more on quit with the
+//! quit time.
 
 use std::cell::RefCell;
 use std::io;
@@ -52,6 +53,8 @@ pub struct Prefs {
     pub quit_at: Option<Timestamp>,
     /// `None` in a file from before onboarding, until `AppState` resolves it against the library.
     pub onboarding: Option<OnboardingStep>,
+    /// View > Bigger and Smaller (A11Y-7), within `theme::TEXT_SCALES`.
+    pub text_scale: f32,
 }
 
 impl Default for Prefs {
@@ -62,6 +65,7 @@ impl Default for Prefs {
             last_selection: None,
             quit_at: None,
             onboarding: None,
+            text_scale: 1.0,
         }
     }
 }
@@ -76,6 +80,7 @@ struct Disk {
     last_selection: Option<String>,
     quit_at_ms: Option<i64>,
     onboarding: Option<String>,
+    text_scale: f32,
 }
 
 impl Default for Disk {
@@ -94,6 +99,7 @@ impl From<&Prefs> for Disk {
             last_selection: prefs.last_selection.as_ref().map(ToString::to_string),
             quit_at_ms: prefs.quit_at.map(|t| t.0),
             onboarding: prefs.onboarding.map(|step| step.as_str().to_owned()),
+            text_scale: prefs.text_scale,
         }
     }
 }
@@ -131,6 +137,7 @@ impl Prefs {
                 .and_then(|id| RecordingId::parse(&id).ok()),
             quit_at: disk.quit_at_ms.map(Timestamp),
             onboarding: disk.onboarding.as_deref().and_then(OnboardingStep::parse),
+            text_scale: crate::theme::clamp_text_scale(disk.text_scale),
         }
     }
 
@@ -150,6 +157,7 @@ impl Prefs {
             && self.sidebar_width == other.sidebar_width
             && self.last_selection == other.last_selection
             && self.onboarding == other.onboarding
+            && self.text_scale == other.text_scale
     }
 }
 
@@ -353,7 +361,8 @@ fn set_sidebar_width(app: &Entity<AppState>, width: f32, cx: &mut App) {
 }
 
 /// A drag handle on the sidebar's trailing edge that clamps to [`SIDEBAR_WIDTH`], also moved by
-/// Left and Right when it has focus.
+/// Left and Right when it has focus, and by VoiceOver's increment and decrement. Its hit area is
+/// 24 pt wide (A11Y-9) while it takes only 8 pt of the layout.
 pub fn sidebar_resize_handle(app: &Entity<AppState>, cx: &mut App) -> AnyElement {
     if cx.try_global::<ResizeFocus>().is_none() {
         let focus = cx.focus_handle();
@@ -363,29 +372,49 @@ pub fn sidebar_resize_handle(app: &Entity<AppState>, cx: &mut App) -> AnyElement
     let width = app.read(cx).prefs.sidebar_width;
     let drag = app.clone();
     let key = app.clone();
-    a11y::node("sidebar-resize", Role::Splitter, "Sidebar width")
-        .aria_value(format!("{} points", width.round() as i32))
-        .track_focus(&focus.tab_stop(true))
-        .w(px(8.))
-        .h_full()
-        .flex_none()
-        .cursor(CursorStyle::ResizeLeftRight)
-        .on_drag(ResizeDrag, |_, _, _, cx| cx.new(|_| NoGhost))
-        .on_drag_move::<ResizeDrag>(move |event, _, cx| {
-            let center = event.bounds.origin.x + event.bounds.size.width / 2.;
-            let delta = f32::from(event.event.position.x - center);
-            let current = drag.read(cx).prefs.sidebar_width;
-            set_sidebar_width(&drag, current + delta, cx);
-        })
-        .on_key_down(move |event: &KeyDownEvent, _, cx| {
-            let delta = match event.keystroke.key.as_str() {
-                "left" => -KEY_STEP,
-                "right" => KEY_STEP,
-                _ => return,
-            };
-            let current = key.read(cx).prefs.sidebar_width;
-            set_sidebar_width(&key, current + delta, cx);
-            cx.stop_propagation();
-        })
-        .into_any_element()
+    let (inc, dec) = (app.clone(), app.clone());
+    let theme = crate::theme::Theme::get(cx);
+    a11y::focusable(
+        a11y::node("sidebar-resize", Role::Splitter, "Sidebar width"),
+        &focus,
+        &theme,
+        false,
+    )
+    .aria_value(format!("{} points", width.round() as i32))
+    .aria_numeric_value(f64::from(width))
+    .aria_min_numeric_value(f64::from(*SIDEBAR_WIDTH.start()))
+    .aria_max_numeric_value(f64::from(*SIDEBAR_WIDTH.end()))
+    .aria_numeric_value_step(f64::from(KEY_STEP))
+    .on_a11y_action(gpui_kit::AccessibleAction::Increment, move |_, _, cx| {
+        let current = inc.read(cx).prefs.sidebar_width;
+        set_sidebar_width(&inc, current + KEY_STEP, cx);
+    })
+    .on_a11y_action(gpui_kit::AccessibleAction::Decrement, move |_, _, cx| {
+        let current = dec.read(cx).prefs.sidebar_width;
+        set_sidebar_width(&dec, current - KEY_STEP, cx);
+    })
+    .w(px(24.))
+    .mx(px(-8.))
+    .rounded(px(6.))
+    .h_full()
+    .flex_none()
+    .cursor(CursorStyle::ResizeLeftRight)
+    .on_drag(ResizeDrag, |_, _, _, cx| cx.new(|_| NoGhost))
+    .on_drag_move::<ResizeDrag>(move |event, _, cx| {
+        let center = event.bounds.origin.x + event.bounds.size.width / 2.;
+        let delta = f32::from(event.event.position.x - center);
+        let current = drag.read(cx).prefs.sidebar_width;
+        set_sidebar_width(&drag, current + delta, cx);
+    })
+    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+        let delta = match event.keystroke.key.as_str() {
+            "left" => -KEY_STEP,
+            "right" => KEY_STEP,
+            _ => return,
+        };
+        let current = key.read(cx).prefs.sidebar_width;
+        set_sidebar_width(&key, current + delta, cx);
+        cx.stop_propagation();
+    })
+    .into_any_element()
 }

@@ -1,16 +1,24 @@
 //! Direction C's tokens (section 2 of `docs/design/handoff-direction-c.md`) as one `Theme`, kept
-//! as a GPUI global that follows the system appearance and accent color.
+//! as a GPUI global that follows the system appearance, the accent color, the display
+//! accessibility settings (`system_prefs`), and View > Bigger and Smaller.
 //!
-//! Views read it with `Theme::get(cx)` and never hard-code a color or a text size. A11Y-6's
-//! high-contrast set and A11Y-7's text scale land here in P7.
+//! Views read it with `Theme::get(cx)` and never hard-code a color or a text size. Every color
+//! pair the views paint is listed in [`Theme::pairs`], and `tests/contrast.rs` holds each one to
+//! its WCAG floor in every variant.
 
-use gpui_kit::{App, Global, Hsla, Pixels, Rgba, Window, WindowAppearance, px, rgb, rgba};
+use gpui_kit::{App, Global, Hsla, Pixels, Rgba, WindowAppearance, px, rgb};
 
 use crate::library::Tone;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Theme {
     pub dark: bool,
+    /// A11Y-6: macOS Increase Contrast. Solid borders, no shadows, no translucency.
+    pub high_contrast: bool,
+    /// macOS Differentiate Without Color: states that a fill color carries also get a word.
+    pub differentiate_without_color: bool,
+    /// Off under Increase Contrast, which draws borders instead.
+    pub shadows: bool,
     pub window_bg: Hsla,
     pub sidebar_bg: Hsla,
     pub panel_border: Hsla,
@@ -27,12 +35,23 @@ pub struct Theme {
     pub on_accent: Hsla,
     pub selection_inactive: Hsla,
     pub wave_rest: Hsla,
+    /// The waveform's empty track, under the bars.
+    pub wave_track: Hsla,
     pub record_red: Hsla,
+    /// Text and the dot on the `record_red` pill.
+    pub on_record: Hsla,
     pub record_glyph: Hsla,
     pub attention: Hsla,
+    /// Text on the `attention` pill when 5 minutes are left.
+    pub on_attention: Hsla,
+    /// The meter bars that are not lit, on the pill.
+    pub meter_off: Hsla,
+    /// Opaque, so its contrast can be measured.
     pub playing_bg: Hsla,
     pub avatar_bg: Hsla,
     pub toast_bg: Hsla,
+    pub toast_text: Hsla,
+    pub toast_text_secondary: Hsla,
     pub menu_bg: Hsla,
     pub menu_border: Hsla,
     /// View > Bigger and Smaller (A11Y-7), 0.85 to 2.0. Every text size goes through
@@ -42,98 +61,264 @@ pub struct Theme {
 
 impl Global for Theme {}
 
+/// What the theme is built from besides the appearance and accent: the macOS display settings
+/// and the text scale. `system_prefs` and the View menu change it, then call [`sync`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Display {
+    pub increase_contrast: bool,
+    pub differentiate_without_color: bool,
+    pub text_scale: f32,
+}
+
+impl Default for Display {
+    fn default() -> Self {
+        Display {
+            increase_contrast: false,
+            differentiate_without_color: false,
+            text_scale: 1.0,
+        }
+    }
+}
+
+impl Global for Display {}
+
 /// macOS's default blue, used when AppKit has no accent to offer (tests, other platforms).
 pub const DEFAULT_ACCENT_LIGHT: u32 = 0x007AFF;
 pub const DEFAULT_ACCENT_DARK: u32 = 0x0A84FF;
 
 /// WCAG 2.2 AA for body text.
 pub const MIN_CONTRAST: f32 = 4.5;
+/// WCAG 2.2 AA for focus rings, borders that mark a control, and graphics (1.4.11).
+pub const MIN_NON_TEXT_CONTRAST: f32 = 3.0;
+
+/// A11Y-7's steps, smallest to largest.
+pub const TEXT_SCALES: [f32; 7] = [0.85, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0];
+
+/// The next step up from `scale`, or the largest.
+pub fn bigger(scale: f32) -> f32 {
+    TEXT_SCALES
+        .into_iter()
+        .find(|s| *s > scale + 0.001)
+        .unwrap_or(TEXT_SCALES[TEXT_SCALES.len() - 1])
+}
+
+/// The next step down from `scale`, or the smallest.
+pub fn smaller(scale: f32) -> f32 {
+    TEXT_SCALES
+        .into_iter()
+        .rev()
+        .find(|s| *s < scale - 0.001)
+        .unwrap_or(TEXT_SCALES[0])
+}
+
+/// A saved scale, kept within A11Y-7's range.
+pub fn clamp_text_scale(scale: f32) -> f32 {
+    if scale.is_finite() {
+        scale.clamp(TEXT_SCALES[0], TEXT_SCALES[TEXT_SCALES.len() - 1])
+    } else {
+        1.0
+    }
+}
+
+/// One foreground painted on one background, and the ratio it must reach.
+#[derive(Clone, Debug)]
+pub struct Pair {
+    pub name: String,
+    pub fg: Hsla,
+    pub bg: Hsla,
+    pub min: f32,
+}
 
 fn c(hex: u32) -> Hsla {
     rgb(hex).into()
 }
 
+/// The fixed tokens of one appearance before anything is derived from the accent.
+struct Base {
+    window_bg: u32,
+    sidebar_bg: u32,
+    panel_border: u32,
+    text: u32,
+    text_secondary: u32,
+    divider: u32,
+    field_bg: u32,
+    control_bg: u32,
+    control_border: u32,
+    card_bg: u32,
+    card_border: u32,
+    selection_inactive: u32,
+    wave_rest: u32,
+    record_red: u32,
+    record_glyph: u32,
+    attention: u32,
+    avatar_bg: u32,
+    toast_bg: u32,
+    menu_bg: u32,
+    menu_border: u32,
+    playing_alpha: f32,
+}
+
+const LIGHT: Base = Base {
+    window_bg: 0xFFFFFF,
+    sidebar_bg: 0xF1F3F7,
+    panel_border: 0xDDE0E6,
+    text: 0x1D1D1F,
+    text_secondary: 0x56585F,
+    divider: 0xE1E3E8,
+    field_bg: 0xE3E6EB,
+    control_bg: 0xFFFFFF,
+    control_border: 0xC9CCD3,
+    card_bg: 0xF3F5FA,
+    card_border: 0xE0E4EE,
+    selection_inactive: 0xDADDE4,
+    wave_rest: 0x8A90A0,
+    record_red: 0xD70015,
+    record_glyph: 0xD70015,
+    attention: 0xA35400,
+    avatar_bg: 0xE3E7F0,
+    toast_bg: 0x2C2D31,
+    menu_bg: 0xFFFFFF,
+    menu_border: 0xD5D8DE,
+    playing_alpha: 0.07,
+};
+
+const DARK: Base = Base {
+    window_bg: 0x1A1B1F,
+    sidebar_bg: 0x25262C,
+    panel_border: 0x3A3B42,
+    text: 0xF2F2F4,
+    text_secondary: 0xAEB0B8,
+    divider: 0x36373D,
+    field_bg: 0x32333A,
+    control_bg: 0x2C2D33,
+    control_border: 0x4A4B52,
+    card_bg: 0x212637,
+    card_border: 0x323A52,
+    selection_inactive: 0x393A41,
+    wave_rest: 0x6E7385,
+    record_red: 0xE0303A,
+    record_glyph: 0xFF6961,
+    attention: 0xFFB340,
+    avatar_bg: 0x323A52,
+    toast_bg: 0x3A3B41,
+    menu_bg: 0x2C2D33,
+    menu_border: 0x45464D,
+    playing_alpha: 0.12,
+};
+
+/// Increase Contrast's secondary text, which also draws every border (handoff section 8).
+const HIGH_CONTRAST_SECONDARY: (u32, u32) = (0x3C3E44, 0xC8CAD0);
+
 impl Theme {
     /// `system_accent` is `NSColor.controlAccentColor` in sRGB.
-    pub fn light(system_accent: Hsla) -> Theme {
-        let window_bg = c(0xFFFFFF);
+    pub fn new(dark: bool, system_accent: Hsla, display: Display) -> Theme {
+        let base = if dark { &DARK } else { &LIGHT };
+        let high = display.increase_contrast;
+        let window_bg = c(base.window_bg);
+        let sidebar_bg = c(base.sidebar_bg);
+        let card_bg = c(base.card_bg);
+        let control_bg = c(base.control_bg);
+        let field_bg = c(base.field_bg);
+        let selection_inactive = c(base.selection_inactive);
         let on_accent = c(0xFFFFFF);
-        let accent = with_contrast(system_accent, on_accent);
-        Theme {
-            dark: false,
+        let text_secondary = if high {
+            c(if dark {
+                HIGH_CONTRAST_SECONDARY.1
+            } else {
+                HIGH_CONTRAST_SECONDARY.0
+            })
+        } else {
+            c(base.text_secondary)
+        };
+        let border = |normal: u32| if high { text_secondary } else { c(normal) };
+        let playing_bg = blend(system_accent, window_bg, base.playing_alpha);
+        let reading = [
             window_bg,
-            sidebar_bg: c(0xF1F3F7),
-            panel_border: c(0xDDE0E6),
-            text: c(0x1D1D1F),
-            text_secondary: c(0x56585F),
-            divider: c(0xE1E3E8),
-            field_bg: c(0xE3E6EB),
-            control_bg: c(0xFFFFFF),
-            control_border: c(0xC9CCD3),
-            card_bg: c(0xF3F5FA),
-            card_border: c(0xE0E4EE),
+            sidebar_bg,
+            card_bg,
+            control_bg,
+            field_bg,
+            selection_inactive,
+            playing_bg,
+        ];
+        let accent = with_contrast(system_accent, on_accent);
+        let record_red = c(base.record_red);
+        let attention = with_contrast_all(c(base.attention), &reading, MIN_CONTRAST);
+        let wave_floor = if high {
+            MIN_CONTRAST
+        } else {
+            MIN_NON_TEXT_CONTRAST
+        };
+        let wave_rest = with_contrast_all(c(base.wave_rest), &[card_bg], wave_floor);
+        let toast_bg = c(base.toast_bg);
+        let toast_text = c(0xFFFFFF);
+        Theme {
+            dark,
+            high_contrast: high,
+            differentiate_without_color: display.differentiate_without_color,
+            shadows: !high,
+            window_bg,
+            sidebar_bg,
+            panel_border: border(base.panel_border),
+            text: c(base.text),
+            text_secondary,
+            divider: border(base.divider),
+            field_bg,
+            control_bg,
+            control_border: border(base.control_border),
+            card_bg,
+            card_border: border(base.card_border),
             accent,
-            accent_text: with_contrast(system_accent, window_bg),
+            accent_text: with_contrast_all(system_accent, &reading, MIN_CONTRAST),
             on_accent,
-            selection_inactive: c(0xDADDE4),
-            wave_rest: c(0x8A90A0),
-            record_red: c(0xD70015),
-            record_glyph: c(0xD70015),
-            attention: c(0xA35400),
-            playing_bg: Hsla { a: 0.07, ..accent },
-            avatar_bg: c(0xE3E7F0),
-            toast_bg: c(0x2C2D31),
-            menu_bg: c(0xFFFFFF),
-            menu_border: c(0xD5D8DE),
-            text_scale: 1.0,
+            selection_inactive,
+            wave_rest,
+            wave_track: if high {
+                card_bg
+            } else {
+                blend(wave_rest, card_bg, 0.35)
+            },
+            record_red,
+            on_record: readable_on(record_red),
+            record_glyph: with_contrast_all(c(base.record_glyph), &reading, MIN_CONTRAST),
+            attention,
+            on_attention: readable_on(attention),
+            meter_off: blend(readable_on(record_red), record_red, 0.4),
+            playing_bg,
+            avatar_bg: c(base.avatar_bg),
+            toast_bg,
+            toast_text,
+            toast_text_secondary: blend(toast_text, toast_bg, 0.7),
+            menu_bg: c(base.menu_bg),
+            menu_border: border(base.menu_border),
+            text_scale: clamp_text_scale(display.text_scale),
         }
+    }
+
+    pub fn light(system_accent: Hsla) -> Theme {
+        Theme::new(false, system_accent, Display::default())
     }
 
     pub fn dark(system_accent: Hsla) -> Theme {
-        let window_bg = c(0x1A1B1F);
-        let on_accent = c(0xFFFFFF);
-        let accent_text = with_contrast(system_accent, window_bg);
-        Theme {
-            dark: true,
-            window_bg,
-            sidebar_bg: c(0x25262C),
-            panel_border: c(0x3A3B42),
-            text: c(0xF2F2F4),
-            text_secondary: c(0xAEB0B8),
-            divider: c(0x36373D),
-            field_bg: c(0x32333A),
-            control_bg: c(0x2C2D33),
-            control_border: c(0x4A4B52),
-            card_bg: c(0x212637),
-            card_border: c(0x323A52),
-            accent: with_contrast(system_accent, on_accent),
-            accent_text,
-            on_accent,
-            selection_inactive: c(0x393A41),
-            wave_rest: c(0x6E7385),
-            record_red: c(0xE0303A),
-            record_glyph: c(0xFF6961),
-            attention: c(0xFFB340),
-            playing_bg: Hsla {
-                a: 0.12,
-                ..accent_text
-            },
-            avatar_bg: c(0x323A52),
-            toast_bg: c(0x3A3B41),
-            menu_bg: c(0x2C2D33),
-            menu_border: c(0x45464D),
-            text_scale: 1.0,
-        }
+        Theme::new(true, system_accent, Display::default())
     }
 
-    pub fn for_appearance(appearance: WindowAppearance, system_accent: Option<Hsla>) -> Theme {
+    pub fn for_appearance(
+        appearance: WindowAppearance,
+        system_accent: Option<Hsla>,
+        display: Display,
+    ) -> Theme {
         match appearance {
-            WindowAppearance::Dark | WindowAppearance::VibrantDark => {
-                Theme::dark(system_accent.unwrap_or_else(|| c(DEFAULT_ACCENT_DARK)))
-            }
-            WindowAppearance::Light | WindowAppearance::VibrantLight => {
-                Theme::light(system_accent.unwrap_or_else(|| c(DEFAULT_ACCENT_LIGHT)))
-            }
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Theme::new(
+                true,
+                system_accent.unwrap_or_else(|| c(DEFAULT_ACCENT_DARK)),
+                display,
+            ),
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Theme::new(
+                false,
+                system_accent.unwrap_or_else(|| c(DEFAULT_ACCENT_LIGHT)),
+                display,
+            ),
         }
     }
 
@@ -165,21 +350,123 @@ impl Theme {
         }
     }
 
-    pub fn sidebar_shadow_color(&self) -> Hsla {
-        rgba(0x00000014).into()
+    /// Every color pair the views paint, with its floor: 4.5 to 1 for text (A11Y-8), 3 to 1 for
+    /// focus rings and graphics. A view that paints a new pair adds it here first.
+    pub fn pairs(&self) -> Vec<Pair> {
+        let text = |name: &str, fg, bg| Pair {
+            name: name.to_owned(),
+            fg,
+            bg,
+            min: MIN_CONTRAST,
+        };
+        let graphic = |name: &str, fg, bg| Pair {
+            name: name.to_owned(),
+            fg,
+            bg,
+            min: MIN_NON_TEXT_CONTRAST,
+        };
+        let backgrounds = [
+            ("window_bg", self.window_bg),
+            ("sidebar_bg", self.sidebar_bg),
+            ("card_bg", self.card_bg),
+            ("control_bg", self.control_bg),
+            ("field_bg", self.field_bg),
+            ("selection_inactive", self.selection_inactive),
+            ("playing_bg", self.playing_bg),
+            ("menu_bg", self.menu_bg),
+        ];
+        let mut pairs = Vec::new();
+        for (fg_name, fg) in [
+            ("text", self.text),
+            ("text_secondary", self.text_secondary),
+            ("accent_text", self.accent_text),
+            ("attention", self.attention),
+            ("record_glyph", self.record_glyph),
+        ] {
+            for (bg_name, bg) in backgrounds {
+                pairs.push(text(&format!("{fg_name} on {bg_name}"), fg, bg));
+            }
+        }
+        for (bg_name, bg) in [
+            ("window_bg", self.window_bg),
+            ("sidebar_bg", self.sidebar_bg),
+            ("card_bg", self.card_bg),
+            ("control_bg", self.control_bg),
+        ] {
+            pairs.push(graphic(
+                &format!("focus ring on {bg_name}"),
+                self.accent,
+                bg,
+            ));
+        }
+        pairs.extend([
+            text("on_accent on accent", self.on_accent, self.accent),
+            graphic("focus ring on accent", self.on_accent, self.accent),
+            text("on_record on record_red", self.on_record, self.record_red),
+            text(
+                "on_attention on attention",
+                self.on_attention,
+                self.attention,
+            ),
+            text("toast_text on toast_bg", self.toast_text, self.toast_bg),
+            text(
+                "toast_text_secondary on toast_bg",
+                self.toast_text_secondary,
+                self.toast_bg,
+            ),
+            text("text on avatar_bg", self.text, self.avatar_bg),
+            graphic("wave_rest on card_bg", self.wave_rest, self.card_bg),
+            graphic("accent wave on card_bg", self.accent, self.card_bg),
+            graphic("playhead on card_bg", self.text, self.card_bg),
+            graphic("record dot on control_bg", self.record_red, self.control_bg),
+        ]);
+        if self.high_contrast {
+            for (bg_name, bg) in [
+                ("window_bg", self.window_bg),
+                ("sidebar_bg", self.sidebar_bg),
+                ("card_bg", self.card_bg),
+                ("control_bg", self.control_bg),
+            ] {
+                pairs.push(graphic(
+                    &format!("border on {bg_name}"),
+                    self.control_border,
+                    bg,
+                ));
+            }
+        }
+        pairs
     }
 }
 
-/// Installs the theme for `window`'s appearance and the current accent, and keeps GPUI Kit's own
-/// components in the same mode. Call it at launch and from `observe_window_appearance`.
-pub fn sync(window: &mut Window, cx: &mut App) {
-    let appearance = window.appearance();
-    cx.set_global(Theme::for_appearance(
-        appearance,
-        crate::platform::system_accent(),
-    ));
-    gpui_kit::component::Theme::change(appearance, Some(window), cx);
-    window.refresh();
+/// Installs the theme for the current appearance, accent, and [`Display`], and keeps GPUI Kit's
+/// own components in step: the same mode, the direction C focus ring, Increase Contrast's borders
+/// and missing shadows, and the text scale as Kit's rem size. Call it at launch and on every
+/// change of any input.
+pub fn sync(cx: &mut App) {
+    let display = cx.try_global::<Display>().copied().unwrap_or_default();
+    let appearance = cx.window_appearance();
+    let theme = Theme::for_appearance(appearance, crate::platform::system_accent(), display);
+    cx.set_global(theme);
+    gpui_kit::component::Theme::change(appearance, None, cx);
+    let kit = gpui_kit::component::Theme::global_mut(cx);
+    kit.ring = theme.accent;
+    kit.font_size = px(16. * theme.text_scale);
+    kit.shadow = theme.shadows;
+    if theme.high_contrast {
+        kit.border = theme.control_border;
+        kit.input = theme.control_border;
+        kit.muted_foreground = theme.text_secondary;
+    }
+    cx.refresh_windows();
+}
+
+/// Changes one input of the theme and rebuilds it.
+pub fn set_display(edit: impl FnOnce(&mut Display), cx: &mut App) {
+    let mut display = cx.try_global::<Display>().copied().unwrap_or_default();
+    edit(&mut display);
+    display.text_scale = clamp_text_scale(display.text_scale);
+    cx.set_global(display);
+    sync(cx);
 }
 
 /// WCAG relative-luminance contrast ratio, 1 to 21.
@@ -200,17 +487,49 @@ fn luminance(color: Rgba) -> f32 {
     0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
 }
 
+/// `top` at `alpha` over `under`, as one opaque color.
+pub fn blend(top: Hsla, under: Hsla, alpha: f32) -> Hsla {
+    let (t, u): (Rgba, Rgba) = (top.into(), under.into());
+    let mix = |a: f32, b: f32| a * alpha + b * (1.0 - alpha);
+    Rgba {
+        r: mix(t.r, u.r),
+        g: mix(t.g, u.g),
+        b: mix(t.b, u.b),
+        a: 1.0,
+    }
+    .into()
+}
+
+/// White text on `fill` when it passes, else the dark text color.
+pub fn readable_on(fill: Hsla) -> Hsla {
+    let white = c(0xFFFFFF);
+    if contrast(white, fill) >= MIN_CONTRAST {
+        white
+    } else {
+        c(LIGHT.text)
+    }
+}
+
 /// A11Y-8: moves `color`'s HSL lightness away from `against` in 1% steps until the pair passes
 /// [`MIN_CONTRAST`]. Against a light color it darkens, against a dark one it lightens, so the
 /// same rule derives `accent` (under white text) and `accent_text` (on either background).
 pub fn with_contrast(color: Hsla, against: Hsla) -> Hsla {
-    let step = if luminance(against.into()) > 0.18 {
-        -0.01
-    } else {
-        0.01
+    with_contrast_all(color, &[against], MIN_CONTRAST)
+}
+
+/// [`with_contrast`] against every background the color is painted on, all of which share one
+/// lightness side, until the worst pair reaches `min`.
+pub fn with_contrast_all(color: Hsla, against: &[Hsla], min: f32) -> Hsla {
+    let light = against.iter().all(|bg| luminance((*bg).into()) > 0.18);
+    let step = if light { -0.01 } else { 0.01 };
+    let worst = |c: Hsla| {
+        against
+            .iter()
+            .map(|bg| contrast(c, *bg))
+            .fold(f32::INFINITY, f32::min)
     };
     let mut out = Hsla { a: 1.0, ..color };
-    while contrast(out, against) < MIN_CONTRAST && (0.0..=1.0).contains(&(out.l + step)) {
+    while worst(out) < min && (0.0..=1.0).contains(&(out.l + step)) {
         out.l += step;
     }
     out
@@ -219,39 +538,6 @@ pub fn with_contrast(color: Hsla, against: Hsla) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The system accents in sRGB, light then dark: blue, purple, pink, red, orange, yellow,
-    /// green, graphite.
-    const ACCENTS: [(u32, u32); 8] = [
-        (0x007AFF, 0x0A84FF),
-        (0xAF52DE, 0xBF5AF2),
-        (0xFF2D55, 0xFF375F),
-        (0xFF3B30, 0xFF453A),
-        (0xFF9500, 0xFF9F0A),
-        (0xFFCC00, 0xFFD60A),
-        (0x34C759, 0x30D158),
-        (0x8E8E93, 0x98989D),
-    ];
-
-    #[test]
-    fn every_macos_accent_passes_aa_in_both_appearances() {
-        for (light, dark) in ACCENTS {
-            for theme in [Theme::light(c(light)), Theme::dark(c(dark))] {
-                let pairs = [
-                    ("on_accent on accent", theme.on_accent, theme.accent),
-                    ("accent_text on window", theme.accent_text, theme.window_bg),
-                ];
-                for (what, fg, bg) in pairs {
-                    let ratio = contrast(fg, bg);
-                    assert!(
-                        ratio >= MIN_CONTRAST,
-                        "{what} is {ratio:.2} for {light:06X}/{dark:06X}, dark={}",
-                        theme.dark
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn the_default_blue_fails_as_is_and_is_darkened_only_as_far_as_needed() {
@@ -286,5 +572,33 @@ mod tests {
                 assert!(ratio >= 5.2, "{ratio:.2} dark={}", theme.dark);
             }
         }
+    }
+
+    #[test]
+    fn text_scale_steps_stay_within_85_and_200_percent() {
+        assert_eq!(bigger(1.0), 1.15);
+        assert_eq!(smaller(1.0), 0.85);
+        assert_eq!(bigger(2.0), 2.0);
+        assert_eq!(smaller(0.85), 0.85);
+        assert_eq!(
+            bigger(1.07),
+            1.15,
+            "an odd saved value snaps to the next step"
+        );
+        assert_eq!(clamp_text_scale(9.0), 2.0);
+        assert_eq!(clamp_text_scale(f32::NAN), 1.0);
+    }
+
+    #[test]
+    fn increase_contrast_drops_shadows_and_draws_borders_in_secondary_text() {
+        let display = Display {
+            increase_contrast: true,
+            ..Display::default()
+        };
+        let theme = Theme::new(false, c(DEFAULT_ACCENT_LIGHT), display);
+        assert!(!theme.shadows);
+        assert_eq!(theme.control_border, theme.text_secondary);
+        assert_eq!(theme.panel_border, theme.text_secondary);
+        assert!(contrast(theme.wave_rest, theme.card_bg) >= MIN_CONTRAST);
     }
 }

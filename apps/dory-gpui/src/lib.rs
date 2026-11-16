@@ -16,6 +16,8 @@
 //!   `settings_window::open`, `models_view::speech_step`, `models_view::meeting_languages_picker`,
 //!   and `set_up_summaries::sheet`.
 //!
+//! - P7 (accessibility): `system_prefs`, and fixes across every view above.
+//!
 //! Each agent-owned file's doc comment is its contract.
 
 pub mod a11y;
@@ -41,6 +43,7 @@ pub mod shell;
 pub mod sidebar;
 pub mod status_item;
 pub mod summary_view;
+pub mod system_prefs;
 pub mod theme;
 pub mod transcript_view;
 
@@ -53,7 +56,7 @@ pub fn build(
     window: &mut Window,
     cx: &mut App,
 ) -> (Entity<app::AppState>, Entity<shell::Shell>) {
-    theme::sync(window, cx);
+    theme::set_display(|display| display.text_scale = prefs.text_scale, cx);
     let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
     models_view::install(&state, cx);
     let shell = cx.new(|cx| shell::Shell::new(state.clone(), window, cx));

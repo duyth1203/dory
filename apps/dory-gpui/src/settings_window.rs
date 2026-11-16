@@ -8,7 +8,8 @@
 //!   Processing (UX-30). **Add model file...** stays disabled: no speech provider accepts a
 //!   user's file today.
 //! - Summaries: the summary models, and the Ollama steps when Ollama does not answer.
-//! - Storage: the data folder, its size, and Show in Finder.
+//! - Storage: the data folder, its size, and Show in Finder, then the old app's WebM files and
+//!   **Move original WebM files to Trash** with Undo.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -24,7 +25,7 @@ use gpui_kit::{
 };
 
 use crate::a11y;
-use crate::app::AppState;
+use crate::app::{AppState, Originals};
 use crate::models_view::{
     self, LanguagePicker, Mark, ModelList, Models, button, language_name, note, option, size_text,
 };
@@ -369,7 +370,7 @@ impl SettingsWindow {
             "Add model file..., unavailable",
         )
         .aria_description(ADD_MODEL_FILE_REASON)
-        .h(px(28.))
+        .min_h(px(28.))
         .px(px(12.))
         .flex()
         .flex_none()
@@ -524,7 +525,7 @@ impl SettingsWindow {
                 )
                 .child(div().flex().child(button(
                     "show-in-finder",
-                    "Show the data folder in Finder",
+                    "Show in Finder, the data folder",
                     "Show in Finder",
                     false,
                     &focus,
@@ -534,14 +535,95 @@ impl SettingsWindow {
         } else {
             body = body.child(note(size, theme));
         }
-        div().child(section(
-            "settings-storage",
-            "Data folder",
-            theme,
-            body.child(note(
-                "Recordings, transcripts, summaries, and downloaded speech models live here.",
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(16.))
+            .child(section(
+                "settings-storage",
+                "Data folder",
                 theme,
-            )),
+                body.child(note(
+                    "Recordings, transcripts, summaries, and downloaded speech models live here.",
+                    theme,
+                )),
+            ))
+            .children(self.originals(theme, cx))
+    }
+
+    /// The old app's WebM files (moved here from P8): what they cost, the one action that moves
+    /// them to the Trash, and Undo. Hidden when there are none.
+    fn originals(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<a11y::Node> {
+        if matches!(self.app.read(cx).originals(), Originals::Unread) {
+            self.app.update(cx, |app, cx| app.read_originals(cx));
+        }
+        let app = self.app.clone();
+        let originals = self.app.read(cx).originals().clone();
+        let (line, action): (String, Option<a11y::Node>) = match &originals {
+            Originals::Unread | Originals::Reading => return None,
+            Originals::Listed { count: 0, .. } => return None,
+            Originals::Listed { count, bytes } => {
+                let focus = self.focus("trash-originals", cx);
+                (
+                    format!(
+                        "{} from the old Dory app, {}. Dory copies each recording in first, so playback and transcripts keep working.",
+                        crate::app::count(*count, "original WebM file"),
+                        size_text(*bytes)
+                    ),
+                    Some(button(
+                        "trash-originals",
+                        "Move original WebM files to Trash",
+                        "Move Original WebM Files to Trash",
+                        false,
+                        &focus,
+                        theme,
+                        move |_, cx| app.update(cx, |app, cx| app.trash_originals(cx)),
+                    )),
+                )
+            }
+            Originals::Moving => (
+                "Copying the recordings in, then moving the files…".into(),
+                None,
+            ),
+            Originals::Moved(trashed) => {
+                let focus = self.focus("undo-trash-originals", cx);
+                (
+                    format!(
+                        "Moved {} to the Trash.",
+                        crate::app::count(trashed.count(), "original WebM file")
+                    ),
+                    Some(button(
+                        "undo-trash-originals",
+                        "Undo, put the WebM files back",
+                        "Undo",
+                        false,
+                        &focus,
+                        theme,
+                        move |_, cx| app.update(cx, |app, cx| app.undo_trash_originals(cx)),
+                    )),
+                )
+            }
+            Originals::Restoring => ("Putting the files back…".into(), None),
+            Originals::Failed(error) => (format!("⚠︎ {error}"), None),
+        };
+        Some(section(
+            "settings-originals",
+            "Files from the old app",
+            theme,
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(
+                    a11y::node("originals-status", Role::Status, line.clone())
+                        .text_size(theme.text(13.))
+                        .child(line),
+                )
+                .children(action.map(|action| div().flex().child(action)))
+                .child(note(
+                    "Nothing is deleted. The Trash keeps the files until you empty it.",
+                    theme,
+                )),
         ))
     }
 }
@@ -590,9 +672,7 @@ impl Render for SettingsWindow {
                         let _ = this.update(cx, |w, cx| w.select(tab, cx));
                     },
                 )
-                .h(px(28.))
-                .flex()
-                .items_center(),
+                .flex(),
             );
         }
         let page = match self.tab {
@@ -625,7 +705,7 @@ impl Render for SettingsWindow {
                             a11y::node("settings-error", Role::Status, error.clone())
                                 .text_size(theme.text(12.))
                                 .text_color(theme.attention)
-                                .child(error),
+                                .child(format!("⚠︎ {error}")),
                         )
                     })
                     .child(page),

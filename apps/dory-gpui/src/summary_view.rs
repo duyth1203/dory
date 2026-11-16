@@ -111,7 +111,7 @@ pub fn summary(
                         .text_size(theme.text(13.))
                         .text_color(theme.text_secondary)
                         .font_weight(FontWeight::MEDIUM)
-                        .child(STALE),
+                        .child(format!("⚠︎ {STALE}")),
                 )
             } else {
                 body

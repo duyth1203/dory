@@ -18,7 +18,7 @@ use super::core::Core;
 use super::{AppState, Saved};
 use crate::library::{self, Percent, Progress, RowStatus};
 use crate::processing::{self, Outcome, Rate, Run};
-use crate::record_control::{self, Live};
+use crate::record_control::Live;
 use crate::{a11y, notify};
 
 /// A model download in flight, from `ProvisionProgress`.
@@ -333,8 +333,8 @@ impl AppState {
 
     pub(super) fn on_recorder(&mut self, status: RecorderStatus, cx: &mut Context<Self>) {
         let before = std::mem::replace(&mut self.recorder, status.clone());
-        if let Some(words) = record_control::announcement(&before, &status) {
-            a11y::announce(words);
+        if let Some(said) = a11y::Announcement::of_recorder(&before, &status) {
+            said.post();
         }
         let new_take = status.id().is_some() && before.id() != status.id();
         if new_take {
@@ -410,16 +410,13 @@ impl AppState {
                     live.cap_at = Some(Ms(live.recorded.0 + remaining.0));
                     cx.notify();
                 });
-                a11y::announce(&format!(
-                    "{} of recording left",
-                    a11y::spoken_duration(remaining)
-                ));
+                a11y::Announcement::TimeLeft(remaining).post();
                 notify::time_warning(cx);
             }
             Event::Finished { id, reason } => {
                 self.sealing.insert(id);
                 if reason == FinalizeReason::CapReached {
-                    a11y::announce("The recording reached its time limit and was saved");
+                    a11y::Announcement::CapReached.post();
                     notify::cap_reached(cx);
                 }
             }
@@ -459,12 +456,20 @@ impl AppState {
             let title = library::title(row, &chrono::Local);
             match outcome {
                 Outcome::Finished => {
-                    a11y::announce(&format!("Finished processing {title}"));
+                    a11y::Announcement::Finished {
+                        title: title.clone(),
+                    }
+                    .post();
                     if cx.active_window().is_none() {
                         notify::job_finished(&id, &title, cx);
                     }
                 }
-                Outcome::Failed => a11y::announce(&format!("{title} needs attention")),
+                Outcome::Failed => {
+                    a11y::Announcement::Failed {
+                        title: title.clone(),
+                    }
+                    .post();
+                }
             }
         }
         let saved: Vec<RecordingId> = self

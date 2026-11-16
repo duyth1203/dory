@@ -41,8 +41,10 @@ use crate::theme::Theme;
 /// frame, and keeping it in the page keeps the page one scrolling surface.
 pub const PAGED_TURNS: usize = 80;
 
-/// The toolbar (52 pt) and the sticky tab row (34 pt) stay on screen above the list.
-const CHROME_ABOVE: f32 = 86.;
+/// The toolbar stays on screen above the list, 52 pt, and the sticky tab row under it, 34 pt
+/// scaled with the text.
+const TOOLBAR: f32 = 52.;
+const TAB_ROW: f32 = 34.;
 /// Keeps the last turn clear of the docked player: 52 pt tall, 14 pt above the edge.
 const DOCK_CLEARANCE: f32 = 80.;
 
@@ -269,13 +271,14 @@ impl TranscriptView {
         let name =
             match self.rename.as_ref().filter(|r| r.turn == ix) {
                 Some(rename) => div()
-                    .w(px(150.))
+                    .w(theme.text(150.))
                     .on_action(cx.listener(|this, _: &Escape, window, cx| {
                         this.finish_rename(false, window, cx)
                     }))
                     .child(
                         Input::new(&rename.input)
                             .id(SharedString::from(format!("turn-{ix}-rename")))
+                            .text_size(theme.text(14.))
                             .aria_label(format!("Name for {}", turn.label)),
                     )
                     .into_any_element(),
@@ -284,6 +287,11 @@ impl TranscriptView {
                     Role::Button,
                     format!("Rename {}", turn.label),
                 )
+                .aria_keyshortcuts("Shift+Return")
+                .min_h(px(24.))
+                .min_w(px(24.))
+                .flex()
+                .items_center()
                 .text_size(theme.text(14.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .cursor_pointer()
@@ -308,6 +316,11 @@ impl TranscriptView {
                 Role::Button,
                 format!("Play from {at}"),
             )
+            .aria_keyshortcuts("Return")
+            .min_h(px(24.))
+            .min_w(px(24.))
+            .flex()
+            .items_center()
             .text_size(theme.text(12.))
             .text_color(theme.accent_text)
             .cursor_pointer()
@@ -345,7 +358,8 @@ impl TranscriptView {
             }))
             .child(
                 div()
-                    .size(px(30.))
+                    .min_w(px(30.))
+                    .min_h(px(30.))
                     .flex_none()
                     .flex()
                     .items_center()
@@ -428,7 +442,7 @@ impl Render for TranscriptView {
                 .children(turns)
                 .into_any_element();
         }
-        let height = window.viewport_size().height - px(CHROME_ABOVE);
+        let height = window.viewport_size().height - px(TOOLBAR) - Theme::get(cx).text(TAB_ROW);
         container
             .child(
                 list(

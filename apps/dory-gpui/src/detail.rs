@@ -271,6 +271,11 @@ impl DetailPane {
         &self.session
     }
 
+    /// Where F6 lands in the detail pane: the title, the first thing in it.
+    pub fn first_focus(&self) -> &FocusHandle {
+        &self.title_focus
+    }
+
     pub fn is_editing_title(&self) -> bool {
         self.title_edit.is_some()
     }
@@ -376,6 +381,9 @@ impl DetailPane {
     fn title(&self, detail: &Detail, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         if let Some(edit) = &self.title_edit {
             return a11y::node("title-editor", Role::Group, "Title")
+                .border_2()
+                .border_color(theme.accent)
+                .rounded(px(6.))
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" {
                         this.finish_title_edit(false, window, cx);
@@ -384,6 +392,7 @@ impl DetailPane {
                 }))
                 .child(
                     Input::new(&edit.field)
+                        .aria_label("Title")
                         .appearance(false)
                         .text_size(theme.text(30.))
                         .font_weight(FontWeight::BOLD),
@@ -431,15 +440,15 @@ impl DetailPane {
                 theme,
                 move |_, cx| app.update(cx, |app, cx| app.set_tab(which, cx)),
             )
-            .h(theme.text(34.))
-            .flex()
-            .items_center()
-            .border_b_2()
-            .when(tab == which, |t| t.border_color(theme.accent))
+            .min_h(theme.text(34.))
         };
-        let (copy_label, copy): (&str, Box<dyn gpui_kit::Action>) = match tab {
-            DetailTab::Summary => ("Copy", Box::new(CopySummary)),
-            DetailTab::Transcript => ("Copy Transcript", Box::new(CopyTranscript)),
+        let (copy_label, copy_name, copy): (&str, &str, Box<dyn gpui_kit::Action>) = match tab {
+            DetailTab::Summary => ("Copy", "Copy summary", Box::new(CopySummary)),
+            DetailTab::Transcript => (
+                "Copy Transcript",
+                "Copy transcript",
+                Box::new(CopyTranscript),
+            ),
         };
         let id = detail.recording.id.clone();
         let action = |id: &'static str, label: &str| {
@@ -456,6 +465,7 @@ impl DetailPane {
             .gap(px(4.))
             .child(
                 action("copy", copy_label)
+                    .accessibility_label(copy_name.to_owned())
                     .on_click(move |_, window, cx| window.dispatch_action(copy.boxed_clone(), cx)),
             )
             .child(
@@ -553,7 +563,7 @@ fn processing(status: RowStatus, text: String, theme: &Theme) -> a11y::Node {
             .w_full()
             .max_w(px(320.))
             .rounded(px(2.))
-            .bg(theme.wave_rest.opacity(0.35))
+            .bg(theme.wave_track)
             .child(
                 div()
                     .h_full()
@@ -564,7 +574,8 @@ fn processing(status: RowStatus, text: String, theme: &Theme) -> a11y::Node {
     }))
 }
 
-/// A button in the detail column: 28 pt tall, accent-filled when `primary`.
+/// A button in the detail column: at least 28 pt tall, accent-filled when `primary`. The resting
+/// border of a plain one is `focusable`'s 2 pt border, so the focus ring keeps its full width.
 pub(crate) fn button(
     id: &'static str,
     label: impl Into<SharedString>,
@@ -588,7 +599,7 @@ pub(crate) fn button(
             cx.stop_propagation();
         }
     })
-    .h(px(28.))
+    .min_h(px(28.))
     .px(px(12.))
     .flex()
     .items_center()
@@ -598,9 +609,7 @@ pub(crate) fn button(
     .font_weight(FontWeight::MEDIUM)
     .when(primary, |b| b.bg(theme.accent).text_color(theme.on_accent))
     .when(!primary, |b| {
-        b.bg(theme.control_bg)
-            .border_1()
-            .border_color(theme.control_border)
+        b.bg(theme.control_bg).border_color(theme.control_border)
     })
     .child(label)
 }
@@ -678,7 +687,8 @@ impl DetailPane {
             });
         };
         let tick = div()
-            .size(px(16.))
+            .min_w(px(16.))
+            .min_h(px(16.))
             .flex()
             .items_center()
             .justify_center()
@@ -712,7 +722,7 @@ impl DetailPane {
                 cx.stop_propagation();
             }
         })
-        .h(px(28.))
+        .min_h(px(28.))
         .flex()
         .items_center()
         .gap(px(8.))
@@ -978,7 +988,7 @@ impl Render for DetailPane {
                         a11y::node("detail-error", Role::Status, error.clone())
                             .text_size(theme.text(14.))
                             .text_color(theme.attention)
-                            .child(error)
+                            .child(format!("⚠︎ {error}"))
                     })),
             )
             .children(card_slot)

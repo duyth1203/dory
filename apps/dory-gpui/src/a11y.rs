@@ -44,7 +44,9 @@ pub fn focusable(el: Node, focus: &FocusHandle, theme: &Theme, on_accent_fill: b
         .focus_visible(move |style| style.border_color(ring))
 }
 
-/// An underline tab (UX-2) that takes focus and activates with a click, Return, or Space.
+/// An underline tab (UX-2) that takes focus and activates with a click, Return, or Space. The
+/// selected tab is semibold over a 2 pt `accent` underline, a shape as well as a color, and at
+/// least 28 pt tall however small the text.
 pub fn tab(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -64,13 +66,26 @@ pub fn tab(
                 cx.stop_propagation();
             }
         })
+        .min_h(px(28.))
+        .min_w(px(24.))
         .px(px(8.))
+        .flex()
+        .flex_col()
+        .justify_center()
         .rounded(px(6.))
         .text_size(theme.text(14.))
         .when(selected, |tab| {
             tab.font_weight(gpui_kit::FontWeight::SEMIBOLD)
         })
-        .child(label)
+        .child(div().pt(px(4.)).child(label))
+        .child(
+            div()
+                .mt(px(4.))
+                .h(px(2.))
+                .w_full()
+                .rounded(px(1.))
+                .when(selected, |line| line.bg(theme.accent)),
+        )
 }
 
 /// A11Y-3: the player slider. Arrows move 5 s, Page Up and Page Down 1 min, and VoiceOver's
@@ -168,8 +183,68 @@ pub fn with_markdown_children(el: Node, markdown: &str) -> Node {
 }
 
 /// Asks VoiceOver to speak `message` now (A11Y-4). A no-op where the platform has no bridge.
+/// The recorder and the pipeline speak through [`Announcement`] instead, so their words live in
+/// one table.
 pub fn announce(message: &str) {
     crate::platform::announce(message);
+}
+
+/// Every state change A11Y-4 names, and the few more the recorder makes. One table, so the
+/// words VoiceOver says and the tests that check them never drift apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Announcement {
+    RecordingStarted,
+    RecordingPaused,
+    RecordingResumed,
+    /// Stop saves at once (UX-9), so VoiceOver says what happened to the audio.
+    RecordingSaved,
+    TimeLeft(Ms),
+    CapReached,
+    Finished {
+        title: String,
+    },
+    Failed {
+        title: String,
+    },
+}
+
+impl Announcement {
+    pub fn text(&self) -> String {
+        match self {
+            Announcement::RecordingStarted => "Recording started".into(),
+            Announcement::RecordingPaused => "Recording paused".into(),
+            Announcement::RecordingResumed => "Recording resumed".into(),
+            Announcement::RecordingSaved => "Recording saved".into(),
+            Announcement::TimeLeft(left) => {
+                format!("{} of recording left", spoken_duration(*left))
+            }
+            Announcement::CapReached => "The recording reached its time limit and was saved".into(),
+            Announcement::Finished { title } => format!("Finished processing {title}"),
+            Announcement::Failed { title } => format!("{title} needs attention"),
+        }
+    }
+
+    pub fn post(&self) {
+        announce(&self.text());
+    }
+
+    /// What VoiceOver says when the recorder moves from `from` to `to`, if anything. The cap and
+    /// a failed start say their own words from the events that carry the reason.
+    pub fn of_recorder(
+        from: &dory_core::app::RecorderStatus,
+        to: &dory_core::app::RecorderStatus,
+    ) -> Option<Announcement> {
+        use dory_core::app::RecorderStatus::*;
+        match (from, to) {
+            (Idle, Recording { .. }) => Some(Announcement::RecordingStarted),
+            (Recording { .. }, Paused { .. }) => Some(Announcement::RecordingPaused),
+            (Paused { .. } | Grace { .. }, Recording { .. }) => {
+                Some(Announcement::RecordingResumed)
+            }
+            (Recording { .. } | Paused { .. }, Grace { .. }) => Some(Announcement::RecordingSaved),
+            _ => None,
+        }
+    }
 }
 
 /// "12:30", or "1:02:03" from an hour on. Rounds down, so it never runs ahead of the audio.

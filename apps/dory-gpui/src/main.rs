@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use dory_gpui::{menus, notify, prefs, status_item};
+use dory_gpui::{menus, notify, prefs, status_item, system_prefs};
 use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 fn main() -> ExitCode {
@@ -26,6 +26,7 @@ fn main() -> ExitCode {
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
         menus::install(cx);
+        system_prefs::install(cx);
         let (width, height) = prefs.window_size;
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {

@@ -638,7 +638,7 @@ pub(crate) fn button(
             cx.stop_propagation();
         })
         .flex_none()
-        .h(px(28.))
+        .min_h(px(28.))
         .px(px(12.))
         .flex()
         .items_center()
@@ -693,7 +693,7 @@ pub(crate) fn option(
         .child(
             div()
                 .flex_none()
-                .w(px(18.))
+                .min_w(px(18.))
                 .text_size(theme.text(14.))
                 .text_color(if on {
                     theme.accent_text
@@ -788,7 +788,8 @@ fn explainer(
         }
     })
     .flex_none()
-    .size(px(24.))
+    .min_w(px(24.))
+    .min_h(px(24.))
     .flex()
     .items_center()
     .justify_center()
@@ -850,7 +851,7 @@ fn explainer(
                     .bg(theme.menu_bg)
                     .border_1()
                     .border_color(theme.menu_border)
-                    .shadow_lg()
+                    .when(theme.shadows, |pop| pop.shadow_lg())
                     .text_color(theme.text)
                     .child(
                         div()

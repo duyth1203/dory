@@ -27,6 +27,20 @@ pub fn title(status: &RecorderStatus, elapsed: Ms) -> String {
     }
 }
 
+/// What VoiceOver reads for the menu-bar item (A11Y-1): the app's name and the recorder's state
+/// in words, where the title has only a glyph and a clock.
+pub fn spoken(status: &RecorderStatus, elapsed: Ms) -> String {
+    match status {
+        RecorderStatus::Recording { .. } => {
+            format!("Dory, recording, {}", a11y::spoken_duration(elapsed))
+        }
+        RecorderStatus::Paused { .. } => {
+            format!("Dory, paused, {}", a11y::spoken_duration(elapsed))
+        }
+        RecorderStatus::Idle | RecorderStatus::Grace { .. } => IDLE_TITLE.to_owned(),
+    }
+}
+
 pub fn is_recording(status: &RecorderStatus) -> bool {
     matches!(
         status,
@@ -93,11 +107,12 @@ mod appkit {
     use objc2::runtime::AnyObject;
     use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
     use objc2_app_kit::{
-        NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+        NSAccessibility as _, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
+        NSVariableStatusItemLength,
     };
     use objc2_foundation::{NSObject, NSString, ns_string};
 
-    use super::{Clock, IDLE_TITLE, is_recording, title, toggle_label};
+    use super::{Clock, IDLE_TITLE, is_recording, spoken, title, toggle_label};
     use crate::actions::{NewRecording, StopRecording};
     use crate::app::AppState;
 
@@ -177,9 +192,10 @@ mod appkit {
             }
         }
 
-        fn set(&self, title: &str, toggle: &str) {
+        fn set(&self, title: &str, spoken: &str, toggle: &str) {
             if let Some(button) = self.item.button(self.mtm) {
                 button.setTitle(&NSString::from_str(title));
+                button.setAccessibilityLabel(Some(&NSString::from_str(spoken)));
             }
             self.toggle.setTitle(&NSString::from_str(toggle));
         }
@@ -195,9 +211,11 @@ mod appkit {
         let status = app.read(cx).recorder().clone();
         let mut shared = shared.borrow_mut();
         let elapsed = shared.clock.elapsed(&status, Instant::now());
-        shared
-            .item
-            .set(&title(&status, elapsed), toggle_label(&status));
+        shared.item.set(
+            &title(&status, elapsed),
+            &spoken(&status, elapsed),
+            toggle_label(&status),
+        );
     }
 
     fn dispatch(action: &dyn gpui_kit::Action, cx: &mut App) {
@@ -220,7 +238,10 @@ mod appkit {
             clock: Clock::default(),
             tick: None,
         }));
-        shared.borrow().item.set(IDLE_TITLE, "Start Recording");
+        shared
+            .borrow()
+            .item
+            .set(IDLE_TITLE, IDLE_TITLE, "Start Recording");
         eprintln!("status-item: created");
         refresh(app, &shared, cx);
 

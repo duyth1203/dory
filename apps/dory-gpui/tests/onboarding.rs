@@ -20,7 +20,7 @@ use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
 };
 
-use crate::common::{dory_on, id_of, open, open_with, open_with_prefs, sample_store};
+use crate::common::{dory_on, id_of, open, open_fresh, open_with, open_with_prefs, sample_store};
 
 fn step(app: &Entity<AppState>, cx: &mut TestAppContext) -> OnboardingStep {
     app.read_with(cx, |app, _| app.onboarding())
@@ -67,7 +67,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 
 #[gpui_kit::test]
 fn a_new_library_starts_at_welcome_with_continue_focused(cx: &mut TestAppContext) {
-    let (window, app) = open_with(cx, dory_on(Arc::new(MemStore::new())));
+    let (window, app) = open_fresh(cx, dory_on(Arc::new(MemStore::new())));
     assert_eq!(step(&app, cx), OnboardingStep::Welcome);
     assert_eq!(
         label(window, "onboarding-heading", cx).as_deref(),
@@ -81,16 +81,41 @@ fn a_new_library_starts_at_welcome_with_continue_focused(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-fn a_library_with_recordings_and_no_saved_step_skips_onboarding(cx: &mut TestAppContext) {
-    let (window, app) = open(cx);
-    assert_eq!(step(&app, cx), OnboardingStep::Done);
+fn an_upgraded_library_sees_only_the_permissions_then_the_start_screen(cx: &mut TestAppContext) {
+    let (window, app) = open_fresh(cx, dory_on(sample_store()));
+    assert_eq!(step(&app, cx), OnboardingStep::Upgrade);
+    assert_eq!(
+        label(window, "onboarding-heading", cx).as_deref(),
+        Some("Allow recording again")
+    );
+    assert!(label(window, "permission-microphone", cx).is_some());
+    assert!(label(window, "permission-system-audio", cx).is_some());
+    assert!(
+        label(window, "onboarding-skip", cx).is_none(),
+        "no models step to skip"
+    );
+    assert!(focused(window, "onboarding-continue", cx));
+
+    click(window, "onboarding-continue", cx);
+    assert_eq!(step(&app, cx), OnboardingStep::Done, "one step only");
     assert!(label(window, "onboarding", cx).is_none());
+    assert!(focused(window, "start-recording", cx));
+}
+
+#[gpui_kit::test]
+fn a_finished_first_run_never_shows_the_upgrade_step(cx: &mut TestAppContext) {
+    let prefs = Prefs {
+        onboarding: Some(OnboardingStep::Done),
+        ..Prefs::default()
+    };
+    let (window, app) = open_with_prefs(cx, dory_on(sample_store()), prefs);
+    assert_eq!(step(&app, cx), OnboardingStep::Done);
     assert!(label(window, "start-recording", cx).is_some());
 }
 
 #[gpui_kit::test]
 fn the_step_survives_a_quit_and_reopen(cx: &mut TestAppContext) {
-    let (window, app) = open_with(cx, dory_on(Arc::new(MemStore::new())));
+    let (window, app) = open_fresh(cx, dory_on(Arc::new(MemStore::new())));
     click(window, "onboarding-continue", cx);
     assert_eq!(step(&app, cx), OnboardingStep::Permissions);
 
@@ -235,7 +260,7 @@ fn grant_opens_system_settings_only_where_macos_cannot_prompt() {
 #[gpui_kit::test]
 fn skip_on_the_models_step_finishes_and_focuses_start_recording(cx: &mut TestAppContext) {
     let store = Arc::new(MemStore::new());
-    let (window, app) = open_with(cx, dory_on(store.clone()));
+    let (window, app) = open_fresh(cx, dory_on(store.clone()));
     click(window, "onboarding-continue", cx);
     click(window, "onboarding-continue", cx);
     assert_eq!(step(&app, cx), OnboardingStep::Models);
@@ -280,7 +305,7 @@ fn the_models_step_keeps_meeting_languages_already_chosen(cx: &mut TestAppContex
         vec![dory_core::ports::Change::SettingsReplaced(settings)],
     )
     .unwrap();
-    let (window, app) = open_with(cx, dory_on(store.clone()));
+    let (window, app) = open_fresh(cx, dory_on(store.clone()));
     click(window, "onboarding-continue", cx);
     click(window, "onboarding-continue", cx);
     assert_eq!(step(&app, cx), OnboardingStep::Models);

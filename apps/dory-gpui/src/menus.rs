@@ -37,6 +37,35 @@ pub struct MenuState {
     pub srt: bool,
     pub can_undo: bool,
     pub recorder: Recorder,
+    pub text_scale: Scale,
+}
+
+/// Where the text scale sits, so View > Bigger and Smaller grey out at the ends (A11Y-7).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scale {
+    Smallest,
+    Smaller,
+    #[default]
+    Actual,
+    Bigger,
+    Largest,
+}
+
+impl Scale {
+    pub fn of(scale: f32) -> Scale {
+        let (min, max) = (crate::theme::TEXT_SCALES[0], crate::theme::TEXT_SCALES[6]);
+        if scale <= min + 0.001 {
+            Scale::Smallest
+        } else if scale >= max - 0.001 {
+            Scale::Largest
+        } else if (scale - 1.0).abs() < 0.001 {
+            Scale::Actual
+        } else if scale < 1.0 {
+            Scale::Smaller
+        } else {
+            Scale::Bigger
+        }
+    }
 }
 
 /// The recorder phase the Recording menu needs, without the take or its time.
@@ -70,6 +99,7 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
         srt: transcript.is_some_and(|t| !t.segments.is_empty() && t.is_timed()),
         can_undo: app.can_undo(),
         recorder: Recorder::of(app.recorder()),
+        text_scale: Scale::of(app.prefs.text_scale),
     }
 }
 
@@ -105,6 +135,7 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Copy Summary", CopySummary).disabled(!state.has_summary),
             MenuItem::action("Copy Transcript", CopyTranscript).disabled(!state.has_transcript),
             MenuItem::separator(),
+            MenuItem::action("Rename", Rename).disabled(!state.has_selection),
             MenuItem::action("Move to Trash", MoveToTrash).disabled(!state.has_selection),
         ]),
         Menu::new("Edit").items([
@@ -125,6 +156,10 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Show Processing", FilterProcessing),
             MenuItem::action("Show Needs Attention", FilterNeedsAttention),
             MenuItem::action("Show Done", FilterDone),
+            MenuItem::separator(),
+            MenuItem::action("Bigger", Bigger).disabled(state.text_scale >= Scale::Largest),
+            MenuItem::action("Smaller", Smaller).disabled(state.text_scale <= Scale::Smallest),
+            MenuItem::action("Actual Size", ActualSize).disabled(state.text_scale == Scale::Actual),
         ]),
         Menu::new("Recording").items([
             MenuItem::action("New Recording", NewRecording).disabled(!idle),
@@ -164,6 +199,12 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("cmd-z", UndoTrash, None),
         KeyBinding::new("cmd-m", Minimize, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
+        KeyBinding::new("cmd-=", Bigger, None),
+        KeyBinding::new("cmd-+", Bigger, None),
+        KeyBinding::new("cmd--", Smaller, None),
+        KeyBinding::new("cmd-0", ActualSize, None),
+        KeyBinding::new("f6", NextRegion, None),
+        KeyBinding::new("shift-f6", PreviousRegion, None),
     ]);
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {
@@ -191,6 +232,22 @@ pub fn watch(app: &Entity<AppState>, cx: &mut App) {
         let app = cx.global::<Target>().0.clone();
         crate::settings_window::open(&app, cx);
     });
+    // Global too: text size applies to every window, Settings included (A11Y-7).
+    let scale = |next: fn(f32) -> f32| {
+        move |cx: &mut App| {
+            let app = cx.global::<Target>().0.clone();
+            app.update(cx, |app, cx| {
+                let scale = next(app.prefs.text_scale);
+                app.set_text_scale(scale, cx)
+            });
+        }
+    };
+    let bigger = scale(crate::theme::bigger);
+    let smaller = scale(crate::theme::smaller);
+    let actual = scale(|_| 1.0);
+    cx.on_action(move |_: &Bigger, cx| bigger(cx));
+    cx.on_action(move |_: &Smaller, cx| smaller(cx));
+    cx.on_action(move |_: &ActualSize, cx| actual(cx));
     let shown = Rc::new(Cell::new(MenuState::default()));
     let refresh = {
         let app = app.clone();
@@ -250,6 +307,7 @@ pub fn recording_menu(
             })
         })
         .separator()
+        .menu("Rename", Box::new(Rename))
         .menu("Move to Trash", Box::new(MoveToTrash))
 }
 

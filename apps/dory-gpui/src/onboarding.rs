@@ -1,4 +1,5 @@
-//! First run (UX-16, UX-17, UX-29): Welcome, Permissions, Models, then Done.
+//! First run (UX-16, UX-17, UX-29): Welcome, Permissions, Models, then Done. Someone upgrading
+//! from the old app sees only [`OnboardingStep::Upgrade`], the permissions again (P7).
 //!
 //! The step lives in the UI prefs file (`prefs.rs`), so a quit resumes at the same step. The shell
 //! shows [`Onboarding`] in the page column while the step is not `Done` and nothing is selected,
@@ -26,6 +27,9 @@ pub enum OnboardingStep {
     Welcome,
     Permissions,
     Models,
+    /// The permissions alone, for a library that came from the old app. macOS matches a grant to
+    /// the app's code signature, so the new app asks again even though the library carries over.
+    Upgrade,
     Done,
 }
 
@@ -34,17 +38,19 @@ impl OnboardingStep {
         match self {
             OnboardingStep::Welcome => OnboardingStep::Permissions,
             OnboardingStep::Permissions => OnboardingStep::Models,
-            OnboardingStep::Models | OnboardingStep::Done => OnboardingStep::Done,
+            OnboardingStep::Models | OnboardingStep::Upgrade | OnboardingStep::Done => {
+                OnboardingStep::Done
+            }
         }
     }
 
-    /// The step to open on. A library that predates onboarding skips it: its owner already
-    /// records, the start screen offers Grant for a missing permission (UX-6), and a recording
-    /// waiting on a model offers its download (UX-13).
+    /// The step to open on. Every first run of this app saves a step, so recordings with no
+    /// saved step can only have come from `dory-cli import` of the old app's folder. Their owner
+    /// already records and has models, so they see only [`OnboardingStep::Upgrade`].
     pub fn resolve(saved: Option<OnboardingStep>, has_recordings: bool) -> OnboardingStep {
         match saved {
             Some(step) => step,
-            None if has_recordings => OnboardingStep::Done,
+            None if has_recordings => OnboardingStep::Upgrade,
             None => OnboardingStep::Welcome,
         }
     }
@@ -54,6 +60,7 @@ impl OnboardingStep {
             OnboardingStep::Welcome => "welcome",
             OnboardingStep::Permissions => "permissions",
             OnboardingStep::Models => "models",
+            OnboardingStep::Upgrade => "upgrade",
             OnboardingStep::Done => "done",
         }
     }
@@ -64,10 +71,22 @@ impl OnboardingStep {
             OnboardingStep::Welcome,
             OnboardingStep::Permissions,
             OnboardingStep::Models,
+            OnboardingStep::Upgrade,
             OnboardingStep::Done,
         ]
         .into_iter()
         .find(|step| step.as_str() == s)
+    }
+
+    /// The step's heading.
+    pub fn title(self) -> &'static str {
+        match self {
+            OnboardingStep::Welcome => "Welcome to Dory",
+            OnboardingStep::Permissions => "Allow recording",
+            OnboardingStep::Models => "Languages and speech",
+            OnboardingStep::Upgrade => "Allow recording again",
+            OnboardingStep::Done => "",
+        }
     }
 
     /// "Step 2 of 3", or `None` once done.
@@ -76,7 +95,7 @@ impl OnboardingStep {
             OnboardingStep::Welcome => 1,
             OnboardingStep::Permissions => 2,
             OnboardingStep::Models => 3,
-            OnboardingStep::Done => return None,
+            OnboardingStep::Upgrade | OnboardingStep::Done => return None,
         };
         Some(format!("Step {n} of 3"))
     }
@@ -277,7 +296,7 @@ impl Onboarding {
 
     fn welcome(&self, theme: &Theme) -> Vec<gpui_kit::AnyElement> {
         vec![
-            heading("Welcome to Dory", theme),
+            heading(OnboardingStep::Welcome.title(), theme),
             paragraph(
                 "Dory records your calls, then writes the transcript and summary on this Mac. Nothing leaves it.",
                 theme,
@@ -286,13 +305,39 @@ impl Onboarding {
     }
 
     fn permissions(&self, theme: &Theme, cx: &App) -> Vec<gpui_kit::AnyElement> {
-        let mut out = vec![
-            heading("Allow recording", theme),
-            paragraph(
-                "macOS asks before Dory can hear anything. Here is what each permission is for.",
-                theme,
-            ),
-        ];
+        self.permission_rows(
+            vec![
+                heading(OnboardingStep::Permissions.title(), theme),
+                paragraph(
+                    "macOS asks before Dory can hear anything. Here is what each permission is for.",
+                    theme,
+                ),
+            ],
+            theme,
+            cx,
+        )
+    }
+
+    fn upgrade(&self, theme: &Theme, cx: &App) -> Vec<gpui_kit::AnyElement> {
+        self.permission_rows(
+            vec![
+                heading(OnboardingStep::Upgrade.title(), theme),
+                paragraph(
+                    "Your recordings, transcripts, and summaries are all here. This version of Dory is a new app to macOS, so it asks for the permissions once more.",
+                    theme,
+                ),
+            ],
+            theme,
+            cx,
+        )
+    }
+
+    fn permission_rows(
+        &self,
+        mut out: Vec<gpui_kit::AnyElement>,
+        theme: &Theme,
+        cx: &App,
+    ) -> Vec<gpui_kit::AnyElement> {
         for (source, focus) in [Source::Microphone, Source::SystemAudio]
             .into_iter()
             .zip(&self.grant)
@@ -348,7 +393,7 @@ impl Onboarding {
         cx: &mut App,
     ) -> Vec<gpui_kit::AnyElement> {
         vec![
-            heading("Languages and speech", theme),
+            heading(OnboardingStep::Models.title(), theme),
             paragraph("Which languages are your meetings in?", theme),
             crate::models_view::meeting_languages_picker(&self.app, window, cx),
             crate::models_view::speech_step(&self.app, window, cx),
@@ -415,6 +460,10 @@ impl Render for Onboarding {
         let theme = Theme::get(cx);
         let step = self.app.read(cx).onboarding();
         if self.shown != Some(step) {
+            // Focus lands on Continue, so VoiceOver would otherwise say only "Continue".
+            if self.shown.is_some() && step != OnboardingStep::Done {
+                a11y::announce(step.title());
+            }
             self.shown = Some(step);
             window.focus(&self.primary, cx);
         }
@@ -422,6 +471,7 @@ impl Render for Onboarding {
             OnboardingStep::Welcome => self.welcome(&theme),
             OnboardingStep::Permissions => self.permissions(&theme, cx),
             OnboardingStep::Models => self.models(&theme, window, cx),
+            OnboardingStep::Upgrade => self.upgrade(&theme, cx),
             OnboardingStep::Done => Vec::new(),
         };
         a11y::node("onboarding", Role::Group, "Set up Dory")
@@ -465,7 +515,7 @@ impl Onboarding {
                 move |_, cx| app.update(cx, |app, cx| app.skip_onboarding(cx)),
             )
         });
-        a11y::node("onboarding-actions", Role::Group, "Set up Dory")
+        a11y::node("onboarding-actions", Role::Group, "Setup actions")
             .flex()
             .justify_end()
             .gap(px(8.))
@@ -505,6 +555,7 @@ mod tests {
             OnboardingStep::Welcome,
             OnboardingStep::Permissions,
             OnboardingStep::Models,
+            OnboardingStep::Upgrade,
             OnboardingStep::Done,
         ] {
             assert_eq!(OnboardingStep::parse(step.as_str()), Some(step));

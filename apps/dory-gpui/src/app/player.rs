@@ -1,7 +1,8 @@
 use std::time::Duration;
 
+use dory_core::app::DoryError;
 use dory_core::domain::{Ms, RecordingId};
-use dory_core::ports::{PlayState, Player, PlayerStatus};
+use dory_core::ports::{PlayState, PlaybackError, Player, PlayerStatus, TakeError};
 use gpui_kit::{Context, SharedString, Task};
 
 use super::core::Core;
@@ -118,7 +119,7 @@ impl PlayerHandle {
                     self.player = Some(player);
                     self.unavailable = None;
                 }
-                Err(error) => self.unavailable = Some(error.to_string().into()),
+                Err(error) => self.unavailable = Some(why_unavailable(&error)),
             }
         }
         self.player.as_deref()
@@ -151,5 +152,20 @@ impl PlayerHandle {
             }));
         }
         cx.notify();
+    }
+}
+
+/// The player's own words for an audio that will not open. The core's messages name ids.
+fn why_unavailable(error: &DoryError) -> SharedString {
+    match error {
+        DoryError::Take(TakeError::Missing(_)) => "This recording has no audio.".into(),
+        DoryError::Playback(PlaybackError::Open(_)) | DoryError::Take(TakeError::Decode(_)) => {
+            "Dory can't play this audio file.".into()
+        }
+        DoryError::Recording(_) => "This recording is still being recorded.".into(),
+        DoryError::Saving(_) => {
+            "This recording is still being saved. Try again in a moment.".into()
+        }
+        other => other.to_string().into(),
     }
 }

@@ -287,6 +287,7 @@ impl DetailPane {
                 .placeholder(placeholder)
                 .default_value(current)
         });
+        a11y::register_text_field(&field, cx);
         field.update(cx, |field, cx| {
             field.focus(window, cx);
             field.select_all(window, cx);

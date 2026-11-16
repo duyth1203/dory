@@ -250,7 +250,7 @@ impl PlayerView {
         };
         if failed(phase).is_some() && failed(phase) != failed(&before) {
             start(&mut t.failed_at);
-            if phase.fix().is_some() && processing {
+            if phase.fix().is_some() && processing && !a11y::typing(window, cx) {
                 window.focus(&self.fix_focus, cx);
             }
         }

@@ -45,6 +45,7 @@ pub struct Sidebar {
 impl Sidebar {
     pub fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        a11y::register_text_field(&search, cx);
         let on_type = cx.subscribe_in(
             &search,
             window,

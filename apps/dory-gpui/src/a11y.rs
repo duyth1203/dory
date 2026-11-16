@@ -11,11 +11,12 @@
 //! - [`focusable`]: GPUI draws no focus ring, and Kit's own is a faint halo (lane 4).
 
 use dory_core::domain::Ms;
+use gpui_kit::component::input::InputState;
 use gpui_kit::{
-    AccessibleAction, AnyElement, App, Div, ElementId, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Role, SharedString, Stateful,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
-    prelude::FluentBuilder as _, px, transparent_black,
+    AccessibleAction, AnyElement, App, Div, ElementId, Entity, FocusHandle, Focusable as _, Global,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Role, SharedString,
+    Stateful, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, WeakFocusHandle,
+    Window, div, prelude::FluentBuilder as _, px, transparent_black,
 };
 
 use crate::theme::Theme;
@@ -25,6 +26,32 @@ use crate::theme::Theme;
 pub type Node = gpui_kit::base::ObservedElement<Stateful<Div>>;
 
 /// A div with its element id, a matching AX identifier, a role, and a label.
+/// The text fields someone may be typing in. GPUI cannot say whether a text field has focus, so
+/// each field registers here when it is made, and code that moves focus on its own asks
+/// [`typing`] first: a failure that arrives mid-rename must not pull focus out of the field.
+#[derive(Default)]
+struct TextFields(Vec<WeakFocusHandle>);
+
+impl Global for TextFields {}
+
+pub fn register_text_field(field: &Entity<InputState>, cx: &mut App) {
+    let handle = field.read(cx).focus_handle(cx).downgrade();
+    let fields = cx.default_global::<TextFields>();
+    fields.0.retain(|h| h.upgrade().is_some());
+    fields.0.push(handle);
+}
+
+/// True while focus is in a registered text field.
+pub fn typing(window: &Window, cx: &App) -> bool {
+    cx.try_global::<TextFields>().is_some_and(|fields| {
+        fields
+            .0
+            .iter()
+            .filter_map(WeakFocusHandle::upgrade)
+            .any(|h| h.contains_focused(window, cx))
+    })
+}
+
 /// Keeps a scroll inside a scroll area nested in the page: GPUI hands every wheel event to every
 /// scroll area under the pointer, so without this the page moves along with the inner list.
 pub fn contain_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> Stateful<Div> {

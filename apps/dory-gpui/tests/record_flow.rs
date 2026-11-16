@@ -1252,3 +1252,38 @@ fn each_failure_says_what_to_do_and_its_fix_takes_focus(cx: &mut TestAppContext)
         );
     }
 }
+
+/// A failure takes focus for its fix button, but never out of a text field someone is typing in.
+#[gpui_kit::test]
+fn a_failure_does_not_pull_focus_out_of_the_title_being_edited(cx: &mut TestAppContext) {
+    let mut rig = Rig::new();
+    with_engine(&mut rig, Arc::new(FakeTranscriber::new()));
+    *rig.takes.clip_error.lock().unwrap() = Some(|| TakeError::DiskFull);
+    rig.capture.push_script(seconds(10));
+    let (window, app) = rig.open(cx, limits());
+    record(window, &app, 10, cx);
+    stop_into_grace(window, &app, cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("title", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        label(window, "title-editor", cx).is_some(),
+        "editing the title"
+    );
+    end_grace(&rig, &app, cx);
+    until(cx, "the failure", |cx| {
+        rig.clock.advance_ms(60_000);
+        label(window, "card-fix", cx).is_some()
+    });
+    assert!(
+        label(window, "title-editor", cx).is_some(),
+        "the title is still being edited"
+    );
+    assert!(
+        !focused(window, "card-fix", cx),
+        "the fix did not take focus"
+    );
+}

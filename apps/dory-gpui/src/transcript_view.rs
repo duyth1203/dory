@@ -184,6 +184,7 @@ impl TranscriptView {
             return;
         };
         let input = cx.new(|cx| InputState::new(window, cx).default_value(turn.label.clone()));
+        a11y::register_text_field(&input, cx);
         let events = cx.subscribe_in(&input, window, |this, _, event: &InputEvent, window, cx| {
             if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                 this.finish_rename(true, window, cx);

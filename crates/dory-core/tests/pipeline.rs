@@ -583,6 +583,34 @@ fn long_meeting(context: u32, reply: &str) -> (Rig, RecordingId) {
 }
 
 #[test]
+fn a_take_with_no_speech_gets_no_summary_and_never_calls_the_summary_model() {
+    let rig = Rig::new(
+        FakeTranscriber::new(),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    );
+    let id = rig.seed("silence", ChannelLayout::MicSystem, 60);
+    rig.takes.set_activity(&id, Channel::Mic, &[]);
+    rig.takes.set_activity(&id, Channel::System, &[]);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+
+    assert!(
+        dory.library()
+            .transcript(&id)
+            .unwrap()
+            .unwrap()
+            .segments
+            .is_empty()
+    );
+    assert!(
+        rig.llm.prompts().is_empty(),
+        "the summary model was asked to summarize nothing"
+    );
+    assert_eq!(dory.library().summary(&id).unwrap(), None);
+}
+
+#[test]
 fn a_transcript_that_fits_the_context_is_summarized_in_one_pass() {
     let (rig, id) = long_meeting(8_192, SUMMARY);
     let dory = rig.open();

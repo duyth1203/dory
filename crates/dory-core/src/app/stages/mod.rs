@@ -474,6 +474,10 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .transcript(id)
         .map_err(failed)?
         .ok_or_else(|| permanent("there is no transcript to summarize"))?;
+    // A model asked to summarize nothing writes a reply about the missing transcript.
+    if transcript.segments.iter().all(|s| s.text.trim().is_empty()) {
+        return Ok(Vec::new());
+    }
     let language = transcript.main_language().cloned();
     let needs = LlmNeeds {
         language: language.clone(),

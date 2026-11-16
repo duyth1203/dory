@@ -388,7 +388,9 @@ fn availability_covers_ready_missing_and_down() {
     );
     assert_eq!(
         Ollama::new(&without.url()).availability(&e4b()),
-        Availability::NeedsProvision { bytes: None }
+        Availability::NeedsProvision {
+            bytes: Some(9_461_576_343)
+        }
     );
     assert_eq!(
         Ollama::new(&down).availability(&e4b()),

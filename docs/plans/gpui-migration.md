@@ -48,10 +48,11 @@ pstack is a Claude Code plugin, not part of this repo. Paths that start with `ps
   - [ ] P4 after P3, after the operator records a go on P0, and after `docs/design/` holds the chosen direction.
   - [ ] P5 after P4.
   - [ ] P6 after P5.
-  - [ ] P7 after P6.
+  - [ ] P6b after P6.
+  - [ ] P7 after P6b.
   - [ ] P8 after P7.
 - [ ] Hold the file boundaries. Each PR's **Files** list is its boundary. A PR that needs a file outside its list stops and asks the root, which either adds a small PR below it in the stack or amends this plan with a logged decision.
-- [ ] Hold the review gate. P4, P5, P6, P7, and P8 change an interaction. They wait for the operator's review in chat with screenshots and a video before merge.
+- [ ] Hold the review gate. P4, P5, P6, P6b, P7, and P8 change an interaction. They wait for the operator's review in chat with screenshots and a video before merge.
 
 ### PR mechanics, for every PR
 
@@ -492,9 +493,71 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
 - [ ] The root appends P6 to the stack on P5's branch.
 
-## Make the app accessible end to end (P7)
+## Limit the load while processing (P6b)
 
 **Depends on.** P6.
+
+**Files.**
+
+- [ ] Create `crates/dory-core/src/app/pace.rs`, `crates/dory-core/tests/pace.rs`, and `crates/dory-macos/src/machine.rs`.
+- [ ] Edit `crates/dory-core/src/domain/settings.rs`, `ports/`, `app/pipeline.rs`, `app/events.rs`, and `testing/`.
+- [ ] Edit `crates/dory-engines/src/sherpa/engine.rs` and `crates/dory-engines/src/ollama/`.
+- [ ] Edit `crates/dory/src/lib.rs` and `config.rs`, `apps/dory-cli`, and `apps/dory-gpui/src/settings_window.rs` and `processing.rs`.
+
+**Build.**
+
+- [ ] Name the data shapes first, per `docs/architecture/hexagonal.md`, "Processing pace". `Settings::processing` is `Processing::{Auto, Fast, Light}`, default `Auto`. `Conditions { power: Ac | Battery | Unknown, low_power: bool, thermal: Nominal | Fair | Serious | Critical }`. `Budget { pace: Fast | Light, threads, reason }`.
+- [ ] Write `pace` test-first as a pure function, including the 2-minute hold back to fast.
+- [ ] Add the `Machine` port, `FakeMachine`, and `dory_macos::MacMachine`. Keep all `unsafe` in `machine.rs` with safety notes.
+- [ ] The pipeline worker evaluates the pace before each speech window and each summary pass, calls `set_pace` on its own thread, and passes `threads` to the engines. The current thread count stays the `Fast` count, so nothing gets slower by default.
+- [ ] Sherpa rebuilds its recognizer when `threads` changes. Ollama sends `num_thread` and keeps it for the whole summary stage.
+- [ ] `Progress` carries the `Budget`. The row and detail pane show the reason (UX-30). Add **Processing** to **Settings > Transcription** (UX-30).
+- [ ] `dory-cli process` takes `--pace fast|light` for the bench. `DORY_MACHINE=battery,low-power,thermal=serious` overrides the conditions for lanes, refused unless `DORY_DATA_DIR` is set, like the `--fake-*` flags.
+
+**You see.**
+
+- [ ] Unplug the Mac while a 60-minute meeting transcribes. Within one window the row reads "Light, on battery", the fans stay quiet, and the transcript still finishes.
+
+**Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
+
+- [ ] `crates/dory-core/tests/pace.rs` covers every (setting, condition, recording) row, the 2-minute hold with a `ManualClock`, a pace change mid-transcribe that rebuilds once, `threads` reaching both requests, and `set_pace` called before every window. Engine tests check the sherpa rebuild and Ollama's `num_thread`. Run `cargo test --workspace`.
+
+**Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
+
+- [ ] Lane 1. Regression lane against P6's head. Transcribe the 60-minute AMI set with `--pace fast` on both. Save `pace-regress.txt`. Pass when head's word error rate and wall time are within the parent's spread.
+- [ ] Lane 2. Transcribe the same set with `--pace light`. Save `pace-light.txt`. Pass when the word error rate is within 0.5 points of Fast.
+- [ ] Lane 3. Operator lane. Unplug power mid-transcription. Save `battery.png` with `screencapture -x`. Pass when the row reads "Light, on battery" within one window.
+- [ ] Lane 4. Operator lane. Turn on Low Power Mode on power. Save `low-power.png`. Pass when the row reads "Light, Low Power Mode".
+- [ ] Lane 5. Set `DORY_MACHINE=thermal=serious`. Save `thermal.png`. Pass when the job runs light with the thermal reason.
+- [ ] Lane 6. Record for 3 minutes while a job transcribes on power. Save `recording-light.png`. Pass when the job runs light during the recording, returns to fast 2 minutes after Stop, and the take has no `CaptureIssue`.
+- [ ] Lane 7. Plug back in, then unplug and replug twice within 2 minutes. Save `hold.txt` from the log. Pass when the pace returns to fast once, 2 minutes after the last plug-in, and the recognizer rebuilds at most twice.
+- [ ] Lane 8. Operator lane. Set **Light** on power and run `sudo powermetrics --samplers cpu_power -i 1000` during transcription. Save `ecores.txt`. Pass when the speech engine's work runs on the efficiency cluster.
+- [ ] Lane 9. Summarize on Light. Save `ollama-threads.txt` from the Ollama server log. Pass when the runner starts with 2 threads.
+- [ ] Lane 10. Set **Fast** with `DORY_MACHINE=battery`, then open **Settings > Transcription** by keyboard. Save `settings-processing.png`. Pass when the job runs fast and VoiceOver's label for each choice includes its one-line effect.
+
+**Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
+
+- [ ] Metric. Wall time, average CPU percent over the process tree, and package energy per audio minute, for the 60-minute AMI set at each pace.
+- [ ] Probe. `dory-cli process --pace <p>` with `ps -o pcpu=` sampled every second. Energy is an operator lane with `sudo powermetrics --samplers cpu_power`. Run Fast and Light interleaved, three times each.
+- [ ] Baseline. Record P6 head's Fast time and CPU in `docs/plans/baselines.md` first.
+- [ ] Rule. Fail when Fast is more than 5% slower than the baseline. Fail when Light averages more than 200% CPU, uses more energy per audio minute than Fast, or takes more than 4 times Fast's wall time. The 4-times bound is a starting guess; record the measured ratio and tighten it.
+
+**Review gate.** The operator reviews before merge.
+
+- [ ] Copy lane 3, 6, and 10 screenshots into `docs/design/review/p6b-review-<slug>.png`.
+- [ ] Record a 30 to 60 second video of unplugging during transcription and the row switching to light. Save it as `docs/design/review/p6b-review.mp4`.
+- [ ] Post the screenshots, the video, and the perf table in chat. Stop at merge-ready. Wait for the operator's click.
+
+**Merge.**
+
+- [ ] Root's clean verdict at the exact head SHA.
+- [ ] Bugbot triage done.
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
+- [ ] The root appends P6b to the stack on P6's branch.
+
+## Make the app accessible end to end (P7)
+
+**Depends on.** P6b.
 
 **Files.**
 

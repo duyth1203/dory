@@ -4,25 +4,33 @@
 //! reloads rows through `library().list` on relevant events and on `Resync`, and views read
 //! `AppState`, `Session`, and `PlayerHandle`. Views never call the store: the `Dory` facade lives
 //! in the private `core` module, so only this module tree can reach it.
+//!
+//! `record` adds the record flow and processing (P5): recorder commands, the recorder's events,
+//! progress and estimates, finish and fix actions.
 
 mod core;
 mod player;
+mod record;
 mod session;
 
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use dory_core::app::{Dory, Event, RecorderStatus, Trashed};
 use dory_core::domain::{JobId, RecordingId, RecordingRow};
+use dory_core::models::ModelRef;
 use dory_core::ports::capture::{Access, CaptureCaps};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 pub use player::PlayerHandle;
+pub use record::{Download, ModelInfo};
 pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 
 use self::core::Core;
 use crate::library::{Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal};
 use crate::prefs::Prefs;
+use crate::processing::{Rate, Run};
+use crate::record_control::Live;
 
 /// How long typing pauses before the search runs.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -58,6 +66,10 @@ pub enum AppEvent {
     RowsReloaded,
 }
 
+/// A take just stopped is listed with its audio, so its finish card can take focus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saved(pub RecordingId);
+
 pub struct AppState {
     core: Core,
     /// The store's rows for the current search, newest first.
@@ -85,10 +97,28 @@ pub struct AppState {
     reselect: Option<RecordingId>,
     rows_generation: u64,
     search_generation: u64,
+    /// The recorded time and level, in their own entity so the 10 Hz meter repaints only the
+    /// views that show it.
+    live: Entity<Live>,
+    /// Seconds the Undo toast shows while the recorder is in grace. The core owns the deadline.
+    grace_left: u8,
+    grace_generation: u64,
+    /// Takes closed and not yet listed with their audio, so the detail says it is saving.
+    sealing: HashSet<RecordingId>,
+    /// The first progress of each running stage, for the time left (UX-12).
+    runs: HashMap<RecordingId, Run>,
+    /// How fast this Mac transcribed in this session, for the finish card's estimate.
+    rate: Option<Rate>,
+    downloads: HashMap<ModelRef, Download>,
+    /// Speech and speaker models by id, for "Download <model>".
+    models: HashMap<ModelRef, ModelInfo>,
+    auto_process: bool,
+    epoch: Instant,
     _pump: Task<()>,
 }
 
 impl EventEmitter<AppEvent> for AppState {}
+impl EventEmitter<Saved> for AppState {}
 
 impl AppState {
     pub fn new(dory: Dory, prefs: Prefs, cx: &mut Context<Self>) -> Self {
@@ -97,6 +127,8 @@ impl AppState {
         let probe = dory.recorder().probe();
         let devices = dory.recorder().input_devices();
         let core = Core::new(dory);
+        record::load_models(&core, cx);
+        record::load_settings(&core, cx);
         let pump = cx.spawn(async move |this, cx| {
             while let Some(first) = events.recv().await {
                 let mut batch = vec![first];
@@ -151,6 +183,16 @@ impl AppState {
             reselect: None,
             rows_generation: 0,
             search_generation: 0,
+            live: cx.new(|_| Live::default()),
+            grace_left: 0,
+            grace_generation: 0,
+            sealing: HashSet::new(),
+            runs: HashMap::new(),
+            rate: None,
+            downloads: HashMap::new(),
+            models: HashMap::new(),
+            auto_process: true,
+            epoch: Instant::now(),
             _pump: pump,
         };
         state.reload(cx);
@@ -369,11 +411,6 @@ impl AppState {
         cx.notify();
     }
 
-    /// The toolbar's Record button. Recording is P5's work, so it only says so.
-    pub fn start_recording(&mut self, _cx: &mut Context<Self>) {
-        eprintln!("record: P5 wires this");
-    }
-
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.rows_generation += 1;
         let generation = self.rows_generation;
@@ -387,8 +424,9 @@ impl AppState {
                 }
                 match rows {
                     Ok(rows) => {
-                        state.recordings = rows;
+                        let before = std::mem::replace(&mut state.recordings, rows);
                         state.error = None;
+                        state.on_rows(&before, cx);
                     }
                     Err(error) => state.error = Some(error.to_string().into()),
                 }
@@ -406,9 +444,12 @@ impl AppState {
     fn on_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
         let mut rows = false;
         let mut detail = false;
+        // A batch of only `Levels` repaints the record control, not the window.
+        let mut quiet = true;
         let selected = self.selection.id().cloned();
         let is_selected = |id: &RecordingId| selected.as_ref() == Some(id);
         for event in events {
+            quiet &= matches!(event, Event::Levels { .. });
             match event {
                 Event::RecordingAdded(_) | Event::JobEnqueued(_) => rows = true,
                 Event::RecordingChanged(id)
@@ -431,6 +472,7 @@ impl AppState {
                     rows = true;
                     if let Some(owner) = self.job_owner.get(&job) {
                         self.progress.remove(owner);
+                        self.runs.remove(owner);
                     }
                 }
                 Event::StageProgress {
@@ -439,16 +481,23 @@ impl AppState {
                     fraction,
                 } => self.on_progress(job, Progress { stage, fraction }, cx),
                 Event::Recorder(status) => {
-                    self.recorder = status;
+                    self.on_recorder(status, cx);
                     rows = true;
                 }
                 Event::Resync => {
                     self.progress.clear();
-                    self.recorder = self.core.dory().recorder().status();
+                    self.runs.clear();
+                    let status = self.core.dory().recorder().status();
+                    self.on_recorder(status, cx);
                     rows = true;
                     detail = true;
                 }
-                _ => {}
+                Event::SettingsChanged => record::load_settings(&self.core, cx),
+                Event::ProvisionFinished { .. } => {
+                    rows = true;
+                    self.on_record_event(event, cx);
+                }
+                other => self.on_record_event(other, cx),
             }
         }
         if rows {
@@ -457,12 +506,14 @@ impl AppState {
         if detail && let Some(session) = &self.session {
             session.update(cx, |session, cx| session.reload(cx));
         }
-        cx.notify();
+        if !quiet {
+            cx.notify();
+        }
     }
 
     fn on_progress(&mut self, job: JobId, progress: Progress, cx: &mut Context<Self>) {
-        if let Some(owner) = self.job_owner.get(&job) {
-            self.progress.insert(owner.clone(), progress);
+        if let Some(owner) = self.job_owner.get(&job).cloned() {
+            self.track(owner, progress);
             return;
         }
         let lookup = self
@@ -472,7 +523,7 @@ impl AppState {
             let Some(found) = lookup.await else { return };
             let _ = this.update(cx, |state, cx| {
                 state.job_owner.insert(job, found.recording.clone());
-                state.progress.insert(found.recording, progress);
+                state.track(found.recording, progress);
                 cx.notify();
             });
         })

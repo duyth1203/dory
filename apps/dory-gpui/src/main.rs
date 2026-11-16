@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use dory_gpui::{menus, prefs};
+use dory_gpui::{menus, notify, prefs, status_item};
 use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 fn main() -> ExitCode {
@@ -47,6 +47,8 @@ fn main() -> ExitCode {
             let (state, shell) = dory_gpui::build(core, prefs, window, cx);
             prefs::watch(&state, &config, window, cx);
             menus::watch(&state, cx);
+            status_item::install(&state, cx);
+            notify::install(&state, cx);
             shell
         });
         if let Err(error) = opened {

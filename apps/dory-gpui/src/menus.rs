@@ -4,7 +4,8 @@
 //! once. `watch` rebuilds them when what the commands need changes: a recording is selected, its
 //! detail has a summary or a transcript, SRT is possible, or there is something to undo. Every
 //! item dispatches an action from `crate::actions`, and the window root handles it, so a menu
-//! item, a shortcut, and a button all take one path. Recording items P5 will wire stay disabled.
+//! item, a shortcut, and a button all take one path. The Recording menu follows the recorder:
+//! New Recording while idle, Pause or Resume and Stop while a take is live, Undo Stop in grace.
 //!
 //! Space for `TogglePlayback` is not bound here. A binding without a context would also take
 //! Space from a focused button and from the search field, so the player owns that key.
@@ -12,6 +13,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use dory_core::app::RecorderStatus;
 use dory_core::domain::RecordingId;
 use gpui_kit::component::input;
 use gpui_kit::component::menu::PopupMenu;
@@ -30,6 +32,28 @@ pub struct MenuState {
     /// The transcript has times for every segment, which SRT needs.
     pub srt: bool,
     pub can_undo: bool,
+    pub recorder: Recorder,
+}
+
+/// The recorder phase the Recording menu needs, without the take or its time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Recorder {
+    #[default]
+    Idle,
+    Recording,
+    Paused,
+    Grace,
+}
+
+impl Recorder {
+    pub fn of(status: &RecorderStatus) -> Recorder {
+        match status {
+            RecorderStatus::Idle => Recorder::Idle,
+            RecorderStatus::Recording { .. } => Recorder::Recording,
+            RecorderStatus::Paused { .. } => Recorder::Paused,
+            RecorderStatus::Grace { .. } => Recorder::Grace,
+        }
+    }
 }
 
 pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
@@ -41,6 +65,7 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
         has_transcript: transcript.is_some(),
         srt: transcript.is_some_and(|t| !t.segments.is_empty() && t.is_timed()),
         can_undo: app.can_undo(),
+        recorder: Recorder::of(app.recorder()),
     }
 }
 
@@ -51,6 +76,13 @@ pub fn build(state: MenuState) -> Vec<Menu> {
     } else {
         "Undo"
     };
+    let idle = state.recorder == Recorder::Idle;
+    let live = matches!(state.recorder, Recorder::Recording | Recorder::Paused);
+    let pause = if state.recorder == Recorder::Paused {
+        "Resume Recording"
+    } else {
+        "Pause Recording"
+    };
     vec![
         Menu::new("Dory").items([
             MenuItem::os_submenu("Services", SystemMenuType::Services),
@@ -58,7 +90,7 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Quit Dory", Quit),
         ]),
         Menu::new("File").items([
-            MenuItem::action("New Recording", NewRecording).disabled(true),
+            MenuItem::action("New Recording", NewRecording).disabled(!idle),
             MenuItem::separator(),
             MenuItem::action("Export as Markdown…", ExportMarkdown).disabled(!exportable),
             MenuItem::action("Export as Text…", ExportText).disabled(!exportable),
@@ -89,15 +121,18 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Show Done", FilterDone),
         ]),
         Menu::new("Recording").items([
-            MenuItem::action("New Recording", NewRecording).disabled(true),
-            MenuItem::action("Pause Recording", PauseRecording).disabled(true),
-            MenuItem::action("Stop Recording", StopRecording).disabled(true),
+            MenuItem::action("New Recording", NewRecording).disabled(!idle),
+            MenuItem::action(pause, PauseRecording).disabled(!live),
+            MenuItem::action("Stop Recording", StopRecording).disabled(!live),
+            MenuItem::action("Undo Stop", UndoStop).disabled(state.recorder != Recorder::Grace),
             MenuItem::separator(),
             MenuItem::action("Play or Pause", TogglePlayback).disabled(!state.has_selection),
         ]),
         Menu::new("Window").items([
             MenuItem::action("Minimize", Minimize),
             MenuItem::action("Zoom", Zoom),
+            MenuItem::separator(),
+            MenuItem::action("Processing Queue", ShowProcessingQueue),
         ]),
         Menu::new("Help").items([MenuItem::action("Dory Help", ShowHelp).disabled(true)]),
     ]

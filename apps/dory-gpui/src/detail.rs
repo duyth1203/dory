@@ -20,9 +20,8 @@ use std::rc::Rc;
 
 use chrono::{Local, TimeZone};
 use dory_core::domain::{
-    Blocker, ChannelLayout, JobState, Recording, RecordingRow, Stage, SummaryFlag, Transcript,
+    ChannelLayout, Goal, JobState, Recording, RecordingId, RecordingRow, SummaryFlag, Transcript,
 };
-use dory_core::models::UnavailableReason;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -36,78 +35,16 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::actions::{CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText};
-use crate::app::{AppState, Detail, DetailTab, Loadable, Session};
+use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
 use crate::library::{self, RowStatus};
 use crate::menus;
 use crate::player_view::PlayerView;
+use crate::processing::Fix;
 use crate::summary_view;
 use crate::theme::Theme;
 use crate::transcript_view::TranscriptView;
 
-/// What a job that stopped needs from the user, in the CLI's words adapted to the app.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Problem {
-    pub text: String,
-    pub fix: Option<String>,
-}
-
-impl Problem {
-    /// `None` unless the job is blocked or failed.
-    pub fn of(job: &JobState) -> Option<Problem> {
-        let problem = |text: String, fix: &str| Problem {
-            text,
-            fix: Some(fix.to_owned()),
-        };
-        match job {
-            JobState::Blocked { blocker, .. } => Some(match blocker {
-                Blocker::NeedsProvision { model, bytes } => problem(
-                    match bytes {
-                        Some(b) => format!("{model} is not on this Mac ({} MB).", b / 1_000_000),
-                        None => format!("{model} is not on this Mac."),
-                    },
-                    "Download it, then try again.",
-                ),
-                Blocker::Unavailable { model, why } => Problem {
-                    text: format!("{model} is unavailable: {}.", unavailable(&why.reason)),
-                    fix: Some(
-                        why.fix
-                            .clone()
-                            .unwrap_or_else(|| "Pick another model, then try again.".into()),
-                    ),
-                },
-                Blocker::Incompatible { model, why } => problem(
-                    format!("{model} {why}."),
-                    "Pick another model, or set the recording's language.",
-                ),
-                Blocker::NoModel { kind } => problem(
-                    format!("No {kind} model is set up."),
-                    "Choose one in Settings, then try again.",
-                ),
-            }),
-            JobState::Failed { stage, error } => Some(Problem {
-                text: format!("{} failed: {}", stage_noun(*stage), error.message),
-                fix: None,
-            }),
-            _ => None,
-        }
-    }
-}
-
-fn unavailable(reason: &UnavailableReason) -> String {
-    match reason {
-        UnavailableReason::UnsupportedPlatform => "not supported on this Mac".into(),
-        UnavailableReason::OsTooOld { required } => format!("needs {required}"),
-        UnavailableReason::NotEligible { detail } => detail.clone(),
-        UnavailableReason::ServerUnreachable { endpoint } => format!("cannot reach {endpoint}"),
-    }
-}
-
-fn stage_noun(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Transcribe => "Transcription",
-        Stage::Summarize => "The summary",
-    }
-}
+pub use crate::processing::Problem;
 
 /// What the page shows under the player.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,9 +53,12 @@ pub enum Body {
     NoAudio,
     /// Recording, queued, or transcribing, with no transcript yet (UX-11, UX-12).
     Processing(RowStatus),
+    /// Stopped and not yet saved: the undo grace, then sealing the take.
+    Saving,
     /// The job stopped before a transcript existed.
     NeedsAttention(Problem),
-    NotTranscribed,
+    /// Audio and no job: the finish card (UX-11).
+    Finish,
     /// Transcribed, but the transcript is empty and there is no summary.
     NothingSaid,
     Tabs,
@@ -126,9 +66,18 @@ pub enum Body {
 
 impl Body {
     /// `job` and `status` are the selected row's; `None` when the row is outside the list.
-    pub fn derive(detail: &Detail, job: Option<&JobState>, status: Option<RowStatus>) -> Body {
+    /// `saving` is `AppState::is_saving` for the recording.
+    pub fn derive(
+        detail: &Detail,
+        job: Option<&JobState>,
+        status: Option<RowStatus>,
+        saving: bool,
+    ) -> Body {
         if status == Some(RowStatus::Recording) {
             return Body::Processing(RowStatus::Recording);
+        }
+        if saving {
+            return Body::Saving;
         }
         if detail.recording.take.is_none() {
             return Body::NoAudio;
@@ -139,7 +88,7 @@ impl Body {
             }
             return match status {
                 Some(s @ (RowStatus::Queued | RowStatus::Transcribing(_))) => Body::Processing(s),
-                _ => Body::NotTranscribed,
+                _ => Body::Finish,
             };
         };
         if transcript.segments.is_empty() && detail.summary.is_none() {
@@ -254,6 +203,14 @@ pub struct DetailPane {
     pinning: Pinning,
     /// What prepaint measured; a change re-renders with it.
     measured: Rc<Cell<Pinning>>,
+    finish_focus: FocusHandle,
+    transcript_only_focus: FocusHandle,
+    always_focus: FocusHandle,
+    fix_focus: FocusHandle,
+    /// The finish card's "Always do this when I stop".
+    always: bool,
+    /// Set when this recording's stop is saved; the finish card takes focus once it shows.
+    focus_finish: bool,
 }
 
 impl DetailPane {
@@ -265,6 +222,13 @@ impl DetailPane {
     ) -> Self {
         cx.observe(&session, |_, _, cx| cx.notify()).detach();
         cx.observe(&app, |_, _, cx| cx.notify()).detach();
+        cx.subscribe(&app, |this, _, Saved(id): &Saved, cx| {
+            if this.session.read(cx).id() == id {
+                this.focus_finish = true;
+                cx.notify();
+            }
+        })
+        .detach();
         let handle = session.read(cx).player().clone();
         let player = cx.new(|cx| PlayerView::new(handle, cx));
         let transcript = cx.new(|cx| TranscriptView::new(session.clone(), window, cx));
@@ -278,6 +242,12 @@ impl DetailPane {
             title_edit: None,
             pinning: Pinning::default(),
             measured: Rc::default(),
+            finish_focus: cx.focus_handle(),
+            transcript_only_focus: cx.focus_handle(),
+            always_focus: cx.focus_handle(),
+            fix_focus: cx.focus_handle(),
+            always: false,
+            focus_finish: false,
         }
     }
 
@@ -555,12 +525,13 @@ fn state(
         }))
 }
 
-fn processing(status: RowStatus, theme: &Theme) -> a11y::Node {
+/// `text` is `AppState::status_text`, so the detail and the row say the same (UX-12).
+fn processing(status: RowStatus, text: String, theme: &Theme) -> a11y::Node {
     let percent = match status {
         RowStatus::Transcribing(Some(p)) => Some(p.get()),
         _ => None,
     };
-    state("detail-state", Role::Status, status.label(), None, theme).children(percent.map(|p| {
+    state("detail-state", Role::Status, text, None, theme).children(percent.map(|p| {
         div()
             .h(px(4.))
             .w_full()
@@ -577,8 +548,210 @@ fn processing(status: RowStatus, theme: &Theme) -> a11y::Node {
     }))
 }
 
+/// A button in the detail column: 28 pt tall, accent-filled when `primary`.
+fn button(
+    id: &'static str,
+    label: impl Into<SharedString>,
+    primary: bool,
+    focus: &FocusHandle,
+    theme: &Theme,
+    on_press: impl Fn(&mut Window, &mut App) + Clone + 'static,
+) -> a11y::Node {
+    let label: SharedString = label.into();
+    let on_key = on_press.clone();
+    a11y::focusable(
+        a11y::node(id, Role::Button, label.clone()),
+        focus,
+        theme,
+        primary,
+    )
+    .on_click(move |_, window, cx| on_press(window, cx))
+    .on_key_down(move |event: &KeyDownEvent, window, cx| {
+        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+            on_key(window, cx);
+            cx.stop_propagation();
+        }
+    })
+    .h(px(28.))
+    .px(px(12.))
+    .flex()
+    .items_center()
+    .gap(px(8.))
+    .rounded(px(7.))
+    .text_size(theme.text(13.))
+    .font_weight(FontWeight::MEDIUM)
+    .when(primary, |b| b.bg(theme.accent).text_color(theme.on_accent))
+    .when(!primary, |b| {
+        b.bg(theme.control_bg)
+            .border_1()
+            .border_color(theme.control_border)
+    })
+    .child(label)
+}
+
+impl DetailPane {
+    /// UX-13's one button, or the download's progress while it runs.
+    fn fix(&self, id: &RecordingId, fix: &Fix, theme: &Theme, cx: &App) -> a11y::Node {
+        let app = self.app.clone();
+        match fix {
+            Fix::SetUpSummaries => button(
+                "detail-fix",
+                "Set up summaries",
+                false,
+                &self.fix_focus,
+                theme,
+                crate::set_up_summaries::sheet,
+            ),
+            Fix::Download(model) => {
+                let state = app.read(cx);
+                let name = state.model_name(model);
+                if let Some(download) = state.download_of(model) {
+                    let text = match download.percent() {
+                        Some(p) => format!("Downloading {name}, {}%", p.get()),
+                        None => format!("Downloading {name}"),
+                    };
+                    return a11y::node("detail-fix", Role::Status, text.clone())
+                        .text_size(theme.text(13.))
+                        .text_color(theme.text_secondary)
+                        .child(text);
+                }
+                let model = model.clone();
+                button(
+                    "detail-fix",
+                    format!("Download {name}"),
+                    false,
+                    &self.fix_focus,
+                    theme,
+                    move |_, cx| app.update(cx, |app, cx| app.download(model.clone(), cx)),
+                )
+            }
+            Fix::TryAgain => {
+                let id = id.clone();
+                button(
+                    "detail-fix",
+                    "Try again",
+                    false,
+                    &self.fix_focus,
+                    theme,
+                    move |_, cx| app.update(cx, |app, cx| app.try_again(id.clone(), cx)),
+                )
+            }
+        }
+    }
+
+    /// UX-11's finish card, shown when automatic processing did not queue the recording.
+    fn finish_card(&self, detail: &Detail, theme: &Theme, cx: &mut Context<Self>) -> a11y::Node {
+        let id = detail.recording.id.clone();
+        let audio = detail
+            .recording
+            .take
+            .map_or(dory_core::domain::Ms(0), |t| t.duration);
+        let estimate = self.app.read(cx).finish_estimate(audio);
+        let always = self.always;
+        let finish = |goal: Goal| {
+            let (app, id) = (self.app.clone(), id.clone());
+            move |_: &mut Window, cx: &mut App| {
+                app.update(cx, |app, cx| app.finish(id.clone(), goal, always, cx))
+            }
+        };
+        let this = cx.entity().downgrade();
+        let toggle = move |_: &mut Window, cx: &mut App| {
+            let _ = this.update(cx, |this, cx| {
+                this.always = !this.always;
+                cx.notify();
+            });
+        };
+        let tick = div()
+            .size(px(16.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .border_1()
+            .border_color(theme.control_border)
+            .when(always, |b| b.bg(theme.accent).text_color(theme.on_accent))
+            .child(if always { "✓" } else { "" });
+        let checkbox = a11y::focusable(
+            a11y::node(
+                "finish-always",
+                Role::CheckBox,
+                "Always do this when I stop",
+            ),
+            &self.always_focus,
+            theme,
+            false,
+        )
+        .aria_toggled(if always {
+            gpui_kit::accesskit::Toggled::True
+        } else {
+            gpui_kit::accesskit::Toggled::False
+        })
+        .on_click({
+            let toggle = toggle.clone();
+            move |_, window, cx| toggle(window, cx)
+        })
+        .on_key_down(move |event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key == "space" {
+                toggle(window, cx);
+                cx.stop_propagation();
+            }
+        })
+        .h(px(28.))
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .rounded(px(6.))
+        .text_size(theme.text(13.))
+        .child(tick)
+        .child("Always do this when I stop");
+        a11y::node("finish-card", Role::Group, "Finish this recording?")
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .p(px(20.))
+            .rounded(px(14.))
+            .bg(theme.card_bg)
+            .border_1()
+            .border_color(theme.card_border)
+            .child(
+                div()
+                    .text_size(theme.text(17.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Finish this recording?"),
+            )
+            .child(
+                a11y::node("finish-estimate", Role::Label, estimate.clone())
+                    .text_size(theme.text(14.))
+                    .text_color(theme.text_secondary)
+                    .child(estimate),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap(px(8.))
+                    .child(button(
+                        "finish-all",
+                        "Transcribe and Summarize",
+                        true,
+                        &self.finish_focus,
+                        theme,
+                        finish(Goal::ALL),
+                    ))
+                    .child(button(
+                        "finish-transcript",
+                        "Transcript Only",
+                        false,
+                        &self.transcript_only_focus,
+                        theme,
+                        finish(Goal::TRANSCRIBE),
+                    )),
+            )
+            .child(checkbox)
+    }
+}
+
 impl Render for DetailPane {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let (detail, write_error) = {
             let session = self.session.read(cx);
@@ -595,7 +768,7 @@ impl Render for DetailPane {
                 }
             }
         };
-        let (tab, job, status) = {
+        let (tab, job, status, status_text, saving) = {
             let app = self.app.read(cx);
             let row = app
                 .recordings
@@ -605,9 +778,24 @@ impl Render for DetailPane {
                 app.tab,
                 row.and_then(|r| r.job.clone()),
                 row.map(|r| app.status(r)),
+                row.map(|r| app.status_text(r)),
+                app.is_saving(&detail.recording.id),
             )
         };
-        let body = Body::derive(&detail, job.as_ref(), status);
+        let body = Body::derive(&detail, job.as_ref(), status, saving);
+        match body {
+            Body::Finish if self.focus_finish => {
+                self.focus_finish = false;
+                window.focus(&self.finish_focus, cx);
+            }
+            // The row can list the saved audio a frame before the session reloads it.
+            Body::Finish | Body::Saving | Body::NoAudio => {}
+            _ => self.focus_finish = false,
+        }
+        let fix = job
+            .as_ref()
+            .and_then(Problem::of)
+            .map(|problem| self.fix(&detail.recording.id, &problem.fix, &theme, cx));
         let pinning = self.pinning;
         let has_player = detail.recording.take.is_some();
         let docked = has_player && pinning.docked;
@@ -646,9 +834,13 @@ impl Render for DetailPane {
                     .children(in_flow)
                     .child(self.watch(Slot::Tabs, cx));
                 let page = match tab {
-                    DetailTab::Summary => {
-                        summary_view::summary(&detail, job.as_ref(), status, &theme)
-                    }
+                    DetailTab::Summary => summary_view::summary(
+                        &detail,
+                        job.as_ref(),
+                        status,
+                        fix.map(IntoElement::into_any_element),
+                        &theme,
+                    ),
                     DetailTab::Transcript => self.transcript.clone().into_any_element(),
                 };
                 let sticky = pinned.map(|row| {
@@ -681,16 +873,45 @@ impl Render for DetailPane {
                     sticky,
                 )
             }
-            Body::Processing(status) => (processing(*status, &theme).into_any_element(), None),
-            Body::NeedsAttention(problem) => (
-                state(
-                    "detail-state",
-                    Role::Group,
-                    problem.text.clone(),
-                    problem.fix.clone(),
+            Body::Processing(status) => (
+                processing(
+                    *status,
+                    status_text.unwrap_or_else(|| status.label()),
                     &theme,
                 )
                 .into_any_element(),
+                None,
+            ),
+            Body::Saving => (
+                state(
+                    "detail-state",
+                    Role::Status,
+                    "Recording saved.",
+                    None,
+                    &theme,
+                )
+                .into_any_element(),
+                None,
+            ),
+            Body::NeedsAttention(problem) => (
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(4.))
+                    .child(state(
+                        "detail-state",
+                        Role::Group,
+                        problem.text.clone(),
+                        None,
+                        &theme,
+                    ))
+                    .children(fix)
+                    .into_any_element(),
+                None,
+            ),
+            Body::Finish => (
+                self.finish_card(&detail, &theme, cx).into_any_element(),
                 None,
             ),
             Body::NoAudio => (
@@ -699,17 +920,6 @@ impl Render for DetailPane {
                     Role::Group,
                     "No audio was recorded.",
                     Some("Nothing reached the microphone or system audio.".into()),
-                    &theme,
-                )
-                .into_any_element(),
-                None,
-            ),
-            Body::NotTranscribed => (
-                state(
-                    "detail-state",
-                    Role::Group,
-                    "Not transcribed yet.",
-                    None,
                     &theme,
                 )
                 .into_any_element(),
@@ -765,10 +975,8 @@ impl Render for DetailPane {
 
 #[cfg(test)]
 mod tests {
-    use dory_core::domain::{
-        Blocker, FailureClass, JobError, JobState, LangTag, Revision, Stage, Transcript,
-    };
-    use dory_core::models::{KindTag, ModelRef};
+    use dory_core::domain::{Blocker, JobState, LangTag, Revision, Stage, Transcript};
+    use dory_core::models::KindTag;
 
     use super::*;
     use crate::app::Detail;
@@ -790,7 +998,12 @@ mod tests {
     fn the_body_follows_the_take_the_transcript_and_the_job() {
         let done = detail("Design review");
         assert_eq!(
-            Body::derive(&done, Some(&JobState::Succeeded), Some(RowStatus::Done)),
+            Body::derive(
+                &done,
+                Some(&JobState::Succeeded),
+                Some(RowStatus::Done),
+                false
+            ),
             Body::Tabs
         );
 
@@ -801,12 +1014,17 @@ mod tests {
         let forty =
             RowStatus::Transcribing(Some(Percent::of(dory_core::domain::Fraction::new(0.4))));
         assert_eq!(
-            Body::derive(&weekly, Some(&running), Some(forty)),
+            Body::derive(&weekly, Some(&running), Some(forty), false),
             Body::Processing(forty)
         );
         assert_eq!(
-            Body::derive(&weekly, None, Some(RowStatus::ReadyToTranscribe)),
-            Body::NotTranscribed
+            Body::derive(&weekly, None, Some(RowStatus::ReadyToTranscribe), false),
+            Body::Finish
+        );
+        assert_eq!(
+            Body::derive(&weekly, None, Some(RowStatus::ReadyToTranscribe), true),
+            Body::Saving,
+            "stopped, inside the undo grace or sealing"
         );
 
         let blocked = JobState::Blocked {
@@ -814,10 +1032,15 @@ mod tests {
             blocker: Blocker::NoModel { kind: KindTag::Stt },
         };
         assert_eq!(
-            Body::derive(&weekly, Some(&blocked), Some(RowStatus::NeedsAttention)),
+            Body::derive(
+                &weekly,
+                Some(&blocked),
+                Some(RowStatus::NeedsAttention),
+                false
+            ),
             Body::NeedsAttention(Problem {
                 text: "No speech model is set up.".into(),
-                fix: Some("Choose one in Settings, then try again.".into()),
+                fix: crate::processing::Fix::TryAgain,
             })
         );
 
@@ -826,42 +1049,11 @@ mod tests {
             segments: Vec::new(),
             ..detail("Design review").transcript.unwrap()
         });
-        assert_eq!(Body::derive(&silent, None, None), Body::NothingSaid);
+        assert_eq!(Body::derive(&silent, None, None, false), Body::NothingSaid);
 
         let mut no_take = detail("Design review");
         no_take.recording.take = None;
-        assert_eq!(Body::derive(&no_take, None, None), Body::NoAudio);
-    }
-
-    #[test]
-    fn problems_read_as_the_cli_words_them() {
-        let failed = JobState::Failed {
-            stage: Stage::Summarize,
-            error: JobError {
-                class: FailureClass::Permanent,
-                message: "The summary model isn't installed.".into(),
-            },
-        };
-        assert_eq!(
-            Problem::of(&failed),
-            Some(Problem {
-                text: "The summary failed: The summary model isn't installed.".into(),
-                fix: None,
-            })
-        );
-        let model = ModelRef::parse("fake/whisper").unwrap();
-        let provision = JobState::Blocked {
-            stage: Stage::Transcribe,
-            blocker: Blocker::NeedsProvision {
-                model,
-                bytes: Some(1_500_000_000),
-            },
-        };
-        assert_eq!(
-            Problem::of(&provision).unwrap().text,
-            "fake/whisper is not on this Mac (1500 MB)."
-        );
-        assert_eq!(Problem::of(&JobState::Queued), None);
+        assert_eq!(Body::derive(&no_take, None, None, false), Body::NoAudio);
     }
 
     #[test]

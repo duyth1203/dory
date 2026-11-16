@@ -8,6 +8,9 @@
 //! - Agent 1: `detail`, `summary_view`.
 //! - Agent 2: `transcript_view`, `player_view`.
 //! - Agent 3: `export`, `menus`, `prefs`.
+//! - P5 record flow: `record_control`, `processing`, and the record and processing parts of the
+//!   shell files above. P5's other agents: `notify`, `queue_popover`, `status_item`, and
+//!   `set_up_summaries`.
 //!
 //! Each agent-owned file's doc comment is its contract.
 
@@ -19,11 +22,17 @@ pub mod export;
 pub mod fixtures;
 pub mod library;
 pub mod menus;
+pub mod notify;
 pub mod platform;
 pub mod player_view;
 pub mod prefs;
+pub mod processing;
+pub mod queue_popover;
+pub mod record_control;
+pub mod set_up_summaries;
 pub mod shell;
 pub mod sidebar;
+pub mod status_item;
 pub mod summary_view;
 pub mod theme;
 pub mod transcript_view;

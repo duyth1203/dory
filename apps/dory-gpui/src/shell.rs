@@ -4,7 +4,8 @@
 //!
 //! Layout: the sidebar is a panel inset 8 pt from the top, left, and bottom edges. To its right,
 //! a 52 pt toolbar holds only the record control, and below it the page scrolls one centered
-//! column at most 720 pt wide, with 48 pt side padding (24 pt below a 900 pt window).
+//! column at most 720 pt wide, with 48 pt side padding (24 pt below a 900 pt window). The Undo
+//! toast for a stopped recording floats 28 pt above the bottom of that column (UX-9).
 
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement, IntoElement,
@@ -20,6 +21,7 @@ use crate::app::{AppEvent, AppState, DetailTab};
 use crate::detail::DetailPane;
 use crate::export::{self, CopyWhat, ExportFormat};
 use crate::library::StatusFilter;
+use crate::record_control::{self, RecordControl};
 use crate::sidebar::Sidebar;
 use crate::theme::{self, Theme};
 
@@ -29,9 +31,10 @@ pub struct Shell {
     app: Entity<AppState>,
     sidebar: Entity<Sidebar>,
     detail: Option<Entity<DetailPane>>,
+    record: Entity<RecordControl>,
     start_focus: FocusHandle,
-    record_focus: FocusHandle,
     undo_focus: FocusHandle,
+    undo_stop_focus: FocusHandle,
     grant_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -39,6 +42,7 @@ pub struct Shell {
 impl Shell {
     pub fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar = cx.new(|cx| Sidebar::new(app.clone(), window, cx));
+        let record = cx.new(|cx| RecordControl::new(app.clone(), cx));
         let on_select = cx.subscribe_in(&app, window, |this, app, event: &AppEvent, window, cx| {
             if *event == AppEvent::SelectionChanged {
                 this.detail = app.read(cx).session().cloned().map(|session| {
@@ -55,54 +59,36 @@ impl Shell {
         let start_focus = cx.focus_handle();
         // Nothing has focus at launch otherwise, and Tab does nothing (spike finding 4).
         window.focus(&start_focus, cx);
+        // Starting a recording swaps the focused start screen for the detail pane. With nothing
+        // focused no shortcut reaches the window root, so Command-Period could not stop it.
+        let on_focus_lost = cx.on_focus_lost(window, |this, window, cx| {
+            let target = match this.detail {
+                Some(_) => this.sidebar.read(cx).list_focus().clone(),
+                None => this.start_focus.clone(),
+            };
+            window.focus(&target, cx);
+        });
         Self {
             app,
             sidebar,
             detail: None,
+            record,
             start_focus,
-            record_focus: cx.focus_handle(),
             undo_focus: cx.focus_handle(),
+            undo_stop_focus: cx.focus_handle(),
             grant_focus: cx.focus_handle(),
-            _subscriptions: vec![on_select, on_app, on_appearance],
+            _subscriptions: vec![on_select, on_app, on_appearance, on_focus_lost],
         }
     }
 
-    fn toolbar(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let app = self.app.clone();
+    fn toolbar(&self) -> impl IntoElement {
         a11y::node("toolbar", Role::Toolbar, "Toolbar")
             .h(px(52.))
             .flex_none()
             .flex()
             .items_center()
             .px(px(16.))
-            .child(
-                a11y::focusable(
-                    a11y::node("record", Role::Button, "Start recording"),
-                    &self.record_focus,
-                    theme,
-                    false,
-                )
-                .aria_keyshortcuts("Command-Shift-R")
-                .on_click(move |_, _, cx| app.update(cx, |app, cx| app.start_recording(cx)))
-                .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.app.update(cx, |app, cx| app.start_recording(cx));
-                        cx.stop_propagation();
-                    }
-                }))
-                .h(px(28.))
-                .px(px(12.))
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .rounded(px(14.))
-                .bg(theme.control_bg)
-                .shadow_xs()
-                .text_size(theme.text(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(div().size(px(10.)).rounded_full().bg(theme.record_red))
-                .child("Record"),
-            )
+            .child(self.record.clone())
     }
 
     fn start_screen(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
@@ -281,6 +267,18 @@ impl Shell {
             .on_action(cx.listener(|this, _: &NewRecording, _, cx| {
                 this.app.update(cx, |app, cx| app.start_recording(cx))
             }))
+            .on_action(cx.listener(|this, _: &PauseRecording, _, cx| {
+                this.app.update(cx, |app, cx| app.toggle_pause(cx))
+            }))
+            .on_action(cx.listener(|this, _: &StopRecording, _, cx| {
+                this.app.update(cx, |app, cx| app.stop_recording(cx))
+            }))
+            .on_action(cx.listener(|this, _: &UndoStop, _, cx| {
+                this.app.update(cx, |app, cx| app.undo_stop(cx))
+            }))
+            .on_action(cx.listener(|this, _: &ShowProcessingQueue, window, cx| {
+                crate::queue_popover::open(&this.app, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Find, window, cx| {
                 this.sidebar
                     .update(cx, |sidebar, cx| sidebar.focus_search(window, cx))
@@ -399,6 +397,17 @@ impl Render for Shell {
         let narrow = window.viewport_size().width < px(NARROW_WINDOW);
         let side_padding = if narrow { 24. } else { 48. };
         let status = self.status_line(&theme, cx);
+        let toast =
+            record_control::undo_toast(&self.app, &self.undo_stop_focus, &theme, cx).map(|toast| {
+                div()
+                    .absolute()
+                    .bottom(px(28.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .child(toast)
+            });
         let page = match &self.detail {
             Some(detail) => detail.clone().into_any_element(),
             None => self.start_screen(&theme, cx).into_any_element(),
@@ -420,11 +429,12 @@ impl Render for Shell {
             )
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(self.toolbar(&theme, cx))
+                    .child(self.toolbar())
                     .child(
                         a11y::node("detail", Role::Main, "Recording")
                             .flex_1()
@@ -441,7 +451,8 @@ impl Render for Shell {
                                     .child(page),
                             ),
                     )
-                    .children(status),
+                    .children(status)
+                    .children(toast),
             );
         self.with_actions(root, cx)
     }

@@ -3,8 +3,8 @@
 //! Rendered Markdown at 15/1.6 with 17 pt semibold section headings, from `Detail.summary`.
 //! Kit's `TextView::markdown` draws it; its AX nodes come from `a11y::with_markdown_children`,
 //! since Kit emits none (spike finding 3). A stale summary says so above the text. No summary
-//! says why, from the recording's job. Copy and Export sit in the tab row, which `detail.rs`
-//! draws.
+//! says why, from the recording's job, with the one button that fixes it (UX-13), which
+//! `detail.rs` builds. Copy and Export sit in the tab row, which `detail.rs` draws.
 
 use dory_core::domain::JobState;
 use gpui_kit::component::text::{TextView, TextViewStyle};
@@ -17,6 +17,7 @@ use crate::a11y;
 use crate::app::Detail;
 use crate::detail::Problem;
 use crate::library::RowStatus;
+use crate::processing::Fix;
 use crate::theme::Theme;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,7 +29,7 @@ pub enum SummaryState<'a> {
     },
     Missing {
         text: String,
-        fix: Option<String>,
+        fix: Option<Fix>,
     },
 }
 
@@ -52,7 +53,7 @@ impl<'a> SummaryState<'a> {
         if let Some(problem) = job.and_then(Problem::of) {
             return SummaryState::Missing {
                 text: problem.text,
-                fix: problem.fix,
+                fix: Some(problem.fix),
             };
         }
         let text = match status {
@@ -69,31 +70,28 @@ impl<'a> SummaryState<'a> {
     }
 }
 
+/// `fix_button` is the job's fix, shown under a summary that is missing because of it.
 pub fn summary(
     detail: &Detail,
     job: Option<&JobState>,
     status: Option<RowStatus>,
+    fix_button: Option<AnyElement>,
     theme: &Theme,
 ) -> AnyElement {
     let doc = a11y::node("summary-document", Role::Document, "Summary");
     match SummaryState::of(detail, job, status) {
-        SummaryState::Missing { text, fix } => {
-            let label = match &fix {
-                Some(fix) => format!("{text} {fix}"),
-                None => text.clone(),
-            };
-            doc.child(
-                a11y::node("summary-missing", Role::Status, label)
-                    .flex()
-                    .flex_col()
-                    .gap(px(4.))
+        SummaryState::Missing { text, fix } => doc
+            .child(
+                a11y::node("summary-missing", Role::Status, text.clone())
                     .text_size(theme.text(15.))
                     .text_color(theme.text_secondary)
-                    .child(text)
-                    .children(fix.map(|fix| div().text_size(theme.text(14.)).child(fix))),
+                    .child(text),
             )
-            .into_any_element()
-        }
+            .children(
+                fix.and(fix_button)
+                    .map(|button| div().pt(px(8.)).child(button)),
+            )
+            .into_any_element(),
         SummaryState::Markdown { markdown, stale } => {
             let heading = theme.text(17.);
             let style = TextViewStyle::default()
@@ -175,7 +173,7 @@ mod tests {
             SummaryState::of(&hiring, Some(&blocked), Some(RowStatus::NeedsAttention)),
             SummaryState::Missing {
                 text: "No summary model is set up.".into(),
-                fix: Some("Choose one in Settings, then try again.".into()),
+                fix: Some(Fix::SetUpSummaries),
             }
         );
         let missing = |status| match SummaryState::of(&hiring, None, status) {

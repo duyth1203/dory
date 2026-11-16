@@ -126,6 +126,7 @@ impl Sidebar {
                 let is_selected = selected.as_ref() == Some(&id);
                 let filled = is_selected && list_focused;
                 let status = statuses[&id];
+                let words = app.status_text(row);
                 let title = library::title(row, &now.timezone());
                 let meta = library::row_meta(row, group, &now);
                 let spoken_time = library::local(row.recording.created_at, &now.timezone())
@@ -135,9 +136,9 @@ impl Sidebar {
                     Some(take) => format!(
                         "{title}, {spoken_time}, {}, {}",
                         a11y::spoken_duration(take.duration),
-                        status.label()
+                        words
                     ),
-                    None => format!("{title}, {spoken_time}, {}", status.label()),
+                    None => format!("{title}, {spoken_time}, {words}"),
                 };
                 let (fg, fg2) = if filled {
                     (theme.on_accent, theme.on_accent)
@@ -193,7 +194,7 @@ impl Sidebar {
                             .text_size(theme.text(12.))
                             .text_color(fg2)
                             .child(div().text_color(glyph_color).child(glyph(status)))
-                            .child(status.label()),
+                            .child(words),
                     )
                     .context_menu(move |menu, window, cx| {
                         menus::recording_menu(menu, &menu_id, window, cx)

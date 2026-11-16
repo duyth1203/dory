@@ -22,6 +22,8 @@ gpui_kit::actions!(
         UndoTrash,
         PauseRecording,
         StopRecording,
+        UndoStop,
+        ShowProcessingQueue,
         Minimize,
         Zoom,
         ShowHelp,

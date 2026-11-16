@@ -867,4 +867,6 @@ mod tests {
     }
 }
 
+pub mod playback;
 pub mod store;
+pub use playback::FakePlayback;

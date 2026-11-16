@@ -47,7 +47,8 @@ use crate::ports::capture::{
     Access, CaptureBackend, CaptureCaps, CaptureError, InputDevice, Source,
 };
 use crate::ports::{
-    Change, Clock, ModelProvider, ProvisionError, Store, StoreError, StoreRead, TakeError, Takes,
+    Change, Clock, ModelProvider, Playback, PlaybackError, PlaybackSource, Player, ProvisionError,
+    Store, StoreError, StoreRead, TakeError, Takes,
 };
 use crate::recorder::{Input, Limits};
 
@@ -56,6 +57,7 @@ pub struct Ports {
     pub store: Arc<dyn Store>,
     pub takes: Arc<dyn Takes>,
     pub capture: Arc<dyn CaptureBackend>,
+    pub playback: Arc<dyn Playback>,
     pub clock: Arc<dyn Clock>,
     pub stt: Vec<Arc<dyn ModelProvider<Stt>>>,
     pub llm: Vec<Arc<dyn ModelProvider<Llm>>>,
@@ -134,6 +136,8 @@ pub enum DoryError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
+    Playback(#[from] PlaybackError),
+    #[error(transparent)]
     Take(#[from] TakeError),
     #[error(transparent)]
     Invalid(#[from] InvalidInput),
@@ -163,6 +167,7 @@ pub struct Dory {
     db: Db,
     reader: LibraryReader,
     takes: Arc<dyn Takes>,
+    playback: Arc<dyn Playback>,
     capture: Arc<dyn CaptureBackend>,
     clock: Arc<dyn Clock>,
     models: Arc<Registries>,
@@ -235,6 +240,7 @@ impl Dory {
             },
             db,
             takes: ports.takes,
+            playback: ports.playback,
             capture: ports.capture,
             clock: ports.clock,
             models,
@@ -489,6 +495,26 @@ impl Library<'_> {
 
     pub fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
         self.dory.takes.playback_path(id)
+    }
+
+    /// A paused player for the recording's sealed audio. Refused while it is being recorded or
+    /// sealed, because the file is still changing.
+    pub fn player(&self, id: &RecordingId) -> Result<Box<dyn Player>, DoryError> {
+        self.dory.recorder.check_not_busy(id)?;
+        let recording = self
+            .dory
+            .reader
+            .recording(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+        let take = recording
+            .take
+            .ok_or_else(|| TakeError::Missing(id.clone()))?;
+        let source = PlaybackSource {
+            path: self.dory.takes.playback_path(id)?,
+            layout: recording.layout,
+            duration: take.duration,
+        };
+        Ok(self.dory.playback.open(&source)?)
     }
 
     fn edit(&self, id: &RecordingId, edit: RecordingEdit) -> Result<(), DoryError> {

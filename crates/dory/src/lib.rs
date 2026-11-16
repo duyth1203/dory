@@ -115,6 +115,7 @@ fn open_with(
         store,
         takes,
         capture,
+        playback: platform::playback(),
         clock: Arc::new(SystemClock::new()),
         stt: providers.stt,
         llm: providers.llm,

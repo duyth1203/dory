@@ -4,6 +4,7 @@
 
 mod args;
 mod library;
+mod play;
 mod process;
 mod record;
 mod view;
@@ -20,6 +21,7 @@ const USAGE: &str = "usage:
   dory-cli show ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--fake-engines]
+  dory-cli play ID [--seek SECONDS]
   dory-cli models [--fake-engines]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
@@ -40,6 +42,9 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| library::models(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
+            Some("play") => {
+                args::PlayArgs::parse(rest).and_then(|a| config().and_then(|c| play::run(&c, &a)))
+            }
             Some("process") => args::ProcessArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::run(&c, &a))),
             _ => Err(USAGE.to_string()),

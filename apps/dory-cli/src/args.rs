@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use dory_core::domain::{ChannelLayout, RecordingId};
+use dory_core::domain::{ChannelLayout, Ms, RecordingId};
 use dory_core::ports::capture::MicSelection;
 
 #[derive(Debug, PartialEq)]
@@ -69,6 +69,39 @@ impl ProcessArgs {
         Ok(Self {
             id: id.ok_or("process needs a recording id")?,
             fake_engines,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct PlayArgs {
+    pub id: RecordingId,
+    pub seek: Ms,
+}
+
+impl PlayArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut id = None;
+        let mut seek = Ms(0);
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                "--seek" => {
+                    let text = it.next().ok_or("--seek needs a value in seconds")?;
+                    let seconds: f64 = text.parse().map_err(|e| format!("--seek: {e}"))?;
+                    if !seconds.is_finite() || seconds < 0.0 {
+                        return Err("--seek needs a number of seconds, 0 or more".into());
+                    }
+                    seek = Ms((seconds * 1000.0).round() as u64);
+                }
+                flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
+                _ if id.is_none() => id = Some(parse_id(arg)?),
+                _ => return Err("play takes one recording id".into()),
+            }
+        }
+        Ok(Self {
+            id: id.ok_or("play needs a recording id")?,
+            seek,
         })
     }
 }
@@ -162,6 +195,24 @@ mod tests {
         assert!(RecordArgs::parse(&words("--fake-capture 0")).is_err());
         assert!(RecordArgs::parse(&words("--layout both")).is_err());
         assert!(RecordArgs::parse(&words("--mic")).is_err());
+    }
+
+    #[test]
+    fn play_takes_an_id_and_an_optional_seek_in_seconds() {
+        let a = PlayArgs::parse(&words("rec_1 --seek 3.5")).unwrap();
+        assert_eq!((a.id.as_str(), a.seek), ("rec_1", Ms(3_500)));
+        assert_eq!(
+            PlayArgs::parse(&words("--seek 1 rec_1")).unwrap().seek,
+            Ms(1_000)
+        );
+        assert_eq!(PlayArgs::parse(&words("rec_1")).unwrap().seek, Ms(0));
+        assert!(PlayArgs::parse(&[]).is_err());
+        assert!(PlayArgs::parse(&words("--seek 3")).is_err());
+        assert!(PlayArgs::parse(&words("rec_1 --seek")).is_err());
+        assert!(PlayArgs::parse(&words("rec_1 --seek -2")).is_err());
+        assert!(PlayArgs::parse(&words("rec_1 --seek soon")).is_err());
+        assert!(PlayArgs::parse(&words("rec_1 --loud")).is_err());
+        assert!(PlayArgs::parse(&words("rec_1 rec_2")).is_err());
     }
 
     #[test]

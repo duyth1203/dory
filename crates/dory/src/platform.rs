@@ -1,10 +1,31 @@
 use std::sync::Arc;
 
+use dory_core::ports::Playback;
 use dory_core::ports::capture::CaptureBackend;
 
 #[cfg(target_os = "macos")]
 pub fn capture() -> Arc<dyn CaptureBackend> {
     Arc::new(dory_macos::CoreAudioCapture::new())
+}
+
+#[cfg(target_os = "macos")]
+pub fn playback() -> Arc<dyn Playback> {
+    Arc::new(dory_macos::AvPlayback::new())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn playback() -> Arc<dyn Playback> {
+    Arc::new(Unsupported)
+}
+
+#[cfg(not(target_os = "macos"))]
+impl Playback for Unsupported {
+    fn open(
+        &self,
+        _: &dory_core::ports::PlaybackSource,
+    ) -> Result<Box<dyn dory_core::ports::Player>, dory_core::ports::PlaybackError> {
+        Err(dory_core::ports::PlaybackError::Unsupported)
+    }
 }
 
 #[cfg(not(target_os = "macos"))]

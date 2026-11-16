@@ -26,14 +26,14 @@ use dory_core::ports::capture::{
     Source,
 };
 use dory_core::ports::{
-    CancelToken, Change, Clip, EngineError, ModelProvider, ProvisionError, ProvisionSink, Store,
-    StoreError, StoreRead, TakeError, TakeWriter, Takes, Transcriber,
+    CancelToken, Change, Clip, EngineError, ModelProvider, PlayState, ProvisionError,
+    ProvisionSink, Store, StoreError, StoreRead, TakeError, TakeWriter, Takes, Transcriber,
 };
 use dory_core::recorder::{FinalizeReason, Limits};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
-    FakeCapture, FakeLanguageModel, FakeLlmProvider, FakeSttProvider, FakeTranscriber, ManualClock,
-    MemTakes, Step, block_on, eventually, llm_entry, stt_entry,
+    FakeCapture, FakeLanguageModel, FakeLlmProvider, FakePlayback, FakeSttProvider,
+    FakeTranscriber, ManualClock, MemTakes, Step, block_on, eventually, llm_entry, stt_entry,
 };
 
 const RATE: u32 = 8_000;
@@ -48,6 +48,7 @@ struct Rig {
     hooked_store: Arc<HookedStore>,
     hooked_takes: Arc<HookedTakes>,
     capture: Arc<FakeCapture>,
+    playback: Arc<FakePlayback>,
     clock: Arc<ManualClock>,
     transcriber: Arc<FakeTranscriber>,
     llm: Arc<FakeLanguageModel>,
@@ -92,6 +93,7 @@ impl Rig {
             store,
             takes,
             capture: Arc::new(FakeCapture::new()),
+            playback: Arc::new(FakePlayback::new()),
             clock: Arc::new(ManualClock::new(Timestamp(1_763_300_000_000))),
             stt: Arc::new(FakeSttProvider::new(
                 "fake",
@@ -113,6 +115,7 @@ impl Rig {
             store: self.hooked_store.clone(),
             takes: self.hooked_takes.clone(),
             capture: self.capture.clone(),
+            playback: self.playback.clone(),
             clock: self.clock.clone(),
             stt: vec![self.stt.clone()],
             llm: vec![self.llm_provider.clone()],
@@ -1294,4 +1297,43 @@ fn an_empty_speech_catalog_opens_and_blocks_jobs_on_the_missing_model() {
             blocker: Blocker::NoModel { kind: KindTag::Stt },
         },
     );
+}
+
+#[test]
+fn a_player_opens_on_the_sealed_take_with_its_layout_and_refuses_a_take_being_saved() {
+    let rig = Rig::new();
+    let id = rig.seed("played");
+    let dory = rig.open();
+
+    let player = dory.library().player(&id).unwrap();
+    let opened = rig.playback.opened();
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].path, PathBuf::from("mem/played"));
+    assert_eq!(opened[0].layout, ChannelLayout::MicSystem);
+    assert_eq!(opened[0].duration, ms(1_000));
+
+    player.seek(ms(500)).unwrap();
+    player.play().unwrap();
+    rig.playback.advance(ms(250));
+    let status = player.status();
+    assert_eq!(
+        (status.state, status.position),
+        (PlayState::Playing, ms(750))
+    );
+
+    let missing = RecordingId::parse("nope").unwrap();
+    assert!(matches!(
+        dory.library().player(&missing),
+        Err(DoryError::Store(StoreError::NotFound(_)))
+    ));
+
+    rig.capture.push_script(seconds(1));
+    dory.recorder().start(StartOptions::default()).unwrap();
+    eventually("recording", || dory.recorder().status().id().is_some());
+    let recording = dory.recorder().status().id().cloned().unwrap();
+    assert!(matches!(
+        dory.library().player(&recording),
+        Err(DoryError::Recording(_))
+    ));
+    assert_eq!(rig.playback.opened().len(), 1);
 }

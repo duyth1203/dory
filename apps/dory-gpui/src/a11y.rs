@@ -12,9 +12,10 @@
 
 use dory_core::domain::Ms;
 use gpui_kit::{
-    AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement as _, KeyDownEvent,
-    ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
-    TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px, transparent_black,
+    AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Role, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
+    prelude::FluentBuilder as _, px, transparent_black,
 };
 
 use crate::theme::Theme;
@@ -24,6 +25,15 @@ use crate::theme::Theme;
 pub type Node = gpui_kit::base::ObservedElement<Stateful<Div>>;
 
 /// A div with its element id, a matching AX identifier, a role, and a label.
+/// Keeps a scroll inside a scroll area nested in the page: GPUI hands every wheel event to every
+/// scroll area under the pointer, so without this the page moves along with the inner list.
+pub fn contain_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> Stateful<Div> {
+    div()
+        .id(ElementId::Name(id.into()))
+        .on_scroll(|_, _, cx| cx.stop_propagation())
+        .child(child)
+}
+
 pub fn node(id: impl Into<SharedString>, role: Role, label: impl Into<SharedString>) -> Node {
     let id: SharedString = id.into();
     div()

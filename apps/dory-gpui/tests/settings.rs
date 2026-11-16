@@ -30,9 +30,9 @@ use dory_core::testing::{
 use dory_gpui::app::AppState;
 use dory_gpui::{fixtures, models_view, set_up_summaries, settings_window};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Context, ElementId, Entity, IntoElement, ParentElement as _,
-    Render, Role, ScrollDelta, TestAppContext, Window, point, px, test::TestQueryExt as _,
-    test::TestWindowExt as _,
+    AnyWindowHandle, AppContext as _, Context, ElementId, Entity, InputEvent as _, IntoElement,
+    ParentElement as _, Render, Role, ScrollDelta, TestAppContext, Window, point, px,
+    test::TestQueryExt as _, test::TestWindowExt as _,
 };
 
 use common::{open_with, sample_store};
@@ -242,12 +242,30 @@ fn reveal(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
         if visible || !scrollable {
             return;
         }
+        // Aim at the panel's left margin: a nested list such as Meeting languages keeps the
+        // scroll when the pointer is over it, as it should.
         cx.update_window(window, |_, window, cx| {
-            window.scroll(
-                "settings-panel",
-                ScrollDelta::Pixels(point(px(0.), px(-200.))),
+            let panel = window.find("settings-panel").bounds();
+            let position = point(panel.left() + px(4.), panel.center().y);
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: window.modifiers(),
+                }
+                .to_platform_input(),
                 cx,
-            )
+            );
+            window.dispatch_event(
+                gpui_kit::ScrollEvent {
+                    position,
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+                    modifiers: window.modifiers(),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
         })
         .unwrap();
     }

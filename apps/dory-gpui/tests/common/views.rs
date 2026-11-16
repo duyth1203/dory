@@ -17,15 +17,16 @@ use dory_gpui::prefs::Prefs;
 use dory_gpui::{fixtures, queue_popover, settings_window};
 use gpui_kit::base::test_support::ElementSnapshot;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
+    AnyWindowHandle, AppContext as _, Entity, InputEvent as _, TestAppContext,
+    test::TestWindowExt as _,
 };
 
 use dory_core::ports::capture::{Access, CaptureCaps};
 use dory_gpui::prefs::MIN_WINDOW_SIZE;
 
 use super::{
-    dory_on, dory_with_capture, id_of, open_fresh, open_with, open_with_prefs, past_first_run,
-    sample_store,
+    dory_with, dory_with_capture, id_of, long_winded_model, open_with, open_with_prefs,
+    past_first_run, sample_store,
 };
 
 /// What a check sees of one view: its name and every observed element of its last frame, each
@@ -33,16 +34,18 @@ use super::{
 pub struct View {
     pub name: String,
     pub elements: Vec<ElementSnapshot>,
-    /// The window's content width, for checks that nothing spills past its edge.
+    /// The window's content size, for checks that nothing spills past its edges.
     pub width: f32,
+    pub height: f32,
 }
 
 fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppContext) -> View {
     cx.run_until_parked();
-    let (elements, width) = cx
+    let (elements, width, height) = cx
         .update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            let width = f32::from(window.viewport_size().width);
+            let size = window.viewport_size();
+            let (width, height) = (f32::from(size.width), f32::from(size.height));
             let elements = gpui_kit::base::test_support::snapshots(window)
                 .into_iter()
                 .map(|raw| {
@@ -56,13 +59,14 @@ fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppConte
                         .unwrap_or(raw)
                 })
                 .collect();
-            (elements, width)
+            (elements, width, height)
         })
         .unwrap();
     View {
         name: name.into(),
         elements,
         width,
+        height,
     }
 }
 
@@ -78,7 +82,55 @@ fn until(cx: &mut TestAppContext, what: &str, mut ok: impl FnMut(&mut TestAppCon
     }
 }
 
+/// Scrolls the page holding `id` until it shows, as a user would, from the page's left margin so
+/// a nested list never takes the scroll.
+fn reveal(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
+    let target = gpui_kit::ElementId::Name(id.to_owned().into());
+    for _ in 0..30 {
+        let page = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                if window.find(target.clone()).visible() {
+                    return None;
+                }
+                ["detail", "settings-panel"]
+                    .into_iter()
+                    .find_map(|page| window.try_find(page).map(|p| p.bounds()))
+            })
+            .unwrap();
+        let Some(page) = page else { return };
+        cx.update_window(window, |_, window, cx| {
+            let position = gpui_kit::point(page.left() + gpui_kit::px(4.), page.center().y);
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position,
+                    pressed_button: None,
+                    modifiers: window.modifiers(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::ScrollEvent {
+                    position,
+                    delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                        gpui_kit::px(0.),
+                        gpui_kit::px(-120.),
+                    )),
+                    modifiers: window.modifiers(),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+}
+
 fn click(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
+    reveal(window, id, cx);
     let id = gpui_kit::ElementId::Name(id.to_owned().into());
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
@@ -100,12 +152,39 @@ fn unasked() -> FakeCapture {
 
 /// First run on an empty library: Welcome, Permissions, Models.
 fn first_run(views: &mut Vec<View>, cx: &mut TestAppContext) {
-    let (window, _) = open_fresh(cx, dory_with_capture(Arc::new(MemStore::new()), unasked()));
+    first_run_at(views, Prefs::default().window_size, cx);
+    first_run_at(views, MIN_WINDOW_SIZE, cx);
+}
+
+fn first_run_at(views: &mut Vec<View>, window_size: (f32, f32), cx: &mut TestAppContext) {
+    let prefs = Prefs {
+        window_size,
+        ..Prefs::default()
+    };
+    let (window, _) = open_with_prefs(
+        cx,
+        dory_with(
+            Arc::new(MemStore::new()),
+            unasked(),
+            vec![long_winded_model()],
+        ),
+        prefs,
+    );
+    let at = if window_size == MIN_WINDOW_SIZE {
+        ", smallest window"
+    } else {
+        ""
+    };
+    let frame =
+        |name: &str, window, cx: &mut TestAppContext| frame(format!("{name}{at}"), window, cx);
     views.push(frame("welcome", window, cx));
     click(window, "onboarding-continue", cx);
     views.push(frame("permissions", window, cx));
     click(window, "onboarding-continue", cx);
     views.push(frame("models step", window, cx));
+    open_explainer(window, cx);
+    views.push(frame("models step explainer", window, cx));
+    open_explainer(window, cx);
     cx.update_window(window, |_, window, cx| {
         dory_gpui::set_up_summaries::sheet(window, cx)
     })
@@ -153,7 +232,15 @@ fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
         text_scale: scale,
         ..past_first_run()
     };
-    let (_, app) = open_with_prefs(cx, dory_on(sample_store()), prefs);
+    let (_, app) = open_with_prefs(
+        cx,
+        dory_with(
+            sample_store(),
+            FakeCapture::new(),
+            vec![long_winded_model()],
+        ),
+        prefs,
+    );
     let before = cx.update(|cx| cx.windows());
     cx.update(|cx| settings_window::open(&app, cx));
     let window = cx
@@ -164,6 +251,42 @@ fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
     for tab in settings_window::Tab::ALL {
         click(window, &tab.id(), cx);
         views.push(frame(format!("settings {}", tab.title()), window, cx));
+        if open_explainer(window, cx) {
+            views.push(frame(
+                format!("settings {} explainer", tab.title()),
+                window,
+                cx,
+            ));
+            open_explainer(window, cx);
+        }
+    }
+}
+
+/// Clicks the first model's info button, which opens its explainer or closes an open one.
+/// False when the view has no model rows.
+fn open_explainer(window: AnyWindowHandle, cx: &mut TestAppContext) -> bool {
+    cx.run_until_parked();
+    let id = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            gpui_kit::base::test_support::snapshots(window)
+                .into_iter()
+                .find_map(|e| match e.path().last() {
+                    Some(gpui_kit::ElementId::Name(n))
+                        if n.starts_with("about-") && e.role() == Some(gpui_kit::Role::Button) =>
+                    {
+                        Some(n.to_string())
+                    }
+                    _ => None,
+                })
+        })
+        .unwrap();
+    match id {
+        Some(id) => {
+            click(window, &id, cx);
+            true
+        }
+        None => false,
     }
 }
 

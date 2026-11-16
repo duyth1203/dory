@@ -207,12 +207,15 @@ impl Shell {
             };
             a11y::node(format!("source-{name}"), Role::ListItem, label)
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(12.))
                 .py(px(8.))
                 .child(
                     div()
-                        .flex_1()
+                        .flex_grow(1.)
+                        .flex_shrink(1.)
+                        .flex_basis(px(160.))
                         .min_w(px(0.))
                         .flex()
                         .flex_col()

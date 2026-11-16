@@ -444,7 +444,8 @@ impl Render for TranscriptView {
         }
         let height = window.viewport_size().height - px(TOOLBAR) - Theme::get(cx).text(TAB_ROW);
         container
-            .child(
+            .child(a11y::contain_scroll(
+                "transcript-scroll",
                 list(
                     self.list.clone(),
                     cx.processor(|this, ix, window, cx| this.render_turn(ix, window, cx)),
@@ -452,7 +453,7 @@ impl Render for TranscriptView {
                 .w_full()
                 .h(height)
                 .pb(px(DOCK_CLEARANCE)),
-            )
+            ))
             .into_any_element()
     }
 }

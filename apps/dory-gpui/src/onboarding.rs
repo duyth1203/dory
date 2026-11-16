@@ -352,6 +352,7 @@ impl Onboarding {
                     format!("{name}, {}", state.word),
                 )
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(16.))
                 .p(px(16.))
@@ -360,8 +361,12 @@ impl Onboarding {
                 .border_1()
                 .border_color(theme.card_border)
                 .child(
+                    // Grows into the row, but asks for 240 pt before the button may share its
+                    // line: in a narrower card the button wraps below instead of spilling out.
                     div()
-                        .flex_1()
+                        .flex_grow(1.)
+                        .flex_shrink(1.)
+                        .flex_basis(px(240.))
                         .min_w(px(0.))
                         .flex()
                         .flex_col()

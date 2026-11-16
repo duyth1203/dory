@@ -67,6 +67,40 @@ pub fn dory_on(store: Arc<MemStore>) -> Dory {
 /// As [`dory_on`], with the capture adapter a test sets up, such as one reporting permissions
 /// macOS has not asked about yet.
 pub fn dory_with_capture(store: Arc<MemStore>, capture: FakeCapture) -> Dory {
+    dory_with(store, capture, Vec::new())
+}
+
+/// A speech model whose explainer says far more than any window can show, so a popover that
+/// only fits short text fails the layout checks.
+pub fn long_winded_model() -> Arc<dyn dory_core::ports::ModelProvider<dory_core::models::Stt>> {
+    let mut entry = dory_core::testing::stt_entry(
+        "sherpa/long-winded",
+        dory_core::models::DiarizationSupport::None,
+    );
+    entry.display_name = "Long-winded speech model with a long name".into();
+    entry.disk_bytes = Some(702_545_920);
+    let sentence = |n: usize, what: &str| {
+        format!(
+            "{what} {n}: a sentence long enough to wrap across two lines of the explainer, as the real catalog's do"
+        )
+    };
+    entry.about = dory_core::models::ModelAbout {
+        summary: "A model whose explainer has more to say than fits on any screen, to check that the popover scrolls instead of running off the window.".into(),
+        pros: (1..=8).map(|n| sentence(n, "Strength")).collect(),
+        cons: (1..=8).map(|n| sentence(n, "Caveat")).collect(),
+    };
+    Arc::new(dory_core::testing::FakeSttProvider::new(
+        "sherpa",
+        vec![entry],
+        Arc::new(dory_core::testing::FakeTranscriber::new()),
+    ))
+}
+
+pub fn dory_with(
+    store: Arc<MemStore>,
+    capture: FakeCapture,
+    stt: Vec<Arc<dyn dory_core::ports::ModelProvider<dory_core::models::Stt>>>,
+) -> Dory {
     let dir = scratch_dir();
     Dory::open(
         Ports {
@@ -78,7 +112,7 @@ pub fn dory_with_capture(store: Arc<MemStore>, capture: FakeCapture) -> Dory {
             clock: Arc::new(ManualClock::new(Timestamp(
                 fixtures::now().timestamp_millis(),
             ))),
-            stt: Vec::new(),
+            stt,
             llm: Vec::new(),
             diar: Vec::new(),
             machine: Arc::new(dory_core::testing::FakeMachine::default()),

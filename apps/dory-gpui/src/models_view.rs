@@ -18,7 +18,7 @@ use dory_core::models::{
 use gpui_kit::component::dialog::Confirm;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored,
     deferred, div, prelude::FluentBuilder as _, px,
 };
@@ -659,6 +659,41 @@ pub(crate) enum Mark {
     Check(bool),
 }
 
+/// The drawn box or circle of a checkbox or radio button, 16 points at actual size. Off, it is an
+/// outline in secondary text color, which keeps 3 to 1 against the window (A11Y-8). On, it fills
+/// with the accent and shows a check or a dot.
+fn indicator(mark: Mark, theme: &Theme) -> gpui_kit::Div {
+    let on = matches!(mark, Mark::Radio(true) | Mark::Check(true));
+    let base = div()
+        .size(theme.text(16.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .border_1()
+        .border_color(if on {
+            theme.accent
+        } else {
+            theme.text_secondary
+        })
+        .when(on, |b| b.bg(theme.accent));
+    match mark {
+        Mark::Check(_) => base
+            .rounded(px(4.))
+            .text_size(theme.text(12.))
+            .font_weight(FontWeight::BOLD)
+            .text_color(theme.on_accent)
+            .when(on, |b| b.child("✓")),
+        Mark::Radio(_) => base.rounded_full().when(on, |b| {
+            b.child(
+                div()
+                    .size(theme.text(6.))
+                    .rounded_full()
+                    .bg(theme.on_accent),
+            )
+        }),
+    }
+}
+
 /// A radio button or checkbox row: the option on one line and its effect on the next (UX-20).
 pub(crate) fn option(
     id: impl Into<SharedString>,
@@ -671,10 +706,11 @@ pub(crate) fn option(
 ) -> a11y::Node {
     let label: SharedString = label.into();
     let effect: SharedString = effect.into();
-    let (role, on, mark) = match mark {
-        Mark::Radio(on) => (Role::RadioButton, on, if on { "●" } else { "○" }),
-        Mark::Check(on) => (Role::CheckBox, on, if on { "☑" } else { "☐" }),
+    let (role, on) = match mark {
+        Mark::Radio(on) => (Role::RadioButton, on),
+        Mark::Check(on) => (Role::CheckBox, on),
     };
+    let hover = theme.control_bg;
     a11y::focusable(a11y::node(id, role, label.clone()), focus, theme, false)
         .aria_toggled(if on {
             gpui_kit::accesskit::Toggled::True
@@ -683,6 +719,8 @@ pub(crate) fn option(
         })
         .aria_description(effect.clone())
         .on_click(move |_, window, cx| press(window, cx))
+        .cursor_pointer()
+        .hover(move |row| row.bg(hover))
         .flex()
         .items_start()
         .gap(px(8.))
@@ -693,14 +731,10 @@ pub(crate) fn option(
         .child(
             div()
                 .flex_none()
-                .min_w(px(18.))
-                .text_size(theme.text(14.))
-                .text_color(if on {
-                    theme.accent_text
-                } else {
-                    theme.text_secondary
-                })
-                .child(mark),
+                .h(theme.text(19.))
+                .flex()
+                .items_center()
+                .child(indicator(mark, theme)),
         )
         .child(
             div()
@@ -753,12 +787,20 @@ pub(crate) fn progress_bar(
         )
 }
 
+/// The popover's distance below its button, and its clearance from the window's edges.
+const POPOVER_GAP: f32 = 28.;
+const POPOVER_MARGIN: f32 = 8.;
+
 /// The info button and, while open, its popover (UX-28). Click, Return, or Space toggles it
 /// (GPUI clicks a focused element on both keys); Escape or a click outside closes it.
+///
+/// `room` is the window's height. The popover never grows past it: a longer explainer scrolls
+/// inside the popover instead of running off the window.
 fn explainer(
     about: About,
     model: &ModelRef,
     open: bool,
+    room: Pixels,
     focus: &FocusHandle,
     theme: &Theme,
     toggle: impl Fn(Option<bool>, &mut Window, &mut App) + Clone + 'static,
@@ -776,9 +818,11 @@ fn explainer(
         false,
     )
     .aria_expanded(open)
-    .on_click(move |_, window, cx| on_click(None, window, cx))
+    // Set, not toggle: a click on this button while the popover is open first closes it through
+    // the popover's click-outside handler, and a toggle would then open it again.
+    .on_click(move |_, window, cx| on_click(Some(!open), window, cx))
     .on_action(move |_: &Confirm, window, cx| {
-        on_confirm(None, window, cx);
+        on_confirm(Some(!open), window, cx);
         cx.stop_propagation();
     })
     .on_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -832,7 +876,10 @@ fn explainer(
         deferred(
             anchored()
                 .anchor(gpui_kit::Anchor::TopRight)
-                .snap_to_window_with_margin(px(8.))
+                // An offset, not a margin: the window snap measures the popover without its
+                // margins, so a margin pushed the popover past the bottom edge.
+                .offset(gpui_kit::point(px(0.), px(POPOVER_GAP)))
+                .snap_to_window_with_margin(px(POPOVER_MARGIN))
                 .child(
                     a11y::node(
                         format!("about-panel-{model}"),
@@ -841,8 +888,9 @@ fn explainer(
                     )
                     .occlude()
                     .on_mouse_down_out(move |_, window, cx| on_out(Some(false), window, cx))
-                    .mt(px(28.))
                     .w(px(340.))
+                    .max_h((room - px(2. * POPOVER_MARGIN)).max(px(120.)))
+                    .overflow_y_scroll()
                     .p(px(12.))
                     .flex()
                     .flex_col()
@@ -994,7 +1042,7 @@ impl<K: ListKind> ModelList<K> {
 }
 
 impl<K: ListKind> Render for ModelList<K> {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let tag = K::TAG.as_str();
         let list = a11y::node(
@@ -1128,6 +1176,7 @@ impl<K: ListKind> Render for ModelList<K> {
                         about(entry, &settings),
                         &model,
                         open,
+                        window.viewport_size().height,
                         &about_focus,
                         &theme,
                         toggle,
@@ -1180,7 +1229,7 @@ impl SpeechStep {
 }
 
 impl Render for SpeechStep {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let group = a11y::node("speech-step", Role::Group, "Speech model")
             .flex()
@@ -1271,6 +1320,7 @@ impl Render for SpeechStep {
                         about(&entry, &settings),
                         &model,
                         open,
+                        window.viewport_size().height,
                         &about_focus,
                         &theme,
                         toggle,
@@ -1426,7 +1476,7 @@ impl Render for LanguagePicker {
                 "With Language on Automatic, Dory only picks a speech model that covers every language listed here.",
                 &theme,
             ))
-            .child(list)
+            .child(a11y::contain_scroll("meeting-languages-scroll", list))
     }
 }
 

@@ -73,8 +73,8 @@ fn every_focusable_or_actionable_element_has_a_role_and_a_label(cx: &mut TestApp
     }
     assert!(checked > 100, "only {checked} elements were checked");
     assert_eq!(
-        kit_dialogs, 3,
-        "the queue at both window sizes and the summaries sheet; if Kit now names dialogs, drop the exception"
+        kit_dialogs, 4,
+        "the queue and the summaries sheet, each at both window sizes; if Kit now names dialogs, drop the exception"
     );
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }

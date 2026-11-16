@@ -141,6 +141,42 @@ fn contained(scale: f32, cx: &mut TestAppContext) {
     assert!(spilled.is_empty(), "{}", spilled.join("\n"));
 }
 
+/// Every popover lies wholly inside its window, however long its text, so none is cut off.
+fn overlays_fit(scale: f32, cx: &mut TestAppContext) {
+    let mut cut = Vec::new();
+    let mut overlays = 0;
+    for view in every_view(scale, cx) {
+        for element in &view.elements {
+            let name = id(element.path());
+            if !name.starts_with("about-panel-") || !element.visible() {
+                continue;
+            }
+            overlays += 1;
+            let b = element.bounds();
+            let (l, t) = (f32::from(b.origin.x), f32::from(b.origin.y));
+            let (r, bottom) = (l + f32::from(b.size.width), t + f32::from(b.size.height));
+            if l < -0.5 || t < -0.5 || r > view.width + 0.5 || bottom > view.height + 0.5 {
+                cut.push(format!(
+                    "{} at {scale}: {name} spans {l:.0},{t:.0} to {r:.0},{bottom:.0} in a {:.0} by {:.0} window",
+                    view.name, view.width, view.height
+                ));
+            }
+        }
+    }
+    assert!(overlays > 0, "no popover was opened at {scale}");
+    assert!(cut.is_empty(), "{}", cut.join("\n"));
+}
+
+#[gpui_kit::test]
+fn every_popover_fits_its_window_at_actual_size(cx: &mut TestAppContext) {
+    overlays_fit(1.0, cx);
+}
+
+#[gpui_kit::test]
+fn every_popover_fits_its_window_at_the_largest_text(cx: &mut TestAppContext) {
+    overlays_fit(2.0, cx);
+}
+
 #[gpui_kit::test]
 fn every_target_fits_its_window_and_containers_at_actual_size(cx: &mut TestAppContext) {
     contained(1.0, cx);

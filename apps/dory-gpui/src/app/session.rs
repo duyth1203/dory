@@ -173,6 +173,15 @@ impl Session {
                 if this.generation != generation {
                     return;
                 }
+                if let Ok(Some(detail)) = &result {
+                    let duration = detail
+                        .recording
+                        .take
+                        .map(|t| t.duration)
+                        .unwrap_or_default();
+                    this.player
+                        .update(cx, |player, cx| player.set_duration(duration, cx));
+                }
                 this.loaded = match result {
                     Ok(Some(detail)) => Loadable::Ready(Arc::new(detail)),
                     Ok(None) => Loadable::Failed("This recording was deleted.".into()),

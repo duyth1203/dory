@@ -620,3 +620,18 @@ fn a_missing_speech_model_downloads_from_the_row_then_runs(cx: &mut TestAppConte
         label(window, "detail-fix", cx).is_none() && label(window, "transcript-tab", cx).is_some()
     });
 }
+
+/// A recording is on screen before its take is saved, so the player first knows no length.
+/// Once the take lands, the player shows its length, and the skip buttons can move.
+#[gpui_kit::test]
+fn the_player_learns_the_length_once_the_take_is_saved(cx: &mut TestAppContext) {
+    let rig = Rig::new();
+    rig.capture.push_script(seconds(30));
+    let (window, app) = rig.open(cx, limits());
+    record(window, &app, 30, cx);
+    stop_into_grace(window, &app, cx);
+    end_grace(&rig, &app, cx);
+    until(cx, "the player to show the take's length", |cx| {
+        label(window, "player-time", cx).is_some_and(|t| t.ends_with("/ 0:03"))
+    });
+}

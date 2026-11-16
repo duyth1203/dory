@@ -54,6 +54,21 @@ impl PlayerHandle {
         self.duration
     }
 
+    /// The take's length as the library now knows it. A recording selected before its take was
+    /// saved starts at zero, so the session passes the length on each reload. A player opened
+    /// before then is dropped while paused, so the next play opens the saved file.
+    pub(super) fn set_duration(&mut self, duration: Ms, cx: &mut Context<Self>) {
+        if duration == self.duration {
+            return;
+        }
+        self.duration = duration;
+        if !self.is_playing() {
+            self.player = None;
+            self.unavailable = None;
+        }
+        cx.notify();
+    }
+
     pub fn is_playing(&self) -> bool {
         self.status.state == PlayState::Playing
     }

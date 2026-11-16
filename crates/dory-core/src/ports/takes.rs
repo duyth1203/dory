@@ -30,6 +30,11 @@ pub trait Takes: Send + Sync {
         span: Option<TimeRange>,
     ) -> Result<Clip, TakeError>;
 
+    /// The part of `whole`, a clip of the whole channel from [`Takes::clip`], that lies in `span`
+    /// (take time), without decoding the take again. Windows of a long take are cut this way, so
+    /// each costs its own length, not everything before it.
+    fn slice(&self, whole: &Clip, span: TimeRange) -> Result<Clip, TakeError>;
+
     /// Takes still open as WAV, left by a crash before sealing.
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError>;
 
@@ -105,6 +110,27 @@ pub enum Activity {
     Unmeasured,
     /// Spans relative to the clip, in order and disjoint. Empty means the clip is silent.
     Speech(Vec<TimeRange>),
+}
+
+impl Activity {
+    /// The spans inside `span`, which is on the same axis as these spans, moved to start at it.
+    pub fn within(&self, span: TimeRange) -> Activity {
+        match self {
+            Activity::Unmeasured => Activity::Unmeasured,
+            Activity::Speech(spans) => Activity::Speech(
+                spans
+                    .iter()
+                    .filter_map(|s| {
+                        TimeRange::new(
+                            Ms(s.start().max(span.start()).0 - span.start().0),
+                            Ms(s.end().min(span.end()).0.saturating_sub(span.start().0)),
+                        )
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect(),
+            ),
+        }
+    }
 }
 
 impl std::fmt::Debug for Clip {

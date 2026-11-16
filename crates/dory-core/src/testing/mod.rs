@@ -384,6 +384,21 @@ impl Takes for MemTakes {
         ))
     }
 
+    fn slice(&self, whole: &Clip, span: TimeRange) -> Result<Clip, TakeError> {
+        let start = span.start().min(Ms(whole.origin.0 + whole.duration.0));
+        let end = span.end().min(Ms(whole.origin.0 + whole.duration.0));
+        let local = TimeRange::new(Ms(start.0 - whole.origin.0), Ms(end.0 - whole.origin.0))
+            .ok_or_else(|| TakeError::Decode(format!("{span:?} is not a span")))?;
+        Ok(Clip::new(
+            whole.path.clone(),
+            whole.channel,
+            local.len(),
+            start,
+            whole.activity.within(local),
+            None,
+        ))
+    }
+
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError> {
         Ok(lock(&self.takes)
             .iter()

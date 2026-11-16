@@ -134,7 +134,6 @@ struct ClipRun {
 
 /// What every window of a run asks the engine for.
 struct WindowCx<'a> {
-    job: &'a Job,
     db: &'a Db,
     takes: &'a dyn Takes,
     cancel: &'a CancelToken,
@@ -224,7 +223,6 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     }
 
     let wx = WindowCx {
-        job: cx.job,
         db: cx.db,
         takes: cx.takes,
         cancel: cx.cancel,
@@ -312,10 +310,7 @@ fn transcribe_window(
     let clip = if span.start() == Ms(0) && span.end() == run.whole.duration {
         &run.whole
     } else {
-        fetched = wx
-            .takes
-            .clip(&wx.job.recording, run.plan.channel, Some(span))
-            .map_err(failed)?;
+        fetched = wx.takes.slice(&run.whole, span).map_err(failed)?;
         &fetched
     };
     let mut sink = Drafts {

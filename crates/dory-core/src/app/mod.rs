@@ -493,6 +493,41 @@ impl Library<'_> {
         }
     }
 
+    /// Adds an audio file as a new recording with one mixed channel. The file is copied in, so
+    /// the original can move. Processing waits for an explicit enqueue.
+    pub fn import_audio(
+        &self,
+        source: &std::path::Path,
+        title: Option<String>,
+    ) -> Result<RecordingId, DoryError> {
+        let now = self.dory.clock.now();
+        let settings = self.dory.reader.store.settings()?;
+        // The take's files are claimed first, so a recording started in the same second, or a
+        // crash before the row commits, never shares or strands an id.
+        let (id, info) = (0..=u16::MAX)
+            .find_map(|suffix| {
+                let id = RecordingId::generate(now, suffix);
+                match self.dory.takes.import(&id, source) {
+                    Err(TakeError::Exists(_)) => None,
+                    result => Some(result.map(|info| (id, info))),
+                }
+            })
+            .ok_or_else(|| StoreError::NotFound("a free recording id".into()))??;
+        let created = self.dory.db.apply(vec![Change::RecordingCreated(Recording {
+            id: id.clone(),
+            title,
+            created_at: now,
+            language: settings.language,
+            layout: crate::domain::ChannelLayout::Mixed,
+            take: Some(info),
+        })]);
+        if let Err(error) = created {
+            let _ = self.dory.takes.delete(&id);
+            return Err(error.into());
+        }
+        Ok(id)
+    }
+
     pub fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
         self.dory.takes.playback_path(id)
     }

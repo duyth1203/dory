@@ -53,9 +53,10 @@ fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
     };
     let sections = format!(
         "Write the whole summary, headings included, in {language}. Use Markdown with three \
-         sections in this order: key points, decisions, and action items. Give each action item \
-         its owner when the input names one. Write \"None\" under a section with nothing to \
-         report."
+         sections in this order: key points, decisions, and action items. Keep each key point to \
+         one short line and merge points that repeat. List every decision and every action item, \
+         each once, with its owner and due date when the input names them. Write \"None\" under \
+         a section with nothing to report."
     );
     let notes = format!(
         "Write in {language}. Keep every key point, decision, and action item with its owner, \
@@ -112,24 +113,33 @@ fn speaker_label(segment: &Segment, names: &SpeakerNames, revision: Revision) ->
     }
 }
 
-/// The summary may take a quarter of the context, up to what a full three-section summary needs.
+/// The summary may take a quarter of the context, up to what a long meeting's summary needs: a
+/// 2-hour meeting with 40 action items runs past 2,000 tokens.
 pub(crate) fn summary_output(context: u32) -> u32 {
-    (context / 4).min(1024)
+    (context / 4).min(4096)
 }
 
 /// Notes stay small enough that any two of them fit one merge pass, so each round of merging at
 /// least halves the notes.
 pub(crate) fn notes_output(context: u32) -> u32 {
-    (context / 8).min(512)
+    (context / 8).min(1024)
 }
 
-/// Tokens left for the input once the system prompt, the output, and the overhead are set aside.
+/// The most input one pass gets, however large the context. Recall falls on long inputs: on a
+/// synthetic 2-hour meeting with 40 action items, Gemma 4 E4B kept 34 in its summary from
+/// 4096-token passes and 17 from 27k-token passes.
+pub(crate) const MAX_PASS_INPUT: u32 = 3_000;
+
+/// Tokens left for the input once the system prompt, the output, and the overhead are set aside,
+/// up to [`MAX_PASS_INPUT`].
 pub(crate) fn input_budget(context: u32, system: u32, output: u32) -> u32 {
-    context.saturating_sub(
-        system
-            .saturating_add(output)
-            .saturating_add(PROMPT_OVERHEAD),
-    )
+    context
+        .saturating_sub(
+            system
+                .saturating_add(output)
+                .saturating_add(PROMPT_OVERHEAD),
+        )
+        .min(MAX_PASS_INPUT)
 }
 
 /// Packs `items` in order into chunks of at most `budget` tokens. An item over the budget on its
@@ -431,6 +441,19 @@ mod tests {
     }
 
     #[test]
+    fn a_long_transcript_is_split_even_when_the_context_could_hold_it() {
+        let lines: Vec<String> = (0..400).map(|n| line(n, 10)).collect();
+        let run = run(&lines, 131_072, "notes");
+        assert!(run.calls.len() > 2, "{} passes", run.calls.len());
+        assert!(
+            run.calls
+                .iter()
+                .all(|(_, _, user, _)| words(user) <= MAX_PASS_INPUT),
+            "no pass gets more than MAX_PASS_INPUT"
+        );
+    }
+
+    #[test]
     fn a_transcript_that_fits_is_summarized_in_one_pass() {
         let lines: Vec<String> = (0..20).map(|n| line(n, 10)).collect();
         let run = run(&lines, 8_192, "notes");
@@ -439,7 +462,7 @@ mod tests {
         let (pass, system, user, max) = &run.calls[0];
         assert_eq!(
             (*pass, user.as_str(), *max),
-            (Pass::Summary, lines.concat().as_str(), 1024)
+            (Pass::Summary, lines.concat().as_str(), 2048)
         );
         assert_eq!(
             system,

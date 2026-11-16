@@ -436,6 +436,57 @@ impl Takes for FsTakes {
         ))
     }
 
+    fn slice(&self, whole: &Clip, span: TimeRange) -> Result<Clip, TakeError> {
+        let end_of_whole = Ms(whole.origin.0 + whole.duration.0);
+        let start = span.start().clamp(whole.origin, end_of_whole);
+        let end = span.end().clamp(start, end_of_whole);
+        let to_frames =
+            |ms: Ms| u32::try_from(ms.0 * u64::from(TARGET_RATE_HZ) / 1000).unwrap_or(u32::MAX);
+        let (first, count) = (
+            to_frames(Ms(start.0 - whole.origin.0)),
+            to_frames(Ms(end.0 - start.0)),
+        );
+
+        let mut reader = hound::WavReader::open(&whole.path).map_err(pcm::hound_err)?;
+        let spec = reader.spec();
+        if (spec.channels, spec.sample_rate, spec.bits_per_sample) != (1, TARGET_RATE_HZ, 16) {
+            return Err(TakeError::Decode(format!(
+                "{} is not a clip from this adapter",
+                whole.path.display()
+            )));
+        }
+        reader.seek(first).map_err(io_err)?;
+        let scratch = tempfile::Builder::new()
+            .prefix("dory-slice-")
+            .tempdir()
+            .map_err(io_err)?;
+        let path = scratch.path().join(
+            whole
+                .path
+                .file_name()
+                .map_or_else(|| "slice.wav".into(), |n| n.to_owned()),
+        );
+        let mut writer = hound::WavWriter::create(&path, spec).map_err(pcm::hound_err)?;
+        let mut written = 0u64;
+        for sample in reader.samples::<i16>().take(count as usize) {
+            writer
+                .write_sample(sample.map_err(pcm::hound_err)?)
+                .map_err(pcm::hound_err)?;
+            written += 1;
+        }
+        writer.finalize().map_err(pcm::hound_err)?;
+        let local = TimeRange::new(Ms(start.0 - whole.origin.0), Ms(end.0 - whole.origin.0))
+            .ok_or_else(|| TakeError::Decode(format!("{span:?} is not a span")))?;
+        Ok(Clip::new(
+            path,
+            whole.channel,
+            Ms::from_frames(written, nonzero(TARGET_RATE_HZ)?),
+            start,
+            whole.activity.within(local),
+            Some(Box::new(scratch)),
+        ))
+    }
+
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError> {
         let entries = match std::fs::read_dir(&self.dir) {
             Ok(entries) => entries,

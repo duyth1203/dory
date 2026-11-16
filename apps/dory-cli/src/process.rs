@@ -23,7 +23,14 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
     }
     let events = dory.events();
     dory.pipeline()
-        .enqueue(&args.id, Goal::ALL)
+        .enqueue(
+            &args.id,
+            if args.summary_only {
+                Goal::SUMMARIZE
+            } else {
+                Goal::ALL
+            },
+        )
         .map_err(crate::chain)?;
     let mut job = view::latest_job(dory.library().jobs(&args.id).map_err(crate::chain)?)
         .ok_or("the job was not queued")?;

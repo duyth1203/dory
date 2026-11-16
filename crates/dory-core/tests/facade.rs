@@ -265,6 +265,9 @@ impl Takes for HookedTakes {
     ) -> Result<Clip, TakeError> {
         self.inner.clip(id, channel, span)
     }
+    fn slice(&self, whole: &Clip, span: TimeRange) -> Result<Clip, TakeError> {
+        self.inner.slice(whole, span)
+    }
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError> {
         self.inner.orphans()
     }
@@ -1304,6 +1307,32 @@ fn an_empty_speech_catalog_opens_and_blocks_jobs_on_the_missing_model() {
             stage: Stage::Transcribe,
             blocker: Blocker::NoModel { kind: KindTag::Stt },
         },
+    );
+}
+
+#[test]
+fn an_imported_audio_file_becomes_a_mixed_recording_with_its_take() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let first = dory
+        .library()
+        .import_audio(Path::new("/tmp/meeting.wav"), Some("Planning".into()))
+        .unwrap();
+    let second = dory
+        .library()
+        .import_audio(Path::new("/tmp/meeting.wav"), None)
+        .unwrap();
+    assert_ne!(
+        first, second,
+        "two imports in the same second get their own ids"
+    );
+    let recording = dory.library().recording(&first).unwrap().unwrap();
+    assert_eq!(recording.layout, ChannelLayout::Mixed);
+    assert_eq!(recording.title.as_deref(), Some("Planning"));
+    assert!(recording.take.is_some());
+    assert!(
+        dory.library().jobs(&first).unwrap().is_empty(),
+        "an import waits for an explicit process"
     );
 }
 

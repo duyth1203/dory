@@ -17,6 +17,29 @@ impl ImportArgs {
     }
 }
 
+/// `add FILE [--title TEXT]` imports an audio file as a new recording.
+#[derive(Debug, PartialEq)]
+pub struct AddArgs {
+    pub path: PathBuf,
+    pub title: Option<String>,
+}
+
+impl AddArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [path] if !path.starts_with("--") => Ok(Self {
+                path: path.into(),
+                title: None,
+            }),
+            [path, flag, title] if flag == "--title" && !path.starts_with("--") => Ok(Self {
+                path: path.into(),
+                title: Some(title.clone()),
+            }),
+            _ => Err("add takes an audio file and an optional --title TEXT".into()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct ListArgs {
     pub search: Option<String>,
@@ -52,15 +75,19 @@ impl ShowArgs {
 pub struct ProcessArgs {
     pub id: RecordingId,
     pub fake_engines: bool,
+    /// Summarizes the stored transcript again without transcribing.
+    pub summary_only: bool,
 }
 
 impl ProcessArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
         let mut id = None;
         let mut fake_engines = false;
+        let mut summary_only = false;
         for arg in args {
             match arg.as_str() {
                 "--fake-engines" => fake_engines = true,
+                "--summary" => summary_only = true,
                 flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
                 _ if id.is_none() => id = Some(parse_id(arg)?),
                 _ => return Err("process takes one recording id".into()),
@@ -69,6 +96,7 @@ impl ProcessArgs {
         Ok(Self {
             id: id.ok_or("process needs a recording id")?,
             fake_engines,
+            summary_only,
         })
     }
 }
@@ -324,8 +352,21 @@ mod tests {
         assert_eq!(p.id.as_str(), "rec_1");
         assert!(ProcessArgs::parse(&words("--fake-engines")).is_err());
         assert!(ProcessArgs::parse(&words("a b")).is_err());
+        assert!(
+            ProcessArgs::parse(&words("rec_1 --summary"))
+                .unwrap()
+                .summary_only
+        );
         assert!(ImportArgs::parse(&words("/tmp/old")).is_ok());
         assert!(ImportArgs::parse(&[]).is_err());
+        assert_eq!(
+            AddArgs::parse(&words("talk.wav --title Planning")).unwrap(),
+            AddArgs {
+                path: "talk.wav".into(),
+                title: Some("Planning".into())
+            }
+        );
+        assert!(AddArgs::parse(&words("--title x")).is_err());
         assert!(
             ModelsArgs::parse(&words("--fake-engines"))
                 .unwrap()

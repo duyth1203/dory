@@ -18,10 +18,11 @@ use dory_core::app::Recovery;
 
 const USAGE: &str = "usage:
   dory-cli import OLD_DATA_DIR
+  dory-cli add AUDIO_FILE [--title TEXT]
   dory-cli list [--search TEXT]
   dory-cli show ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
-  dory-cli process ID [--fake-engines]
+  dory-cli process ID [--summary] [--fake-engines]
   dory-cli play ID [--seek SECONDS]
   dory-cli models [--about] [--fake-engines]
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID
@@ -50,6 +51,8 @@ fn main() -> ExitCode {
                 _ => args::ModelsArgs::parse(rest)
                     .and_then(|a| config().and_then(|c| library::models(&c, &a))),
             },
+            Some("add") => args::AddArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::add(&c, &a))),
             Some("languages") => args::LanguagesArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| settings::languages(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)

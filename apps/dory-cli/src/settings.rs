@@ -1,11 +1,11 @@
-//! The commands that change settings or fetch models: `models choose`, `models provision`, and
-//! `languages`. Each opens Dory with the data folder locked, because they write.
+//! The commands that write outside recording and processing: `add`, `models choose`,
+//! `models provision`, and `languages`. Each opens Dory with the data folder locked.
 
 use dory::Config;
 use dory_core::app::{AppKind, Event};
 use dory_core::models::{Choice, Diar, Llm, ModelId, Stt};
 
-use crate::args::{ChooseArgs, KindArg, LanguagesArgs, ProvisionArgs};
+use crate::args::{AddArgs, ChooseArgs, KindArg, LanguagesArgs, ProvisionArgs};
 use crate::open;
 use crate::wait::block_on;
 
@@ -90,5 +90,15 @@ pub fn languages(config: &Config, args: &LanguagesArgs) -> Result<(), String> {
             .collect();
         println!("meeting languages: {}", tags.join(", "));
     }
+    Ok(())
+}
+
+pub fn add(config: &Config, args: &AddArgs) -> Result<(), String> {
+    let dory = open(config, false)?;
+    let id = dory
+        .library()
+        .import_audio(&args.path, args.title.clone())
+        .map_err(crate::chain)?;
+    println!("added {id}");
     Ok(())
 }

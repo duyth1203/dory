@@ -284,6 +284,52 @@ fn clips_report_where_someone_talks_on_their_own_time_axis() {
 }
 
 #[test]
+fn a_slice_cuts_a_window_from_the_whole_clip_without_decoding_the_take_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("slice");
+    let rate = 48_000u32;
+    let frames = rate as usize * 10;
+    let mic = tone(300.0, rate, 6.0, 7.5, 0.3, frames);
+    let mut writer = takes.begin(&id, ChannelLayout::MicOnly, rate).unwrap();
+    write_in_chunks(&mut *writer, &mic, 1, rate);
+    writer.finish().unwrap();
+    takes.seal(&id).unwrap();
+
+    let whole = takes.clip(&id, Channel::Mic, None).unwrap();
+    let (_, whole_out) = read_clip(&whole.path);
+    // The take is gone, so only the whole clip can feed the slice.
+    takes.delete(&id).unwrap();
+
+    let span = TimeRange::new(Ms(5_000), Ms(9_000)).unwrap();
+    let window = takes.slice(&whole, span).unwrap();
+    let (spec, out) = read_clip(&window.path);
+    assert_eq!((spec.sample_rate, spec.channels), (16_000, 1));
+    assert_eq!(
+        out,
+        whole_out[80_000..144_000],
+        "the same samples as the whole clip"
+    );
+    assert_eq!((window.origin, window.duration), (Ms(5_000), Ms(4_000)));
+    assert_eq!(window.channel, Channel::Mic);
+    assert_speech(&window.activity, &[(1_000, 2_500)]);
+
+    let tail = takes
+        .slice(&whole, TimeRange::new(Ms(9_500), Ms(12_000)).unwrap())
+        .unwrap();
+    assert_eq!(
+        tail.duration,
+        Ms(500),
+        "a span past the end is cut at the end"
+    );
+
+    let path = window.path.clone();
+    drop(window);
+    assert!(!path.exists(), "dropping the slice removes its file");
+    assert!(whole.path.exists(), "the whole clip outlives its slices");
+}
+
+#[test]
 fn channels_are_picked_by_layout() {
     let dir = tempfile::tempdir().unwrap();
     let takes = FsTakes::new(dir.path());

@@ -99,7 +99,7 @@ Each lists its states and the ids it satisfies.
 
 **Sidebar row** (UX-1, A11Y-1, A11Y-8). Three lines: title (14 semibold, one line, ellipsis), meta (`start · duration · language`, 12 secondary), status (12 pt glyph and a 12 pt label). Padding 10/12, radius 8, 2 pt gap between rows. Selected with keyboard focus in the list: `accent` fill, all text `on_accent`. Selected with focus elsewhere: `selection_inactive` fill, normal text colors. Context-menu target: 2 pt `accent` outline, no fill change. The VoiceOver label reads all three lines: "Design review, 10:30, 48 minutes, English, Done".
 
-**Status glyphs.** Always a glyph followed by a word. Map them from `pipeline_status` in `src-tauri/src/lib.rs`:
+**Status glyphs.** Always a glyph followed by a word. Map them from the old app's `pipeline_status` strings:
 
 | State | Glyph | Label | Glyph color |
 |---|---|---|---|

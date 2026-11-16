@@ -53,7 +53,7 @@ pub enum ConfigError {
     Machine(String),
 }
 
-/// The old Tauri app's data folder. The importer reads it. Nothing writes to it.
+/// The old app's data folder. The importer reads it. Nothing writes to it.
 pub fn legacy_data_dir(home: &Path) -> PathBuf {
     home.join("Library/Application Support").join(APP_ID)
 }

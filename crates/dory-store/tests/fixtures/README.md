@@ -1,6 +1,6 @@
 # Fixtures
 
-`legacy-data/` is a small copy of the old Tauri app's data folder, shaped like the real one:
+`legacy-data/` is a small copy of the old app's data folder, shaped like the real one:
 `recordings/<id>.webm|wav` and `metadata/<id>.json`, with ids from the old `generateId()`.
 
 | id suffix | what it covers |

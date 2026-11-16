@@ -24,7 +24,7 @@ It comes from a pstack architect arena. Two runners on different models designed
 | `apps/dory-cli` | Headless driving adapter and test bench | core, `dory` |
 | `apps/dory-gpui` | The GPUI app | core, `dory`, `gpui` |
 
-The Tauri app in `src-tauri/` stays outside the workspace until the GPUI app replaces it.
+The GPUI app replaced the old app, and the old code is gone from the tree.
 
 ## Usage
 
@@ -209,7 +209,7 @@ The recorder creates a take's files before its row, so a crash between the two l
 
 ## Legacy data
 
-`dory-store` imports each old `metadata/<id>.json` once, keyed by content hash, in one `apply`. It points at the old audio file in place (`LegacyWebm`, `Mixed`), parses the transcript into untimed segments, and maps the old pipeline status to a job state. Nothing is copied or deleted, so the Tauri app keeps working on the same folder.
+`dory-store` imports each old `metadata/<id>.json` once, keyed by content hash, in one `apply`. It points at the old audio file in place (`LegacyWebm`, `Mixed`), parses the transcript into untimed segments, and maps the old pipeline status to a job state. Nothing is copied or deleted, so the old app keeps working on the same folder if it is still installed.
 
 ## Open questions
 

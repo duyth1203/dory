@@ -9,7 +9,6 @@ members = [
     "apps/dory-cli",
     "apps/dory-gpui",
 ]
-exclude = ["src-tauri"]
 
 [workspace.package]
 edition = "2024"

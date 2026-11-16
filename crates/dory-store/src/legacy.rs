@@ -1,9 +1,9 @@
-//! Imports the old Tauri app's data folder.
+//! Imports the old app's data folder.
 //!
 //! The old app keeps `recordings/<id>.webm|wav` and `metadata/<id>.json` (transcript and summary as
 //! text, a pipeline status string, seconds-since-epoch creation time). This module reads them and
 //! writes only to the new store and to the new takes folder. The old folder is opened read-only,
-//! so the Tauri app keeps working on it.
+//! so the old app keeps working on it.
 //!
 //! One recording is one transaction, keyed by the SHA-256 of its metadata. A file whose hash is
 //! already recorded is skipped, so a second run changes nothing, and a run killed halfway resumes

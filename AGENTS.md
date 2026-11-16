@@ -1,6 +1,6 @@
 # Dory agent guide
 
-Dory is a local-first macOS meeting recorder. It records audio, transcribes it on-device, and summarizes it with Gemma through Ollama. The old Tauri app used the Sona sidecar, whose repo is gone. The new core transcribes in process through sherpa-onnx (`crates/dory-engines`). Every agent session in this repo, local or cloud, Claude or not, follows this file.
+Dory is a local-first macOS meeting recorder. It records audio, transcribes it on-device, and summarizes it with Gemma through Ollama. The core transcribes in process through sherpa-onnx (`crates/dory-engines`) and the app is native GPUI. Every agent session in this repo, local or cloud, Claude or not, follows this file.
 
 ## Drive every task with pstack
 
@@ -16,16 +16,14 @@ Verify finished work on the real app, not by "it compiles". Name what you checke
 
 ## Know where the work is going
 
-Three programs are planned. Read the plan before you touch its area.
+The GPUI program is done except for its last steps. Read the plan before you touch its area.
 
-- `docs/plans/gpui-migration.md` replaces Tauri and React with a native GPUI app and a shared `dory-core` crate.
+- `docs/plans/gpui-migration.md` built the native GPUI app and the shared `dory-core` crate that replaced the old app.
 - `docs/plans/ux-redesign.md` is the UX spec the GPUI screens implement. `docs/plans/claude-design-brief.md` is the matching Claude Design request.
 - `docs/plans/speech-model-evaluation.md` is the speech-to-text and Gemma bake-off.
 - `docs/plans/decisions.tsv` is the append-only decision log. Add a row for each real decision. Never edit old rows.
 
-Until the GPUI program lands, do not add features to the React UI in `src/`. Bug fixes and accessibility fixes there are fine.
-
-Live tests never use the real data folder. Set `DORY_DATA_DIR` to a throwaway folder once the GPUI plan's P1 adds it.
+Live tests never use the real data folder. Set `DORY_DATA_DIR` to a throwaway folder. A run with `DORY_DATA_DIR` set also skips the one-time legacy audio cleanup, because that cleanup changes system-wide devices.
 
 ## Keep the hexagon intact
 
@@ -40,23 +38,20 @@ The new code follows `docs/architecture/hexagonal.md`. Read it before you touch 
 ## Build and run
 
 - `cargo test --workspace --all-features` and `cargo clippy --workspace --all-features --all-targets -- -D warnings` cover the new crates. Run `cargo fmt` before committing.
-- `dory-cli` drives the app headlessly through the `dory` composition root: `import <old-data-dir>`, `list`, `show <id>`, `record`, `process <id> [--fake-engines]`, and `models`. Set `DORY_DATA_DIR` to a throwaway folder for anything you run by hand. The default is `~/Library/Application Support/com.dory.app/v2`, and the old Tauri folder is refused. The `--fake-*` flags are refused unless `DORY_DATA_DIR` is set.
+- `dory-cli` drives the app headlessly through the `dory` composition root: `import <old-data-dir>`, `list`, `show <id>`, `record`, `process <id> [--fake-engines]`, and `models`. Set `DORY_DATA_DIR` to a throwaway folder for anything you run by hand. The default is `~/Library/Application Support/com.dory.app/v2`, and the old app's folder is refused. The `--fake-*` flags are refused unless `DORY_DATA_DIR` is set.
 - One process at a time owns a data folder. `record`, `process`, and `import` lock it, and a second one fails at once with "Dory is already running". `list`, `show`, and `models` only read, so they work while `record` runs.
 - `cargo run -p dory-macos --example dory-capture -- --layout mic-system --seconds 10 --out /tmp/take.wav` records through the macOS adapter directly, for capture debugging. `-- devices` lists the input devices. macOS attributes the permission prompts to the app that launched it.
-- `pnpm prebuild:sona` used to download the Sona sidecars into `src-tauri/binaries/`. Sona's GitHub repo returns 404 since 2026-11-16, so the Tauri app can no longer be built with transcription on a fresh machine.
+- `cargo run -p dory-gpui` runs the app from a terminal, which macOS attributes the permission prompts to. `scripts/bundle-macos.sh` builds `target/bundle/Dory.app` with bundle id `com.dory.app`, for permission lanes. It signs with `DORY_SIGNING_IDENTITY` when set and ad hoc otherwise, and notarizes only when a real identity and `APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID` are set. It needs `cargo install cargo-packager --locked`. `apps/dory-gpui/bundle.sh` is the quick dev bundler.
+- `crates/dory-macos/src/legacy_cleanup.rs` removes the audio devices the old app left (UIDs `com.dory.aggregate` and `com.dory.multioutput`) once at launch. Its tests use a fake HAL. Never run its destroying path against a real machine in a test or check.
 - `dory-engines` links sherpa-onnx statically. Its build script downloads a 20.8 MB prebuilt library from the k2-fsa GitHub release on the first build.
-- `pnpm install`, then `pnpm dev`, runs the Tauri app. `src-tauri/` is outside the Cargo workspace until the GPUI app replaces it.
-- `pnpm vite:build` is the only typecheck for the React side.
 - Do not claim a test run that did not happen.
 
 ## Find the code
 
 - `crates/dory-core` holds the domain, ports, recorder state machine, model selection, and the frame ring that capture adapters push into.
 - `crates/dory-store` holds the SQLite store, file takes, and legacy import. `crates/dory-macos` holds the macOS 26 adapters. `crates/dory` is the composition root, the only crate that names adapters. `apps/dory-cli` is the headless driving adapter and test harness. The capture harness is `crates/dory-macos/examples/dory-capture`.
-- `src-tauri/src/lib.rs` holds the old commands, the pipeline queue (`PipelineCoordinator`, `pipeline_worker_loop`), and the BlackHole routing module `audio_setup`.
-- `src-tauri/src/sona.rs` runs the Sona HTTP sidecar. `sona_download.rs` and `sona_paths.rs` locate or fetch it.
-- `src/` is the React UI. Audio capture lives in `src/hooks/useAudioRecorder.ts`.
-- App data lives in `~/Library/Application Support/com.dory.app/`. Each recording has `recordings/<id>.webm` or `.wav` and `metadata/<id>.json`.
+- App data lives in `~/Library/Application Support/com.dory.app/v2`. The old app's folder one level up is only read, by the importer and the legacy cleanup.
+- `apps/dory-gpui/Info.plist`, `Dory.entitlements`, and `Dory.icns` feed the bundle.
 
 ## Git
 

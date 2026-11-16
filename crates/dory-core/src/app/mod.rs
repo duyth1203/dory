@@ -182,6 +182,41 @@ impl Trashed {
     }
 }
 
+/// An audio file of the old app that a recording still reads in place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Original {
+    pub id: RecordingId,
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+/// Old-app originals in the system trash, with what [`Library::restore_originals`] needs to put
+/// them back. It lives in memory only, so undo works until the process ends.
+#[derive(Debug)]
+pub struct TrashedOriginals {
+    receipt: TrashReceipt,
+    count: usize,
+    bytes: u64,
+    skipped: usize,
+}
+
+impl TrashedOriginals {
+    /// Files moved to the trash.
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Their total size.
+    pub fn bytes(&self) -> u64 {
+        self.bytes
+    }
+
+    /// Recordings left alone because a job was queued, running, or blocked on them.
+    pub fn skipped(&self) -> usize {
+        self.skipped
+    }
+}
+
 /// What startup found and repaired after the last run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Recovery {
@@ -628,6 +663,114 @@ impl Library<'_> {
             return Err(error.into());
         }
         Ok(id)
+    }
+
+    /// The old app's audio files that recordings still read in place, and how big they are.
+    /// A recording whose original is gone is not listed.
+    pub fn originals(&self) -> Result<Vec<Original>, DoryError> {
+        let mut found = Vec::new();
+        for id in self.legacy_ids()? {
+            if let Some(original) = self.original_of(id)? {
+                found.push(original);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Copies every original in as Dory's own FLAC take, then moves the originals to the system
+    /// trash in one receipt. Playback and re-transcription read the copies, so they keep working
+    /// whether or not the originals come back.
+    ///
+    /// A recording with a queued, running, or blocked job is skipped and counted, so a stage
+    /// never loses its audio mid-run. Nothing moves to the trash until every other original is
+    /// copied, so a failed copy (the converter missing, a full disk) leaves every original where
+    /// it was. Copies already made stay: they are real takes and harmless. Their originals are no
+    /// longer listed, since the pointer is gone, and stay in the old app's folder.
+    ///
+    /// The copy and the row edit are two steps. A crash or a store failure between them leaves a
+    /// row that still says WebM over a FLAC take. Nothing reads the label to find audio, and the
+    /// next call corrects the row. A crash after the copies and before the move leaves the
+    /// originals in place and unlisted, like a failed copy does. The trash move is all or
+    /// nothing.
+    pub fn trash_originals(&self) -> Result<TrashedOriginals, DoryError> {
+        let dory = self.dory;
+        let (mut paths, mut bytes, mut skipped) = (Vec::new(), 0, 0);
+        for id in self.legacy_ids()? {
+            let Some(original) = self.original_of(id.clone())? else {
+                self.heal_label(&id)?;
+                continue;
+            };
+            let busy = dory
+                .db
+                .store
+                .jobs_for(&id)?
+                .iter()
+                .any(|job| !job.is_terminal());
+            if busy {
+                skipped += 1;
+                continue;
+            }
+            let info = dory.takes.adopt(&id)?;
+            self.edit(&id, RecordingEdit::Take(info))?;
+            bytes += original.bytes;
+            paths.push(original.path);
+        }
+        let receipt = dory.trash.move_to_trash(&paths)?;
+        Ok(TrashedOriginals {
+            receipt,
+            count: paths.len(),
+            bytes,
+            skipped,
+        })
+    }
+
+    /// Undoes [`Library::trash_originals`]: the originals go back where they were. The recordings
+    /// keep their copies. The trashed set is spent whatever happens.
+    ///
+    /// Fails with a [`TrashError`] if a file left the trash or its old place is taken. Nothing
+    /// has moved in that case.
+    pub fn restore_originals(&self, trashed: TrashedOriginals) -> Result<(), DoryError> {
+        self.dory.trash.put_back(&trashed.receipt)?;
+        Ok(())
+    }
+
+    fn legacy_ids(&self) -> Result<Vec<RecordingId>, StoreError> {
+        Ok(self
+            .dory
+            .reader
+            .list(&RecordingQuery::default())?
+            .into_iter()
+            .filter(|row| {
+                row.recording
+                    .take
+                    .is_some_and(|take| take.container == TakeContainer::LegacyWebm)
+            })
+            .map(|row| row.recording.id)
+            .collect())
+    }
+
+    fn original_of(&self, id: RecordingId) -> Result<Option<Original>, DoryError> {
+        let Some(path) = self.dory.takes.legacy_original(&id)? else {
+            return Ok(None);
+        };
+        Ok(std::fs::metadata(&path)
+            .ok()
+            .filter(|meta| meta.is_file())
+            .map(|meta| Original {
+                id,
+                path,
+                bytes: meta.len(),
+            }))
+    }
+
+    /// Corrects a row that says WebM over a take that has been copied in.
+    fn heal_label(&self, id: &RecordingId) -> Result<(), DoryError> {
+        match self.dory.takes.inspect(id)? {
+            Some(info) if info.container != TakeContainer::LegacyWebm => {
+                self.edit(id, RecordingEdit::Take(info))
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Adds an audio file as a new recording with one mixed channel. The file is copied in, so

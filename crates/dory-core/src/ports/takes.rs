@@ -48,6 +48,16 @@ pub trait Takes: Send + Sync {
     /// Copies an external audio file in as a take. Imports are always `ChannelLayout::Mixed`.
     fn import(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError>;
 
+    /// The old app's audio file a legacy pointer refers to, or `None` when `id` has no pointer.
+    /// The file may be gone: this reports what the pointer says, not what is on disk.
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError>;
+
+    /// Copies the audio a legacy pointer refers to in as this adapter's own take, then removes the
+    /// pointer. The original is never touched. The pointer goes last, so a crash at any point
+    /// leaves the legacy take readable and a second call completes. With no pointer and an own
+    /// take present, returns that take's info.
+    fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError>;
+
     /// A stable path for playback and "reveal in Finder". Not for engines.
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError>;
 

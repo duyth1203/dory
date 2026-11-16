@@ -85,6 +85,8 @@ pub trait Takes: Send + Sync {
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError>;          // open WAVs a crash left
     fn stored(&self) -> Result<Vec<RecordingId>, TakeError>;           // every id with any file
     // inspect, import, playback_path, delete
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError>; // the old app's file a pointer names
+    fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError>;                   // copy it in as a FLAC take, then drop the pointer
     fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError>; // what delete removes, for the trash
 }
 pub trait Trash: Send + Sync {

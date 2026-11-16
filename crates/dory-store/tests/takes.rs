@@ -876,3 +876,147 @@ fn files_lists_what_delete_removes_for_one_id_and_never_a_legacy_audio_file() {
     assert_eq!(std::fs::read_dir(&takes_dir).unwrap().count(), 0);
     assert_eq!(std::fs::read(&old).unwrap(), b"legacy audio");
 }
+
+const OLD_RATE: u32 = 22_050;
+
+fn write_old_wav(path: &Path) {
+    let mut w = hound::WavWriter::create(
+        path,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: OLD_RATE,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    for s in tone(1_000.0, OLD_RATE, 0.0, 9.0, 0.5, OLD_RATE as usize * 3) {
+        w.write_sample((s * 32767.0) as i16).unwrap();
+    }
+    w.finalize().unwrap();
+}
+
+fn names(takes: &FsTakes, id: &RecordingId) -> Vec<String> {
+    let mut names: Vec<String> = takes
+        .files(id)
+        .unwrap()
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn linked_wav(dir: &Path, name: &str) -> (FsTakes, RecordingId, std::path::PathBuf) {
+    let old = dir.join(format!("{name}.wav"));
+    write_old_wav(&old);
+    let takes = FsTakes::new(dir.join("takes"));
+    let id = rid(name);
+    takes
+        .link_legacy(&id, &old, TakeContainer::Wav, OLD_RATE, Ms(3_000))
+        .unwrap();
+    (takes, id, old)
+}
+
+#[test]
+fn adopting_a_legacy_wav_copies_it_in_as_a_flac_take_and_leaves_the_original_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (takes, id, old) = linked_wav(dir.path(), "old");
+    let before = std::fs::read(&old).unwrap();
+    assert_eq!(takes.legacy_original(&id).unwrap().as_deref(), Some(&*old));
+
+    let info = takes.adopt(&id).unwrap();
+    assert_eq!(
+        info,
+        TakeInfo {
+            container: TakeContainer::Flac,
+            rate_hz: OLD_RATE,
+            duration: Ms(3_000)
+        }
+    );
+    assert_eq!(takes.legacy_original(&id).unwrap(), None);
+    assert_eq!(names(&takes, &id), ["old.flac", "old.meta"]);
+    assert_eq!(takes.inspect(&id).unwrap(), Some(info));
+    assert_eq!(
+        std::fs::read(&old).unwrap(),
+        before,
+        "the original is untouched"
+    );
+
+    std::fs::remove_file(&old).unwrap();
+    let clip = takes.clip(&id, Channel::Mixed, None).unwrap();
+    let (_, out) = read_clip(&clip.path);
+    assert_eq!(out.len(), 48_000);
+    assert!((amplitude_at(&out[4_000..44_000], 1_000.0, 16_000) - 0.5).abs() < 0.01);
+    assert!(takes.playback_path(&id).unwrap().ends_with("old.flac"));
+}
+
+#[test]
+fn adopting_twice_changes_nothing_and_adopting_an_own_take_returns_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (takes, id, _) = linked_wav(dir.path(), "again");
+    let first = takes.adopt(&id).unwrap();
+    let flac = takes.dir().join("again.flac");
+    let bytes = std::fs::read(&flac).unwrap();
+
+    assert_eq!(takes.adopt(&id).unwrap(), first);
+    assert_eq!(std::fs::read(&flac).unwrap(), bytes);
+
+    let own = rid("own");
+    let mut writer = takes.begin(&own, ChannelLayout::Mixed, 16_000).unwrap();
+    writer.write(&[0.0; 1_600]).unwrap();
+    writer.finish().unwrap();
+    let sealed = takes.seal(&own).unwrap();
+    assert_eq!(takes.adopt(&own).unwrap(), sealed);
+
+    assert!(matches!(
+        takes.adopt(&rid("nothing")),
+        Err(TakeError::Missing(_))
+    ));
+}
+
+#[test]
+fn adopting_cleans_up_what_a_crashed_attempt_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let (takes, id, _) = linked_wav(dir.path(), "crashed");
+    let tmp = takes.dir().join("crashed.flac.tmp");
+    let partial = takes.dir().join("crashed.wav.partial");
+    std::fs::write(&tmp, b"half an encoder run").unwrap();
+    std::fs::write(&partial, b"half a decode").unwrap();
+
+    let info = takes.adopt(&id).unwrap();
+    assert_eq!(info.container, TakeContainer::Flac);
+    assert_eq!(info.duration, Ms(3_000));
+    assert_eq!(names(&takes, &id), ["crashed.flac", "crashed.meta"]);
+}
+
+#[test]
+fn a_crash_after_the_flac_landed_and_before_the_pointer_went_is_finished_by_a_second_adopt() {
+    let dir = tempfile::tempdir().unwrap();
+    let (takes, id, old) = linked_wav(dir.path(), "late");
+    let pointer = takes.dir().join("late.legacy");
+    let pointer_text = std::fs::read(&pointer).unwrap();
+    let done = takes.adopt(&id).unwrap();
+    std::fs::write(&pointer, pointer_text).unwrap();
+    assert_eq!(
+        takes.inspect(&id).unwrap().unwrap().container,
+        TakeContainer::Wav,
+        "while the pointer stands, the legacy take is what reads"
+    );
+
+    assert_eq!(takes.adopt(&id).unwrap(), done);
+    assert_eq!(takes.legacy_original(&id).unwrap(), None);
+    assert_eq!(names(&takes, &id), ["late.flac", "late.meta"]);
+    assert!(old.is_file());
+}
+
+#[test]
+fn adopting_without_the_original_fails_and_keeps_the_pointer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (takes, id, old) = linked_wav(dir.path(), "lost");
+    std::fs::remove_file(&old).unwrap();
+
+    assert!(matches!(takes.adopt(&id), Err(TakeError::Missing(_))));
+    assert_eq!(takes.legacy_original(&id).unwrap().as_deref(), Some(&*old));
+    assert_eq!(names(&takes, &id), ["lost.legacy"]);
+}

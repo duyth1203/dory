@@ -9,7 +9,7 @@
 //!   crash point leaves a state that a second `seal` completes.
 //! - `<id>.meta` holds the channel layout, because `clip` is asked for "the mic" by id alone.
 //! - `<id>.legacy` points at an audio file in the old app's folder. That file is read in place and
-//!   is never copied, moved, or deleted.
+//!   is never moved or deleted. [`Takes::adopt`] copies it in as a FLAC take and drops the pointer.
 //!
 //! [`FILES`] lists every name this adapter writes, so [`Takes::stored`] and [`Takes::delete`]
 //! agree on what belongs to an id.
@@ -289,6 +289,41 @@ impl FsTakes {
         Self::flac_info(&flac)
     }
 
+    /// Converts `source` into this id's FLAC, by its extension. The caller has claimed the id.
+    fn convert(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError> {
+        let ext = source
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_default();
+        match ext.as_str() {
+            "flac" => {
+                let reader = FlacReader::open(source)?;
+                let (rate_hz, frames) = (reader.rate_hz(), reader.total_frames());
+                drop(reader);
+                let tmp = self.file(id, "flac.tmp");
+                std::fs::copy(source, &tmp).map_err(io_err)?;
+                std::fs::rename(&tmp, self.file(id, "flac")).map_err(io_err)?;
+                let duration = Ms::from_frames(frames.unwrap_or(0), nonzero(rate_hz)?);
+                Ok(TakeInfo {
+                    container: TakeContainer::Flac,
+                    rate_hz,
+                    duration,
+                })
+            }
+            "wav" => self.import_wav_samples(id, Box::new(HoundReader::open(source)?)),
+            _ => {
+                let scratch = tempfile::Builder::new()
+                    .prefix("dory-import-")
+                    .tempdir()
+                    .map_err(io_err)?;
+                let decoded = scratch.path().join("source.wav");
+                ffmpeg::decode_to_wav(source, &decoded)?;
+                self.import_wav_samples(id, Box::new(HoundReader::open(&decoded)?))
+            }
+        }
+    }
+
     fn import_wav_samples(
         &self,
         id: &RecordingId,
@@ -549,42 +584,46 @@ impl Takes for FsTakes {
         if !source.is_file() {
             return Err(TakeError::Missing(id.clone()));
         }
-        let ext = source
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_ascii_lowercase)
-            .unwrap_or_default();
         meta::write_atomic(
             &self.file(id, "meta"),
             &meta::layout_text(ChannelLayout::Mixed),
         )
         .map_err(io_err)?;
-        match ext.as_str() {
-            "flac" => {
-                let reader = FlacReader::open(source)?;
-                let (rate_hz, frames) = (reader.rate_hz(), reader.total_frames());
-                drop(reader);
-                let tmp = self.file(id, "flac.tmp");
-                std::fs::copy(source, &tmp).map_err(io_err)?;
-                std::fs::rename(&tmp, self.file(id, "flac")).map_err(io_err)?;
-                let duration = Ms::from_frames(frames.unwrap_or(0), nonzero(rate_hz)?);
-                Ok(TakeInfo {
-                    container: TakeContainer::Flac,
-                    rate_hz,
-                    duration,
-                })
+        self.convert(id, source)
+    }
+
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError> {
+        Ok(self.legacy_link(id)?.map(|link| link.path))
+    }
+
+    /// Everything the pointer's removal waits on is a complete file: `flac` and `wav` only appear
+    /// by rename, so a retry finishes what it finds instead of converting again.
+    fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
+        let Some(link) = self.legacy_link(id)? else {
+            return self
+                .inspect(id)?
+                .ok_or_else(|| TakeError::Missing(id.clone()));
+        };
+        let (flac, wav) = (self.file(id, "flac"), self.file(id, "wav"));
+        let info = if wav.is_file() {
+            self.seal_wav(id, &wav)?
+        } else if flac.is_file() {
+            Self::flac_info(&flac)?
+        } else {
+            if !link.path.is_file() {
+                return Err(TakeError::Missing(id.clone()));
             }
-            "wav" => self.import_wav_samples(id, Box::new(HoundReader::open(source)?)),
-            _ => {
-                let scratch = tempfile::Builder::new()
-                    .prefix("dory-import-")
-                    .tempdir()
-                    .map_err(io_err)?;
-                let decoded = scratch.path().join("source.wav");
-                ffmpeg::decode_to_wav(source, &decoded)?;
-                self.import_wav_samples(id, Box::new(HoundReader::open(&decoded)?))
-            }
-        }
+            meta::write_atomic(
+                &self.file(id, "meta"),
+                &meta::layout_text(ChannelLayout::Mixed),
+            )
+            .map_err(io_err)?;
+            self.convert(id, &link.path)?
+        };
+        remove_if_present(&self.file(id, "legacy"))?;
+        remove_if_present(&self.file(id, "flac.tmp"))?;
+        remove_if_present(&self.file(id, "wav.partial"))?;
+        Ok(info)
     }
 
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {

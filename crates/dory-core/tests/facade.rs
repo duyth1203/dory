@@ -100,6 +100,7 @@ impl Rig {
             hooked_takes: Arc::new(HookedTakes {
                 inner: takes.clone(),
                 seal: Mutex::new(None),
+                adopt: Mutex::new(None),
             }),
             store,
             takes,
@@ -164,6 +165,7 @@ impl Rig {
 
 type ApplyHook = Arc<dyn Fn(&[Change]) -> Result<(), StoreError> + Send + Sync>;
 type SealHook = Arc<dyn Fn(&RecordingId) -> Result<(), TakeError> + Send + Sync>;
+type AdoptHook = SealHook;
 
 /// A `MemStore` whose applies a test can watch, hold, or fail. `before` runs ahead of each apply
 /// and an error from it fails the apply. `after` runs once an apply committed.
@@ -238,10 +240,11 @@ impl Store for HookedStore {
     }
 }
 
-/// `MemTakes` whose `seal` a test can hold or fail.
+/// `MemTakes` whose `seal` and `adopt` a test can hold or fail.
 struct HookedTakes {
     inner: MemTakes,
     seal: Mutex<Option<SealHook>>,
+    adopt: Mutex<Option<AdoptHook>>,
 }
 
 impl HookedTakes {
@@ -250,6 +253,13 @@ impl HookedTakes {
         hook: impl Fn(&RecordingId) -> Result<(), TakeError> + Send + Sync + 'static,
     ) {
         *self.seal.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    fn on_adopt(
+        &self,
+        hook: impl Fn(&RecordingId) -> Result<(), TakeError> + Send + Sync + 'static,
+    ) {
+        *self.adopt.lock().unwrap() = Some(Arc::new(hook));
     }
 }
 
@@ -291,6 +301,16 @@ impl Takes for HookedTakes {
     }
     fn import(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError> {
         self.inner.import(id, source)
+    }
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError> {
+        self.inner.legacy_original(id)
+    }
+    fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
+        let hook = self.adopt.lock().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(id)?;
+        }
+        self.inner.adopt(id)
     }
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
         self.inner.playback_path(id)
@@ -1647,4 +1667,204 @@ fn a_crash_between_putting_the_files_back_and_the_commit_loses_the_recording_at_
     assert_eq!(dory.recovery().deleted_orphans, vec![id.clone()]);
     assert!(rig.takes.stored().unwrap().is_empty());
     assert!(library_is_empty(&dory));
+}
+
+const ORIGINAL_BYTES: &[u8] = b"pretend this is the old app's webm";
+
+impl Rig {
+    /// A recording the old app made: a real file in its folder, and a pointer to it.
+    fn seed_legacy(&self, name: &str) -> (RecordingId, PathBuf) {
+        let id = RecordingId::parse(name).unwrap();
+        let old_app = self.old_app();
+        std::fs::create_dir_all(&old_app).unwrap();
+        let original = old_app.join(format!("{name}.webm"));
+        std::fs::write(&original, ORIGINAL_BYTES).unwrap();
+        let take = self.takes.link_legacy(&id, &original, Ms(20_000)).unwrap();
+        assert_eq!(take.container, TakeContainer::LegacyWebm);
+        let mut row = recording(&id, Some(take));
+        row.layout = ChannelLayout::Mixed;
+        self.store
+            .apply(vec![Change::RecordingCreated(row)])
+            .unwrap();
+        (id, original)
+    }
+
+    fn old_app(&self) -> PathBuf {
+        self._scratch.path().join("old-app")
+    }
+}
+
+fn container_of(dory: &Dory, id: &RecordingId) -> TakeContainer {
+    take_of(dory, id).unwrap().container
+}
+
+#[test]
+fn originals_lists_the_files_recordings_still_read_in_place() {
+    let rig = Rig::new();
+    let (kept, kept_path) = rig.seed_legacy("kept");
+    let (gone, gone_path) = rig.seed_legacy("gone");
+    rig.seed("own");
+    std::fs::remove_file(gone_path).unwrap();
+    let dory = rig.open();
+
+    let originals = dory.library().originals().unwrap();
+    assert_eq!(
+        originals,
+        vec![dory_core::app::Original {
+            id: kept,
+            path: kept_path,
+            bytes: ORIGINAL_BYTES.len() as u64,
+        }]
+    );
+    assert!(!originals.iter().any(|o| o.id == gone));
+}
+
+#[test]
+fn trashing_originals_keeps_every_recording_playable_and_undo_puts_the_files_back() {
+    let rig = Rig::new();
+    let (first, first_path) = rig.seed_legacy("first");
+    let (second, second_path) = rig.seed_legacy("second");
+    let own = rig.seed("own");
+    let dory = rig.open();
+    let library = dory.library();
+
+    let trashed = library.trash_originals().unwrap();
+    assert_eq!(trashed.count(), 2);
+    assert_eq!(trashed.bytes(), 2 * ORIGINAL_BYTES.len() as u64);
+    assert_eq!(trashed.skipped(), 0);
+    assert!(!first_path.exists() && !second_path.exists());
+    assert_eq!(rig.trash.trashed_files().len(), 2);
+
+    for id in [&first, &second] {
+        assert_eq!(container_of(&dory, id), TakeContainer::Flac);
+        assert_eq!(rig.takes.legacy_original(id).unwrap(), None);
+        let clip = rig.takes.clip(id, Channel::Mixed, None).unwrap();
+        assert_eq!(clip.duration, Ms(20_000));
+        assert!(library.player(id).is_ok());
+        assert!(
+            !rig.takes
+                .playback_path(id)
+                .unwrap()
+                .starts_with(rig.old_app())
+        );
+        assert!(
+            !rig.takes.files(id).unwrap().contains(&first_path),
+            "the original was never one of Dory's files"
+        );
+    }
+    assert_eq!(container_of(&dory, &own), TakeContainer::Flac);
+    assert_eq!(library.originals().unwrap(), vec![]);
+    assert_eq!(
+        library.trash_originals().unwrap().count(),
+        0,
+        "a second run finds nothing"
+    );
+
+    library.restore_originals(trashed).unwrap();
+    assert_eq!(std::fs::read(&first_path).unwrap(), ORIGINAL_BYTES);
+    assert_eq!(std::fs::read(&second_path).unwrap(), ORIGINAL_BYTES);
+    assert!(rig.trash.trashed_files().is_empty());
+    for id in [&first, &second] {
+        assert_eq!(container_of(&dory, id), TakeContainer::Flac);
+        assert!(library.player(id).is_ok());
+    }
+}
+
+#[test]
+fn a_recording_with_a_running_job_keeps_its_original() {
+    let rig = Rig::new();
+    let (busy, busy_path) = rig.seed_legacy("busy");
+    let (idle, idle_path) = rig.seed_legacy("idle");
+    rig.transcriber.hold(true);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&busy, Goal::ALL).unwrap();
+    eventually("the engine to run", || rig.transcriber.is_running());
+
+    let trashed = dory.library().trash_originals().unwrap();
+    assert_eq!((trashed.count(), trashed.skipped()), (1, 1));
+    assert!(busy_path.is_file(), "the job is still reading it");
+    assert!(!idle_path.exists());
+    assert_eq!(container_of(&dory, &busy), TakeContainer::LegacyWebm);
+    assert_eq!(container_of(&dory, &idle), TakeContainer::Flac);
+    assert_eq!(
+        dory.library().originals().unwrap().len(),
+        1,
+        "it can be trashed once the job is done"
+    );
+    rig.transcriber.hold(false);
+}
+
+#[test]
+fn a_failing_copy_moves_nothing_to_the_trash() {
+    let rig = Rig::new();
+    let (first, first_path) = rig.seed_legacy("first");
+    let (second, second_path) = rig.seed_legacy("second");
+    let failing = second.clone();
+    rig.hooked_takes.on_adopt(move |id| {
+        if *id == failing {
+            Err(TakeError::ConverterMissing("ffmpeg".into()))
+        } else {
+            Ok(())
+        }
+    });
+    let dory = rig.open();
+
+    assert!(matches!(
+        dory.library().trash_originals(),
+        Err(DoryError::Take(TakeError::ConverterMissing(_)))
+    ));
+    assert!(first_path.is_file() && second_path.is_file());
+    assert!(rig.trash.trashed_files().is_empty());
+    assert_eq!(container_of(&dory, &second), TakeContainer::LegacyWebm);
+    assert!(
+        dory.library().player(&second).is_ok(),
+        "it still plays from the original"
+    );
+    assert_eq!(
+        container_of(&dory, &first),
+        TakeContainer::Flac,
+        "a finished copy stays"
+    );
+}
+
+#[test]
+fn a_trash_that_refuses_leaves_the_originals_in_place() {
+    let rig = Rig::new();
+    let (id, path) = rig.seed_legacy("refused");
+    rig.trash.fail_moves(true);
+    let dory = rig.open();
+
+    assert!(matches!(
+        dory.library().trash_originals(),
+        Err(DoryError::Trash(_))
+    ));
+    assert!(path.is_file());
+    assert!(dory.library().player(&id).is_ok());
+}
+
+#[test]
+fn a_row_left_saying_webm_over_a_copied_take_is_corrected_on_the_next_run() {
+    let rig = Rig::new();
+    let (id, path) = rig.seed_legacy("half");
+    let dory = rig.open();
+    rig.hooked_store.before(|changes| {
+        if changes
+            .iter()
+            .any(|c| matches!(c, Change::RecordingEdited { .. }))
+        {
+            Err(StoreError::Unavailable("the disk is busy".into()))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(
+        dory.library().trash_originals(),
+        Err(DoryError::Store(_))
+    ));
+    assert_eq!(container_of(&dory, &id), TakeContainer::LegacyWebm);
+    assert!(path.is_file() && rig.trash.trashed_files().is_empty());
+
+    rig.hooked_store.before(|_| Ok(()));
+    assert_eq!(dory.library().trash_originals().unwrap().count(), 0);
+    assert_eq!(container_of(&dory, &id), TakeContainer::Flac);
 }

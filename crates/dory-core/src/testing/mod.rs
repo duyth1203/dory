@@ -262,6 +262,8 @@ struct MemTake {
     rate_hz: u32,
     samples: Vec<f32>,
     sealed: bool,
+    /// The old app's file a legacy pointer refers to. Never copied or touched.
+    legacy: Option<PathBuf>,
 }
 
 impl MemTake {
@@ -271,7 +273,9 @@ impl MemTake {
 
     fn info(&self) -> TakeInfo {
         TakeInfo {
-            container: if self.sealed {
+            container: if self.legacy.is_some() {
+                TakeContainer::LegacyWebm
+            } else if self.sealed {
                 TakeContainer::Flac
             } else {
                 TakeContainer::Wav
@@ -305,6 +309,33 @@ impl MemTakes {
     pub fn is_sealed(&self, id: &RecordingId) -> bool {
         let takes = lock(&self.takes);
         self.live(&takes, id).is_some_and(|t| t.sealed)
+    }
+
+    /// Makes `id` a legacy take: a pointer to the real file `original`, which is read in place and
+    /// never listed by [`Takes::files`]. The take is mixed, `duration` long, and silent.
+    pub fn link_legacy(
+        &self,
+        id: &RecordingId,
+        original: &Path,
+        duration: Ms,
+    ) -> Result<TakeInfo, TakeError> {
+        const RATE_HZ: u32 = 16_000;
+        if !original.is_file() {
+            return Err(TakeError::Missing(id.clone()));
+        }
+        let mut takes = lock(&self.takes);
+        self.claim(&takes, id)?;
+        let frames = usize::try_from(duration.0 * u64::from(RATE_HZ) / 1000).unwrap_or(0);
+        let take = MemTake {
+            layout: ChannelLayout::Mixed,
+            rate_hz: RATE_HZ,
+            samples: vec![0.0; frames],
+            sealed: true,
+            legacy: Some(original.to_owned()),
+        };
+        let info = take.info();
+        takes.insert(id.clone(), take);
+        Ok(info)
     }
 
     fn marker(&self, id: &RecordingId) -> Option<PathBuf> {
@@ -347,6 +378,20 @@ impl MemTakes {
         lock(&self.activity).insert((id.clone(), channel), spans);
     }
 
+    /// Like [`MemTakes::with`], but a legacy take whose original is gone is missing, as it is for
+    /// a reader that decodes the original in place.
+    fn readable<T>(
+        &self,
+        id: &RecordingId,
+        f: impl FnOnce(&mut MemTake) -> T,
+    ) -> Result<T, TakeError> {
+        self.with(id, |take| match &take.legacy {
+            Some(original) if !original.is_file() => None,
+            _ => Some(f(take)),
+        })?
+        .ok_or_else(|| TakeError::Missing(id.clone()))
+    }
+
     fn with<T>(&self, id: &RecordingId, f: impl FnOnce(&mut MemTake) -> T) -> Result<T, TakeError> {
         let mut takes = lock(&self.takes);
         let live = self.live(&takes, id).is_some();
@@ -374,6 +419,7 @@ impl Takes for MemTakes {
                 rate_hz,
                 samples: Vec::new(),
                 sealed: false,
+                legacy: None,
             },
         );
         Ok(Box::new(MemTakeWriter {
@@ -397,7 +443,7 @@ impl Takes for MemTakes {
         channel: Channel,
         span: Option<TimeRange>,
     ) -> Result<Clip, TakeError> {
-        let info = self.with(id, |take| {
+        let info = self.readable(id, |take| {
             take.layout
                 .index_of(channel)
                 .map(|_| take.info())
@@ -466,7 +512,29 @@ impl Takes for MemTakes {
 
     fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError> {
         let takes = lock(&self.takes);
-        Ok(self.live(&takes, id).map(MemTake::info))
+        Ok(self
+            .live(&takes, id)
+            .filter(|take| {
+                take.legacy
+                    .as_ref()
+                    .is_none_or(|original| original.is_file())
+            })
+            .map(MemTake::info))
+    }
+
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError> {
+        let takes = lock(&self.takes);
+        Ok(self.live(&takes, id).and_then(|take| take.legacy.clone()))
+    }
+
+    fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
+        self.with(id, |take| match &take.legacy {
+            Some(original) if !original.is_file() => Err(TakeError::Missing(id.clone())),
+            _ => {
+                take.legacy = None;
+                Ok(take.info())
+            }
+        })?
     }
 
     fn import(&self, id: &RecordingId, _source: &Path) -> Result<TakeInfo, TakeError> {
@@ -477,6 +545,7 @@ impl Takes for MemTakes {
             rate_hz: 16_000,
             samples: Vec::new(),
             sealed: true,
+            legacy: None,
         };
         let info = take.info();
         takes.insert(id.clone(), take);
@@ -484,7 +553,11 @@ impl Takes for MemTakes {
     }
 
     fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
-        self.with(id, |_| PathBuf::from(format!("mem/{id}")))
+        self.readable(id, |take| {
+            take.legacy
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("mem/{id}")))
+        })
     }
 
     fn delete(&self, id: &RecordingId) -> Result<(), TakeError> {

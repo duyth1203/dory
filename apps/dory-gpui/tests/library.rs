@@ -1,3 +1,5 @@
+mod common;
+
 use chrono::NaiveDate;
 use dory_core::app::RecorderStatus;
 use dory_core::domain::{Fraction, JobState, Ms, RecordingId, Stage};
@@ -193,103 +195,14 @@ fn search_trims_and_an_empty_search_lists_everything() {
 }
 
 mod window {
-    use std::sync::Arc;
-
-    use dory_core::app::{Dory, Options, Ports};
-    use dory_core::domain::RecordingId;
-    use dory_core::domain::Timestamp;
-    use dory_core::ports::{Change, Store as _};
-    use dory_core::testing::playback::FakePlayback;
-    use dory_core::testing::store::MemStore;
-    use dory_core::testing::{FakeCapture, ManualClock, MemTakes};
     use dory_gpui::app::{AppState, SEARCH_DEBOUNCE};
     use dory_gpui::fixtures::{self, SAMPLES};
     use dory_gpui::library::{Selection, StatusFilter, group_by_date};
-    use dory_gpui::prefs::Prefs;
     use gpui_kit::{
-        AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Role, TestAppContext,
-        WindowBounds, WindowOptions, px, size, test::TestWindowExt as _,
+        AppContext as _, ElementId, Entity, Role, TestAppContext, test::TestWindowExt as _,
     };
 
-    /// A real `Dory` over the core's in-memory store, seeded with the section 6 samples. The
-    /// store runs the same contract suite as SQLite, search included.
-    fn scratch_dir() -> std::path::PathBuf {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "dory-gpui-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).expect("create the scratch dir");
-        dir
-    }
-
-    fn sample_dory() -> Dory {
-        let dir = scratch_dir();
-        let store = Arc::new(MemStore::new());
-        let mut changes = Vec::new();
-        for sample in &SAMPLES {
-            changes.push(Change::RecordingCreated(sample.recording()));
-            if let Some(transcript) = sample.transcript() {
-                changes.push(Change::TranscriptReplaced {
-                    id: sample.id(),
-                    transcript,
-                });
-            }
-            if let Some(summary) = sample.summary() {
-                changes.push(Change::SummaryReplaced {
-                    id: sample.id(),
-                    summary,
-                });
-            }
-        }
-        store.apply(changes).expect("seed the samples");
-        Dory::open(
-            Ports {
-                store,
-                takes: Arc::new(MemTakes::in_dir(&dir)),
-                capture: Arc::new(FakeCapture::new()),
-                playback: Arc::new(FakePlayback::new()),
-                trash: Arc::new(dory_core::testing::FakeTrash::new(&dir)),
-                clock: Arc::new(ManualClock::new(Timestamp(
-                    fixtures::now().timestamp_millis(),
-                ))),
-                stt: Vec::new(),
-                llm: Vec::new(),
-                diar: Vec::new(),
-                guard: None,
-            },
-            Options::default(),
-        )
-        .expect("open Dory on the samples")
-    }
-
-    fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
-        cx.update(gpui_kit::init);
-        let dory = sample_dory();
-        let opened = cx.update(|cx| {
-            let mut state = None;
-            let (window, _) = gpui_kit::open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(Bounds {
-                        origin: Default::default(),
-                        size: size(px(1100.), px(720.)),
-                    })),
-                    ..Default::default()
-                },
-                cx,
-                |window, cx| {
-                    let (app, shell) = dory_gpui::build(dory, Prefs::default(), window, cx);
-                    state = Some(app);
-                    shell
-                },
-            )
-            .expect("open the window");
-            (window, state.expect("the app state"))
-        });
-        cx.run_until_parked();
-        opened
-    }
+    use crate::common::{id_of, open};
 
     fn titles(app: &Entity<AppState>, cx: &mut TestAppContext) -> Vec<String> {
         app.read_with(cx, |app, _| {
@@ -298,10 +211,6 @@ mod window {
                 .map(|(row, _)| row.recording.title.clone().unwrap_or_default())
                 .collect()
         })
-    }
-
-    fn id_of(title: &str) -> RecordingId {
-        SAMPLES.iter().find(|s| s.title == title).unwrap().id()
     }
 
     #[gpui_kit::test]

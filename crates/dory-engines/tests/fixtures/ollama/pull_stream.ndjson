@@ -1,0 +1,8 @@
+{"status":"pulling manifest"}
+{"status":"pulling dc35e8d9c606","digest":"sha256:dc35e8d9c606","total":6600000000,"completed":0}
+{"status":"pulling dc35e8d9c606","digest":"sha256:dc35e8d9c606","total":6600000000,"completed":1650000000}
+{"status":"pulling dc35e8d9c606","digest":"sha256:dc35e8d9c606","total":6600000000,"completed":6600000000}
+{"status":"pulling 4b19ac7dd2fb","digest":"sha256:4b19ac7dd2fb","total":1480,"completed":1480}
+{"status":"verifying sha256 digest"}
+{"status":"writing manifest"}
+{"status":"success"}

@@ -1,0 +1,3 @@
+{"model":"gemma4:e4b","created_at":"2026-11-16T09:00:01.101342Z","message":{"role":"assistant","content":"## Summary"},"done":false}
+{"model":"gemma4:e4b","created_at":"2026-11-16T09:00:01.142518Z","message":{"role":"assistant","content":"\n\nThe team"},"done":false}
+{"error":"llama runner process has terminated: exit status 2"}

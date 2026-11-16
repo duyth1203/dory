@@ -714,6 +714,7 @@ Unproven until P0 runs:
 ## Appendix C. Risks
 
 - **GPUI accessibility bugs (P0, P4, P7).** The owner watches zed issues 66690, 66691, and 66730 and any new AccessKit panic. P4 sets the workspace release profile to `panic = "unwind"` so an AccessKit panic can be caught at the view boundary, and P7 restores `abort` only after its VoiceOver soak passes. Cargo cannot set `panic` per package, so the whole workspace changes together.
+  - P7 found that GPUI Kit 0.9.1's component `Dialog` leaves its accessibility node unnamed, so VoiceOver hears only "dialog". The minimal repro is `docs/plans/upstream/kit-dialog-has-no-accessible-name.md`. It is not filed, because filing is the operator's call. `tests/a11y_tree.rs` keeps it as its one exception and fails once Kit is fixed.
 - **GPUI API churn (P4 to P8).** GPUI Kit made breaking releases from 0.6 to 0.9 between September and November 2026. The owner pins exact versions in `Cargo.lock` and upgrades only in a dedicated PR.
 - **Process tap reliability (P0, P2).** Browser audio may come from helper processes, and a global tap also records notification sounds. P0 lane 8 and P2 lane 2 watch this.
 - **Clock drift between mic and tap (P2).** The two devices run on different clocks. Trunk's aggregate device corrected this, and P2 must do it in software. P2 lane 9 measures it over 2 hours.

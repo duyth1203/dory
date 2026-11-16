@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key><string>com.dory.app</string>
+  <key>CFBundleName</key><string>Dory</string>
+  <key>CFBundleDisplayName</key><string>Dory</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>LSMinimumSystemVersion</key><string>26.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Dory records your voice so it can write a transcript of your meeting on this Mac.</string>
+  <key>NSAudioCaptureUsageDescription</key>
+  <string>Dory records the audio your Mac plays so it can transcribe the other people in your meeting.</string>
+</dict>
+</plist>

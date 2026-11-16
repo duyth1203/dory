@@ -20,21 +20,22 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use dory_core::app::{Dory, Event, RecorderStatus, Trashed};
-use dory_core::domain::{JobId, RecordingId, RecordingQuery, RecordingRow, Settings};
+use dory_core::domain::{Job, JobId, RecordingId, RecordingQuery, RecordingRow, Segment, Settings};
 use dory_core::models::ModelRef;
 use dory_core::ports::capture::{Access, Source};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 pub use player::PlayerHandle;
-pub use record::{Download, ModelInfo};
 pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 
 use self::core::Core;
 pub use self::models::{Originals, count};
+use crate::estimate::{Estimate, Rates};
 use crate::library::{Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal};
 use crate::onboarding::OnboardingStep;
 use crate::prefs::Prefs;
-use crate::processing::{Rate, Run};
+pub use crate::processing::{Download, ModelInfo};
+use crate::processing::{Phase, Run};
 use crate::record_control::Live;
 
 /// How long typing pauses before the search runs.
@@ -86,12 +87,20 @@ pub struct AppState {
     pub prefs: Prefs,
     /// Here rather than in the detail pane, so Command-1 and Command-2 work from any focus.
     pub tab: DetailTab,
+    /// The tab the user last picked, which each selection starts on.
+    chosen_tab: DetailTab,
+    /// The user picked a tab for the selected recording, so processing no longer switches it.
+    tab_chosen: bool,
+    /// The selected recording's phase as last seen, so VoiceOver speaks only when it changes.
+    card: Option<(RecordingId, Phase)>,
     pub sources: Option<Sources>,
     recorder: RecorderStatus,
     /// Droppable `StageProgress`, never stored. Cleared when the job moves on and on `Resync`.
     progress: HashMap<RecordingId, Progress>,
     /// A job never changes recording, so this cache cannot go stale.
     job_owner: HashMap<JobId, RecordingId>,
+    /// The newest progress of jobs whose recording is being looked up.
+    unowned: HashMap<JobId, Progress>,
     session: Option<Entity<Session>>,
     loaded: bool,
     error: Option<SharedString>,
@@ -106,6 +115,8 @@ pub struct AppState {
     /// The recorded time and level, in their own entity so the 10 Hz meter repaints only the
     /// views that show it.
     live: Entity<Live>,
+    /// The recorder's running total of the take, for the card before the take is saved.
+    last_recorded: dory_core::domain::Ms,
     /// Seconds the Undo toast shows while the recorder is in grace. The core owns the deadline.
     grace_left: u8,
     grace_generation: u64,
@@ -113,8 +124,16 @@ pub struct AppState {
     sealing: HashSet<RecordingId>,
     /// The first progress of each running stage, for the time left (UX-12).
     runs: HashMap<RecordingId, Run>,
-    /// How fast this Mac transcribed in this session, for the finish card's estimate.
-    rate: Option<Rate>,
+    /// Each running stage's smoothed time left (UX-12).
+    estimates: HashMap<RecordingId, Estimate>,
+    /// How fast this Mac transcribed in this session at each pace.
+    rates: Rates,
+    /// Running, queued, and blocked jobs in queue order, read with the rows.
+    queue: Vec<Job>,
+    /// Lines the engine wrote for each running job, before the transcript commits (UX-12).
+    drafts: HashMap<JobId, Vec<Segment>>,
+    /// Phases and lines pinned for design previews and the layout checks (`preview_phase`).
+    previews: HashMap<RecordingId, (Phase, Vec<Segment>)>,
     downloads: HashMap<ModelRef, Download>,
     /// Speech and speaker models by id, for "Download <model>".
     models: HashMap<ModelRef, ModelInfo>,
@@ -171,10 +190,14 @@ impl AppState {
             filter: StatusFilter::All,
             prefs,
             tab: DetailTab::Summary,
+            chosen_tab: DetailTab::Summary,
+            tab_chosen: false,
+            card: None,
             sources: None,
             recorder,
             progress: HashMap::new(),
             job_owner: HashMap::new(),
+            unowned: HashMap::new(),
             session: None,
             loaded: false,
             error: None,
@@ -185,11 +208,16 @@ impl AppState {
             rows_generation: 0,
             search_generation: 0,
             live: cx.new(|_| Live::default()),
+            last_recorded: dory_core::domain::Ms(0),
             grace_left: 0,
             grace_generation: 0,
             sealing: HashSet::new(),
             runs: HashMap::new(),
-            rate: None,
+            estimates: HashMap::new(),
+            rates: Rates::default(),
+            queue: Vec::new(),
+            drafts: HashMap::new(),
+            previews: HashMap::new(),
             downloads: HashMap::new(),
             models: HashMap::new(),
             settings: Settings::default(),
@@ -218,11 +246,7 @@ impl AppState {
     }
 
     pub fn status(&self, row: &RecordingRow) -> RowStatus {
-        RowStatus::derive(
-            row,
-            &self.recorder,
-            self.progress.get(&row.recording.id).copied(),
-        )
+        self.phase(row).row()
     }
 
     /// The rows the sidebar shows, in order, after the status filter.
@@ -261,6 +285,9 @@ impl AppState {
         };
         let core = self.core.clone();
         self.session = row.map(|row| cx.new(|cx| Session::new(core, &row, cx)));
+        self.tab_chosen = false;
+        self.tab = self.chosen_tab;
+        self.follow_card();
         cx.emit(AppEvent::SelectionChanged);
         cx.notify();
     }
@@ -322,8 +349,11 @@ impl AppState {
         cx.notify();
     }
 
+    /// The user picks a tab: a click, Command-1, or Command-2.
     pub fn set_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
         self.tab = tab;
+        self.chosen_tab = tab;
+        self.tab_chosen = true;
         cx.notify();
     }
 
@@ -431,7 +461,12 @@ impl AppState {
         self.rows_generation += 1;
         let generation = self.rows_generation;
         let query = self.search.to_query();
-        let list = self.core.run(cx, move |dory| dory.library().list(&query));
+        let list = self.core.run(cx, move |dory| {
+            Ok::<_, dory_core::ports::StoreError>((
+                dory.library().list(&query)?,
+                dory.pipeline().queue()?,
+            ))
+        });
         cx.spawn(async move |this, cx| {
             let rows = list.await;
             let _ = this.update(cx, |state, cx| {
@@ -439,8 +474,9 @@ impl AppState {
                     return;
                 }
                 match rows {
-                    Ok(rows) => {
+                    Ok((rows, queue)) => {
                         let before = std::mem::replace(&mut state.recordings, rows);
+                        state.queue = queue;
                         state.error = None;
                         state.on_rows(&before, cx);
                     }
@@ -484,12 +520,9 @@ impl AppState {
                         self.select(next, cx);
                     }
                 }
-                Event::JobChanged(job) => {
-                    rows = true;
-                    if let Some(owner) = self.job_owner.get(&job) {
-                        self.progress.remove(owner);
-                        self.runs.remove(owner);
-                    }
+                Event::JobChanged(_) => rows = true,
+                Event::DraftSegment { job, segment } => {
+                    self.drafts.entry(job).or_default().push(segment);
                 }
                 Event::StageProgress {
                     job,
@@ -512,6 +545,8 @@ impl AppState {
                 Event::Resync => {
                     self.progress.clear();
                     self.runs.clear();
+                    self.estimates.clear();
+                    self.drafts.clear();
                     let status = self.core.dory().recorder().status();
                     self.on_recorder(status, cx);
                     rows = true;
@@ -528,6 +563,7 @@ impl AppState {
         if rows {
             self.reload(cx);
         }
+        self.follow_card();
         if detail && let Some(session) = &self.session {
             session.update(cx, |session, cx| session.reload(cx));
         }
@@ -541,15 +577,24 @@ impl AppState {
             self.track(owner, progress);
             return;
         }
+        // One lookup per job, and only the newest progress is tracked when it lands: lookups
+        // finish in any order, and an older fraction must not overwrite a newer one.
+        if self.unowned.insert(job, progress).is_some() {
+            return;
+        }
         let lookup = self
             .core
             .run(cx, move |dory| dory.pipeline().job(job).ok().flatten());
         cx.spawn(async move |this, cx| {
-            let Some(found) = lookup.await else { return };
+            let found = lookup.await;
             let _ = this.update(cx, |state, cx| {
-                state.job_owner.insert(job, found.recording.clone());
-                state.track(found.recording, progress);
-                cx.notify();
+                let latest = state.unowned.remove(&job);
+                if let (Some(found), Some(progress)) = (found, latest) {
+                    state.job_owner.insert(job, found.recording.clone());
+                    state.track(found.recording, progress);
+                    state.follow_card();
+                    cx.notify();
+                }
             });
         })
         .detach();

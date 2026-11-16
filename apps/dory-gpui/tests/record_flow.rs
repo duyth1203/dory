@@ -1,26 +1,39 @@
 //! P5's record flow through the window: a real `Dory` over the sample store, the core's scripted
 //! `FakeCapture`, and a `ManualClock` that alone ends the undo grace. The recorder and pipeline
 //! run on their own threads, so each wait polls the window until the state arrives.
+//!
+//! The processing card's states (`docs/design/processing-view.md` section 4) are driven here too:
+//! gates hold the seal, the speech model's load, the engine, and the summary, so each state stays
+//! on screen until the test has read it.
 
 mod common;
 
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use dory_core::app::{Dory, Options, Ports, RecorderStatus};
 use dory_core::domain::{
-    Blocker, Channel, FailureClass, Goal, Job, JobError, JobEvent, JobState, Ms, Priority,
-    RecordingId, Stage, Timestamp,
+    Blocker, Channel, ChannelLayout, FailureClass, Goal, Job, JobError, JobEvent, JobState, Levels,
+    Ms, Priority, RecordingId, Stage, TakeInfo, TimeRange, Timestamp,
 };
-use dory_core::models::{Availability, DiarizationSupport, KindTag, Llm, ModelId, Stt};
-use dory_core::ports::{Change, ModelProvider, Store as _, StoreRead as _};
+use dory_core::models::{
+    Availability, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId, ProviderId, Stt,
+};
+use dory_core::ports::{
+    CancelToken, Change, Clip, CompletionRequest, Conditions, EngineError, LanguageModel,
+    LegacyFile, ModelProvider, Power, ProvisionError, ProvisionSink, SegmentSink, Store as _,
+    StoreRead as _, TakeError, TakeWriter, Takes, TextSink, Thermal, TranscribeOutcome,
+    TranscribeRequest, Transcriber,
+};
 use dory_core::recorder::Limits;
 use dory_core::testing::playback::FakePlayback;
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
-    FakeCapture, FakeLanguageModel, FakeLlmProvider, FakeSttProvider, FakeTranscriber, FakeTrash,
-    ManualClock, MemTakes, Step, llm_entry, stt_entry,
+    FakeCapture, FakeLanguageModel, FakeLlmProvider, FakeMachine, FakeSttProvider, FakeTranscriber,
+    FakeTrash, ManualClock, MemTakes, Step, llm_entry, stt_entry,
 };
 use dory_gpui::app::AppState;
 use dory_gpui::fixtures;
@@ -42,6 +55,9 @@ struct Rig {
     clock: Arc<ManualClock>,
     stt: Vec<Arc<dyn ModelProvider<Stt>>>,
     llm: Vec<Arc<dyn ModelProvider<Llm>>>,
+    machine: Arc<FakeMachine>,
+    /// Holds sealing and fails clips, when a test asks.
+    takes: Arc<GatedTakes>,
 }
 
 impl Rig {
@@ -54,6 +70,8 @@ impl Rig {
             ))),
             stt: Vec::new(),
             llm: Vec::new(),
+            machine: Arc::new(FakeMachine::default()),
+            takes: Arc::new(GatedTakes::default()),
         }
     }
 
@@ -74,10 +92,11 @@ impl Rig {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
+        *self.takes.inner.lock().unwrap() = Some(MemTakes::in_dir(&dir));
         let dory = Dory::open(
             Ports {
                 store: self.store.clone(),
-                takes: Arc::new(MemTakes::in_dir(&dir)),
+                takes: self.takes.clone(),
                 trash: Arc::new(FakeTrash::new(&dir)),
                 capture: self.capture.clone(),
                 playback: Arc::new(FakePlayback::new()),
@@ -85,13 +104,14 @@ impl Rig {
                 stt: self.stt.clone(),
                 llm: self.llm.clone(),
                 diar: Vec::new(),
-                machine: Arc::new(dory_core::testing::FakeMachine::default()),
+                machine: self.machine.clone(),
                 guard: None,
             },
             Options {
                 limits,
                 clock_poll: Duration::from_millis(2),
                 level_every: Duration::from_millis(10),
+                retry_base_ms: 1,
                 ..Options::default()
             },
         )
@@ -104,6 +124,13 @@ impl Rig {
 
     fn jobs(&self, id: &RecordingId) -> Vec<Job> {
         self.store.jobs_for(id).unwrap()
+    }
+}
+
+/// A failed assertion must not leave a take sealing forever, or the window never closes.
+impl Drop for Rig {
+    fn drop(&mut self) {
+        self.takes.seal.release();
     }
 }
 
@@ -348,17 +375,17 @@ fn nothing_is_queued_until_the_grace_ends_and_then_once(cx: &mut TestAppContext)
     settle(cx);
     assert!(rig.jobs(&id).is_empty(), "queued inside the grace window");
     assert_eq!(
-        label(window, "detail-state", cx).as_deref(),
-        Some("Saving the recording"),
-        "the processing view shows from the moment Stop is pressed"
+        label(window, "card-status", cx).as_deref(),
+        Some("Recording stopped. Transcription starts in 5 seconds."),
+        "the card shows from the moment Stop is pressed"
     );
     assert_eq!(
-        label(window, "detail-step-0", cx).as_deref(),
-        Some("Recorded, done")
+        label(window, "card-step-0", cx).as_deref(),
+        Some("Recording, Stopped")
     );
     assert_eq!(
-        label(window, "detail-step-1", cx).as_deref(),
-        Some("Transcript, under way")
+        label(window, "card-step-1", cx).as_deref(),
+        Some("Transcript, Starts in 5 s")
     );
 
     end_grace(&rig, &app, cx);
@@ -504,15 +531,18 @@ fn try_again_retries_a_failed_job(cx: &mut TestAppContext) {
     let (window, app) = rig.open(cx, limits());
     select(&app, &id, cx);
     assert_eq!(
-        label(window, "detail-state", cx).as_deref(),
-        Some("Transcription failed: The upload broke.")
+        label(window, "card-status", cx).as_deref(),
+        Some(
+            "Transcription didn't finish. Your recording is saved, but transcription failed: The upload broke. Try Again."
+        )
     );
-    assert_eq!(
-        label(window, "detail-fix", cx).as_deref(),
-        Some("Try again")
+    assert_eq!(label(window, "card-fix", cx).as_deref(), Some("Try Again"));
+    assert!(
+        !focused(window, "card-fix", cx),
+        "selecting a failed recording leaves focus where it was"
     );
 
-    click(window, "detail-fix", cx);
+    click(window, "card-fix", cx);
     until(
         cx,
         "the retry to run and block on the missing speech model",
@@ -525,11 +555,18 @@ fn try_again_retries_a_failed_job(cx: &mut TestAppContext) {
         },
     );
     until(cx, "the new problem", |cx| {
-        label(window, "detail-state", cx).as_deref() == Some("No speech model is set up.")
+        label(window, "card-status", cx).as_deref()
+            == Some(
+                "Transcription didn't start. Your recording is saved, but no speech model is set up. Choose a Speech Model.",
+            )
     });
     assert_eq!(
-        label(window, "detail-fix", cx).as_deref(),
-        Some("Try again")
+        label(window, "card-fix", cx).as_deref(),
+        Some("Choose a Speech Model…")
+    );
+    assert!(
+        focused(window, "card-fix", cx),
+        "the fix takes focus when the new failure appears"
     );
 }
 
@@ -576,13 +613,20 @@ fn a_missing_summary_model_offers_set_up_summaries(cx: &mut TestAppContext) {
     select(&app, &id, cx);
     until(cx, "the summary's problem", |cx| {
         label(window, "summary-missing", cx).as_deref()
-            == Some("fake/llm is not on this Mac (4000 MB).")
+            == Some("The transcript is ready, but summaries aren't set up.")
     });
     assert_eq!(
-        label(window, "detail-fix", cx).as_deref(),
-        Some("Set up summaries")
+        label(window, "summary-fix", cx).as_deref(),
+        Some("Set Up Summaries")
     );
-    click(window, "detail-fix", cx);
+    assert!(
+        label(window, "player-root", cx).is_some()
+            && label(window, "processing-card", cx).is_none(),
+        "the transcript is ready, so the card is the player and only the Summary tab shows it"
+    );
+    let row = label(window, &format!("row-{id}"), cx).unwrap();
+    assert!(row.ends_with(", Needs attention"), "{row}");
+    click(window, "summary-fix", cx);
     settle(cx);
     assert!(matches!(rig.jobs(&id)[0].state, JobState::Blocked { .. }));
     assert_eq!(llm.provisions(), 0, "the sheet explains, it does not pull");
@@ -597,7 +641,12 @@ fn a_missing_speech_model_downloads_from_the_row_then_runs(cx: &mut TestAppConte
         vec![stt_entry(STT, DiarizationSupport::Native)],
         Arc::new(FakeTranscriber::new().with_segments(Channel::Mic, &[(0, 900, 0, "Hello.")])),
     ));
-    stt.set_availability(&model, Availability::NeedsProvision { bytes: Some(100) });
+    stt.set_availability(
+        &model,
+        Availability::NeedsProvision {
+            bytes: Some(487_211_443),
+        },
+    );
     rig.stt = vec![stt.clone()];
     rig.capture.push_script(seconds(10));
     let (window, app) = rig.open(cx, limits());
@@ -617,17 +666,25 @@ fn a_missing_speech_model_downloads_from_the_row_then_runs(cx: &mut TestAppConte
         })
     });
     until(cx, "the Download button", |cx| {
-        label(window, "detail-fix", cx).as_deref() == Some("Download fake/stt")
+        label(window, "card-fix", cx).as_deref() == Some("Download fake/stt, 487 megabytes")
     });
+    assert_eq!(
+        label(window, "card-headline", cx).as_deref(),
+        Some("Transcription didn't start")
+    );
+    assert!(
+        focused(window, "card-fix", cx),
+        "the fix takes focus when the failure appears"
+    );
     assert_eq!(stt.provisions(), 0, "nothing downloads by itself");
 
-    click(window, "detail-fix", cx);
+    click(window, "card-fix", cx);
     until(cx, "the download", |_| stt.provisions() == 1);
     until(cx, "the job to run once the model is here", |_| {
         rig.jobs(&id)[0].state == JobState::Succeeded
     });
-    until(cx, "the transcript in place of the button", |cx| {
-        label(window, "detail-fix", cx).is_none() && label(window, "transcript-tab", cx).is_some()
+    until(cx, "the player in place of the card", |cx| {
+        label(window, "card-fix", cx).is_none() && label(window, "player-root", cx).is_some()
     });
 }
 
@@ -635,7 +692,7 @@ fn a_missing_speech_model_downloads_from_the_row_then_runs(cx: &mut TestAppConte
 /// Once the take lands, the player shows its length, and the skip buttons can move.
 #[gpui_kit::test]
 fn the_player_learns_the_length_once_the_take_is_saved(cx: &mut TestAppContext) {
-    let rig = Rig::new();
+    let rig = Rig::new().auto_process(false);
     rig.capture.push_script(seconds(30));
     let (window, app) = rig.open(cx, limits());
     record(window, &app, 30, cx);
@@ -644,4 +701,554 @@ fn the_player_learns_the_length_once_the_take_is_saved(cx: &mut TestAppContext) 
     until(cx, "the player to show the take's length", |cx| {
         label(window, "player-time", cx).is_some_and(|t| t.ends_with("/ 0:03"))
     });
+}
+
+/// Holds whatever waits on it until the test releases it, or the work is cancelled.
+#[derive(Default)]
+struct Gate(AtomicBool);
+
+impl Gate {
+    fn held() -> Gate {
+        Gate(AtomicBool::new(true))
+    }
+
+    fn hold(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    fn release(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+
+    fn wait(&self, cancel: Option<&CancelToken>) {
+        while self.0.load(Ordering::SeqCst) && !cancel.is_some_and(CancelToken::is_cancelled) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// `MemTakes` whose sealing a test can hold and whose clips a test can fail.
+#[derive(Default)]
+struct GatedTakes {
+    inner: Mutex<Option<MemTakes>>,
+    seal: Gate,
+    clip_error: Mutex<Option<fn() -> TakeError>>,
+}
+
+impl GatedTakes {
+    fn inner(&self) -> MemTakes {
+        self.inner.lock().unwrap().clone().expect("the rig opened")
+    }
+}
+
+impl Takes for GatedTakes {
+    fn begin(
+        &self,
+        id: &RecordingId,
+        layout: ChannelLayout,
+        rate_hz: u32,
+    ) -> Result<Box<dyn TakeWriter>, TakeError> {
+        self.inner().begin(id, layout, rate_hz)
+    }
+    fn seal(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
+        self.seal.wait(None);
+        self.inner().seal(id)
+    }
+    fn clip(
+        &self,
+        id: &RecordingId,
+        channel: Channel,
+        span: Option<TimeRange>,
+    ) -> Result<Clip, TakeError> {
+        if let Some(error) = *self.clip_error.lock().unwrap() {
+            return Err(error());
+        }
+        self.inner().clip(id, channel, span)
+    }
+    fn slice(&self, whole: &Clip, span: TimeRange) -> Result<Clip, TakeError> {
+        self.inner().slice(whole, span)
+    }
+    fn orphans(&self) -> Result<Vec<RecordingId>, TakeError> {
+        self.inner().orphans()
+    }
+    fn stored(&self) -> Result<Vec<RecordingId>, TakeError> {
+        self.inner().stored()
+    }
+    fn inspect(&self, id: &RecordingId) -> Result<Option<TakeInfo>, TakeError> {
+        self.inner().inspect(id)
+    }
+    fn import(&self, id: &RecordingId, source: &Path) -> Result<TakeInfo, TakeError> {
+        self.inner().import(id, source)
+    }
+    fn legacy_original(&self, id: &RecordingId) -> Result<Option<LegacyFile>, TakeError> {
+        self.inner().legacy_original(id)
+    }
+    fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError> {
+        self.inner().adopt(id)
+    }
+    fn levels(&self, id: &RecordingId) -> Result<Levels, TakeError> {
+        self.inner().levels(id)
+    }
+    fn playback_path(&self, id: &RecordingId) -> Result<PathBuf, TakeError> {
+        self.inner().playback_path(id)
+    }
+    fn delete(&self, id: &RecordingId) -> Result<(), TakeError> {
+        self.inner().delete(id)
+    }
+    fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError> {
+        self.inner().files(id)
+    }
+}
+
+/// A speech model whose load waits at a gate, so "Getting ready to transcribe" stays up.
+struct SlowToLoad {
+    inner: FakeSttProvider,
+    load: Gate,
+}
+
+impl SlowToLoad {
+    fn new(engine: Arc<dyn Transcriber>) -> Arc<SlowToLoad> {
+        Arc::new(SlowToLoad {
+            inner: FakeSttProvider::new(
+                "fake",
+                vec![stt_entry(STT, DiarizationSupport::Native)],
+                engine,
+            ),
+            load: Gate::held(),
+        })
+    }
+}
+
+impl ModelProvider<Stt> for SlowToLoad {
+    fn id(&self) -> ProviderId {
+        self.inner.id()
+    }
+    fn catalog(&self) -> Vec<ModelEntry<Stt>> {
+        self.inner.catalog()
+    }
+    fn availability(&self, model: &ModelId<Stt>) -> Availability {
+        self.inner.availability(model)
+    }
+    fn provision(
+        &self,
+        model: &ModelId<Stt>,
+        progress: &mut dyn ProvisionSink,
+        cancel: &CancelToken,
+    ) -> Result<(), ProvisionError> {
+        self.inner.provision(model, progress, cancel)
+    }
+    fn open(
+        &self,
+        model: &ModelId<Stt>,
+        cancel: &CancelToken,
+    ) -> Result<Arc<dyn Transcriber>, EngineError> {
+        self.load.wait(Some(cancel));
+        self.inner.open(model, cancel)
+    }
+}
+
+/// A summary model that writes only once the test lets it.
+struct SlowSummary {
+    inner: FakeLanguageModel,
+    write: Gate,
+}
+
+impl LanguageModel for SlowSummary {
+    fn count_tokens(&self, text: &str) -> u32 {
+        self.inner.count_tokens(text)
+    }
+
+    fn complete(
+        &self,
+        req: &CompletionRequest<'_>,
+        sink: &mut dyn TextSink,
+        cancel: &CancelToken,
+    ) -> Result<String, EngineError> {
+        self.write.wait(Some(cancel));
+        self.inner.complete(req, sink, cancel)
+    }
+}
+
+/// A speech engine whose runtime dies on every call.
+struct Crashing;
+
+impl Transcriber for Crashing {
+    fn transcribe(
+        &self,
+        _: &TranscribeRequest<'_>,
+        _: &mut dyn SegmentSink,
+        _: &CancelToken,
+    ) -> Result<TranscribeOutcome, EngineError> {
+        Err(EngineError::Crashed("the engine stopped".into()))
+    }
+}
+
+fn row_word(window: AnyWindowHandle, id: &RecordingId, cx: &mut TestAppContext) -> String {
+    label(window, &format!("row-{id}"), cx).unwrap_or_default()
+}
+
+/// A take of two seconds on both channels: the mic says one line, and the system channel is
+/// the engine's second call, which the test can hold at 50%.
+fn speaking_engine() -> Arc<FakeTranscriber> {
+    Arc::new(
+        FakeTranscriber::new().with_segments(Channel::Mic, &[(0, 900, 0, "We ship on Friday.")]),
+    )
+}
+
+#[gpui_kit::test]
+fn the_card_walks_from_stop_to_the_player(cx: &mut TestAppContext) {
+    let mut rig = Rig::new();
+    let engine = speaking_engine();
+    engine.hold_from(1);
+    let stt = SlowToLoad::new(engine.clone());
+    let summary = Arc::new(SlowSummary {
+        inner: FakeLanguageModel::new("## Key points\n- We ship on Friday."),
+        write: Gate::held(),
+    });
+    rig.stt = vec![stt.clone()];
+    rig.llm = vec![Arc::new(FakeLlmProvider::new(
+        "fake",
+        vec![llm_entry(LLM)],
+        summary.clone(),
+    ))];
+    rig.capture.push_script(seconds(20));
+    rig.takes.seal.hold();
+    let (window, app) = rig.open(cx, limits());
+    let id = record(window, &app, 20, cx);
+
+    stop_into_grace(window, &app, cx);
+    assert_eq!(
+        label(window, "card-headline", cx).as_deref(),
+        Some("Recording stopped"),
+        "P1"
+    );
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some("Recording stopped. Transcription starts in 5 seconds.")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", Stopped"));
+    assert_eq!(
+        label(window, "transcript-placeholder", cx).as_deref(),
+        Some("The transcript appears here, line by line, as it is written."),
+        "the Transcript tab waits for the lines"
+    );
+
+    end_grace(&rig, &app, cx);
+    until(cx, "P2", |cx| {
+        label(window, "card-headline", cx).as_deref() == Some("Saving the recording")
+    });
+    assert_eq!(
+        label(window, "card-detail", cx).as_deref(),
+        Some("2 seconds of audio. This takes a moment.")
+    );
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some("Saving the recording.")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", Saving"));
+
+    rig.takes.seal.release();
+    until(cx, "P3b", |cx| {
+        label(window, "card-headline", cx).as_deref() == Some("Getting ready to transcribe")
+    });
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some("Getting ready to transcribe. Loading the speech model.")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", Preparing"));
+
+    stt.load.release();
+    until(cx, "P4 with the first line", |cx| {
+        label(window, "draft-0", cx).is_some()
+            && label(window, "card-status", cx).as_deref()
+                == Some("Transcribing, 50%. Estimating time left.")
+    });
+    assert_eq!(
+        label(window, "card-headline", cx).as_deref(),
+        Some("Transcribing")
+    );
+    assert_eq!(
+        label(window, "card-detail", cx).as_deref(),
+        Some("50% · estimating time left")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", Transcribing 50%"));
+    assert_eq!(
+        label(window, "draft-0", cx).as_deref(),
+        Some("0 seconds, We ship on Friday."),
+        "the line streams into the Transcript tab"
+    );
+    assert_eq!(
+        label(window, "transcript-footnote", cx).as_deref(),
+        Some("Speaker names are added when transcription finishes.")
+    );
+    assert_eq!(
+        label(window, "card-step-1", cx).as_deref(),
+        Some("Transcript, 50%")
+    );
+
+    engine.hold(false);
+    until(cx, "P6", |cx| {
+        label(window, "card-headline", cx).as_deref() == Some("Writing the summary")
+    });
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some("Transcript ready. Writing the summary.")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", Summarizing"));
+    assert_eq!(
+        app.read_with(cx, |app, _| app.tab),
+        dory_gpui::app::DetailTab::Transcript,
+        "the finished transcript is the tab to read while the summary is written"
+    );
+
+    summary.write.release();
+    until(cx, "P7, the player in the same place", |cx| {
+        label(window, "processing-card", cx).is_none() && label(window, "player-root", cx).is_some()
+    });
+    assert!(row_word(window, &id, cx).ends_with(", Done"));
+    assert_eq!(
+        app.read_with(cx, |app, _| app.tab),
+        dory_gpui::app::DetailTab::Summary,
+        "the summary shows once it is ready"
+    );
+    let sentence = app.read_with(cx, |app, _| {
+        let row = app.row(&id).unwrap();
+        app.phase(row)
+            .sentence(&dory_gpui::library::title(row, &chrono::Local))
+    });
+    assert!(
+        sentence.starts_with("Summary ready for "),
+        "what VoiceOver says when it is done: {sentence}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_summary_tab_waits_when_the_user_picked_the_transcript(cx: &mut TestAppContext) {
+    let mut rig = Rig::new();
+    let summary = Arc::new(SlowSummary {
+        inner: FakeLanguageModel::new("## Key points\n- We ship on Friday."),
+        write: Gate::held(),
+    });
+    with_engine(&mut rig, speaking_engine());
+    rig.llm = vec![Arc::new(FakeLlmProvider::new(
+        "fake",
+        vec![llm_entry(LLM)],
+        summary.clone(),
+    ))];
+    rig.capture.push_script(seconds(10));
+    let (window, app) = rig.open(cx, limits());
+    let id = record(window, &app, 10, cx);
+    stop_into_grace(window, &app, cx);
+    end_grace(&rig, &app, cx);
+    until(cx, "P6", |cx| {
+        label(window, "card-headline", cx).as_deref() == Some("Writing the summary")
+    });
+    click(window, "transcript-tab", cx);
+    summary.write.release();
+    until(cx, "P7", |cx| label(window, "player-root", cx).is_some());
+    assert!(row_word(window, &id, cx).ends_with(", Done"));
+    assert_eq!(
+        app.read_with(cx, |app, _| app.tab),
+        dory_gpui::app::DetailTab::Transcript,
+        "the user is reading the transcript, so it stays"
+    );
+}
+
+#[gpui_kit::test]
+fn a_queued_recording_says_how_many_are_ahead_and_moves_to_top(cx: &mut TestAppContext) {
+    let mut rig = Rig::new();
+    let stt = SlowToLoad::new(speaking_engine());
+    rig.stt = vec![stt.clone()];
+    let first = id_of("1:1 with Sam");
+    seed(&rig, &first, Vec::new());
+    rig.capture.push_script(seconds(10));
+    let (window, app) = rig.open(cx, limits());
+    until(cx, "the first job to load the model", |_| {
+        matches!(rig.jobs(&first)[0].state, JobState::Running { .. })
+    });
+    let id = record(window, &app, 10, cx);
+    stop_into_grace(window, &app, cx);
+    end_grace(&rig, &app, cx);
+    until(cx, "P3a", |cx| {
+        label(window, "card-headline", cx).as_deref() == Some("Waiting to transcribe")
+    });
+    assert_eq!(
+        label(window, "card-detail", cx).as_deref(),
+        Some("1 recording is ahead of this one.")
+    );
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some("Waiting to transcribe. 1 recording ahead.")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", Queued, 1 ahead"));
+    assert_eq!(
+        label(window, "card-step-1", cx).as_deref(),
+        Some("Transcript, 1 ahead")
+    );
+
+    click(window, "card-move-to-top", cx);
+    until(cx, "the job to move to the top", |_| {
+        rig.jobs(&id)[0].priority == Priority::Front
+    });
+    stt.load.release();
+}
+
+#[gpui_kit::test]
+fn running_light_says_why_and_use_fast_this_time_overrides_it(cx: &mut TestAppContext) {
+    let mut rig = Rig::new();
+    rig.machine.set(Conditions {
+        power: Power::Battery,
+        low_power: false,
+        thermal: Thermal::Nominal,
+    });
+    let engine = speaking_engine();
+    engine.hold_from(1);
+    rig.stt = vec![Arc::new(FakeSttProvider::new(
+        "fake",
+        vec![stt_entry(STT, DiarizationSupport::Native)],
+        engine.clone(),
+    ))];
+    rig.capture.push_script(seconds(10));
+    let (window, app) = rig.open(cx, limits());
+    let id = record(window, &app, 10, cx);
+    stop_into_grace(window, &app, cx);
+    end_grace(&rig, &app, cx);
+    until(cx, "P5", |cx| label(window, "card-light", cx).is_some());
+    assert_eq!(
+        label(window, "card-light", cx).as_deref(),
+        Some("Light, on battery")
+    );
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some(
+            "Transcribing, 50%. Estimating time left. Running light because the Mac is on battery."
+        )
+    );
+    assert!(row_word(window, &id, cx).ends_with(", 50%, light"));
+    assert_eq!(
+        label(window, "card-step-1", cx).as_deref(),
+        Some("Transcript, 50%, light")
+    );
+
+    click(window, "card-run-fast", cx);
+    until(cx, "the job to run fast", |_| rig.jobs(&id)[0].run_fast);
+    assert_eq!(
+        rig.store.settings().unwrap().processing,
+        dory_core::domain::Processing::Auto,
+        "the setting stays"
+    );
+    engine.hold(false);
+}
+
+/// One UX-13 failure: how the rig makes it, and what the card then says and offers.
+struct Failure {
+    name: &'static str,
+    setup: fn(&mut Rig),
+    headline: &'static str,
+    sentence: &'static str,
+    button: &'static str,
+}
+
+fn with_engine(rig: &mut Rig, engine: Arc<dyn Transcriber>) {
+    rig.stt = vec![Arc::new(FakeSttProvider::new(
+        "fake",
+        vec![stt_entry(STT, DiarizationSupport::Native)],
+        engine,
+    ))];
+}
+
+#[gpui_kit::test]
+fn each_failure_says_what_to_do_and_its_fix_takes_focus(cx: &mut TestAppContext) {
+    let failures = [
+        Failure {
+            name: "speech model missing",
+            setup: |rig| {
+                let stt = Arc::new(FakeSttProvider::new(
+                    "fake",
+                    vec![stt_entry(STT, DiarizationSupport::Native)],
+                    Arc::new(FakeTranscriber::new()),
+                ));
+                stt.set_availability(
+                    &STT.parse().unwrap(),
+                    Availability::NeedsProvision {
+                        bytes: Some(487_211_443),
+                    },
+                );
+                rig.stt = vec![stt];
+            },
+            headline: "Transcription didn't start",
+            sentence: "Transcription didn't start. Your recording is saved, but the speech model isn't on this Mac. Download fake/stt, 487 megabytes.",
+            button: "Download fake/stt, 487 megabytes",
+        },
+        Failure {
+            name: "no speech model",
+            setup: |rig| rig.stt = Vec::new(),
+            headline: "Transcription didn't start",
+            sentence: "Transcription didn't start. Your recording is saved, but no speech model is set up. Choose a Speech Model.",
+            button: "Choose a Speech Model…",
+        },
+        Failure {
+            name: "disk full",
+            setup: |rig| {
+                with_engine(rig, Arc::new(FakeTranscriber::new()));
+                *rig.takes.clip_error.lock().unwrap() = Some(|| TakeError::DiskFull);
+            },
+            headline: "Transcription didn't finish",
+            sentence: "Transcription didn't finish. Your recording is saved, but there isn't enough space to transcribe it. Free Up Space.",
+            button: "Free Up Space…",
+        },
+        Failure {
+            name: "transcriber crashed",
+            setup: |rig| with_engine(rig, Arc::new(Crashing)),
+            headline: "Transcription didn't finish",
+            sentence: "Transcription didn't finish. Transcription stopped partway. Your recording is saved. Try Again.",
+            button: "Try Again",
+        },
+        Failure {
+            name: "audio unreadable",
+            setup: |rig| {
+                with_engine(rig, Arc::new(FakeTranscriber::new()));
+                *rig.takes.clip_error.lock().unwrap() =
+                    Some(|| TakeError::Decode("the file is cut short".into()));
+            },
+            headline: "Can't read the audio",
+            sentence: "Can't read the audio. This recording's audio can't be read. Show in Finder.",
+            button: "Show in Finder",
+        },
+    ];
+    for failure in failures {
+        let mut rig = Rig::new();
+        (failure.setup)(&mut rig);
+        rig.capture.push_script(seconds(10));
+        let (window, app) = rig.open(cx, limits());
+        let id = record(window, &app, 10, cx);
+        stop_into_grace(window, &app, cx);
+        end_grace(&rig, &app, cx);
+        let name = failure.name;
+        until(cx, name, |cx| {
+            // Retries wait out a backoff on the manual clock.
+            rig.clock.advance_ms(60_000);
+            label(window, "card-fix", cx).is_some()
+        });
+        assert_eq!(
+            label(window, "card-headline", cx).as_deref(),
+            Some(failure.headline),
+            "{name}"
+        );
+        assert_eq!(
+            label(window, "card-status", cx).as_deref(),
+            Some(failure.sentence),
+            "{name}"
+        );
+        assert_eq!(
+            label(window, "card-fix", cx).as_deref(),
+            Some(failure.button),
+            "{name}"
+        );
+        assert!(focused(window, "card-fix", cx), "{name}: the fix has focus");
+        assert!(
+            row_word(window, &id, cx).ends_with(", Needs attention"),
+            "{name}"
+        );
+    }
 }

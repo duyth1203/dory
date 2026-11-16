@@ -1,6 +1,11 @@
 //! The inset sidebar panel (UX-1, UX-25): search, the status filter, and the recordings grouped
 //! by date. It reads `AppState` and writes only through its methods.
 //!
+//! Each row has two lines (`docs/design/processing-view.md` section 4): the title, then the date
+//! and duration on the left with the status glyph and word on the right. The row is at least
+//! 52 pt tall and grows with the text. The title truncates up to 125% text and wraps above it;
+//! the status word never truncates, so the title gives way first.
+//!
 //! The list is one Tab stop. Up and Down move the selection, and the selected row is the list's
 //! active descendant, so VoiceOver follows the selection the way it does in a native source
 //! list. With focus in the list the selected row is `accent`-filled with an `on_accent` ring;
@@ -21,10 +26,11 @@ use gpui_kit::{
 use crate::a11y;
 use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
 use crate::app::AppState;
-use crate::library::{self, DateGroup, Glyph, RowStatus, Selection, StatusFilter};
+use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::menus;
 use crate::prefs;
 use crate::theme::Theme;
+use crate::{glyphs, motion};
 
 pub struct Sidebar {
     app: Entity<AppState>,
@@ -94,6 +100,9 @@ impl Sidebar {
     /// The group headers and rows, and the selected row's index among them.
     fn rows(&self, window: &Window, cx: &mut Context<Self>) -> (Vec<AnyElement>, Option<usize>) {
         let theme = Theme::get(cx);
+        let loops = motion::looping(window, cx);
+        let at = loops.then(motion::clock_ms);
+        let mut breathing = false;
         let app = self.app.read(cx);
         let now = Local::now();
         let today = now.date_naive();
@@ -139,7 +148,8 @@ impl Sidebar {
                 }
                 let filled = is_selected && list_focused;
                 let status = statuses[&id];
-                let words = app.status_text(row);
+                let words = status.label();
+                breathing |= status.glyph() == Glyph::Dots || status.glyph() == Glyph::DotsCircle;
                 let title = library::title(row, &now.timezone());
                 let meta = library::row_meta(row, group, &now);
                 let spoken_time = library::local(row.recording.created_at, &now.timezone())
@@ -147,9 +157,8 @@ impl Sidebar {
                     .to_string();
                 let label = match row.recording.take {
                     Some(take) => format!(
-                        "{title}, {spoken_time}, {}, {}",
-                        a11y::spoken_duration(take.duration),
-                        words
+                        "{title}, {spoken_time}, {}, {words}",
+                        library::short_duration(take.duration),
                     ),
                     None => format!("{title}, {spoken_time}, {words}"),
                 };
@@ -173,9 +182,11 @@ impl Sidebar {
                     .when(is_selected, |row| row.aria_active_descendant())
                     .flex()
                     .flex_col()
+                    .justify_center()
                     .gap(px(2.))
+                    .min_h(px(52.))
                     .px(px(12.))
-                    .py(px(10.))
+                    .py(px(7.))
                     .rounded(px(8.))
                     .border_2()
                     .border_color(if filled {
@@ -194,26 +205,41 @@ impl Sidebar {
                     .child(
                         div()
                             .text_size(theme.text(14.))
+                            .line_height(gpui_kit::relative(1.25))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(fg)
-                            .truncate()
+                            .when(theme.text_scale <= 1.25, |title| title.truncate())
                             .child(title),
                     )
-                    .child(div().text_size(theme.text(12.)).text_color(fg2).child(meta))
                     .child(
                         div()
                             .flex()
-                            .gap(px(4.))
+                            .flex_wrap()
+                            .items_center()
+                            .justify_between()
+                            .gap_x(px(8.))
                             .text_size(theme.text(12.))
                             .text_color(fg2)
-                            .child(div().text_color(glyph_color).child(glyph(status)))
-                            .child(words),
+                            .child(div().min_w_0().child(meta))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_none()
+                                    .items_center()
+                                    .gap(px(4.))
+                                    .whitespace_nowrap()
+                                    .child(glyphs::row(status.glyph(), glyph_color, 12., at))
+                                    .child(words),
+                            ),
                     )
                     .context_menu(move |menu, window, cx| {
                         menus::recording_menu(menu, &menu_id, window, cx)
                     });
                 children.push(row_el.into_any_element());
             }
+        }
+        if breathing && loops {
+            window.request_animation_frame();
         }
         (children, selected_ix)
     }
@@ -230,18 +256,6 @@ fn group_header(group: DateGroup, today: chrono::NaiveDate, theme: &Theme) -> im
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.text_secondary)
         .child(label)
-}
-
-/// Text glyphs until the app ships its own icon set. Each one always sits next to its word.
-fn glyph(status: RowStatus) -> &'static str {
-    match status.glyph() {
-        Glyph::Dot => "●",
-        Glyph::Doc => "▤",
-        Glyph::Clock => "◷",
-        Glyph::Ring(_) => "◔",
-        Glyph::Check => "✓",
-        Glyph::Triangle => "▲",
-    }
 }
 
 impl Render for Sidebar {

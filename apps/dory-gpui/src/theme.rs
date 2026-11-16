@@ -38,6 +38,9 @@ pub struct Theme {
     pub on_accent: Hsla,
     pub selection_inactive: Hsla,
     pub wave_rest: Hsla,
+    /// Bars transcription has passed (processing view). `accent` in light; in dark, the accent
+    /// lightened until it reaches 3 to 1 on `card_bg`.
+    pub wave_done: Hsla,
     /// The waveform's empty track, under the bars.
     pub wave_track: Hsla,
     pub record_red: Hsla,
@@ -45,6 +48,9 @@ pub struct Theme {
     pub on_record: Hsla,
     pub record_glyph: Hsla,
     pub attention: Hsla,
+    /// The processing card's border when it failed: always next to the triangle and the words,
+    /// never instead of them. Increase Contrast draws it in `attention`.
+    pub attention_border: Hsla,
     /// Text on the `attention` pill when 5 minutes are left.
     pub on_attention: Hsla,
     /// The meter bars that are not lit, on the pill.
@@ -93,6 +99,9 @@ pub const DEFAULT_ACCENT_DARK: u32 = 0x0A84FF;
 pub const MIN_CONTRAST: f32 = 4.5;
 /// WCAG 2.2 AA for focus rings, borders that mark a control, and graphics (1.4.11).
 pub const MIN_NON_TEXT_CONTRAST: f32 = 3.0;
+
+/// The failed card's border is extra to its glyph and words, so it only has to be visible.
+pub const ATTENTION_BORDER_MIN: f32 = 1.5;
 
 /// A11Y-7's steps, smallest to largest.
 pub const TEXT_SCALES: [f32; 7] = [0.85, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0];
@@ -154,6 +163,7 @@ struct Base {
     record_red: u32,
     record_glyph: u32,
     attention: u32,
+    attention_border: u32,
     avatar_bg: u32,
     toast_bg: u32,
     menu_bg: u32,
@@ -178,6 +188,7 @@ const LIGHT: Base = Base {
     record_red: 0xD70015,
     record_glyph: 0xD70015,
     attention: 0xA35400,
+    attention_border: 0xE2B98A,
     avatar_bg: 0xE3E7F0,
     toast_bg: 0x2C2D31,
     menu_bg: 0xFFFFFF,
@@ -202,6 +213,7 @@ const DARK: Base = Base {
     record_red: 0xE0303A,
     record_glyph: 0xFF6961,
     attention: 0xFFB340,
+    attention_border: 0x8A6220,
     avatar_bg: 0x323A52,
     toast_bg: 0x3A3B41,
     menu_bg: 0x2C2D33,
@@ -253,6 +265,11 @@ impl Theme {
             MIN_NON_TEXT_CONTRAST
         };
         let wave_rest = with_contrast_all(c(base.wave_rest), &[card_bg], wave_floor);
+        let wave_done = with_contrast_all(
+            if dark { system_accent } else { accent },
+            &[card_bg],
+            wave_floor,
+        );
         let toast_bg = c(base.toast_bg);
         let toast_text = c(0xFFFFFF);
         Theme {
@@ -281,6 +298,7 @@ impl Theme {
             on_accent,
             selection_inactive,
             wave_rest,
+            wave_done,
             wave_track: if high {
                 card_bg
             } else {
@@ -290,6 +308,11 @@ impl Theme {
             on_record: readable_on(record_red),
             record_glyph: with_contrast_all(c(base.record_glyph), &reading, MIN_CONTRAST),
             attention,
+            attention_border: if high {
+                attention
+            } else {
+                c(base.attention_border)
+            },
             on_attention: readable_on(attention),
             meter_off: blend(readable_on(record_red), record_red, 0.4),
             playing_bg,
@@ -421,9 +444,22 @@ impl Theme {
             text("text on avatar_bg", self.text, self.avatar_bg),
             graphic("wave_rest on card_bg", self.wave_rest, self.card_bg),
             graphic("accent wave on card_bg", self.accent, self.card_bg),
+            graphic("wave_done on card_bg", self.wave_done, self.card_bg),
             graphic("playhead on card_bg", self.text, self.card_bg),
             graphic("record dot on control_bg", self.record_red, self.control_bg),
         ]);
+        pairs.push(Pair {
+            name: "attention_border on card_bg".into(),
+            fg: self.attention_border,
+            bg: self.card_bg,
+            // It only adds to the triangle and the words, so it needs to be seen, not read.
+            // Increase Contrast holds it to the full graphics floor.
+            min: if self.high_contrast {
+                MIN_NON_TEXT_CONTRAST
+            } else {
+                ATTENTION_BORDER_MIN
+            },
+        });
         if self.high_contrast {
             for (bg_name, bg) in [
                 ("window_bg", self.window_bg),
@@ -464,6 +500,11 @@ pub fn sync(cx: &mut App) {
         kit.muted_foreground = theme.text_secondary;
     }
     cx.refresh_windows();
+}
+
+/// Tabular figures, so times and percents keep their width as they count (handoff section 2).
+pub fn tabular() -> gpui_kit::FontFeatures {
+    gpui_kit::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
 /// Changes one input of the theme and rebuilds it.

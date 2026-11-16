@@ -3,9 +3,9 @@
 //! store, so every rule is tested without a window.
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone};
-use dory_core::app::{Budget, RecorderStatus};
+use dory_core::app::Budget;
 use dory_core::domain::{
-    Fraction, JobState, Ms, RecordingId, RecordingQuery, RecordingRow, Stage, Timestamp,
+    Fraction, Ms, RecordingId, RecordingQuery, RecordingRow, Stage, Timestamp,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -82,14 +82,9 @@ impl StatusFilter {
     pub fn admits(self, status: RowStatus) -> bool {
         match self {
             StatusFilter::All => true,
-            StatusFilter::Processing => matches!(
-                status,
-                RowStatus::Recording
-                    | RowStatus::ReadyToTranscribe
-                    | RowStatus::Queued
-                    | RowStatus::Transcribing(_)
-                    | RowStatus::Summarizing
-            ),
+            StatusFilter::Processing => {
+                !matches!(status, RowStatus::NeedsAttention | RowStatus::Done)
+            }
             StatusFilter::NeedsAttention => status == RowStatus::NeedsAttention,
             StatusFilter::Done => status == RowStatus::Done,
         }
@@ -119,14 +114,27 @@ pub struct Progress {
     pub budget: Option<Budget>,
 }
 
-/// The status a sidebar row shows: always a glyph and a word (A11Y-8).
+/// The status a sidebar row shows: always a glyph and a word (A11Y-8), in the short forms of
+/// `docs/design/processing-view.md` section 4. `processing::Phase::row` derives it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowStatus {
     Recording,
     ReadyToTranscribe,
-    Queued,
-    /// `None` until the first progress event arrives.
-    Transcribing(Option<Percent>),
+    /// P1, the Undo window.
+    Stopped,
+    /// P2.
+    Saving,
+    /// P3a.
+    Queued {
+        ahead: usize,
+    },
+    /// P3b.
+    Preparing,
+    /// P4, and P5 when `light`.
+    Transcribing {
+        percent: Percent,
+        light: bool,
+    },
     Summarizing,
     Done,
     NeedsAttention,
@@ -136,8 +144,12 @@ pub enum RowStatus {
 pub enum Glyph {
     Dot,
     Doc,
+    StopCircle,
+    /// Three dots in a circle: saving.
+    DotsCircle,
     Clock,
-    Ring(Option<Percent>),
+    /// Three dots that breathe: under way.
+    Dots,
     Check,
     Triangle,
 }
@@ -152,42 +164,23 @@ pub enum Tone {
 }
 
 impl RowStatus {
-    pub fn derive(
-        row: &RecordingRow,
-        recorder: &RecorderStatus,
-        progress: Option<Progress>,
-    ) -> RowStatus {
-        let id = &row.recording.id;
-        if matches!(recorder, RecorderStatus::Recording { id: r, .. } | RecorderStatus::Paused { id: r, .. } if r == id)
-        {
-            return RowStatus::Recording;
-        }
-        match &row.job {
-            Some(JobState::Queued) => RowStatus::Queued,
-            Some(JobState::Running {
-                stage: Stage::Transcribe,
-            }) => RowStatus::Transcribing(
-                progress
-                    .filter(|p| p.stage == Stage::Transcribe)
-                    .map(|p| Percent::of(p.fraction)),
-            ),
-            Some(JobState::Running {
-                stage: Stage::Summarize,
-            }) => RowStatus::Summarizing,
-            Some(JobState::Blocked { .. } | JobState::Failed { .. }) => RowStatus::NeedsAttention,
-            Some(JobState::Succeeded) => RowStatus::Done,
-            Some(JobState::Cancelled) | None if row.has_transcript => RowStatus::Done,
-            Some(JobState::Cancelled) | None => RowStatus::ReadyToTranscribe,
-        }
-    }
-
     pub fn label(self) -> String {
         match self {
             RowStatus::Recording => "Recording".into(),
             RowStatus::ReadyToTranscribe => "Ready to transcribe".into(),
-            RowStatus::Queued => "Queued".into(),
-            RowStatus::Transcribing(None) => "Transcribing".into(),
-            RowStatus::Transcribing(Some(p)) => format!("Transcribing, {}%", p.get()),
+            RowStatus::Stopped => "Stopped".into(),
+            RowStatus::Saving => "Saving".into(),
+            RowStatus::Queued { ahead: 0 } => "Queued".into(),
+            RowStatus::Queued { ahead } => format!("Queued, {ahead} ahead"),
+            RowStatus::Preparing => "Preparing".into(),
+            RowStatus::Transcribing {
+                percent,
+                light: false,
+            } => format!("Transcribing {}%", percent.get()),
+            RowStatus::Transcribing {
+                percent,
+                light: true,
+            } => format!("{}%, light", percent.get()),
             RowStatus::Summarizing => "Summarizing".into(),
             RowStatus::Done => "Done".into(),
             RowStatus::NeedsAttention => "Needs attention".into(),
@@ -198,9 +191,12 @@ impl RowStatus {
         match self {
             RowStatus::Recording => Glyph::Dot,
             RowStatus::ReadyToTranscribe => Glyph::Doc,
-            RowStatus::Queued => Glyph::Clock,
-            RowStatus::Transcribing(p) => Glyph::Ring(p),
-            RowStatus::Summarizing => Glyph::Ring(None),
+            RowStatus::Stopped => Glyph::StopCircle,
+            RowStatus::Saving => Glyph::DotsCircle,
+            RowStatus::Queued { .. } => Glyph::Clock,
+            RowStatus::Preparing | RowStatus::Transcribing { .. } | RowStatus::Summarizing => {
+                Glyph::Dots
+            }
             RowStatus::Done => Glyph::Check,
             RowStatus::NeedsAttention => Glyph::Triangle,
         }
@@ -209,9 +205,15 @@ impl RowStatus {
     pub fn tone(self) -> Tone {
         match self {
             RowStatus::Recording => Tone::Record,
-            RowStatus::Transcribing(_) | RowStatus::Summarizing => Tone::Accent,
+            RowStatus::Saving
+            | RowStatus::Preparing
+            | RowStatus::Transcribing { .. }
+            | RowStatus::Summarizing => Tone::Accent,
             RowStatus::NeedsAttention => Tone::Attention,
-            RowStatus::ReadyToTranscribe | RowStatus::Queued | RowStatus::Done => Tone::Secondary,
+            RowStatus::ReadyToTranscribe
+            | RowStatus::Stopped
+            | RowStatus::Queued { .. }
+            | RowStatus::Done => Tone::Secondary,
         }
     }
 }

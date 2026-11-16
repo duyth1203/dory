@@ -12,8 +12,8 @@
 
 use dory_core::domain::Ms;
 use gpui_kit::{
-    AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Role, SharedString, Stateful,
+    AccessibleAction, AnyElement, App, Div, ElementId, FocusHandle, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, Role, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
     prelude::FluentBuilder as _, px, transparent_black,
 };
@@ -66,6 +66,19 @@ pub fn tab(
     theme: &Theme,
     on_select: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> Node {
+    tab_with(id, label, None, selected, focus, theme, on_select)
+}
+
+/// A [`tab`] with a glyph before its label, such as the dots while the summary is written.
+pub fn tab_with(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    leading: Option<AnyElement>,
+    selected: bool,
+    focus: &FocusHandle,
+    theme: &Theme,
+    on_select: impl Fn(&mut Window, &mut App) + Clone + 'static,
+) -> Node {
     let label: SharedString = label.into();
     focusable(node(id, Role::Tab, label.clone()), focus, theme, false)
         .aria_selected(selected)
@@ -81,7 +94,16 @@ pub fn tab(
         .when(selected, |tab| {
             tab.font_weight(gpui_kit::FontWeight::SEMIBOLD)
         })
-        .child(div().pt(px(4.)).child(label))
+        .child(match leading {
+            Some(leading) => div()
+                .pt(px(4.))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(leading)
+                .child(label),
+            None => div().pt(px(4.)).child(label),
+        })
         .child(
             div()
                 .mt(px(4.))

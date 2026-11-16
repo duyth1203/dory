@@ -2,8 +2,14 @@
 //!
 //! Inside the shell's centered 720 pt column, top to bottom: the editable title (30 bold, saved
 //! with `Session::set_title`), the metadata line (date, duration, detected languages, layout; 14
-//! secondary), the player, then [`Body`]: the tab row and tab content, or the state that takes
-//! their place. The page scrolls as one surface, the shell's.
+//! secondary), the card (the processing card from Stop, then the player in the same place, see
+//! `player_view`), then [`Body`]: the tab row and tab content, or the state that takes their
+//! place. The page scrolls as one surface, the shell's.
+//!
+//! While a recording is processed, the Transcript tab shows a placeholder, then the lines the
+//! engine writes for this recording as they arrive, with a footnote; the Summary tab says when the
+//! summary comes, and shows the dots glyph while it is written. `AppState` picks the tab: the
+//! transcript while it is being written, then the summary, unless the user picked one.
 //!
 //! The player card docks to a slim bar 14 pt above the column's bottom edge once it scrolls out
 //! of view, and the tab row sticks to the top once it would scroll off, showing the title on its
@@ -17,79 +23,67 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Instant;
 
 use chrono::{Local, TimeZone};
 use dory_core::domain::{
-    ChannelLayout, Goal, JobState, Recording, RecordingId, RecordingRow, SummaryFlag, Transcript,
+    ChannelLayout, Goal, Recording, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
+    Transcript,
 };
-use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
-    Anchor, AnchoredPositionMode, Animation, AnimationExt as _, AnyElement, App, AppContext as _,
-    Bounds, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Pixels, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored,
-    canvas, deferred, div, ease_in_out, point, prelude::FluentBuilder as _, px, relative,
+    Anchor, AnchoredPositionMode, AnyElement, App, AppContext as _, Bounds, Context, Entity,
+    FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Pixels, Render, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, WeakEntity, Window, anchored, canvas, deferred, div, point,
+    prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
 use crate::actions::{CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText};
 use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
-use crate::library::{self, RowStatus};
+use crate::library;
 use crate::menus;
+use crate::motion::{self, ease_standard, elapsed};
 use crate::player_view::PlayerView;
-use crate::processing::Fix;
+use crate::processing::{self, Fix, Phase};
 use crate::summary_view;
 use crate::theme::Theme;
 use crate::transcript_view::TranscriptView;
+use crate::{glyphs, set_up_summaries};
 
-pub use crate::processing::Problem;
-
-/// What the page shows under the player.
+/// What the page shows under the card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Body {
+    /// Still recording: the transcript starts after Stop.
+    Recording,
     /// No frames landed, so there is nothing to play or transcribe.
     NoAudio,
-    /// Recording, queued, or transcribing, with no transcript yet (UX-11, UX-12).
-    Processing(RowStatus),
-    /// Stopped and not yet saved: the undo grace, then sealing the take.
-    Saving,
-    /// The job stopped before a transcript existed.
-    NeedsAttention(Problem),
     /// Audio and no job: the finish card (UX-11).
     Finish,
     /// Transcribed, but the transcript is empty and there is no summary.
     NothingSaid,
+    /// The tab row and its content, from Stop on.
     Tabs,
 }
 
 impl Body {
-    /// `job` and `status` are the selected row's; `None` when the row is outside the list.
-    /// `saving` is `AppState::is_saving` for the recording.
-    pub fn derive(
-        detail: &Detail,
-        job: Option<&JobState>,
-        status: Option<RowStatus>,
-        saving: bool,
-    ) -> Body {
-        if status == Some(RowStatus::Recording) {
-            return Body::Processing(RowStatus::Recording);
-        }
-        if saving {
-            return Body::Saving;
+    /// `phase` is the selected row's; `None` when the row is outside the list.
+    pub fn derive(detail: &Detail, phase: Option<&Phase>) -> Body {
+        match phase {
+            Some(Phase::Recording) => return Body::Recording,
+            Some(phase) if phase.is_processing() => return Body::Tabs,
+            _ => {}
         }
         if detail.recording.take.is_none() {
             return Body::NoAudio;
         }
         let Some(transcript) = &detail.transcript else {
-            if let Some(problem) = job.and_then(Problem::of) {
-                return Body::NeedsAttention(problem);
-            }
-            return match status {
-                Some(s @ (RowStatus::Queued | RowStatus::Transcribing(_))) => Body::Processing(s),
+            return match phase {
+                Some(Phase::Failed(_)) => Body::Tabs,
                 _ => Body::Finish,
             };
         };
@@ -181,10 +175,6 @@ pub fn language_name(tag: &dory_core::domain::LangTag) -> String {
         .map_or_else(|| tag.to_string(), |(_, name)| (*name).to_owned())
 }
 
-/// UX-17: a recording made before its speech model is on this Mac is kept, not failed.
-pub const WAITS_FOR_MODEL: &str =
-    "The recording is saved and waits in the queue. It transcribes once the model is on this Mac.";
-
 /// Where the column, the player card, and the tab row sat in the last prepaint.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Pinning {
@@ -227,6 +217,8 @@ pub struct DetailPane {
     fix_focus: FocusHandle,
     /// The finish card's "Always do this when I stop".
     always: bool,
+    /// When each streamed line arrived, in order, for its fade in.
+    arrivals: Vec<Instant>,
     /// Set when this recording's stop is saved; the finish card takes focus once it shows.
     focus_finish: bool,
 }
@@ -248,7 +240,7 @@ impl DetailPane {
         })
         .detach();
         let handle = session.read(cx).player().clone();
-        let player = cx.new(|cx| PlayerView::new(handle, cx));
+        let player = cx.new(|cx| PlayerView::new(handle, app.clone(), cx));
         let transcript = cx.new(|cx| TranscriptView::new(session.clone(), window, cx));
         Self {
             app,
@@ -265,6 +257,7 @@ impl DetailPane {
             always_focus: cx.focus_handle(),
             fix_focus: cx.focus_handle(),
             always: false,
+            arrivals: Vec::new(),
             focus_finish: false,
         }
     }
@@ -424,13 +417,19 @@ impl DetailPane {
         tab: DetailTab,
         title: Option<String>,
         detail: &Detail,
+        summarizing: Option<Option<u64>>,
         theme: &Theme,
     ) -> AnyElement {
-        let tab_button = |id: &'static str, label: &'static str, which: DetailTab, ix: usize| {
+        let tab_button = |id: &'static str,
+                          label: &'static str,
+                          which: DetailTab,
+                          ix: usize,
+                          leading: Option<AnyElement>| {
             let app = self.app.clone();
-            a11y::tab(
+            a11y::tab_with(
                 id,
                 label,
+                leading,
                 tab == which,
                 &self.tab_focus[ix],
                 theme,
@@ -438,6 +437,8 @@ impl DetailPane {
             )
             .min_h(theme.text(34.))
         };
+        let dots =
+            summarizing.map(|at| glyphs::dots(theme.accent_text, 14., at).into_any_element());
         let (copy_label, copy_name, copy): (&str, &str, Box<dyn gpui_kit::Action>) = match tab {
             DetailTab::Summary => ("Copy", "Copy summary", Box::new(CopySummary)),
             DetailTab::Transcript => (
@@ -503,12 +504,19 @@ impl DetailPane {
                 a11y::node("detail-tabs", Role::TabList, "Recording views")
                     .flex()
                     .gap(px(16.))
-                    .child(tab_button("summary-tab", "Summary", DetailTab::Summary, 0))
+                    .child(tab_button(
+                        "summary-tab",
+                        "Summary",
+                        DetailTab::Summary,
+                        0,
+                        dots,
+                    ))
                     .child(tab_button(
                         "transcript-tab",
                         "Transcript",
                         DetailTab::Transcript,
                         1,
+                        None,
                     )),
             )
             .child(div().flex_1())
@@ -547,164 +555,6 @@ fn state(
                 .text_color(theme.text_secondary)
                 .child(fix)
         }))
-}
-
-/// `text` is `AppState::status_text`, so the detail and the row say the same (UX-12).
-/// Where a recording is on its way from Stop to a transcript. The detail pane shows the same
-/// processing view through all of it, so Stop never leaves a quiet gap (UX-12).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stage {
-    Recording,
-    /// The Undo window, then saving the take.
-    Saving,
-    /// Queued behind other jobs, or loading the speech model.
-    Waiting,
-    Transcribing(Option<u8>),
-}
-
-impl Stage {
-    pub fn of(status: RowStatus) -> Stage {
-        match status {
-            RowStatus::Recording => Stage::Recording,
-            RowStatus::Transcribing(p) => Stage::Transcribing(p.map(|p| p.get())),
-            _ => Stage::Waiting,
-        }
-    }
-
-    /// The one line under the steps, which VoiceOver reads as the status.
-    pub fn line(self) -> String {
-        match self {
-            Stage::Recording => "Recording".into(),
-            Stage::Saving => "Saving the recording".into(),
-            Stage::Waiting => "Starting transcription".into(),
-            Stage::Transcribing(None) => "Transcribing".into(),
-            Stage::Transcribing(Some(p)) => format!("Transcribing, {p}%"),
-        }
-    }
-}
-
-/// Recorded, Transcript, Summary: each done, under way, or still to come.
-fn steps(stage: Stage, theme: &Theme) -> a11y::Node {
-    #[derive(Clone, Copy, PartialEq)]
-    enum Step {
-        Done,
-        Now,
-        Next,
-    }
-    let recorded = if stage == Stage::Recording {
-        Step::Now
-    } else {
-        Step::Done
-    };
-    let transcript = match stage {
-        Stage::Recording => Step::Next,
-        Stage::Saving | Stage::Waiting | Stage::Transcribing(_) => Step::Now,
-    };
-    let items = [
-        (
-            if recorded == Step::Done {
-                "Recorded"
-            } else {
-                "Recording"
-            },
-            recorded,
-        ),
-        ("Transcript", transcript),
-        ("Summary", Step::Next),
-    ];
-    let mut row = a11y::node("detail-steps", Role::List, "Progress")
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(px(8.));
-    for (ix, (name, step)) in items.into_iter().enumerate() {
-        if ix > 0 {
-            row = row.child(div().w(px(20.)).h(px(1.)).bg(theme.divider));
-        }
-        let (glyph, word, color) = match step {
-            Step::Done => ("✓", "done", theme.accent_text),
-            Step::Now => ("●", "under way", theme.accent_text),
-            Step::Next => ("○", "to come", theme.text_secondary),
-        };
-        row = row.child(
-            a11y::node(
-                format!("detail-step-{ix}"),
-                Role::ListItem,
-                format!("{name}, {word}"),
-            )
-            .flex()
-            .items_center()
-            .gap(px(6.))
-            .text_size(theme.text(13.))
-            .text_color(color)
-            .when(step == Step::Now, |s| s.font_weight(FontWeight::SEMIBOLD))
-            .child(glyph)
-            .child(
-                div()
-                    .text_color(if step == Step::Next {
-                        theme.text_secondary
-                    } else {
-                        theme.text
-                    })
-                    .child(name),
-            ),
-        );
-    }
-    row
-}
-
-/// The processing view: the steps, the stage line, and a bar that fills with the percent, or
-/// moves while no percent is known yet. With Reduce Motion the unknown bar holds still.
-fn processing(stage: Stage, text: String, reduce_motion: bool, theme: &Theme) -> a11y::Node {
-    let track = || {
-        div()
-            .relative()
-            .h(px(4.))
-            .w_full()
-            .max_w(px(320.))
-            .rounded(px(2.))
-            .overflow_hidden()
-            .bg(theme.wave_track)
-    };
-    let bar = match stage {
-        Stage::Transcribing(Some(p)) => track().child(
-            div()
-                .h_full()
-                .rounded(px(2.))
-                .bg(theme.accent)
-                .w(relative(f32::from(p) / 100.)),
-        ),
-        _ if reduce_motion => track(),
-        _ => track().child(
-            div()
-                .absolute()
-                .top_0()
-                .h_full()
-                .w(relative(0.3))
-                .rounded(px(2.))
-                .bg(theme.accent)
-                .with_animation(
-                    "detail-indeterminate",
-                    Animation::new(Duration::from_millis(1400))
-                        .repeat()
-                        .with_easing(ease_in_out),
-                    |bar, delta| bar.left(relative(delta * 1.3 - 0.3)),
-                ),
-        ),
-    };
-    a11y::node("detail-processing", Role::Group, "Processing")
-        .flex()
-        .flex_col()
-        .gap(px(12.))
-        .py(px(24.))
-        .child(steps(stage, theme))
-        .child(
-            a11y::node("detail-state", Role::Status, text.clone())
-                .text_size(theme.text(15.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(text),
-        )
-        .child(bar)
 }
 
 /// A button in the detail column: at least 28 pt tall, accent-filled when `primary`. The resting
@@ -757,53 +607,120 @@ pub(crate) fn spoken_button(
 }
 
 impl DetailPane {
-    /// UX-13's one button, or the download's progress while it runs.
-    fn fix(&self, id: &RecordingId, fix: &Fix, theme: &Theme, cx: &App) -> a11y::Node {
-        let app = self.app.clone();
-        match fix {
-            Fix::SetUpSummaries => button(
-                "detail-fix",
-                "Set up summaries",
-                false,
-                &self.fix_focus,
-                theme,
-                crate::set_up_summaries::sheet,
-            ),
-            Fix::Download(model) => {
-                let state = app.read(cx);
-                let name = state.model_name(model);
-                if let Some(download) = state.download_of(model) {
-                    let text = match download.percent() {
-                        Some(p) => format!("Downloading {name}, {}%", p.get()),
-                        None => format!("Downloading {name}"),
-                    };
-                    return a11y::node("detail-fix", Role::Status, text.clone())
-                        .text_size(theme.text(13.))
-                        .text_color(theme.text_secondary)
-                        .child(text);
-                }
-                let model = model.clone();
-                button(
-                    "detail-fix",
-                    format!("Download {name}"),
-                    false,
-                    &self.fix_focus,
-                    theme,
-                    move |_, cx| app.update(cx, |app, cx| app.download(model.clone(), cx)),
-                )
-            }
-            Fix::TryAgain => {
-                let id = id.clone();
-                button(
-                    "detail-fix",
-                    "Try again",
-                    false,
-                    &self.fix_focus,
-                    theme,
-                    move |_, cx| app.update(cx, |app, cx| app.try_again(id.clone(), cx)),
-                )
-            }
+    /// The Summary tab's one button when the summary failed (UX-13). The transcript stays
+    /// readable, and only this tab shows the failure.
+    fn summary_fix(&self, id: &RecordingId, fix: &Fix, theme: &Theme) -> Option<a11y::Node> {
+        let label = match fix {
+            Fix::SetUpSummaries => "Set Up Summaries",
+            Fix::TryAgain => "Try Again",
+            _ => return None,
+        };
+        let (app, id, fix) = (self.app.clone(), id.clone(), fix.clone());
+        Some(button(
+            "summary-fix",
+            label,
+            true,
+            &self.fix_focus,
+            theme,
+            move |window, cx| match fix {
+                Fix::SetUpSummaries => set_up_summaries::sheet(window, cx),
+                _ => app.update(cx, |app, cx| app.try_again(id.clone(), cx)),
+            },
+        ))
+    }
+
+    /// The Transcript tab before the transcript: the placeholder, then the lines as the engine
+    /// writes them, newest last, with the footnote (UX-12). Each line fades and rises 4 pt into
+    /// place, or appears at once under Reduce Motion.
+    fn lines_so_far(
+        &mut self,
+        lines: &[Segment],
+        placeholder: &'static str,
+        window: &mut Window,
+        theme: &Theme,
+        cx: &App,
+    ) -> AnyElement {
+        if lines.len() < self.arrivals.len() {
+            self.arrivals.clear();
         }
+        let now = Instant::now();
+        let still = cx.reduce_motion();
+        while self.arrivals.len() < lines.len() {
+            self.arrivals
+                .push(if still { now - motion::SLOW } else { now });
+        }
+        if lines.is_empty() {
+            return a11y::node("transcript-placeholder", Role::Status, placeholder)
+                .py(px(16.))
+                .text_size(theme.text(15.))
+                .line_height(relative(1.6))
+                .text_color(theme.text_secondary)
+                .child(placeholder)
+                .into_any_element();
+        }
+        let stamp_w = px(42. + 12. * (theme.text_scale - 1.).max(0.));
+        let arriving = self
+            .arrivals
+            .iter()
+            .any(|at| elapsed(Some(*at), motion::BASE) < 1.);
+        if arriving && window.visibility().is_visible() {
+            window.request_animation_frame();
+        }
+        let items = lines
+            .iter()
+            .zip(&self.arrivals)
+            .enumerate()
+            .map(|(ix, (line, at))| {
+                let shown = ease_standard(elapsed(Some(*at), motion::BASE));
+                let start = line.range.map(|r| r.start());
+                let spoken = match start {
+                    Some(start) => format!("{}, {}", a11y::spoken_duration(start), line.text),
+                    None => line.text.clone(),
+                };
+                a11y::node(format!("draft-{ix}"), Role::ListItem, spoken)
+                    .flex()
+                    .gap(px(8.))
+                    .opacity(shown)
+                    .relative()
+                    .top(px(4. * (1. - shown)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .w(stamp_w)
+                            .pt(px(2.))
+                            .font_features(crate::theme::tabular())
+                            .text_size(theme.text(12.))
+                            .text_color(theme.text_secondary)
+                            .child(start.map(a11y::clock).unwrap_or_default()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_size(theme.text(15.))
+                            .line_height(relative(1.6))
+                            .child(line.text.clone()),
+                    )
+            });
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .pt(px(8.))
+            .child(
+                a11y::node("transcript-drafts", Role::List, "Transcript so far")
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .children(items),
+            )
+            .child(
+                a11y::node("transcript-footnote", Role::Label, processing::FOOTNOTE)
+                    .text_size(theme.text(12.))
+                    .text_color(theme.text_secondary)
+                    .child(processing::FOOTNOTE),
+            )
+            .into_any_element()
     }
 
     /// UX-11's finish card, shown when automatic processing did not queue the recording.
@@ -928,42 +845,31 @@ impl Render for DetailPane {
                 }
             }
         };
-        let (tab, job, status, status_text, saving) = {
+        let (tab, phase, lines) = {
             let app = self.app.read(cx);
-            let row = app
-                .recordings
-                .iter()
-                .find(|r| r.recording.id == detail.recording.id);
-            (
-                app.tab,
-                row.and_then(|r| r.job.clone()),
-                row.map(|r| app.status(r)),
-                row.map(|r| app.status_text(r)),
-                app.is_saving(&detail.recording.id),
-            )
+            let id = &detail.recording.id;
+            (app.tab, app.phase_of(id), app.drafts(id).to_vec())
         };
-        let body = Body::derive(&detail, job.as_ref(), status, saving);
+        let body = Body::derive(&detail, phase.as_ref());
         match body {
             Body::Finish if self.focus_finish => {
                 self.focus_finish = false;
                 window.focus(&self.finish_focus, cx);
             }
             // The row can list the saved audio a frame before the session reloads it.
-            Body::Finish | Body::Saving | Body::NoAudio => {}
+            Body::Finish | Body::Tabs | Body::NoAudio => {}
             _ => self.focus_finish = false,
         }
-        let fix = job
-            .as_ref()
-            .and_then(Problem::of)
-            .map(|problem| self.fix(&detail.recording.id, &problem.fix, &theme, cx));
+        let processing = phase.as_ref().is_some_and(Phase::is_processing);
         let pinning = self.pinning;
-        let has_player = detail.recording.take.is_some();
-        let docked = has_player && pinning.docked;
+        let has_card = processing || detail.recording.take.is_some();
+        let docked = !processing && detail.recording.take.is_some() && pinning.docked;
         let stuck = body == Body::Tabs && pinning.stuck;
 
-        let card_slot = has_player.then(|| {
+        let card_slot = has_card.then(|| {
             div()
                 .relative()
+                .mt(px(4.))
                 .when(docked, |slot| slot.h(pinning.card_h))
                 .when(!docked, |slot| slot.child(self.player.clone()))
                 .child(self.watch(Slot::Card, cx))
@@ -982,7 +888,12 @@ impl Render for DetailPane {
         let (content, sticky_row) = match &body {
             Body::Tabs => {
                 let shown = shown_title(&detail.recording, &Local);
-                let row = self.tab_row(tab, stuck.then_some(shown), &detail, &theme);
+                let summarizing = matches!(phase, Some(Phase::Summarizing { .. }));
+                if summarizing && motion::looping(window, cx) {
+                    window.request_animation_frame();
+                }
+                let dots = summarizing.then(|| motion::looping(window, cx).then(motion::clock_ms));
+                let row = self.tab_row(tab, stuck.then_some(shown), &detail, dots, &theme);
                 let (in_flow, pinned) = if stuck {
                     (None, Some(row))
                 } else {
@@ -994,14 +905,28 @@ impl Render for DetailPane {
                     .children(in_flow)
                     .child(self.watch(Slot::Tabs, cx));
                 let page = match tab {
-                    DetailTab::Summary => summary_view::summary(
-                        &detail,
-                        job.as_ref(),
-                        status,
-                        fix.map(IntoElement::into_any_element),
-                        &theme,
-                    ),
-                    DetailTab::Transcript => self.transcript.clone().into_any_element(),
+                    DetailTab::Summary => {
+                        let fix = match &phase {
+                            Some(Phase::Failed(problem)) if problem.stage() == Stage::Summarize => {
+                                problem.fix().and_then(|fix| {
+                                    self.summary_fix(&detail.recording.id, &fix, &theme)
+                                })
+                            }
+                            _ => None,
+                        };
+                        summary_view::summary(
+                            &detail,
+                            phase.as_ref(),
+                            fix.map(IntoElement::into_any_element),
+                            &theme,
+                        )
+                    }
+                    DetailTab::Transcript => match &phase {
+                        Some(phase) if phase.before_transcript() => {
+                            self.lines_so_far(&lines, phase.placeholder(), window, &theme, cx)
+                        }
+                        _ => self.transcript.clone().into_any_element(),
+                    },
                 };
                 let sticky = pinned.map(|row| {
                     deferred(
@@ -1033,44 +958,15 @@ impl Render for DetailPane {
                     sticky,
                 )
             }
-            Body::Processing(status) => {
-                let stage = Stage::of(*status);
-                // The row's own text adds the time left once it is known; before the first
-                // progress the stage says what is happening.
-                let text = match (stage, status_text) {
-                    (Stage::Transcribing(_), Some(text)) => text,
-                    _ => stage.line(),
-                };
-                (
-                    processing(stage, text, cx.reduce_motion(), &theme).into_any_element(),
-                    None,
-                )
-            }
-            Body::Saving => (
-                processing(
-                    Stage::Saving,
-                    Stage::Saving.line(),
-                    cx.reduce_motion(),
+            Body::Recording => (
+                state(
+                    "detail-state",
+                    Role::Status,
+                    "Recording",
+                    Some("Transcription starts after you stop.".into()),
                     &theme,
                 )
                 .into_any_element(),
-                None,
-            ),
-            Body::NeedsAttention(problem) => (
-                div()
-                    .flex()
-                    .flex_col()
-                    .items_start()
-                    .gap(px(4.))
-                    .child(state(
-                        "detail-state",
-                        Role::Group,
-                        problem.text.clone(),
-                        matches!(problem.fix, Fix::Download(_)).then(|| WAITS_FOR_MODEL.into()),
-                        &theme,
-                    ))
-                    .children(fix)
-                    .into_any_element(),
                 None,
             ),
             Body::Finish => (
@@ -1138,13 +1034,13 @@ impl Render for DetailPane {
 
 #[cfg(test)]
 mod tests {
-    use dory_core::domain::{Blocker, JobState, LangTag, Revision, Stage, Transcript};
-    use dory_core::models::KindTag;
+    use dory_core::domain::{Fraction, LangTag, Revision, Transcript};
 
     use super::*;
     use crate::app::Detail;
+    use crate::estimate::Left;
     use crate::fixtures::{self, SAMPLES};
-    use crate::library::Percent;
+    use crate::processing::Problem;
 
     fn detail(title: &str) -> Detail {
         let sample = SAMPLES.iter().find(|s| s.title == title).unwrap();
@@ -1158,53 +1054,44 @@ mod tests {
     }
 
     #[test]
-    fn the_body_follows_the_take_the_transcript_and_the_job() {
+    fn the_body_follows_the_take_the_transcript_and_the_phase() {
         let done = detail("Design review");
         assert_eq!(
-            Body::derive(
-                &done,
-                Some(&JobState::Succeeded),
-                Some(RowStatus::Done),
-                false
-            ),
+            Body::derive(&done, Some(&Phase::Done { summary: true })),
             Body::Tabs
         );
 
-        let weekly = detail("Weekly sync");
-        let running = JobState::Running {
-            stage: Stage::Transcribe,
+        let mut weekly = detail("Weekly sync");
+        let transcribing = Phase::Transcribing {
+            done: Fraction::new(0.4),
+            left: Left::Estimating,
+            light: None,
         };
-        let forty =
-            RowStatus::Transcribing(Some(Percent::of(dory_core::domain::Fraction::new(0.4))));
         assert_eq!(
-            Body::derive(&weekly, Some(&running), Some(forty), false),
-            Body::Processing(forty)
+            Body::derive(&weekly, Some(&transcribing)),
+            Body::Tabs,
+            "the card and the tabs from Stop on"
         );
+        assert_eq!(Body::derive(&weekly, Some(&Phase::Ready)), Body::Finish);
         assert_eq!(
-            Body::derive(&weekly, None, Some(RowStatus::ReadyToTranscribe), false),
-            Body::Finish
+            Body::derive(&weekly, Some(&Phase::Failed(Problem::NoSpeechModel))),
+            Body::Tabs
         );
-        assert_eq!(
-            Body::derive(&weekly, None, Some(RowStatus::ReadyToTranscribe), true),
-            Body::Saving,
-            "stopped, inside the undo grace or sealing"
-        );
-
-        let blocked = JobState::Blocked {
-            stage: Stage::Transcribe,
-            blocker: Blocker::NoModel { kind: KindTag::Stt },
-        };
+        weekly.recording.take = None;
         assert_eq!(
             Body::derive(
                 &weekly,
-                Some(&blocked),
-                Some(RowStatus::NeedsAttention),
-                false
+                Some(&Phase::Stopped {
+                    starts_in: 5,
+                    auto: true
+                })
             ),
-            Body::NeedsAttention(Problem {
-                text: "No speech model is set up.".into(),
-                fix: crate::processing::Fix::TryAgain,
-            })
+            Body::Tabs,
+            "stopped, before the take is saved"
+        );
+        assert_eq!(
+            Body::derive(&weekly, Some(&Phase::Recording)),
+            Body::Recording
         );
 
         let mut silent = detail("Weekly sync");
@@ -1212,11 +1099,11 @@ mod tests {
             segments: Vec::new(),
             ..detail("Design review").transcript.unwrap()
         });
-        assert_eq!(Body::derive(&silent, None, None, false), Body::NothingSaid);
+        assert_eq!(Body::derive(&silent, None), Body::NothingSaid);
 
         let mut no_take = detail("Design review");
         no_take.recording.take = None;
-        assert_eq!(Body::derive(&no_take, None, None, false), Body::NoAudio);
+        assert_eq!(Body::derive(&no_take, None), Body::NoAudio);
     }
 
     #[test]

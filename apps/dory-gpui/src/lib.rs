@@ -17,6 +17,9 @@
 //!   and `set_up_summaries::sheet`.
 //!
 //! - P7 (accessibility): `system_prefs`, and fixes across every view above.
+//! - The processing view (`docs/design/processing-view.md`): `processing` (the states P1 to P8
+//!   and their words), `estimate` (time left), `motion` and `glyphs`, with the card in
+//!   `player_view` and the lines below it in `detail`.
 //!
 //! Each agent-owned file's doc comment is its contract.
 
@@ -24,11 +27,14 @@ pub mod a11y;
 pub mod actions;
 pub mod app;
 pub mod detail;
+pub mod estimate;
 pub mod export;
 pub mod fixtures;
+pub mod glyphs;
 pub mod library;
 pub mod menus;
 pub mod models_view;
+pub mod motion;
 pub mod notify;
 pub mod onboarding;
 pub mod platform;

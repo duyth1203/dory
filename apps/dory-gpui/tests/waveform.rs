@@ -73,6 +73,7 @@ fn player_for(title: &str, app: &Entity<AppState>, cx: &mut TestAppContext) -> E
             .player()
             .clone()
     });
+    let app = app.clone();
     cx.update(|cx| {
         gpui_kit::open_window(
             WindowOptions {
@@ -83,7 +84,7 @@ fn player_for(title: &str, app: &Entity<AppState>, cx: &mut TestAppContext) -> E
                 ..Default::default()
             },
             cx,
-            |_, cx| cx.new(|cx| PlayerView::new(handle, cx)),
+            |_, cx| cx.new(|cx| PlayerView::new(handle, app, cx)),
         )
         .expect("open the player window")
         .1

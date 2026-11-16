@@ -69,7 +69,7 @@ impl Tab {
 pub const ADD_MODEL_FILE_REASON: &str =
     "No speech engine in Dory can load a model file yet, so models come from the list above.";
 
-struct Open(AnyWindowHandle);
+struct Open(AnyWindowHandle, Entity<SettingsWindow>);
 
 impl Global for Open {}
 
@@ -98,10 +98,18 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
     match gpui_kit::open_window(options, cx, move |window, cx| {
         cx.new(|cx| SettingsWindow::new(owner, window, cx))
     }) {
-        Ok((handle, _)) => cx.set_global(Open(handle)),
+        Ok((handle, view)) => cx.set_global(Open(handle, view)),
         Err(error) => app.update(cx, |app, cx| {
             app.say(format!("Could not open Settings: {error}"), cx)
         }),
+    }
+}
+
+/// Opens Settings on `tab`: a fix button that sends the user to the setting that fixes it.
+pub fn open_at(app: &Entity<AppState>, tab: Tab, cx: &mut App) {
+    open(app, cx);
+    if let Some(view) = cx.try_global::<Open>().map(|open| open.1.clone()) {
+        view.update(cx, |view, cx| view.select(tab, cx));
     }
 }
 

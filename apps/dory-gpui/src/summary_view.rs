@@ -3,10 +3,11 @@
 //! Rendered Markdown at 15/1.6 with 17 pt semibold section headings, from `Detail.summary`.
 //! Kit's `TextView::markdown` draws it; its AX nodes come from `a11y::with_markdown_children`,
 //! since Kit emits none (spike finding 3). A stale summary says so above the text. No summary
-//! says why, from the recording's job, with the one button that fixes it (UX-13), which
-//! `detail.rs` builds. Copy and Export sit in the tab row, which `detail.rs` draws.
+//! says why, from the recording's phase. A summary that failed shows here only, with the one
+//! button that fixes it (UX-13), which `detail.rs` builds, while the transcript stays readable.
+//! Copy and Export sit in the tab row, which `detail.rs` draws.
 
-use dory_core::domain::JobState;
+use dory_core::domain::Stage;
 use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::{
     AnyElement, FontWeight, IntoElement as _, ParentElement as _, Role, Styled as _, div, px,
@@ -15,9 +16,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::Detail;
-use crate::detail::Problem;
-use crate::library::RowStatus;
-use crate::processing::Fix;
+use crate::processing::{Fix, Phase};
 use crate::theme::Theme;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -36,11 +35,7 @@ pub enum SummaryState<'a> {
 pub const STALE: &str = "This summary is from an earlier version of the transcript.";
 
 impl<'a> SummaryState<'a> {
-    pub fn of(
-        detail: &'a Detail,
-        job: Option<&JobState>,
-        status: Option<RowStatus>,
-    ) -> SummaryState<'a> {
+    pub fn of(detail: &'a Detail, phase: Option<&Phase>) -> SummaryState<'a> {
         if let Some(summary) = &detail.summary {
             return SummaryState::Markdown {
                 markdown: &summary.markdown,
@@ -50,15 +45,17 @@ impl<'a> SummaryState<'a> {
                     .is_some_and(|t| summary.is_stale_for(t.revision)),
             };
         }
-        if let Some(problem) = job.and_then(Problem::of) {
+        if let Some(Phase::Failed(problem)) = phase
+            && problem.stage() == Stage::Summarize
+        {
             return SummaryState::Missing {
-                text: problem.text,
-                fix: Some(problem.fix),
+                text: problem.text(),
+                fix: problem.fix(),
             };
         }
-        let text = match status {
-            Some(RowStatus::Summarizing) => "Summarizing…",
-            Some(RowStatus::Queued | RowStatus::Transcribing(_)) => {
+        let text = match phase {
+            Some(Phase::Summarizing { .. }) => "Writing the summary…",
+            Some(phase) if phase.is_processing() => {
                 "The summary comes once the transcript is done."
             }
             _ => "No summary yet.",
@@ -73,13 +70,12 @@ impl<'a> SummaryState<'a> {
 /// `fix_button` is the job's fix, shown under a summary that is missing because of it.
 pub fn summary(
     detail: &Detail,
-    job: Option<&JobState>,
-    status: Option<RowStatus>,
+    phase: Option<&Phase>,
     fix_button: Option<AnyElement>,
     theme: &Theme,
 ) -> AnyElement {
     let doc = a11y::node("summary-document", Role::Document, "Summary");
-    match SummaryState::of(detail, job, status) {
+    match SummaryState::of(detail, phase) {
         SummaryState::Missing { text, fix } => doc
             .child(
                 a11y::node("summary-missing", Role::Status, text.clone())
@@ -130,12 +126,13 @@ pub fn summary(
 
 #[cfg(test)]
 mod tests {
-    use dory_core::domain::{Blocker, JobState, Revision, Stage};
-    use dory_core::models::KindTag;
+    use dory_core::domain::Revision;
     use gpui_kit::Role;
 
     use super::*;
+    use crate::estimate::Left;
     use crate::fixtures::SAMPLES;
+    use crate::processing::Problem;
 
     fn detail(title: &str) -> Detail {
         let sample = SAMPLES.iter().find(|s| s.title == title).unwrap();
@@ -152,12 +149,12 @@ mod tests {
     fn a_summary_from_an_older_transcript_is_stale() {
         let mut done = detail("Design review");
         assert!(matches!(
-            SummaryState::of(&done, None, None),
+            SummaryState::of(&done, None),
             SummaryState::Markdown { stale: false, .. }
         ));
         done.transcript.as_mut().unwrap().revision = Revision(2);
         assert!(matches!(
-            SummaryState::of(&done, None, None),
+            SummaryState::of(&done, None),
             SummaryState::Markdown { stale: true, .. }
         ));
     }
@@ -165,23 +162,28 @@ mod tests {
     #[test]
     fn a_missing_summary_says_why() {
         let hiring = detail("Hiring debrief");
-        let blocked = JobState::Blocked {
-            stage: Stage::Summarize,
-            blocker: Blocker::NoModel { kind: KindTag::Llm },
-        };
         assert_eq!(
-            SummaryState::of(&hiring, Some(&blocked), Some(RowStatus::NeedsAttention)),
+            SummaryState::of(&hiring, Some(&Phase::Failed(Problem::SummaryModelMissing))),
             SummaryState::Missing {
-                text: "No summary model is set up.".into(),
+                text: "The transcript is ready, but summaries aren't set up.".into(),
                 fix: Some(Fix::SetUpSummaries),
             }
         );
-        let missing = |status| match SummaryState::of(&hiring, None, status) {
+        let missing = |phase: Phase| match SummaryState::of(&hiring, Some(&phase)) {
             SummaryState::Missing { text, .. } => text,
             other => panic!("{other:?}"),
         };
-        assert_eq!(missing(Some(RowStatus::Summarizing)), "Summarizing…");
-        assert_eq!(missing(Some(RowStatus::Done)), "No summary yet.");
+        assert_eq!(
+            missing(Phase::Summarizing {
+                left: Left::Estimating
+            }),
+            "Writing the summary…"
+        );
+        assert_eq!(
+            missing(Phase::Preparing),
+            "The summary comes once the transcript is done."
+        );
+        assert_eq!(missing(Phase::Done { summary: false }), "No summary yet.");
     }
 
     #[test]

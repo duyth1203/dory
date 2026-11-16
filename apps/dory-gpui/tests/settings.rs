@@ -661,7 +661,7 @@ fn a_job_running_light_says_why_on_its_row(cx: &mut TestAppContext) {
     // Events before the window subscribed are gone, so the next window is what it hears.
     rig.transcriber.hold_from(1);
     until(cx, "the light row", |cx| {
-        label(main, &row, cx).is_some_and(|l| l.contains("Transcribing, 33% · Light, on battery"))
+        label(main, &row, cx).is_some_and(|l| l.ends_with(", 33%, light"))
     });
     rig.transcriber.hold(false);
 }

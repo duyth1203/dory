@@ -1,13 +1,36 @@
 mod common;
 
 use chrono::NaiveDate;
+use std::collections::HashMap;
+
 use dory_core::app::RecorderStatus;
-use dory_core::domain::{Fraction, JobState, Ms, RecordingId, Stage};
+use dory_core::domain::{Fraction, JobState, Ms, RecordingId, RecordingRow, Stage};
+use dory_gpui::estimate::Left;
 use dory_gpui::fixtures::{self, SAMPLES};
 use dory_gpui::library::{
-    DateGroup, Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal,
+    DateGroup, Percent, Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal,
     group_by_date, row_meta,
 };
+use dory_gpui::processing::{Facts, Phase};
+
+/// The row status `AppState` derives for a row, with nothing in the queue and no download.
+fn status(row: &RecordingRow, recorder: &RecorderStatus, progress: Option<Progress>) -> RowStatus {
+    let (models, downloads) = (HashMap::new(), HashMap::new());
+    Phase::derive(&Facts {
+        row,
+        recorder,
+        grace_left: None,
+        sealing: false,
+        progress,
+        done: &[],
+        spot: None,
+        left: Left::Estimating,
+        auto_process: true,
+        models: &models,
+        downloads: &downloads,
+    })
+    .row()
+}
 
 fn titles(rows: &[&dory_core::domain::RecordingRow]) -> Vec<String> {
     rows.iter()
@@ -112,19 +135,17 @@ fn row_status_reads_the_job_the_recorder_and_progress() {
     };
     let weekly = row("Weekly sync");
     assert_eq!(
-        RowStatus::derive(weekly, &idle, Some(forty)).label(),
-        "Transcribing, 40%"
+        status(weekly, &idle, Some(forty)).label(),
+        "Transcribing 40%"
     );
     assert_eq!(
-        RowStatus::derive(weekly, &idle, None).label(),
-        "Transcribing"
+        status(weekly, &idle, None).label(),
+        "Preparing",
+        "running, before the first window"
     );
+    assert_eq!(status(row("Design review"), &idle, None), RowStatus::Done);
     assert_eq!(
-        RowStatus::derive(row("Design review"), &idle, None),
-        RowStatus::Done
-    );
-    assert_eq!(
-        RowStatus::derive(row("Hiring debrief"), &idle, None).label(),
+        status(row("Hiring debrief"), &idle, None).label(),
         "Needs attention"
     );
 
@@ -133,25 +154,28 @@ fn row_status_reads_the_job_the_recorder_and_progress() {
         recorded: Ms(1_000),
     };
     assert_eq!(
-        RowStatus::derive(weekly, &recording, Some(forty)),
+        status(weekly, &recording, Some(forty)),
         RowStatus::Recording
     );
 
     let mut fresh = row("Design review").clone();
     fresh.job = None;
     fresh.has_transcript = false;
-    assert_eq!(
-        RowStatus::derive(&fresh, &idle, None),
-        RowStatus::ReadyToTranscribe
-    );
+    assert_eq!(status(&fresh, &idle, None), RowStatus::ReadyToTranscribe);
     fresh.job = Some(JobState::Queued);
-    assert_eq!(RowStatus::derive(&fresh, &idle, None), RowStatus::Queued);
+    assert_eq!(status(&fresh, &idle, None), RowStatus::Queued { ahead: 0 });
     fresh.job = Some(JobState::Running {
         stage: Stage::Summarize,
     });
+    assert_eq!(status(&fresh, &idle, Some(forty)), RowStatus::Summarizing);
     assert_eq!(
-        RowStatus::derive(&fresh, &idle, Some(forty)),
-        RowStatus::Summarizing
+        RowStatus::Transcribing {
+            percent: Percent::of(Fraction::new(0.4)),
+            light: true
+        }
+        .label(),
+        "40%, light",
+        "the short form UX-30 gives the row"
     );
 }
 
@@ -160,7 +184,7 @@ fn the_status_filter_keeps_only_matching_samples() {
     let rows = fixtures::rows();
     let kept = |filter: StatusFilter| -> Vec<String> {
         rows.iter()
-            .filter(|r| filter.admits(RowStatus::derive(r, &RecorderStatus::Idle, None)))
+            .filter(|r| filter.admits(status(r, &RecorderStatus::Idle, None)))
             .map(|r| r.recording.title.clone().unwrap())
             .collect()
     };
@@ -367,7 +391,7 @@ mod window {
             assert_eq!(row.role(), Some(Role::ListItem));
             let label = row.label().unwrap_or_default().to_owned();
             assert!(
-                label.starts_with("Design review, ") && label.ends_with(", 48 minutes, Done"),
+                label.starts_with("Design review, ") && label.ends_with(", 48 min, Done"),
                 "{label}"
             );
 

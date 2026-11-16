@@ -1,66 +1,771 @@
-//! The processing rules of UX-11 to UX-13 and UX-30 as plain data and pure functions: what a
-//! stopped job says and the one button it offers, how long the rest of a run takes at the rate
-//! observed so far, why a job runs light, the Processing choices, and which rows just finished or
-//! failed. Nothing here touches GPUI or the store.
+//! The processing view's rules (`docs/design/processing-view.md` section 4, UX-11 to UX-13,
+//! UX-30) as plain data and pure functions. [`Phase::derive`] turns what the core reports about
+//! one recording into one of the states P1 to P8, and each state words itself: the card's
+//! headline, detail, steps, and VoiceOver sentence, and the sidebar row's glyph and word. Nothing
+//! here touches GPUI or the store.
 
-use dory_core::app::LightReason;
+use std::collections::HashMap;
+
+use dory_core::app::{LightReason, RecorderStatus};
 use dory_core::domain::{
-    Blocker, Fraction, JobState, Ms, Processing, RecordingId, RecordingRow, Stage,
+    Blocker, FailureCause, FailureClass, Fraction, JobState, Ms, Processing, RecordingId,
+    RecordingRow, Stage, SummaryFlag,
 };
 use dory_core::models::{KindTag, ModelRef, UnavailableReason};
 use dory_core::ports::Pace;
 
+use crate::estimate::Left;
+use crate::library::{Percent, Progress, RowStatus};
+
+/// A model download in flight, from `ProvisionProgress`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Download {
+    pub done: u64,
+    pub total: Option<u64>,
+}
+
+impl Download {
+    pub fn percent(self) -> Option<Percent> {
+        self.total
+            .filter(|t| *t > 0)
+            .map(|t| Percent::of(Fraction::new(self.done as f32 / t as f32)))
+    }
+}
+
+/// A speech or speaker model the Download button names, from the catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub kind: KindTag,
+    pub name: String,
+    /// What is left to download.
+    pub bytes: Option<u64>,
+}
+
+/// Where a queued job stands: the jobs running or waiting before it, and when it starts, once
+/// every one of them has an estimate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Spot {
+    pub ahead: usize,
+    pub starts_in: Option<Ms>,
+}
+
+/// Everything one recording's phase is derived from. `AppState` gathers it from the core's rows,
+/// queue, events, and its own estimates.
+pub struct Facts<'a> {
+    pub row: &'a RecordingRow,
+    pub recorder: &'a RecorderStatus,
+    /// Seconds left in the Undo window while this recording is in it.
+    pub grace_left: Option<u8>,
+    /// Closed and not yet listed with its audio.
+    pub sealing: bool,
+    /// The last progress of this recording's running stage.
+    pub progress: Option<Progress>,
+    /// Stages the recording's active job already finished.
+    pub done: &'a [Stage],
+    /// `None` until the queue is read.
+    pub spot: Option<Spot>,
+    /// The smoothed time left of the running stage.
+    pub left: Left,
+    /// Settings > Transcription > Process recordings automatically.
+    pub auto_process: bool,
+    pub models: &'a HashMap<ModelRef, ModelInfo>,
+    pub downloads: &'a HashMap<ModelRef, Download>,
+}
+
+/// Where a recording is on its way from Stop to a summary. P1 to P8 are the spec's names.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Phase {
+    Recording,
+    /// P1: the Undo window.
+    Stopped {
+        starts_in: u8,
+        auto: bool,
+    },
+    /// P2: sealing the take.
+    Saving,
+    /// Audio and no job: the finish card (UX-11).
+    Ready,
+    /// P3a.
+    Queued(Spot),
+    /// P3b: the transcribe stage started, and no window yet.
+    Preparing,
+    /// P4, and P5 when `light` says why it runs light.
+    Transcribing {
+        done: Fraction,
+        left: Left,
+        light: Option<LightReason>,
+    },
+    /// P6.
+    Summarizing {
+        left: Left,
+    },
+    /// P7.
+    Done {
+        summary: bool,
+    },
+    /// P8.
+    Failed(Problem),
+}
+
+/// Why a job stopped, in the terms UX-13 gives the user.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Problem {
+    SpeechModelMissing {
+        model: ModelRef,
+        kind: KindTag,
+        name: String,
+        bytes: Option<u64>,
+        download: Option<Download>,
+    },
+    /// The catalog has no speech model, or the choice is Off.
+    NoSpeechModel,
+    DiskFull,
+    Crashed,
+    AudioUnreadable,
+    /// Anything else the transcribe stage reports, in the core's words.
+    Transcription {
+        text: String,
+        started: bool,
+    },
+    SummaryModelMissing,
+    /// Anything else the summary stage reports, in the core's words.
+    Summary(String),
+}
+
 /// The one button a stopped job offers (UX-13).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fix {
-    /// The summary model is missing or unreachable: the sheet with the `ollama pull` command.
-    SetUpSummaries,
-    /// A speech or speaker model is not on this Mac.
     Download(ModelRef),
-    /// Unblocks a blocked job, or retries a failed one.
+    ChooseSpeechModel,
+    SetUpSummaries,
+    FreeUpSpace,
     TryAgain,
+    ShowInFinder,
 }
 
-/// What a job that stopped needs from the user: one sentence with the cause, and its fix.
+/// The glyph before a step's word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepGlyph {
+    Stop,
+    /// Under way: three dots that breathe.
+    Dots,
+    Check,
+    Clock,
+    /// Still to come.
+    Pending,
+    Warning,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Problem {
-    pub text: String,
-    pub fix: Fix,
+pub struct Step {
+    pub name: &'static str,
+    pub glyph: StepGlyph,
+    pub word: String,
+}
+
+/// What the transcript tab shows before there is a transcript to read.
+pub const PLACEHOLDER: &str = "The transcript appears here, line by line, as it is written.";
+/// The footnote under the lines that stream in while transcribing.
+pub const FOOTNOTE: &str = "Speaker names are added when transcription finishes.";
+
+impl Phase {
+    pub fn derive(facts: &Facts<'_>) -> Phase {
+        let row = facts.row;
+        let id = &row.recording.id;
+        if matches!(facts.recorder, RecorderStatus::Recording { id: r, .. } | RecorderStatus::Paused { id: r, .. } if r == id)
+        {
+            return Phase::Recording;
+        }
+        if let RecorderStatus::Grace { id: g, .. } = facts.recorder
+            && g == id
+        {
+            return Phase::Stopped {
+                starts_in: facts.grace_left.unwrap_or(1).max(1),
+                auto: facts.auto_process,
+            };
+        }
+        if facts.sealing {
+            return Phase::Saving;
+        }
+        let progress = |stage| facts.progress.filter(|p| p.stage == stage);
+        match &row.job {
+            Some(JobState::Queued) if facts.done.contains(&Stage::Transcribe) => {
+                Phase::Summarizing { left: facts.left }
+            }
+            Some(JobState::Queued) => Phase::Queued(facts.spot.unwrap_or(Spot {
+                ahead: 0,
+                starts_in: None,
+            })),
+            Some(JobState::Running {
+                stage: Stage::Transcribe,
+            }) => match progress(Stage::Transcribe) {
+                Some(p) => Phase::Transcribing {
+                    done: p.fraction,
+                    left: facts.left,
+                    light: p.budget.and_then(|b| b.reason()),
+                },
+                None => Phase::Preparing,
+            },
+            Some(JobState::Running {
+                stage: Stage::Summarize,
+            }) => Phase::Summarizing { left: facts.left },
+            Some(job @ (JobState::Blocked { .. } | JobState::Failed { .. })) => {
+                Phase::Failed(Problem::of(job, facts.models, facts.downloads))
+            }
+            Some(JobState::Succeeded) => Phase::Done {
+                summary: row.summary != SummaryFlag::None,
+            },
+            Some(JobState::Cancelled) | None if row.has_transcript => Phase::Done {
+                summary: row.summary != SummaryFlag::None,
+            },
+            Some(JobState::Cancelled) | None => Phase::Ready,
+        }
+    }
+
+    /// The card shows from Stop until the summary is ready. Done, and a summary that failed
+    /// after the transcript, show the player instead.
+    pub fn is_processing(&self) -> bool {
+        match self {
+            Phase::Stopped { .. }
+            | Phase::Saving
+            | Phase::Queued(_)
+            | Phase::Preparing
+            | Phase::Transcribing { .. }
+            | Phase::Summarizing { .. } => true,
+            Phase::Failed(problem) => problem.stage() == Stage::Transcribe,
+            Phase::Recording | Phase::Ready | Phase::Done { .. } => false,
+        }
+    }
+
+    /// No transcript is ready to read yet, so the transcript tab shows the placeholder or the
+    /// lines as they stream in.
+    pub fn before_transcript(&self) -> bool {
+        match self {
+            Phase::Stopped { .. }
+            | Phase::Saving
+            | Phase::Queued(_)
+            | Phase::Preparing
+            | Phase::Transcribing { .. } => true,
+            Phase::Failed(problem) => problem.stage() == Stage::Transcribe,
+            _ => false,
+        }
+    }
+
+    pub fn headline(&self) -> Option<String> {
+        Some(
+            match self {
+                Phase::Stopped { .. } => "Recording stopped",
+                Phase::Saving => "Saving the recording",
+                Phase::Queued(_) => "Waiting to transcribe",
+                Phase::Preparing => "Getting ready to transcribe",
+                Phase::Transcribing { .. } => "Transcribing",
+                Phase::Summarizing { .. } => "Writing the summary",
+                Phase::Failed(problem) => return Some(problem.headline().into()),
+                Phase::Recording | Phase::Ready | Phase::Done { .. } => return None,
+            }
+            .into(),
+        )
+    }
+
+    /// The line under the headline. `audio` is the take's length as far as it is known.
+    pub fn detail(&self, audio: Option<Ms>) -> Option<String> {
+        Some(match self {
+            Phase::Stopped { starts_in, auto } => {
+                let seconds = seconds(*starts_in);
+                if *auto {
+                    format!("Transcription starts in {seconds}.")
+                } else {
+                    format!("You can undo for {seconds}.")
+                }
+            }
+            Phase::Saving => match audio.map(minutes_of_audio) {
+                Some(minutes) => format!("{minutes} of audio. This takes a moment."),
+                None => "This takes a moment.".into(),
+            },
+            Phase::Queued(spot) => {
+                let ahead = match spot.ahead {
+                    0 => "This recording is next.".to_owned(),
+                    1 => "1 recording is ahead of this one.".to_owned(),
+                    n => format!("{n} recordings are ahead of this one."),
+                };
+                match spot.starts_in {
+                    Some(at) if spot.ahead > 0 => {
+                        format!("{ahead} It starts {}.", Left::starts(at))
+                    }
+                    _ => ahead,
+                }
+            }
+            Phase::Preparing => "Loading the speech model. This takes a few seconds.".into(),
+            Phase::Transcribing { done, left, .. } => {
+                format!("{}% · {}", Percent::of(*done).get(), left.short())
+            }
+            Phase::Summarizing { left } => match left {
+                Left::Estimating => "The transcript is ready to read.".into(),
+                Left::About(ms) if ms.0 < 60_000 => {
+                    "The transcript is ready to read. Summary in less than 1 min.".into()
+                }
+                Left::About(ms) => format!(
+                    "The transcript is ready to read. Summary in about {} min.",
+                    ms.0.div_ceil(60_000)
+                ),
+            },
+            Phase::Failed(problem) => problem.detail(),
+            Phase::Recording | Phase::Ready | Phase::Done { .. } => return None,
+        })
+    }
+
+    /// Recording, Transcript, Summary, each with its glyph and word.
+    pub fn steps(&self) -> Option<[Step; 3]> {
+        use StepGlyph::*;
+        let step = |name, glyph, word: &str| Step {
+            name,
+            glyph,
+            word: word.to_owned(),
+        };
+        let saved = step("Recording", Check, "Saved");
+        let waiting = |name| step(name, Pending, "Waiting");
+        Some(match self {
+            Phase::Stopped { starts_in, auto } => [
+                step("Recording", Stop, "Stopped"),
+                if *auto {
+                    step("Transcript", Pending, &format!("Starts in {starts_in} s"))
+                } else {
+                    waiting("Transcript")
+                },
+                waiting("Summary"),
+            ],
+            Phase::Saving => [
+                step("Recording", Dots, "Saving"),
+                waiting("Transcript"),
+                waiting("Summary"),
+            ],
+            Phase::Queued(spot) => [
+                saved,
+                match spot.ahead {
+                    0 => step("Transcript", Clock, "Next"),
+                    n => step("Transcript", Clock, &format!("{n} ahead")),
+                },
+                waiting("Summary"),
+            ],
+            Phase::Preparing => [
+                saved,
+                step("Transcript", Dots, "Preparing"),
+                waiting("Summary"),
+            ],
+            Phase::Transcribing { done, light, .. } => {
+                let percent = Percent::of(*done).get();
+                let word = match light {
+                    Some(_) => format!("{percent}%, light"),
+                    None => format!("{percent}%"),
+                };
+                [saved, step("Transcript", Dots, &word), waiting("Summary")]
+            }
+            Phase::Summarizing { .. } => [
+                saved,
+                step("Transcript", Check, "Ready"),
+                step("Summary", Dots, "Writing"),
+            ],
+            Phase::Failed(problem) if problem.stage() == Stage::Transcribe => [
+                saved,
+                step("Transcript", Warning, problem.step_word()),
+                waiting("Summary"),
+            ],
+            Phase::Failed(_) | Phase::Recording | Phase::Ready | Phase::Done { .. } => {
+                return None;
+            }
+        })
+    }
+
+    /// The card's `role=status` text. `title` names the recording once it is done.
+    pub fn sentence(&self, title: &str) -> String {
+        match self {
+            Phase::Recording => "Recording.".into(),
+            Phase::Ready => "Ready to transcribe.".into(),
+            Phase::Stopped { .. } => {
+                format!(
+                    "Recording stopped. {}",
+                    self.detail(None).unwrap_or_default()
+                )
+            }
+            Phase::Saving => "Saving the recording.".into(),
+            Phase::Queued(spot) => {
+                let ahead = match spot.ahead {
+                    0 => return "Waiting to transcribe. Next in line.".into(),
+                    1 => "1 recording ahead".to_owned(),
+                    n => format!("{n} recordings ahead"),
+                };
+                match spot.starts_in {
+                    Some(at) => format!(
+                        "Waiting to transcribe. {ahead}, starts {}.",
+                        spoken_start(at)
+                    ),
+                    None => format!("Waiting to transcribe. {ahead}."),
+                }
+            }
+            Phase::Preparing => "Getting ready to transcribe. Loading the speech model.".into(),
+            Phase::Transcribing { done, left, light } => {
+                let percent = Percent::of(*done).get();
+                let mut said = match left {
+                    Left::Estimating => format!("Transcribing, {percent}%. Estimating time left."),
+                    Left::About(_) => format!("Transcribing, {percent}%, {}.", left.spoken()),
+                };
+                if let Some(reason) = light {
+                    said.push_str(&format!(" Running light because {}.", because(*reason)));
+                }
+                said
+            }
+            Phase::Summarizing { left } => match left {
+                Left::Estimating => "Transcript ready. Writing the summary.".into(),
+                Left::About(_) => {
+                    format!("Transcript ready. Writing the summary, {}.", left.spoken())
+                }
+            },
+            Phase::Done { summary: true } => format!("Summary ready for {title}."),
+            Phase::Done { summary: false } => format!("Transcript ready for {title}."),
+            Phase::Failed(problem) => problem.sentence(),
+        }
+    }
+
+    pub fn row(&self) -> RowStatus {
+        match self {
+            Phase::Recording => RowStatus::Recording,
+            Phase::Stopped { .. } => RowStatus::Stopped,
+            Phase::Saving => RowStatus::Saving,
+            Phase::Ready => RowStatus::ReadyToTranscribe,
+            Phase::Queued(spot) => RowStatus::Queued { ahead: spot.ahead },
+            Phase::Preparing => RowStatus::Preparing,
+            Phase::Transcribing { done, light, .. } => RowStatus::Transcribing {
+                percent: Percent::of(*done),
+                light: light.is_some(),
+            },
+            Phase::Summarizing { .. } => RowStatus::Summarizing,
+            Phase::Done { .. } => RowStatus::Done,
+            Phase::Failed(_) => RowStatus::NeedsAttention,
+        }
+    }
+
+    /// The chip that says why transcription runs light, with Use Fast This Time (P5).
+    pub fn light(&self) -> Option<LightReason> {
+        match self {
+            Phase::Transcribing { light, .. } => *light,
+            _ => None,
+        }
+    }
+
+    /// Move to Top sits in the headline row while other jobs are ahead (UX-15).
+    pub fn can_move_to_top(&self) -> bool {
+        matches!(self, Phase::Queued(spot) if spot.ahead > 0)
+    }
+
+    /// How far transcription got through the audio, for the waveform and its caption.
+    pub fn transcribed(&self) -> Fraction {
+        match self {
+            Phase::Transcribing { done, .. } => *done,
+            Phase::Summarizing { .. } | Phase::Done { .. } => Fraction::new(1.0),
+            Phase::Failed(problem) if problem.stage() == Stage::Summarize => Fraction::new(1.0),
+            _ => Fraction::new(0.0),
+        }
+    }
+
+    /// What the transcript tab shows while there is nothing to read yet.
+    pub fn placeholder(&self) -> &'static str {
+        match self {
+            Phase::Failed(Problem::SpeechModelMissing { .. }) => {
+                "The transcript appears here once the speech model is installed."
+            }
+            Phase::Failed(Problem::NoSpeechModel) => {
+                "The transcript appears here once a speech model is set up."
+            }
+            Phase::Failed(_) => "The transcript appears here once transcription finishes.",
+            _ => PLACEHOLDER,
+        }
+    }
+
+    /// The fix while the job is stopped, unless a download is already running.
+    pub fn fix(&self) -> Option<Fix> {
+        match self {
+            Phase::Failed(problem) => problem.fix(),
+            _ => None,
+        }
+    }
+
+    /// The stage this phase stands for, so VoiceOver speaks when it changes and not on each
+    /// percent, countdown second, or estimate (UX-12). A new problem is a new stage.
+    fn stage_key(&self) -> (u8, Option<std::mem::Discriminant<Problem>>) {
+        let key = match self {
+            Phase::Recording => 0,
+            Phase::Stopped { .. } => 1,
+            Phase::Saving => 2,
+            Phase::Ready => 3,
+            Phase::Queued(_) => 4,
+            Phase::Preparing => 5,
+            Phase::Transcribing { .. } => 6,
+            Phase::Summarizing { .. } => 7,
+            Phase::Done { .. } => 8,
+            Phase::Failed(problem) => return (9, Some(std::mem::discriminant(problem))),
+        };
+        (key, None)
+    }
+}
+
+/// Whether VoiceOver should speak the card's sentence when the selected recording goes from
+/// `before` to `after`: when the stage changes, when processing fails, and when it is done.
+/// Stop has its own announcement ("Recording saved"), and the finish card has its own focus.
+pub fn announces(before: &Phase, after: &Phase) -> bool {
+    if before.stage_key() == after.stage_key() {
+        return false;
+    }
+    !matches!(after, Phase::Recording | Phase::Ready)
+        && !matches!((before, after), (Phase::Recording, Phase::Stopped { .. }))
 }
 
 impl Problem {
-    /// `None` unless the job is blocked or failed.
-    pub fn of(job: &JobState) -> Option<Problem> {
+    pub fn of(
+        job: &JobState,
+        models: &HashMap<ModelRef, ModelInfo>,
+        downloads: &HashMap<ModelRef, Download>,
+    ) -> Problem {
         match job {
             JobState::Blocked { stage, blocker } => {
-                let summaries = *stage == Stage::Summarize
-                    || matches!(blocker, Blocker::NoModel { kind: KindTag::Llm });
-                let fix = match blocker {
-                    _ if summaries => Fix::SetUpSummaries,
-                    Blocker::NeedsProvision { model, .. } => Fix::Download(model.clone()),
-                    _ => Fix::TryAgain,
-                };
-                Some(Problem {
-                    text: blocked_text(blocker),
-                    fix,
-                })
+                if *stage == Stage::Summarize
+                    || matches!(blocker, Blocker::NoModel { kind: KindTag::Llm })
+                {
+                    return Problem::SummaryModelMissing;
+                }
+                match blocker {
+                    Blocker::NeedsProvision { model, bytes } => {
+                        let info = models.get(model);
+                        Problem::SpeechModelMissing {
+                            model: model.clone(),
+                            kind: info.map_or(KindTag::Stt, |m| m.kind),
+                            name: info.map_or_else(|| model.to_string(), |m| m.name.clone()),
+                            bytes: bytes.or(info.and_then(|m| m.bytes)),
+                            download: downloads.get(model).copied(),
+                        }
+                    }
+                    Blocker::NoModel { .. } => Problem::NoSpeechModel,
+                    other => Problem::Transcription {
+                        text: blocked_text(other),
+                        started: false,
+                    },
+                }
             }
-            JobState::Failed { stage, error } => Some(Problem {
-                text: format!("{} failed: {}", stage_noun(*stage), error.message),
-                fix: Fix::TryAgain,
-            }),
-            _ => None,
+            JobState::Failed {
+                stage: Stage::Summarize,
+                error,
+            } => Problem::Summary(error.message.clone()),
+            JobState::Failed { error, .. } => match error.cause {
+                FailureCause::DiskFull => Problem::DiskFull,
+                FailureCause::AudioUnreadable => Problem::AudioUnreadable,
+                FailureCause::Crashed => Problem::Crashed,
+                FailureCause::Other if error.class == FailureClass::Transient => Problem::Crashed,
+                FailureCause::Other => Problem::Transcription {
+                    text: format!("transcription failed: {}", sentence_end(&error.message)),
+                    started: true,
+                },
+            },
+            _ => Problem::Transcription {
+                text: "transcription stopped.".into(),
+                started: true,
+            },
+        }
+    }
+
+    pub fn stage(&self) -> Stage {
+        match self {
+            Problem::SummaryModelMissing | Problem::Summary(_) => Stage::Summarize,
+            _ => Stage::Transcribe,
+        }
+    }
+
+    pub fn headline(&self) -> &'static str {
+        match self {
+            Problem::SpeechModelMissing { .. } | Problem::NoSpeechModel => {
+                "Transcription didn't start"
+            }
+            Problem::Transcription { started: false, .. } => "Transcription didn't start",
+            Problem::DiskFull | Problem::Crashed | Problem::Transcription { .. } => {
+                "Transcription didn't finish"
+            }
+            Problem::AudioUnreadable => "Can't read the audio",
+            Problem::SummaryModelMissing | Problem::Summary(_) => "No summary yet",
+        }
+    }
+
+    /// UX-13's one sentence. When the audio is safe it says so first.
+    pub fn text(&self) -> String {
+        match self {
+            Problem::SpeechModelMissing { kind, .. } => format!(
+                "Your recording is saved, but the {} model isn't on this Mac.",
+                model_noun(*kind)
+            ),
+            Problem::NoSpeechModel => {
+                "Your recording is saved, but no speech model is set up.".into()
+            }
+            Problem::DiskFull => {
+                "Your recording is saved, but there isn't enough space to transcribe it.".into()
+            }
+            Problem::Crashed => "Transcription stopped partway. Your recording is saved.".into(),
+            Problem::AudioUnreadable => "This recording's audio can't be read.".into(),
+            Problem::Transcription { text, .. } => format!("Your recording is saved, but {text}"),
+            Problem::SummaryModelMissing => {
+                "The transcript is ready, but summaries aren't set up.".into()
+            }
+            Problem::Summary(message) => format!(
+                "The transcript is ready, but the summary failed: {}",
+                sentence_end(message)
+            ),
+        }
+    }
+
+    /// The card's detail line: the sentence, or the download while it runs.
+    pub fn detail(&self) -> String {
+        match self {
+            Problem::SpeechModelMissing {
+                name,
+                download: Some(download),
+                ..
+            } => downloading(name, *download, "MB"),
+            _ => self.text(),
+        }
+    }
+
+    fn step_word(&self) -> &'static str {
+        match self {
+            Problem::SpeechModelMissing {
+                kind: KindTag::Diar,
+                ..
+            } => "Needs the speaker model",
+            Problem::SpeechModelMissing { .. } => "Needs the speech model",
+            Problem::NoSpeechModel => "Needs a speech model",
+            Problem::DiskFull => "Needs space",
+            Problem::Crashed => "Stopped",
+            Problem::AudioUnreadable => "Can't read audio",
+            Problem::Transcription { started: false, .. } => "Didn't start",
+            Problem::Transcription { .. } => "Failed",
+            Problem::SummaryModelMissing | Problem::Summary(_) => "Waiting",
+        }
+    }
+
+    pub fn fix(&self) -> Option<Fix> {
+        Some(match self {
+            Problem::SpeechModelMissing {
+                download: Some(_), ..
+            } => return None,
+            Problem::SpeechModelMissing { model, .. } => Fix::Download(model.clone()),
+            Problem::NoSpeechModel => Fix::ChooseSpeechModel,
+            Problem::SummaryModelMissing => Fix::SetUpSummaries,
+            Problem::DiskFull => Fix::FreeUpSpace,
+            Problem::AudioUnreadable => Fix::ShowInFinder,
+            Problem::Crashed | Problem::Transcription { .. } | Problem::Summary(_) => Fix::TryAgain,
+        })
+    }
+
+    /// The button's visible label and its spoken name.
+    pub fn button(&self) -> Option<(String, String)> {
+        let plain = |label: &str| Some((label.to_owned(), label.to_owned()));
+        match self.fix()? {
+            Fix::Download(_) => {
+                let Problem::SpeechModelMissing { name, bytes, .. } = self else {
+                    return None;
+                };
+                match bytes {
+                    Some(bytes) => Some((
+                        format!("Download {name} ({} MB)", megabytes(*bytes)),
+                        format!("Download {name}, {} megabytes", megabytes(*bytes)),
+                    )),
+                    None => plain(&format!("Download {name}")),
+                }
+            }
+            Fix::ChooseSpeechModel => plain("Choose a Speech Model…"),
+            Fix::SetUpSummaries => plain("Set Up Summaries"),
+            Fix::FreeUpSpace => plain("Free Up Space…"),
+            Fix::TryAgain => plain("Try Again"),
+            Fix::ShowInFinder => plain("Show in Finder"),
+        }
+    }
+
+    /// The VoiceOver sentence: the headline, the sentence, and the button (UX-13).
+    pub fn sentence(&self) -> String {
+        let detail = match self {
+            Problem::SpeechModelMissing {
+                name,
+                download: Some(download),
+                ..
+            } => format!("{}.", downloading(name, *download, "megabytes")),
+            _ => self.text(),
+        };
+        match self.button() {
+            Some((_, spoken)) => format!(
+                "{}. {detail} {}.",
+                self.headline(),
+                spoken.trim_end_matches('…')
+            ),
+            None => format!("{}. {detail}", self.headline()),
+        }
+    }
+}
+
+fn model_noun(kind: KindTag) -> &'static str {
+    match kind {
+        KindTag::Diar => "speaker",
+        _ => "speech",
+    }
+}
+
+fn megabytes(bytes: u64) -> u64 {
+    (bytes + 500_000) / 1_000_000
+}
+
+/// "Downloading Parakeet, 120 of 487 MB", or a percent-free form before the size is known.
+fn downloading(name: &str, download: Download, unit: &str) -> String {
+    let done = megabytes(download.done);
+    match download.total {
+        Some(total) => format!("Downloading {name}, {done} of {} {unit}", megabytes(total)),
+        None => format!("Downloading {name}, {done} {unit}"),
+    }
+}
+
+fn sentence_end(message: &str) -> String {
+    let message = message.trim();
+    if message.ends_with(['.', '!', '?']) {
+        message.to_owned()
+    } else {
+        format!("{message}.")
+    }
+}
+
+fn seconds(n: u8) -> String {
+    if n == 1 {
+        "1 second".into()
+    } else {
+        format!("{n} seconds")
+    }
+}
+
+fn minutes_of_audio(audio: Ms) -> String {
+    let secs = (audio.0 + 500) / 1000;
+    match (secs + 30) / 60 {
+        _ if secs < 60 => seconds(secs.max(1) as u8),
+        1 => "1 minute".into(),
+        n => format!("{n} minutes"),
+    }
+}
+
+fn spoken_start(at: Ms) -> String {
+    if at.0 < 60_000 {
+        "in less than 1 minute".into()
+    } else {
+        match at.0.div_ceil(60_000) {
+            1 => "in about 1 minute".into(),
+            n => format!("in about {n} minutes"),
         }
     }
 }
 
 fn blocked_text(blocker: &Blocker) -> String {
     match blocker {
-        Blocker::NeedsProvision { model, bytes } => match bytes {
-            Some(b) => format!("{model} is not on this Mac ({} MB).", b / 1_000_000),
-            None => format!("{model} is not on this Mac."),
-        },
-        // The provider's own fix, such as turning on Apple Intelligence, is the only way out.
+        Blocker::NeedsProvision { model, .. } => format!("{model} isn't on this Mac."),
         Blocker::Unavailable { model, why } => match &why.fix {
             Some(fix) => format!(
                 "{model} is unavailable: {}. {fix}",
@@ -69,7 +774,7 @@ fn blocked_text(blocker: &Blocker) -> String {
             None => format!("{model} is unavailable: {}.", unavailable(&why.reason)),
         },
         Blocker::Incompatible { model, why } => format!("{model} {why}."),
-        Blocker::NoModel { kind } => format!("No {kind} model is set up."),
+        Blocker::NoModel { kind } => format!("no {kind} model is set up."),
     }
 }
 
@@ -82,61 +787,25 @@ fn unavailable(reason: &UnavailableReason) -> String {
     }
 }
 
-fn stage_noun(stage: Stage) -> &'static str {
-    match stage {
-        Stage::Transcribe => "Transcription",
-        Stage::Summarize => "The summary",
+/// The chip in the card while transcription runs light (UX-30).
+pub fn light_chip(reason: LightReason) -> &'static str {
+    match reason {
+        LightReason::Chosen => "Light, chosen in Settings",
+        LightReason::Battery => "Light, on battery",
+        LightReason::LowPower => "Light, Low Power Mode",
+        LightReason::Hot => "Light, Mac is warm",
+        LightReason::Recording => "Light, while you record",
     }
 }
 
-/// Audio milliseconds processed per wall-clock millisecond.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Rate(f64);
-
-impl Rate {
-    /// A guess for a Mac Dory has not watched transcribe yet: a quarter of real time.
-    pub const GUESS: Rate = Rate(4.0);
-
-    /// The rate over `elapsed_ms` in which `audio` went from `from` to `to` done. `None` until
-    /// some audio and some time have passed.
-    pub fn observed(audio: Ms, from: Fraction, to: Fraction, elapsed_ms: u64) -> Option<Rate> {
-        let done = f64::from(to.get() - from.get()) * audio.0 as f64;
-        (done > 0.0 && elapsed_ms > 0).then(|| Rate(done / elapsed_ms as f64))
+fn because(reason: LightReason) -> &'static str {
+    match reason {
+        LightReason::Chosen => "Light is chosen in Settings",
+        LightReason::Battery => "the Mac is on battery",
+        LightReason::LowPower => "Low Power Mode is on",
+        LightReason::Hot => "the Mac is warm",
+        LightReason::Recording => "you're recording",
     }
-
-    pub fn time_for(self, audio: Ms) -> Ms {
-        Ms((audio.0 as f64 / self.0).round() as u64)
-    }
-}
-
-/// UX-12 shows the time left only once this much audio is done, so the rate has settled.
-pub const ESTIMATE_AFTER: Ms = Ms(60_000);
-
-/// The time the rest of `audio` takes at `rate`, once [`ESTIMATE_AFTER`] of it is done.
-pub fn time_left(audio: Ms, done: Fraction, rate: Rate) -> Option<Ms> {
-    let done_ms = f64::from(done.get()) * audio.0 as f64;
-    (done_ms >= ESTIMATE_AFTER.0 as f64)
-        .then(|| rate.time_for(Ms((audio.0 as f64 - done_ms).max(0.0) as u64)))
-}
-
-/// "about 3 min left", rounded up so the estimate never promises too much.
-pub fn left_label(left: Ms) -> String {
-    match left.0.div_ceil(60_000) {
-        0 | 1 => "about 1 min left".into(),
-        minutes => format!("about {minutes} min left"),
-    }
-}
-
-/// The finish card's sentence with the estimated time (UX-11).
-pub fn finish_estimate(audio: Ms, rate: Option<Rate>) -> String {
-    let minutes = rate
-        .unwrap_or(Rate::GUESS)
-        .time_for(audio)
-        .0
-        .div_ceil(60_000)
-        .max(1);
-    let unit = if minutes == 1 { "minute" } else { "minutes" };
-    format!("Transcribing takes about {minutes} {unit} on this Mac.")
 }
 
 /// The first progress seen for a recording's running stage at its current pace, so a rate covers
@@ -147,17 +816,6 @@ pub struct Run {
     pub pace: Option<Pace>,
     pub from: Fraction,
     pub at_ms: u64,
-}
-
-/// What the row and the detail add after the stage while a job runs light (UX-30).
-pub fn light_label(reason: LightReason) -> &'static str {
-    match reason {
-        LightReason::Chosen => "Light, chosen in Settings",
-        LightReason::Battery => "Light, on battery",
-        LightReason::LowPower => "Light, Low Power Mode",
-        LightReason::Hot => "Light, Mac is hot",
-        LightReason::Recording => "Light, while recording",
-    }
 }
 
 /// A Processing choice in Settings > Transcription and its effect in one line (UX-30).
@@ -215,110 +873,612 @@ pub fn outcomes(before: &[RecordingRow], after: &[RecordingRow]) -> Vec<(Recordi
 
 #[cfg(test)]
 mod tests {
-    use dory_core::domain::{FailureClass, JobError};
+    use dory_core::app::Budget;
+    use dory_core::domain::JobError;
 
     use super::*;
     use crate::fixtures;
+    use crate::library::{Glyph, Tone};
+
+    const MIN: u64 = 60_000;
+
+    /// One recording's facts, starting from Weekly sync with nothing running, recorded or queued.
+    struct Case {
+        row: RecordingRow,
+        recorder: RecorderStatus,
+        grace_left: Option<u8>,
+        sealing: bool,
+        progress: Option<Progress>,
+        done: Vec<Stage>,
+        spot: Option<Spot>,
+        left: Left,
+        models: HashMap<ModelRef, ModelInfo>,
+        downloads: HashMap<ModelRef, Download>,
+    }
+
+    fn weekly() -> Case {
+        let mut row = fixtures::rows()
+            .into_iter()
+            .find(|r| r.recording.title.as_deref() == Some("Weekly sync"))
+            .unwrap();
+        row.job = None;
+        row.has_transcript = false;
+        row.summary = SummaryFlag::None;
+        Case {
+            row,
+            recorder: RecorderStatus::Idle,
+            grace_left: None,
+            sealing: false,
+            progress: None,
+            done: Vec::new(),
+            spot: None,
+            left: Left::Estimating,
+            models: HashMap::new(),
+            downloads: HashMap::new(),
+        }
+    }
+
+    impl Case {
+        fn job(mut self, job: JobState) -> Case {
+            self.row.job = Some(job);
+            self
+        }
+
+        fn progress(mut self, stage: Stage, fraction: f32, budget: Option<Budget>) -> Case {
+            self.progress = Some(Progress {
+                stage,
+                fraction: Fraction::new(fraction),
+                budget,
+            });
+            self
+        }
+
+        fn phase(&self) -> Phase {
+            Phase::derive(&Facts {
+                row: &self.row,
+                recorder: &self.recorder,
+                grace_left: self.grace_left,
+                sealing: self.sealing,
+                progress: self.progress,
+                done: &self.done,
+                spot: self.spot,
+                left: self.left,
+                auto_process: true,
+                models: &self.models,
+                downloads: &self.downloads,
+            })
+        }
+    }
+
+    /// One row of section 4: what the card and the row say.
+    #[derive(Debug, PartialEq)]
+    struct Words {
+        headline: Option<String>,
+        detail: Option<String>,
+        steps: Option<Vec<(StepGlyph, String)>>,
+        sentence: String,
+        row: (Glyph, String, Tone),
+    }
+
+    fn words(phase: &Phase) -> Words {
+        let row = phase.row();
+        Words {
+            headline: phase.headline(),
+            detail: phase.detail(Some(Ms(62 * MIN))),
+            steps: phase
+                .steps()
+                .map(|steps| steps.into_iter().map(|s| (s.glyph, s.word)).collect()),
+            sentence: phase.sentence("Weekly sync"),
+            row: (row.glyph(), row.label(), row.tone()),
+        }
+    }
+
+    fn want(
+        headline: Option<&str>,
+        detail: Option<&str>,
+        steps: Option<[(StepGlyph, &str); 3]>,
+        sentence: &str,
+        row: (Glyph, &str, Tone),
+    ) -> Words {
+        Words {
+            headline: headline.map(str::to_owned),
+            detail: detail.map(str::to_owned),
+            steps: steps.map(|s| s.into_iter().map(|(g, w)| (g, w.to_owned())).collect()),
+            sentence: sentence.to_owned(),
+            row: (row.0, row.1.to_owned(), row.2),
+        }
+    }
+
+    use StepGlyph::{Check, Clock, Dots, Pending, Stop, Warning};
+
+    fn running(stage: Stage) -> JobState {
+        JobState::Running { stage }
+    }
 
     #[test]
-    fn problems_read_as_the_cli_words_them_with_one_fix_each() {
-        let failed = JobState::Failed {
-            stage: Stage::Summarize,
-            error: JobError {
-                class: FailureClass::Permanent,
-                message: "The summary model isn't installed.".into(),
-                cause: dory_core::domain::FailureCause::Other,
-            },
+    fn p1_stopped_in_the_undo_window() {
+        let mut case = weekly();
+        case.recorder = RecorderStatus::Grace {
+            id: case.row.recording.id.clone(),
+            recorded: Ms(62 * MIN),
         };
+        case.grace_left = Some(5);
         assert_eq!(
-            Problem::of(&failed),
-            Some(Problem {
-                text: "The summary failed: The summary model isn't installed.".into(),
-                fix: Fix::TryAgain,
-            })
+            words(&case.phase()),
+            want(
+                Some("Recording stopped"),
+                Some("Transcription starts in 5 seconds."),
+                Some([
+                    (Stop, "Stopped"),
+                    (Pending, "Starts in 5 s"),
+                    (Pending, "Waiting")
+                ]),
+                "Recording stopped. Transcription starts in 5 seconds.",
+                (Glyph::StopCircle, "Stopped", Tone::Secondary),
+            )
         );
-        let model = ModelRef::parse("fake/whisper").unwrap();
-        let provision = JobState::Blocked {
+    }
+
+    #[test]
+    fn p2_saving() {
+        let mut case = weekly();
+        case.sealing = true;
+        assert_eq!(
+            words(&case.phase()),
+            want(
+                Some("Saving the recording"),
+                Some("62 minutes of audio. This takes a moment."),
+                Some([(Dots, "Saving"), (Pending, "Waiting"), (Pending, "Waiting")]),
+                "Saving the recording.",
+                (Glyph::DotsCircle, "Saving", Tone::Accent),
+            )
+        );
+    }
+
+    #[test]
+    fn p3a_queued_with_the_number_ahead_and_the_start() {
+        let mut case = weekly().job(JobState::Queued);
+        case.spot = Some(Spot {
+            ahead: 2,
+            starts_in: Some(Ms(8 * MIN + 20_000)),
+        });
+        let phase = case.phase();
+        assert!(phase.can_move_to_top());
+        assert_eq!(
+            words(&phase),
+            want(
+                Some("Waiting to transcribe"),
+                Some("2 recordings are ahead of this one. It starts in about 9 min."),
+                Some([(Check, "Saved"), (Clock, "2 ahead"), (Pending, "Waiting")]),
+                "Waiting to transcribe. 2 recordings ahead, starts in about 9 minutes.",
+                (Glyph::Clock, "Queued, 2 ahead", Tone::Secondary),
+            )
+        );
+        case.spot = Some(Spot {
+            ahead: 1,
+            starts_in: None,
+        });
+        assert_eq!(
+            case.phase().detail(None).as_deref(),
+            Some("1 recording is ahead of this one."),
+            "no start without estimates for the jobs ahead"
+        );
+        case.spot = Some(Spot {
+            ahead: 0,
+            starts_in: None,
+        });
+        assert!(!case.phase().can_move_to_top());
+        assert_eq!(case.phase().row().label(), "Queued");
+    }
+
+    #[test]
+    fn p3b_loading_the_model() {
+        let case = weekly().job(running(Stage::Transcribe));
+        assert_eq!(
+            words(&case.phase()),
+            want(
+                Some("Getting ready to transcribe"),
+                Some("Loading the speech model. This takes a few seconds."),
+                Some([(Check, "Saved"), (Dots, "Preparing"), (Pending, "Waiting")]),
+                "Getting ready to transcribe. Loading the speech model.",
+                (Glyph::Dots, "Preparing", Tone::Accent),
+            )
+        );
+    }
+
+    #[test]
+    fn p4_transcribing_with_the_time_left() {
+        let mut case = weekly().job(running(Stage::Transcribe)).progress(
+            Stage::Transcribe,
+            0.4,
+            Some(Budget::Fast { threads: 4 }),
+        );
+        case.left = Left::About(Ms(4 * MIN));
+        let phase = case.phase();
+        assert_eq!(phase.light(), None);
+        assert_eq!(
+            words(&phase),
+            want(
+                Some("Transcribing"),
+                Some("40% · about 4 min left"),
+                Some([(Check, "Saved"), (Dots, "40%"), (Pending, "Waiting")]),
+                "Transcribing, 40%, about 4 minutes left.",
+                (Glyph::Dots, "Transcribing 40%", Tone::Accent),
+            )
+        );
+    }
+
+    #[test]
+    fn p4_in_the_first_minute_is_still_estimating() {
+        let case = weekly().job(running(Stage::Transcribe)).progress(
+            Stage::Transcribe,
+            0.03,
+            Some(Budget::Fast { threads: 4 }),
+        );
+        let said = words(&case.phase());
+        assert_eq!(said.detail.as_deref(), Some("3% · estimating time left"));
+        assert_eq!(said.sentence, "Transcribing, 3%. Estimating time left.");
+    }
+
+    #[test]
+    fn p5_transcribing_light_says_why_and_offers_fast() {
+        let mut case = weekly().job(running(Stage::Transcribe)).progress(
+            Stage::Transcribe,
+            0.4,
+            Some(Budget::Light {
+                reason: LightReason::Battery,
+            }),
+        );
+        case.left = Left::About(Ms(9 * MIN));
+        let phase = case.phase();
+        assert_eq!(phase.light().map(light_chip), Some("Light, on battery"));
+        assert_eq!(
+            words(&phase),
+            want(
+                Some("Transcribing"),
+                Some("40% · about 9 min left"),
+                Some([(Check, "Saved"), (Dots, "40%, light"), (Pending, "Waiting")]),
+                "Transcribing, 40%, about 9 minutes left. Running light because the Mac is on battery.",
+                (Glyph::Dots, "40%, light", Tone::Accent),
+            )
+        );
+        for (reason, chip) in [
+            (LightReason::LowPower, "Light, Low Power Mode"),
+            (LightReason::Hot, "Light, Mac is warm"),
+            (LightReason::Recording, "Light, while you record"),
+        ] {
+            assert_eq!(light_chip(reason), chip);
+        }
+    }
+
+    #[test]
+    fn p6_summarizing() {
+        let mut case = weekly().job(running(Stage::Summarize));
+        case.row.has_transcript = true;
+        case.left = Left::About(Ms(50_000));
+        assert_eq!(
+            words(&case.phase()),
+            want(
+                Some("Writing the summary"),
+                Some("The transcript is ready to read. Summary in less than 1 min."),
+                Some([(Check, "Saved"), (Check, "Ready"), (Dots, "Writing")]),
+                "Transcript ready. Writing the summary, less than 1 minute left.",
+                (Glyph::Dots, "Summarizing", Tone::Accent),
+            )
+        );
+        case.left = Left::About(Ms(MIN));
+        assert_eq!(
+            case.phase().sentence("Weekly sync"),
+            "Transcript ready. Writing the summary, about 1 minute left."
+        );
+        let mut between = weekly().job(JobState::Queued);
+        between.done = vec![Stage::Transcribe];
+        assert_eq!(
+            between.phase().row(),
+            RowStatus::Summarizing,
+            "queued for the summary after the transcript"
+        );
+    }
+
+    #[test]
+    fn p7_done_becomes_the_player() {
+        let mut case = weekly().job(JobState::Succeeded);
+        case.row.has_transcript = true;
+        case.row.summary = SummaryFlag::Current;
+        let phase = case.phase();
+        assert!(!phase.is_processing());
+        assert_eq!(
+            words(&phase),
+            want(
+                None,
+                None,
+                None,
+                "Summary ready for Weekly sync.",
+                (Glyph::Check, "Done", Tone::Secondary),
+            )
+        );
+        case.row.summary = SummaryFlag::None;
+        assert_eq!(
+            case.phase().sentence("Weekly sync"),
+            "Transcript ready for Weekly sync."
+        );
+    }
+
+    fn parakeet() -> ModelRef {
+        ModelRef::parse("sherpa/parakeet").unwrap()
+    }
+
+    fn missing_parakeet() -> Case {
+        let mut case = weekly().job(JobState::Blocked {
             stage: Stage::Transcribe,
             blocker: Blocker::NeedsProvision {
-                model: model.clone(),
-                bytes: Some(1_500_000_000),
+                model: parakeet(),
+                bytes: None,
             },
+        });
+        case.models.insert(
+            parakeet(),
+            ModelInfo {
+                kind: KindTag::Stt,
+                name: "Parakeet".into(),
+                bytes: Some(487_211_443),
+            },
+        );
+        case
+    }
+
+    #[test]
+    fn p8_a_missing_speech_model_offers_its_download() {
+        let case = missing_parakeet();
+        let phase = case.phase();
+        assert!(phase.is_processing());
+        assert_eq!(
+            words(&phase),
+            want(
+                Some("Transcription didn't start"),
+                Some("Your recording is saved, but the speech model isn't on this Mac."),
+                Some([
+                    (Check, "Saved"),
+                    (Warning, "Needs the speech model"),
+                    (Pending, "Waiting")
+                ]),
+                "Transcription didn't start. Your recording is saved, but the speech model isn't on this Mac. Download Parakeet, 487 megabytes.",
+                (Glyph::Triangle, "Needs attention", Tone::Attention),
+            )
+        );
+        let Phase::Failed(problem) = &phase else {
+            unreachable!()
         };
         assert_eq!(
-            Problem::of(&provision),
-            Some(Problem {
-                text: "fake/whisper is not on this Mac (1500 MB).".into(),
-                fix: Fix::Download(model.clone()),
-            })
+            problem.button(),
+            Some((
+                "Download Parakeet (487 MB)".into(),
+                "Download Parakeet, 487 megabytes".into()
+            ))
         );
-        let summary_missing = JobState::Blocked {
+        assert_eq!(phase.fix(), Some(Fix::Download(parakeet())));
+        assert_eq!(
+            phase.placeholder(),
+            "The transcript appears here once the speech model is installed."
+        );
+    }
+
+    #[test]
+    fn p8_the_download_shows_in_the_same_card() {
+        let mut case = missing_parakeet();
+        case.downloads.insert(
+            parakeet(),
+            Download {
+                done: 120_000_000,
+                total: Some(487_211_443),
+            },
+        );
+        let phase = case.phase();
+        assert_eq!(
+            phase.detail(None).as_deref(),
+            Some("Downloading Parakeet, 120 of 487 MB")
+        );
+        assert_eq!(phase.fix(), None, "no button while it downloads");
+        assert_eq!(
+            phase.sentence("Weekly sync"),
+            "Transcription didn't start. Downloading Parakeet, 120 of 487 megabytes."
+        );
+    }
+
+    fn failed(stage: Stage, class: FailureClass, cause: FailureCause) -> JobState {
+        JobState::Failed {
+            stage,
+            error: JobError {
+                class,
+                message: "the engine said no".into(),
+                cause,
+            },
+        }
+    }
+
+    /// UX-13's table: cause, sentence, button, and whether the card stays (the transcript failed)
+    /// or the Summary tab shows it (the summary failed).
+    #[test]
+    fn ux_13_every_cause_says_what_to_do() {
+        let summary_blocked = JobState::Blocked {
             stage: Stage::Summarize,
-            blocker: Blocker::NeedsProvision { model, bytes: None },
-        };
-        assert_eq!(
-            Problem::of(&summary_missing).unwrap().fix,
-            Fix::SetUpSummaries
-        );
-        let no_llm = JobState::Blocked {
-            stage: Stage::Transcribe,
             blocker: Blocker::NoModel { kind: KindTag::Llm },
         };
-        assert_eq!(Problem::of(&no_llm).unwrap().fix, Fix::SetUpSummaries);
-        let no_stt = JobState::Blocked {
+        let rows: [(&str, JobState, &str, &str, Fix, bool); 6] = [
+            (
+                "summary model missing",
+                summary_blocked,
+                "The transcript is ready, but summaries aren't set up.",
+                "Set Up Summaries",
+                Fix::SetUpSummaries,
+                false,
+            ),
+            (
+                "disk full",
+                failed(
+                    Stage::Transcribe,
+                    FailureClass::NeedsUser,
+                    FailureCause::DiskFull,
+                ),
+                "Your recording is saved, but there isn't enough space to transcribe it.",
+                "Free Up Space…",
+                Fix::FreeUpSpace,
+                true,
+            ),
+            (
+                "transcriber crashed",
+                failed(
+                    Stage::Transcribe,
+                    FailureClass::Transient,
+                    FailureCause::Crashed,
+                ),
+                "Transcription stopped partway. Your recording is saved.",
+                "Try Again",
+                Fix::TryAgain,
+                true,
+            ),
+            (
+                "retries ran out",
+                failed(
+                    Stage::Transcribe,
+                    FailureClass::Transient,
+                    FailureCause::Other,
+                ),
+                "Transcription stopped partway. Your recording is saved.",
+                "Try Again",
+                Fix::TryAgain,
+                true,
+            ),
+            (
+                "audio unreadable",
+                failed(
+                    Stage::Transcribe,
+                    FailureClass::Permanent,
+                    FailureCause::AudioUnreadable,
+                ),
+                "This recording's audio can't be read.",
+                "Show in Finder",
+                Fix::ShowInFinder,
+                true,
+            ),
+            (
+                "something else",
+                failed(
+                    Stage::Transcribe,
+                    FailureClass::Permanent,
+                    FailureCause::Other,
+                ),
+                "Your recording is saved, but transcription failed: the engine said no.",
+                "Try Again",
+                Fix::TryAgain,
+                true,
+            ),
+        ];
+        for (name, job, text, button, fix, card) in rows {
+            let mut case = weekly().job(job);
+            case.row.has_transcript = !card;
+            let phase = case.phase();
+            let Phase::Failed(problem) = &phase else {
+                panic!("{name}: {phase:?}")
+            };
+            assert_eq!(problem.text(), text, "{name}");
+            assert_eq!(
+                problem.button(),
+                Some((button.into(), button.into())),
+                "{name}"
+            );
+            assert_eq!(phase.fix(), Some(fix), "{name}");
+            assert_eq!(phase.is_processing(), card, "{name}");
+            assert_eq!(phase.row(), RowStatus::NeedsAttention, "{name}");
+            assert_eq!(
+                phase.sentence("Weekly sync"),
+                format!(
+                    "{}. {text} {}.",
+                    problem.headline(),
+                    button.trim_end_matches('…')
+                ),
+                "{name}: the sentence plus the button's label"
+            );
+        }
+    }
+
+    #[test]
+    fn no_speech_model_asks_to_choose_one() {
+        let case = weekly().job(JobState::Blocked {
             stage: Stage::Transcribe,
             blocker: Blocker::NoModel { kind: KindTag::Stt },
+        });
+        let Phase::Failed(problem) = case.phase() else {
+            unreachable!()
         };
-        assert_eq!(
-            Problem::of(&no_stt),
-            Some(Problem {
-                text: "No speech model is set up.".into(),
-                fix: Fix::TryAgain,
-            })
-        );
-        assert_eq!(Problem::of(&JobState::Queued), None);
+        assert_eq!(problem, Problem::NoSpeechModel);
+        assert_eq!(problem.fix(), Some(Fix::ChooseSpeechModel));
     }
 
     #[test]
-    fn time_left_waits_for_a_minute_of_audio_then_uses_the_observed_rate() {
-        let audio = Ms(10 * 60_000);
-        let rate = Rate::observed(audio, Fraction::new(0.0), Fraction::new(0.2), 30_000).unwrap();
-        assert_eq!(rate.time_for(Ms(120_000)), Ms(30_000), "4x real time");
-        assert_eq!(
-            time_left(audio, Fraction::new(0.05), rate),
-            None,
-            "30 s done"
-        );
-        assert_eq!(
-            time_left(audio, Fraction::new(0.2), rate),
-            Some(Ms(120_000)),
-            "8 min of audio left at 4x"
-        );
-        assert_eq!(left_label(Ms(120_000)), "about 2 min left");
-        assert_eq!(left_label(Ms(121_000)), "about 3 min left");
-        assert_eq!(left_label(Ms(5_000)), "about 1 min left");
-        assert_eq!(
-            Rate::observed(audio, Fraction::new(0.2), Fraction::new(0.2), 1_000),
-            None
-        );
+    fn rows_outside_processing_keep_their_words() {
+        let mut case = weekly();
+        assert_eq!(case.phase(), Phase::Ready);
+        assert_eq!(case.phase().row().label(), "Ready to transcribe");
+        case.recorder = RecorderStatus::Recording {
+            id: case.row.recording.id.clone(),
+            recorded: Ms(1_000),
+        };
+        assert_eq!(case.phase().row(), RowStatus::Recording);
+        let mut cancelled = weekly().job(JobState::Cancelled);
+        cancelled.row.has_transcript = true;
+        assert_eq!(cancelled.phase().row(), RowStatus::Done);
     }
 
     #[test]
-    fn the_finish_estimate_uses_the_observed_rate_or_a_guess() {
-        let audio = Ms(12 * 60_000);
-        assert_eq!(
-            finish_estimate(audio, None),
-            "Transcribing takes about 3 minutes on this Mac."
-        );
-        let slow = Rate::observed(audio, Fraction::new(0.0), Fraction::new(0.5), 6 * 60_000);
-        assert_eq!(
-            finish_estimate(audio, slow),
-            "Transcribing takes about 12 minutes on this Mac."
-        );
-        assert_eq!(
-            finish_estimate(Ms(10_000), None),
-            "Transcribing takes about 1 minute on this Mac."
-        );
+    fn voiceover_speaks_on_a_new_stage_a_failure_and_done_but_not_on_each_percent() {
+        let transcribing = |percent: f32, left: Left| Phase::Transcribing {
+            done: Fraction::new(percent),
+            left,
+            light: None,
+        };
+        let queued = Phase::Queued(Spot {
+            ahead: 2,
+            starts_in: None,
+        });
+        let crashed = Phase::Failed(Problem::Crashed);
+        let stopped = |starts_in| Phase::Stopped {
+            starts_in,
+            auto: true,
+        };
+        let silent = [
+            (
+                transcribing(0.40, Left::Estimating),
+                transcribing(0.41, Left::About(Ms(MIN))),
+            ),
+            (stopped(5), stopped(4)),
+            (
+                queued.clone(),
+                Phase::Queued(Spot {
+                    ahead: 1,
+                    starts_in: None,
+                }),
+            ),
+            (Phase::Recording, stopped(5)),
+            (Phase::Saving, Phase::Ready),
+        ];
+        for (before, after) in silent {
+            assert!(!announces(&before, &after), "{before:?} -> {after:?}");
+        }
+        let summarizing = Phase::Summarizing {
+            left: Left::Estimating,
+        };
+        let spoken = [
+            (queued, Phase::Preparing),
+            (Phase::Preparing, transcribing(0.0, Left::Estimating)),
+            (transcribing(0.9, Left::Estimating), summarizing.clone()),
+            (summarizing, Phase::Done { summary: true }),
+            (transcribing(0.4, Left::Estimating), crashed.clone()),
+            (crashed, Phase::Failed(Problem::DiskFull)),
+        ];
+        for (before, after) in spoken {
+            assert!(announces(&before, &after), "{before:?} -> {after:?}");
+        }
     }
 
     #[test]
@@ -326,20 +1486,14 @@ mod tests {
         let rows = fixtures::rows();
         let mut before = rows.clone();
         let mut after = rows.clone();
-        let running = Some(JobState::Running {
-            stage: Stage::Transcribe,
-        });
-        before[0].job = running.clone();
+        before[0].job = Some(running(Stage::Transcribe));
         after[0].job = Some(JobState::Succeeded);
         before[1].job = Some(JobState::Queued);
-        after[1].job = Some(JobState::Failed {
-            stage: Stage::Transcribe,
-            error: JobError {
-                class: FailureClass::Permanent,
-                message: "broke".into(),
-                cause: dory_core::domain::FailureCause::Other,
-            },
-        });
+        after[1].job = Some(failed(
+            Stage::Transcribe,
+            FailureClass::Permanent,
+            FailureCause::Other,
+        ));
         before[2].job = Some(JobState::Succeeded);
         after[2].job = Some(JobState::Succeeded);
         assert_eq!(

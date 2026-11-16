@@ -1,46 +1,26 @@
 //! The record flow and processing on `AppState` (P5): recorder commands, the recorder's events,
-//! progress and the time left, and the finish and fix actions. Views call these methods; only
-//! this module tree reaches the facade.
+//! progress, the time left and the phase of each recording, and the finish and fix actions.
+//! Views call these methods; only this module tree reaches the facade.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
 use dory_core::app::{AppKind, Dory, Event, RecorderStatus, StartOptions};
-use dory_core::domain::{Blocker, Fraction, Goal, JobState, Ms, RecordingId, RecordingRow, Stage};
-use dory_core::models::{Diar, KindTag, ModelId, ModelRef, Stt};
+use dory_core::domain::{Goal, JobId, JobState, Ms, RecordingId, RecordingRow, Segment, Stage};
+use dory_core::models::{Availability, Diar, KindTag, ModelId, ModelRef, Stt};
 use dory_core::ports::ProvisionError;
 use dory_core::ports::capture::CaptureIssue;
 use dory_core::recorder::{FinalizeReason, Limits};
 use gpui_kit::Context;
 
 use super::core::Core;
-use super::{AppState, Saved};
-use crate::library::{self, Percent, Progress, RowStatus};
-use crate::processing::{self, Outcome, Rate, Run};
+use super::{AppState, DetailTab, Download, ModelInfo, Saved};
+use crate::estimate::{self, Estimate, Left, Rate};
+use crate::library::{self, Progress};
+use crate::processing::{self, Facts, Outcome, Phase, Run, Spot};
 use crate::record_control::Live;
 use crate::{a11y, notify};
-
-/// A model download in flight, from `ProvisionProgress`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Download {
-    pub done: u64,
-    pub total: Option<u64>,
-}
-
-impl Download {
-    pub fn percent(self) -> Option<Percent> {
-        self.total
-            .filter(|t| *t > 0)
-            .map(|t| Percent::of(Fraction::new(self.done as f32 / t as f32)))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelInfo {
-    pub kind: KindTag,
-    pub name: String,
-}
 
 /// Fills the model names the Download button shows.
 pub(super) fn load_models(core: &Core, cx: &mut Context<AppState>) {
@@ -48,23 +28,31 @@ pub(super) fn load_models(core: &Core, cx: &mut Context<AppState>) {
     let diar = core.dory().models().list::<Diar>();
     cx.spawn(async move |this, cx| {
         let mut models = HashMap::new();
+        let left_to_download = |availability: &Availability| match availability {
+            Availability::NeedsProvision { bytes } => *bytes,
+            _ => None,
+        };
         for row in stt.await.into_iter().flatten() {
+            let bytes = left_to_download(&row.status.availability);
             let entry = row.status.entry;
             models.insert(
                 entry.id.erase(),
                 ModelInfo {
                     kind: KindTag::Stt,
                     name: entry.display_name,
+                    bytes,
                 },
             );
         }
         for row in diar.await.into_iter().flatten() {
+            let bytes = left_to_download(&row.status.availability);
             let entry = row.status.entry;
             models.insert(
                 entry.id.erase(),
                 ModelInfo {
                     kind: KindTag::Diar,
                     name: entry.display_name,
+                    bytes,
                 },
             );
         }
@@ -251,58 +239,92 @@ impl AppState {
 
     /// The finish card's sentence, at the rate seen on this Mac so far.
     pub fn finish_estimate(&self, audio: Ms) -> String {
-        processing::finish_estimate(audio, self.rate)
+        estimate::finish_estimate(audio, self.rates.any())
     }
 
-    /// The time the running transcription still takes, once a minute of audio is done.
-    pub fn time_left(&self, id: &RecordingId) -> Option<Ms> {
-        let progress = self.progress.get(id)?;
-        if progress.stage != Stage::Transcribe {
-            return None;
+    /// Where `row` is from Stop to its summary, P1 to P8 (`docs/design/processing-view.md`).
+    pub fn phase(&self, row: &RecordingRow) -> Phase {
+        let id = &row.recording.id;
+        if let Some((phase, _)) = self.previews.get(id) {
+            return phase.clone();
         }
-        processing::time_left(self.audio_of(id)?, progress.fraction, self.rate?)
+        let job = self.queue.iter().find(|j| &j.recording == id);
+        Phase::derive(&Facts {
+            row,
+            recorder: &self.recorder,
+            grace_left: self.grace_left(),
+            sealing: self.sealing.contains(id),
+            progress: self.progress.get(id).copied(),
+            done: job.map_or(&[], |j| j.done.as_slice()),
+            spot: self.spot(id),
+            left: self
+                .estimates
+                .get(id)
+                .map_or(Left::Estimating, Estimate::left),
+            auto_process: self.settings.auto_process,
+            models: &self.models,
+            downloads: &self.downloads,
+        })
     }
 
-    /// The status words a row and the detail show: "Transcribing, 40%, about 3 min left", with
-    /// "· Light, on battery" after it while the job runs light, or "Downloading, 12%" while the
-    /// model a blocked job needs downloads.
-    pub fn status_text(&self, row: &RecordingRow) -> String {
-        let status = self.status(row);
-        if let Some(JobState::Blocked {
-            blocker: Blocker::NeedsProvision { model, .. },
-            ..
-        }) = &row.job
-            && let Some(download) = self.downloads.get(model)
-        {
-            return match download.percent() {
-                Some(p) => format!("Downloading, {}%", p.get()),
-                None => "Downloading".into(),
-            };
-        }
-        let words = match (status, self.time_left(&row.recording.id)) {
-            (RowStatus::Transcribing(Some(_)), Some(left)) => {
-                format!("{}, {}", status.label(), processing::left_label(left))
-            }
-            _ => status.label(),
-        };
-        let light = self
-            .progress
-            .get(&row.recording.id)
-            .and_then(|p| p.budget?.reason())
-            .filter(|_| matches!(status, RowStatus::Transcribing(_) | RowStatus::Summarizing));
-        match light {
-            Some(reason) => format!("{words} · {}", processing::light_label(reason)),
-            None => words,
+    /// The phase of the recording `id`, if it is listed.
+    pub fn phase_of(&self, id: &RecordingId) -> Option<Phase> {
+        self.row(id).map(|row| self.phase(row))
+    }
+
+    pub fn row(&self, id: &RecordingId) -> Option<&RecordingRow> {
+        self.recordings.iter().find(|r| &r.recording.id == id)
+    }
+
+    /// The audio's length: the saved take's, or the recorder's running total before it is saved.
+    pub fn audio_of(&self, id: &RecordingId) -> Option<Ms> {
+        match self.row(id)?.recording.take {
+            Some(take) => Some(take.duration),
+            None => (self.recorder.id() == Some(id) || self.sealing.contains(id))
+                .then_some(self.last_recorded)
+                .filter(|ms| ms.0 > 0),
         }
     }
 
-    fn audio_of(&self, id: &RecordingId) -> Option<Ms> {
-        self.recordings
+    /// The lines the engine wrote for this recording's running job, oldest first (UX-12).
+    pub fn drafts(&self, id: &RecordingId) -> &[Segment] {
+        if let Some((_, lines)) = self.previews.get(id) {
+            return lines;
+        }
+        self.drafts
             .iter()
-            .find(|r| &r.recording.id == id)?
-            .recording
-            .take
-            .map(|t| t.duration)
+            .find(|(job, _)| self.job_owner.get(*job) == Some(id))
+            .map_or(&[], |(_, lines)| lines.as_slice())
+    }
+
+    /// The jobs running or waiting before `id`'s, and when it starts once each has an estimate.
+    fn spot(&self, id: &RecordingId) -> Option<Spot> {
+        let active: Vec<_> = self
+            .queue
+            .iter()
+            .filter(|j| matches!(j.state, JobState::Queued | JobState::Running { .. }))
+            .collect();
+        let ahead = active.iter().position(|j| &j.recording == id)?;
+        let mut starts_in = Some(Ms(0));
+        for job in &active[..ahead] {
+            let takes = match job.state {
+                JobState::Running { .. } => {
+                    match self.estimates.get(&job.recording).map(Estimate::left) {
+                        Some(Left::About(ms)) => Some(ms),
+                        _ => None,
+                    }
+                }
+                _ => self
+                    .audio_of(&job.recording)
+                    .zip(self.rates.any())
+                    .map(|(audio, rate)| rate.time_for(audio)),
+            };
+            starts_in = starts_in.zip(takes).map(|(sum, more)| Ms(sum.0 + more.0));
+        }
+        Some(Spot {
+            ahead,
+            starts_in: starts_in.filter(|_| ahead > 0),
+        })
     }
 
     pub(super) fn track(&mut self, id: RecordingId, progress: Progress) {
@@ -313,22 +335,132 @@ impl AppState {
             from: progress.fraction,
             at_ms: now,
         };
+        let mut new_stage = false;
         let run = *self
             .runs
             .entry(id.clone())
             .and_modify(|run| {
-                if run.stage != fresh.stage || run.pace != fresh.pace {
+                new_stage = run.stage != fresh.stage;
+                if new_stage || run.pace != fresh.pace {
                     *run = fresh;
                 }
             })
             .or_insert(fresh);
-        if progress.stage == Stage::Transcribe
-            && let Some(audio) = self.audio_of(&id)
-            && let Some(rate) = Rate::observed(audio, run.from, progress.fraction, now - run.at_ms)
-        {
-            self.rate = Some(rate);
+        if new_stage {
+            self.estimates.remove(&id);
         }
+        let raw = match progress.stage {
+            Stage::Transcribe => {
+                let audio = self.audio_of(&id);
+                if let (Some(audio), Some(pace)) = (audio, run.pace)
+                    && let Some(rate) =
+                        Rate::observed(audio, run.from, progress.fraction, now - run.at_ms)
+                {
+                    self.rates.observe(pace, rate);
+                }
+                audio.and_then(|audio| {
+                    let rate = run.pace.and_then(|pace| self.rates.at(pace));
+                    estimate::transcribe_left(audio, progress.fraction, rate)
+                })
+            }
+            Stage::Summarize => {
+                estimate::summary_left(run.from, progress.fraction, now - run.at_ms)
+            }
+        };
+        self.estimates
+            .entry(id.clone())
+            .or_default()
+            .update(raw, now);
         self.progress.insert(id, progress);
+    }
+
+    /// Speaks the selected recording's sentence when its stage changes, and keeps its tab on
+    /// what there is to read: the transcript while it is being written, then the summary,
+    /// unless the user picked a tab (UX-12, `docs/design/processing-view.md` section 4).
+    pub(super) fn follow_card(&mut self) {
+        let Some(id) = self.selection.id().cloned() else {
+            self.card = None;
+            return;
+        };
+        let Some(row) = self.row(&id) else {
+            return;
+        };
+        let phase = self.phase(row);
+        let title = library::title(row, &chrono::Local);
+        let before = match self.card.take() {
+            Some((was, before)) if was == id => Some(before),
+            _ => None,
+        };
+        if let Some(before) = &before
+            && processing::announces(before, &phase)
+        {
+            a11y::announce(&phase.sentence(&title));
+        }
+        if !self.tab_chosen {
+            let reading = phase.before_transcript() || matches!(phase, Phase::Summarizing { .. });
+            let finished = before.as_ref().is_some_and(Phase::is_processing)
+                && matches!(phase, Phase::Done { .. } | Phase::Failed(_));
+            if reading {
+                self.tab = DetailTab::Transcript;
+            } else if finished {
+                self.tab = DetailTab::Summary;
+            }
+        }
+        self.card = Some((id, phase));
+    }
+
+    /// Pins `id` to `phase`, with `lines` streamed so far, whatever the core reports: for design
+    /// previews and for the layout checks that walk every state of the card.
+    pub fn preview_phase(
+        &mut self,
+        id: RecordingId,
+        phase: Phase,
+        lines: Vec<Segment>,
+        cx: &mut Context<Self>,
+    ) {
+        self.previews.insert(id, (phase, lines));
+        self.follow_card();
+        cx.notify();
+    }
+
+    /// Move to Top (UX-15) from the card.
+    pub fn move_to_top(&mut self, id: RecordingId, cx: &mut Context<Self>) {
+        self.on_active_job(id, cx, |dory, job| dory.pipeline().promote(job));
+    }
+
+    /// Use Fast This Time (UX-30): this one job runs fast, the setting stays.
+    pub fn run_fast(&mut self, id: RecordingId, cx: &mut Context<Self>) {
+        self.on_active_job(id, cx, |dory, job| dory.pipeline().run_fast(job));
+    }
+
+    fn on_active_job(
+        &mut self,
+        id: RecordingId,
+        cx: &mut Context<Self>,
+        act: impl FnOnce(&Dory, JobId) -> Result<(), dory_core::app::DoryError> + Send + 'static,
+    ) {
+        let done = self
+            .core
+            .run(cx, move |dory| match dory.library().jobs(&id)?.pop() {
+                Some(job) if !job.is_terminal() => act(dory, job.id),
+                _ => Ok(()),
+            });
+        self.report(done, cx);
+    }
+
+    /// **Show in Finder** (UX-13) for audio the app cannot read.
+    pub fn show_in_finder(&mut self, id: RecordingId, cx: &mut Context<Self>) {
+        let path = self
+            .core
+            .run(cx, move |dory| dory.library().playback_path(&id));
+        cx.spawn(async move |this, cx| {
+            let path = path.await;
+            let _ = this.update(cx, |state, cx| match path {
+                Ok(path) => cx.reveal_path(&path),
+                Err(_) => state.say("The audio file is missing.", cx),
+            });
+        })
+        .detach();
     }
 
     pub(super) fn on_recorder(&mut self, status: RecorderStatus, cx: &mut Context<Self>) {
@@ -346,6 +478,13 @@ impl AppState {
             | RecorderStatus::Paused { recorded, .. }
             | RecorderStatus::Grace { recorded, .. } => Some(*recorded),
         };
+        if let Some(recorded) = recorded {
+            self.last_recorded = if new_take {
+                recorded
+            } else {
+                self.last_recorded.max(recorded)
+            };
+        }
         self.live.update(cx, |live, cx| {
             match recorded {
                 Some(recorded) if !new_take => live.recorded = live.recorded.max(recorded),
@@ -394,6 +533,7 @@ impl AppState {
     pub(super) fn on_record_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Levels { peaks, recorded } => {
+                self.last_recorded = recorded;
                 let epoch = self.epoch;
                 self.live.update(cx, |live, cx| {
                     if !live.sampled {
@@ -446,30 +586,56 @@ impl AppState {
         }
     }
 
-    /// After each reload: announce and notify jobs that just ended, and release takes whose
-    /// audio is now listed.
+    /// After each reload: drop progress and lines of jobs that moved on, announce and notify
+    /// jobs that just ended, and release takes whose audio is now listed. The selected
+    /// recording's card speaks its own sentence instead (`follow_card`).
     pub(super) fn on_rows(&mut self, before: &[RecordingRow], cx: &mut Context<Self>) {
+        let running: HashMap<RecordingId, Stage> = self
+            .recordings
+            .iter()
+            .filter_map(|r| match r.job {
+                Some(JobState::Running { stage }) => Some((r.recording.id.clone(), stage)),
+                _ => None,
+            })
+            .collect();
+        self.progress
+            .retain(|id, p| running.get(id) == Some(&p.stage));
+        self.runs
+            .retain(|id, run| running.get(id) == Some(&run.stage));
+        let runs = &self.runs;
+        self.estimates.retain(|id, _| runs.contains_key(id));
+        let owners = &self.job_owner;
+        self.drafts.retain(|job, _| {
+            owners
+                .get(job)
+                .is_none_or(|owner| running.get(owner) == Some(&Stage::Transcribe))
+        });
+        let selected = self.selection.id().cloned();
         for (id, outcome) in processing::outcomes(before, &self.recordings) {
             let Some(row) = self.recordings.iter().find(|r| r.recording.id == id) else {
                 continue;
             };
             let title = library::title(row, &chrono::Local);
+            let speaks = selected.as_ref() != Some(&id);
             match outcome {
                 Outcome::Finished => {
-                    a11y::Announcement::Finished {
-                        title: title.clone(),
+                    if speaks {
+                        a11y::Announcement::Finished {
+                            title: title.clone(),
+                        }
+                        .post();
                     }
-                    .post();
                     if cx.active_window().is_none() {
                         notify::job_finished(&id, &title, cx);
                     }
                 }
-                Outcome::Failed => {
+                Outcome::Failed if speaks => {
                     a11y::Announcement::Failed {
                         title: title.clone(),
                     }
                     .post();
                 }
+                Outcome::Failed => {}
             }
         }
         let saved: Vec<RecordingId> = self
@@ -482,6 +648,7 @@ impl AppState {
             self.sealing.remove(&id);
             cx.emit(Saved(id));
         }
+        self.follow_card();
     }
 }
 

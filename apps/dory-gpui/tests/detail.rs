@@ -194,8 +194,22 @@ fn each_state_shows_its_text(cx: &mut TestAppContext) {
     })
     .unwrap();
 
+    let cards = [
+        (
+            "Weekly sync",
+            "Getting ready to transcribe. Loading the speech model.",
+        ),
+        (
+            BROKEN,
+            "Transcription didn't finish. Your recording is saved, but transcription failed: The upload broke. Try Again.",
+        ),
+    ];
+    for (title, want) in cards {
+        select(&app, title, cx);
+        assert_eq!(label_of(window, "card-status", cx), want, "{title}");
+    }
+
     let cases = [
-        ("Weekly sync", "Transcribing"),
         (
             SILENT,
             "Nothing was said. The transcript is empty, so there is nothing to summarize.",
@@ -204,7 +218,6 @@ fn each_state_shows_its_text(cx: &mut TestAppContext) {
             LOST,
             "No audio was recorded. Nothing reached the microphone or system audio.",
         ),
-        (BROKEN, "Transcription failed: The upload broke."),
     ];
     for (title, want) in cases {
         select(&app, title, cx);

@@ -403,7 +403,7 @@ fn the_explainer_shows_the_catalog_text_and_opens_and_closes_by_keyboard(cx: &mu
         ("about-summary", "Whisper turns speech into text."),
         ("about-good", "Good at"),
         ("about-watch", "Watch out for"),
-        ("about-size", "Download size: 1.0 GB"),
+        ("about-disk", "On disk: 1.0 GB"),
         (
             "about-languages",
             "Languages: Tagalog, English, French, and German",
@@ -572,7 +572,7 @@ fn the_speech_step_offers_the_model_auto_picks_for_tagalog(cx: &mut TestAppConte
     });
     assert_eq!(
         label(window, "speech-step-model", cx).as_deref(),
-        Some("Whisper, 1.0 GB")
+        Some("Whisper, 1.0 GB on disk")
     );
     assert_eq!(
         label(window, "meeting-languages-summary", cx).as_deref(),

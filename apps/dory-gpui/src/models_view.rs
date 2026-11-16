@@ -243,7 +243,14 @@ impl RowState {
 pub struct Row {
     pub model: ModelRef,
     pub name: String,
+    /// What the row shows after the name: "487 MB to download" while the model is not
+    /// installed, "671 MB on disk" once it is.
     pub size: Option<String>,
+    /// What is left to fetch while the model is not installed: the compressed download, less
+    /// any part already on disk.
+    pub download: Option<String>,
+    /// The model's size once unpacked.
+    pub disk: Option<String>,
     /// Why the model cannot do the job, or does it with a limit: "Doesn't support Tagalog".
     pub fit: Option<String>,
     /// False when the fit rules the model out, so Choose is not offered.
@@ -312,14 +319,25 @@ pub fn row<K: ListKind>(row: &ModelRow<K>, settings: &Settings, download: Option
         (Availability::NeedsProvision { .. }, None) => RowState::NeedsDownload,
         (Availability::Unavailable(why), None) => RowState::Unavailable(unavailable_text(why)),
     };
-    let bytes = match &row.status.availability {
-        Availability::NeedsProvision { bytes: Some(b) } => Some(*b),
-        _ => entry.disk_bytes,
+    // Two different sizes: the compressed download, and the unpacked model on disk. Each is
+    // named, so the row and the explainer never show one under the other's label.
+    let download = match &row.status.availability {
+        Availability::NeedsProvision { bytes: Some(b) } => Some(size_text(*b)),
+        _ => None,
+    };
+    let disk = entry.disk_bytes.map(size_text);
+    let size = match (&download, &disk, &state) {
+        (Some(d), _, _) => Some(format!("{d} to download")),
+        (None, Some(s), RowState::Ready) => Some(format!("{s} on disk")),
+        (None, Some(s), _) => Some(s.clone()),
+        (None, None, _) => None,
     };
     Row {
         model: entry.id.erase(),
         name: entry.display_name.clone(),
-        size: bytes.map(size_text),
+        size,
+        download,
+        disk,
         fit: fit_text::<K>(row.fit, &entry.caps, settings),
         usable: !matches!(row.fit, Fit::No(_)),
         state,
@@ -334,7 +352,8 @@ pub struct About {
     pub summary: String,
     pub good_at: Vec<String>,
     pub watch_out: Vec<String>,
-    pub size: Option<String>,
+    pub download: Option<String>,
+    pub disk: Option<String>,
     pub languages: String,
 }
 
@@ -369,13 +388,14 @@ pub fn languages_text(set: &LangSet, first: &[LangTag]) -> String {
     )
 }
 
-pub fn about<K: ListKind>(entry: &ModelEntry<K>, settings: &Settings) -> About {
+pub fn about<K: ListKind>(entry: &ModelEntry<K>, row: &Row, settings: &Settings) -> About {
     About {
         name: entry.display_name.clone(),
         summary: entry.about.summary.clone(),
         good_at: entry.about.pros.clone(),
         watch_out: entry.about.cons.clone(),
-        size: entry.disk_bytes.map(size_text),
+        download: row.download.clone(),
+        disk: row.disk.clone(),
         languages: languages_text(K::languages(&entry.caps), &K::wanted(settings)),
     }
 }
@@ -864,8 +884,11 @@ fn explainer(
                 ))
         };
         let mut facts = Vec::new();
-        if let Some(size) = &about.size {
-            facts.push(("size", format!("Download size: {size}")));
+        if let Some(download) = &about.download {
+            facts.push(("download", format!("Download: {download}")));
+        }
+        if let Some(disk) = &about.disk {
+            facts.push(("disk", format!("On disk: {disk}")));
         }
         facts.push(("languages", format!("Languages: {}", about.languages)));
         let line = |id: String, text: String, size: f32| {
@@ -972,8 +995,8 @@ fn download_controls<K: ListKind>(
         RowState::NeedsDownload => {
             let focus = controls.focus(&model, "download", cx);
             let (models, id) = (models.clone(), id.clone());
-            let label = match &row.size {
-                Some(size) => format!("Download {}, {size}", row.name),
+            let label = match &row.download {
+                Some(download) => format!("Download {}, {download}", row.name),
                 None => format!("Download {}", row.name),
             };
             Some(div().child(button(
@@ -1173,7 +1196,7 @@ impl<K: ListKind> Render for ModelList<K> {
                             }),
                     )
                     .child(explainer(
-                        about(entry, &settings),
+                        about(entry, &worded, &settings),
                         &model,
                         open,
                         window.viewport_size().height,
@@ -1317,7 +1340,7 @@ impl Render for SpeechStep {
                             .child(heading),
                     )
                     .child(explainer(
-                        about(&entry, &settings),
+                        about(&entry, &worded, &settings),
                         &model,
                         open,
                         window.viewport_size().height,
@@ -1486,6 +1509,45 @@ mod tests {
 
     fn tag(s: &str) -> LangTag {
         LangTag::parse(s).unwrap()
+    }
+
+    /// Parakeet's real figures: a 487 MB archive that unpacks to 671 MB. The row once showed
+    /// one and the explainer the other, both as the download size.
+    #[test]
+    fn the_download_and_the_size_on_disk_are_named_apart() {
+        let mut entry = dory_core::testing::stt_entry(
+            "sherpa/parakeet",
+            dory_core::models::DiarizationSupport::None,
+        );
+        entry.display_name = "Parakeet".into();
+        entry.disk_bytes = Some(670_576_784);
+        let model_row = |availability| ModelRow {
+            status: dory_core::models::ModelStatus {
+                entry: entry.clone(),
+                availability,
+            },
+            fit: dory_core::models::Fit::Yes,
+            chosen: false,
+        };
+        let settings = Settings::default();
+
+        let missing = row(
+            &model_row(Availability::NeedsProvision {
+                bytes: Some(487_211_443),
+            }),
+            &settings,
+            None,
+        );
+        assert_eq!(missing.size.as_deref(), Some("487 MB to download"));
+        let info = about(&entry, &missing, &settings);
+        assert_eq!(info.download.as_deref(), Some("487 MB"));
+        assert_eq!(info.disk.as_deref(), Some("671 MB"));
+
+        let ready = row(&model_row(Availability::Ready), &settings, None);
+        assert_eq!(ready.size.as_deref(), Some("671 MB on disk"));
+        let info = about(&entry, &ready, &settings);
+        assert_eq!(info.download, None, "nothing left to download");
+        assert_eq!(info.disk.as_deref(), Some("671 MB"));
     }
 
     #[test]

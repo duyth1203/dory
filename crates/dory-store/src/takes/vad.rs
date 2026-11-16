@@ -21,6 +21,10 @@ const MARGIN_DB: f32 = 10.0;
 /// speech does not take speech for the floor. Meetings spend far more than a tenth of their time
 /// between words.
 const FLOOR_PERCENTILE: usize = 10;
+/// Room noise on a capture device sits well below this. A clip whose quietest tenth is louder has
+/// someone or something playing nearly throughout, such as a short voice note, so the floor starts
+/// where a room's noise would be and adapts from there.
+const FLOOR_START_MAX_DBFS: f32 = -40.0;
 /// Per frame, the floor drops quickly into a quieter frame and rises with a time constant of
 /// about ten seconds, so the pauses inside speech keep pulling it back down.
 const FLOOR_FALL: f32 = 0.3;
@@ -98,7 +102,7 @@ fn voiced(levels: &[f32]) -> Vec<bool> {
     let Some(&start) = sorted.get(sorted.len() * FLOOR_PERCENTILE / 100) else {
         return Vec::new();
     };
-    let mut floor = start.max(FLOOR_MIN_DBFS);
+    let mut floor = start.clamp(FLOOR_MIN_DBFS, FLOOR_START_MAX_DBFS);
     levels
         .iter()
         .map(|&level| {
@@ -356,6 +360,12 @@ mod tests {
         assert_eq!(spans.len(), 2, "{spans:?}");
         assert_eq!(spans[0].0, 0);
         assert_eq!(spans[1].1, 4_500, "cut to the clip's end");
+    }
+
+    #[test]
+    fn a_clip_with_no_quiet_part_at_all_is_speech() {
+        let spans = Signal::new().tone(3_000, -15.0).activity();
+        assert_eq!(spans, vec![(0, 3_000)]);
     }
 
     #[test]

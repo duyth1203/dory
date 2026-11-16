@@ -248,6 +248,22 @@ fn skip_on_the_models_step_finishes_and_focuses_start_recording(cx: &mut TestApp
         );
     }
 
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let height = window.viewport_size().height;
+        for id in ["onboarding-skip", "onboarding-continue"] {
+            let bounds = window
+                .try_find(gpui_kit::ElementId::Name(id.into()))
+                .expect(id)
+                .bounds();
+            assert!(
+                bounds.bottom() <= height,
+                "{id} sits below the window: {bounds:?}, window height {height:?}"
+            );
+        }
+    })
+    .unwrap();
+
     click(window, "onboarding-skip", cx);
     assert_eq!(step(&app, cx), OnboardingStep::Done);
     assert!(label(window, "onboarding", cx).is_none());

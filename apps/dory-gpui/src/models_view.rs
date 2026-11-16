@@ -440,6 +440,9 @@ pub struct Models {
     generation: u64,
     /// Listed models downloading at the last look, so the end of one triggers a refresh.
     downloading: HashSet<ModelRef>,
+    /// `AppState`'s copy at the last look. It follows `SettingsChanged`, so a change made
+    /// elsewhere, such as onboarding's language preselect, refreshes this cache too.
+    seen: Option<Settings>,
     _observe: Subscription,
 }
 
@@ -478,11 +481,16 @@ impl Models {
                 .collect();
             let finished = this.downloading.difference(&now).next().is_some();
             this.downloading = now;
-            if finished {
+            let changed = this.seen.as_ref() != Some(app.settings());
+            if changed {
+                this.seen = Some(app.settings().clone());
+            }
+            if finished || changed {
                 this.refresh(cx);
             }
             cx.notify();
         });
+        let seen = Some(app.read(cx).settings().clone());
         Self {
             app,
             settings: None,
@@ -492,6 +500,7 @@ impl Models {
             checking: false,
             generation: 0,
             downloading: HashSet::new(),
+            seen,
             _observe: observe,
         }
     }

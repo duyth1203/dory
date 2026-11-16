@@ -9,6 +9,7 @@ use std::pin::Pin;
 use dory_core::app::{AppKind, Dory, Event, RecorderStatus, StartOptions};
 use dory_core::domain::{Blocker, Fraction, Goal, JobState, Ms, RecordingId, RecordingRow, Stage};
 use dory_core::models::{Diar, KindTag, ModelId, ModelRef, Stt};
+use dory_core::ports::ProvisionError;
 use dory_core::ports::capture::CaptureIssue;
 use dory_core::recorder::{FinalizeReason, Limits};
 use gpui_kit::Context;
@@ -423,7 +424,9 @@ impl AppState {
             }
             Event::ProvisionFinished { model, result } => {
                 self.downloads.remove(&model);
-                if let Err(error) = result {
+                if let Err(error) = result
+                    && error != ProvisionError::Cancelled.to_string()
+                {
                     let name = self.model_name(&model);
                     self.say(format!("Could not download {name}: {error}"), cx);
                 }

@@ -55,6 +55,7 @@ pub fn build(
 ) -> (Entity<app::AppState>, Entity<shell::Shell>) {
     theme::sync(window, cx);
     let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
+    models_view::install(&state, cx);
     let shell = cx.new(|cx| shell::Shell::new(state.clone(), window, cx));
     (state, shell)
 }

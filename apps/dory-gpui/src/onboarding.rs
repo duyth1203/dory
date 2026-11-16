@@ -11,8 +11,9 @@
 use dory_core::domain::LangTag;
 use dory_core::ports::capture::{Access, Source};
 use gpui_kit::{
-    App, Context, Entity, FocusHandle, FontWeight, IntoElement, ParentElement as _, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px, relative,
+    AnyElement, App, Context, Entity, FocusHandle, FontWeight, IntoElement, ParentElement as _,
+    Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, px,
+    relative,
 };
 
 use crate::a11y;
@@ -423,6 +424,27 @@ impl Render for Onboarding {
             OnboardingStep::Models => self.models(&theme, window, cx),
             OnboardingStep::Done => Vec::new(),
         };
+        a11y::node("onboarding", Role::Group, "Set up Dory")
+            .flex()
+            .flex_col()
+            .gap(px(20.))
+            .pt(px(72.))
+            .children(step.counter().map(|counter| {
+                div()
+                    .text_size(theme.text(12.))
+                    .text_color(theme.text_secondary)
+                    .child(counter)
+            }))
+            .children(body)
+    }
+}
+
+impl Onboarding {
+    /// The step's buttons. The shell pins them under the scrolling page, so Continue stays in
+    /// view however tall the step grows.
+    pub fn actions(&self, cx: &App) -> AnyElement {
+        let theme = Theme::get(cx);
+        let step = self.app.read(cx).onboarding();
         let app = self.app.clone();
         let primary = button(
             "onboarding-continue",
@@ -443,27 +465,13 @@ impl Render for Onboarding {
                 move |_, cx| app.update(cx, |app, cx| app.skip_onboarding(cx)),
             )
         });
-        a11y::node("onboarding", Role::Group, "Set up Dory")
+        a11y::node("onboarding-actions", Role::Group, "Set up Dory")
             .flex()
-            .flex_col()
-            .gap(px(20.))
-            .pt(px(72.))
-            .children(step.counter().map(|counter| {
-                div()
-                    .text_size(theme.text(12.))
-                    .text_color(theme.text_secondary)
-                    .child(counter)
-            }))
-            .children(body)
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap(px(8.))
-                    .pt(px(8.))
-                    .children(skip)
-                    .child(primary),
-            )
+            .justify_end()
+            .gap(px(8.))
+            .children(skip)
+            .child(primary)
+            .into_any_element()
     }
 }
 

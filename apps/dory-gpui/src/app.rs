@@ -9,6 +9,7 @@
 //! progress and estimates, finish and fix actions.
 
 mod core;
+mod models;
 mod player;
 mod queue;
 mod record;

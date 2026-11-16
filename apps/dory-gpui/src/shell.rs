@@ -409,6 +409,23 @@ impl Render for Shell {
         if std::mem::replace(&mut self.step, step) != step && step == OnboardingStep::Done {
             window.focus(&self.start_focus, cx);
         }
+        let onboarding_actions =
+            (self.detail.is_none() && step != OnboardingStep::Done).then(|| {
+                div()
+                    .flex_none()
+                    .flex()
+                    .justify_center()
+                    .border_t_1()
+                    .border_color(theme.divider)
+                    .py(px(12.))
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(720. + 2. * side_padding))
+                            .px(px(side_padding))
+                            .child(self.onboarding.read(cx).actions(cx)),
+                    )
+            });
         let page = match &self.detail {
             Some(detail) => detail.clone().into_any_element(),
             None if step != OnboardingStep::Done => self.onboarding.clone().into_any_element(),
@@ -453,6 +470,7 @@ impl Render for Shell {
                                     .child(page),
                             ),
                     )
+                    .children(onboarding_actions)
                     .children(status)
                     .children(toast),
             );

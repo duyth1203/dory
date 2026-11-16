@@ -431,6 +431,7 @@ impl Render for Shell {
                             .overflow_y_scroll()
                             .flex()
                             .justify_center()
+                            .items_start()
                             .child(
                                 div()
                                     .w_full()

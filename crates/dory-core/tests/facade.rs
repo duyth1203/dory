@@ -1318,7 +1318,7 @@ fn a_player_opens_on_the_sealed_take_with_its_layout_and_refuses_a_take_being_sa
     assert_eq!(opened.len(), 1);
     assert_eq!(opened[0].path, PathBuf::from("mem/played"));
     assert_eq!(opened[0].layout, ChannelLayout::MicSystem);
-    assert_eq!(opened[0].duration, ms(1_000));
+    assert_eq!(opened[0].duration, ms(20_000));
 
     player.seek(ms(500)).unwrap();
     player.play().unwrap();

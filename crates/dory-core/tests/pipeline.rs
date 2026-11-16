@@ -99,6 +99,7 @@ impl Rig {
                 .iter()
                 .map(|(_, provider)| provider.clone() as _)
                 .collect(),
+            playback: Arc::new(dory_core::testing::FakePlayback::new()),
             guard: None,
         };
         let options = Options {

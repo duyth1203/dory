@@ -12,7 +12,8 @@ use std::time::Instant;
 use dory_core::domain::{Channel, Fraction, LangTag, LanguagePref, Ms};
 use dory_core::models::Availability;
 use dory_core::ports::{
-    CancelToken, Clip, EngineError, ModelProvider, RawSegment, SegmentSink, TranscribeRequest,
+    Activity, CancelToken, Clip, EngineError, ModelProvider, RawSegment, SegmentSink,
+    TranscribeRequest,
 };
 use dory_engines::Sherpa;
 
@@ -35,7 +36,14 @@ fn installed_models_transcribe_a_wav() {
         LanguagePref::Pinned(LangTag::parse(&l).unwrap())
     });
     let sherpa = Sherpa::new(&models, Sherpa::RELEASES);
-    let clip = Clip::new(wav, Channel::Mixed, Ms(0), Ms(0), vec![], None);
+    let clip = Clip::new(
+        wav,
+        Channel::Mixed,
+        Ms(0),
+        Ms(0),
+        Activity::Unmeasured,
+        None,
+    );
     let audio_secs = wav_secs(&clip.path);
     let only = std::env::var("DORY_SHERPA_ONLY").ok();
     let cancel = CancelToken::new();

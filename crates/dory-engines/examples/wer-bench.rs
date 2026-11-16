@@ -12,7 +12,8 @@ use std::time::Instant;
 use dory_core::domain::{Channel, Fraction, LangTag, LanguagePref, Ms};
 use dory_core::models::Availability;
 use dory_core::ports::{
-    CancelToken, Clip, EngineError, ModelProvider, RawSegment, SegmentSink, TranscribeRequest,
+    Activity, CancelToken, Clip, EngineError, ModelProvider, RawSegment, SegmentSink,
+    TranscribeRequest,
 };
 use dory_engines::Sherpa;
 
@@ -89,7 +90,14 @@ fn main() {
         let engine = sherpa.open(&entry.id, &cancel).expect("model opens");
         let (mut errors, mut total, mut audio, mut busy, mut done) = (0, 0, 0.0f32, 0.0f32, 0);
         for (path, reference) in &refs {
-            let clip = Clip::new(path.clone(), Channel::Mixed, Ms(0), Ms(0), vec![], None);
+            let clip = Clip::new(
+                path.clone(),
+                Channel::Mixed,
+                Ms(0),
+                Ms(0),
+                Activity::Unmeasured,
+                None,
+            );
             let request = TranscribeRequest {
                 clip: &clip,
                 language: language.clone(),

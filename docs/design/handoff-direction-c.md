@@ -99,6 +99,8 @@ Each lists its states and the ids it satisfies.
 
 **Sidebar row** (UX-1, A11Y-1, A11Y-8). Three lines: title (14 semibold, one line, ellipsis), meta (`start · duration · language`, 12 secondary), status (12 pt glyph and a 12 pt label). Padding 10/12, radius 8, 2 pt gap between rows. Selected with keyboard focus in the list: `accent` fill, all text `on_accent`. Selected with focus elsewhere: `selection_inactive` fill, normal text colors. Context-menu target: 2 pt `accent` outline, no fill change. The VoiceOver label reads all three lines: "Design review, 10:30, 48 minutes, English, Done".
 
+*Amended by `docs/design/processing-view.md` section 7:* the sidebar row is two lines and at least 52 tall: the title, then the date and duration with the status on the right. It replaces the three-line row above.
+
 **Status glyphs.** Always a glyph followed by a word. Map them from the old app's `pipeline_status` strings:
 
 | State | Glyph | Label | Glyph color |
@@ -112,6 +114,8 @@ Each lists its states and the ids it satisfies.
 | `failed` | triangle | Needs attention | `attention` |
 
 With Reduce Motion on, the progress ring shows its fill but does not spin (A11Y-5).
+
+*Amended by `docs/design/processing-view.md` section 7:* the indeterminate progress ring is replaced by the dots glyph, because rotation is not part of the allowed motion (position, size, opacity, color). The row words and glyphs are the ones in that file's section 4.
 
 **Record control** (UX-5, UX-7, UX-8, UX-10). Idle: bordered pill 28 tall, red 10 pt dot, label "Record". Recording: a red pill (`record_red` fill, white text) containing a white dot, the elapsed time, and a 5-bar level meter, followed by separate round Pause (⇧⌘P) and Stop (⌘.) buttons, each 28×28. With 5 minutes left, the pill fill changes to `attention` and the label becomes "5 min left". With Reduce Motion, the level meter is a static bar. VoiceOver label: "Recording, 12 minutes 4 seconds".
 

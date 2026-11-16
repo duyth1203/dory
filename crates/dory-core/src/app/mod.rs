@@ -15,6 +15,7 @@
 
 mod events;
 mod models;
+mod pace;
 mod pipeline;
 mod recorder;
 mod stages;
@@ -30,6 +31,7 @@ use thiserror::Error;
 
 pub use events::{Event, Subscription, change_events};
 pub use models::{AppKind, ModelRow};
+pub use pace::{Budget, HOLD_MS, LIGHT_THREADS, LightReason, Pacer, light_condition};
 pub use recorder::{RecorderGone, RecorderStatus, StartOptions};
 
 use events::{Db, EventHub};
@@ -38,17 +40,18 @@ use pipeline::{Nudge, PipelineHandle};
 use recorder::{Msg, RecorderHandle, commit_sealed};
 
 use crate::domain::{
-    Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority, Recording,
-    RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerId, SpeakerNames,
-    Summary, TakeContainer, Transcript,
+    Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority, Processing,
+    Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerId,
+    SpeakerNames, Summary, TakeContainer, Transcript,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
     Access, CaptureBackend, CaptureCaps, CaptureError, InputDevice, Source,
 };
 use crate::ports::{
-    Change, Clock, ModelProvider, Playback, PlaybackError, PlaybackSource, Player, ProvisionError,
-    Store, StoreError, StoreRead, TakeError, Takes, Trash, TrashError, TrashReceipt,
+    Change, Clock, Machine, ModelProvider, Playback, PlaybackError, PlaybackSource, Player,
+    ProvisionError, Store, StoreError, StoreRead, TakeError, Takes, Trash, TrashError,
+    TrashReceipt,
 };
 use crate::recorder::{Input, Limits};
 
@@ -60,6 +63,7 @@ pub struct Ports {
     pub capture: Arc<dyn CaptureBackend>,
     pub playback: Arc<dyn Playback>,
     pub clock: Arc<dyn Clock>,
+    pub machine: Arc<dyn Machine>,
     pub stt: Vec<Arc<dyn ModelProvider<Stt>>>,
     pub llm: Vec<Arc<dyn ModelProvider<Llm>>>,
     pub diar: Vec<Arc<dyn ModelProvider<Diar>>>,
@@ -93,6 +97,8 @@ pub struct Options {
     pub retry_base_ms: u64,
     /// Events each subscriber can fall behind by before it loses some and gets `Resync`.
     pub event_capacity: usize,
+    /// Overrides `Settings::processing` for this process, for benches.
+    pub processing: Option<Processing>,
 }
 
 impl Default for Options {
@@ -107,6 +113,7 @@ impl Default for Options {
             engine_idle_ms: 5 * 60 * 1000,
             retry_base_ms: 10_000,
             event_capacity: 256,
+            processing: None,
         }
     }
 }
@@ -239,27 +246,36 @@ impl Dory {
         pipeline::unblock_all(&db);
 
         let (nudge, wake) = pipeline::nudge_channel();
-        let pipeline = pipeline::spawn(
-            pipeline::Deps {
-                db: db.clone(),
-                takes: Arc::clone(&ports.takes),
-                clock: Arc::clone(&ports.clock),
-                models: Arc::clone(&models),
-            },
-            &options,
-            nudge.clone(),
-            wake,
-        )?;
+        // The recorder starts first, so the worker can see whether it is busy.
         let recorder = recorder::spawn(
             recorder::Deps {
                 db: db.clone(),
                 takes: Arc::clone(&ports.takes),
                 capture: Arc::clone(&ports.capture),
                 clock: Arc::clone(&ports.clock),
-                nudge,
+                nudge: nudge.clone(),
             },
             &options,
         )?;
+        let pipeline = match pipeline::spawn(
+            pipeline::Deps {
+                db: db.clone(),
+                takes: Arc::clone(&ports.takes),
+                clock: Arc::clone(&ports.clock),
+                models: Arc::clone(&models),
+                machine: ports.machine,
+                recorder: recorder.watch(),
+            },
+            &options,
+            nudge,
+            wake,
+        ) {
+            Ok(pipeline) => pipeline,
+            Err(error) => {
+                recorder.shutdown();
+                return Err(error.into());
+            }
+        };
         Ok(Dory {
             reader: LibraryReader {
                 store: db.store.clone(),

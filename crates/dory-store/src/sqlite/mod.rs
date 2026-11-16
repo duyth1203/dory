@@ -14,7 +14,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dory_core::domain::{
-    Job, JobEvent, JobId, JobState, Priority, Recording, RecordingEdit, RecordingId,
+    Job, JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
     RecordingQuery, RecordingRow, Revision, Segment, Settings, SpeakerId, SpeakerNames, Summary,
     SummaryFlag, TakeInfo, Timestamp, Transcript,
 };
@@ -577,6 +577,14 @@ impl StoreRead for SqliteStore {
                     other => return Err(corrupt(format!("auto_process is {other:?}"))),
                 };
             }
+            if let Some(v) = rows.get("processing") {
+                settings.processing = match v.as_str() {
+                    "auto" => Processing::Auto,
+                    "fast" => Processing::Fast,
+                    "light" => Processing::Light,
+                    other => return Err(corrupt(format!("processing is {other:?}"))),
+                };
+            }
             Ok(settings)
         })
     }
@@ -972,6 +980,15 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 (
                     "auto_process",
                     if settings.auto_process { "1" } else { "0" }.to_owned(),
+                ),
+                (
+                    "processing",
+                    match settings.processing {
+                        Processing::Auto => "auto",
+                        Processing::Fast => "fast",
+                        Processing::Light => "light",
+                    }
+                    .to_owned(),
                 ),
             ] {
                 put.execute(params![key, value]).map_err(db)?;

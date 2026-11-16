@@ -73,6 +73,7 @@ pub fn dory_on(store: Arc<MemStore>) -> Dory {
             stt: Vec::new(),
             llm: Vec::new(),
             diar: Vec::new(),
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         },
         Options::default(),

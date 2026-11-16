@@ -103,6 +103,7 @@ fn main() {
                 language: language.clone(),
                 diarize: false,
                 hint: None,
+                threads: 4,
             };
             let mut sink = Collect::default();
             let started = Instant::now();

@@ -15,6 +15,17 @@ pub struct Settings {
     pub meeting_languages: Vec<LangTag>,
     /// Start processing after the undo grace ends.
     pub auto_process: bool,
+    pub processing: Processing,
+}
+
+/// How hard processing may work (UX-30). Automatic follows the Mac's power, heat, and the
+/// recorder.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Processing {
+    #[default]
+    Auto,
+    Fast,
+    Light,
 }
 
 impl Default for Settings {
@@ -26,6 +37,7 @@ impl Default for Settings {
             language: LanguagePref::Auto,
             meeting_languages: Vec::new(),
             auto_process: true,
+            processing: Processing::Auto,
         }
     }
 }

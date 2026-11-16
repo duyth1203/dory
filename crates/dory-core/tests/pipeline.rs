@@ -101,6 +101,7 @@ impl Rig {
                 .map(|(_, provider)| provider.clone() as _)
                 .collect(),
             playback: Arc::new(dory_core::testing::FakePlayback::new()),
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         };
         let options = Options {

@@ -24,7 +24,7 @@ const USAGE: &str = "usage:
   dory-cli show ID
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
-  dory-cli process ID [--summary] [--fake-engines]
+  dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]
   dory-cli play ID [--seek SECONDS]
   dory-cli models [--about] [--fake-engines]
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID
@@ -32,7 +32,9 @@ const USAGE: &str = "usage:
   dory-cli languages [TAG...|--clear]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
-The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.";
+The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.
+$DORY_MACHINE=battery,low-power,thermal=serious pretends the Mac's conditions, also only with
+$DORY_DATA_DIR set.";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

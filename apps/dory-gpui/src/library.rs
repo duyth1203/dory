@@ -3,7 +3,7 @@
 //! store, so every rule is tested without a window.
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone};
-use dory_core::app::RecorderStatus;
+use dory_core::app::{Budget, RecorderStatus};
 use dory_core::domain::{
     Fraction, JobState, Ms, RecordingId, RecordingQuery, RecordingRow, Stage, Timestamp,
 };
@@ -115,6 +115,8 @@ impl Percent {
 pub struct Progress {
     pub stage: Stage,
     pub fraction: Fraction,
+    /// The pace the stage runs at, so the row can say why it runs light (UX-30).
+    pub budget: Budget,
 }
 
 /// The status a sidebar row shows: always a glyph and a word (A11Y-8).

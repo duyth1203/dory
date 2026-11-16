@@ -4,8 +4,9 @@
 //! - General: process recordings automatically.
 //! - Recording: the Mac's inputs, read-only. No setting carries a microphone or a layout yet;
 //!   every take starts with `StartOptions::default()`, the system default input plus system audio.
-//! - Transcription: language (UX-26), meeting languages (UX-29), and the speech models (UX-28).
-//!   **Add model file...** stays disabled: no speech provider accepts a user's file today.
+//! - Transcription: language (UX-26), meeting languages (UX-29), the speech models (UX-28), and
+//!   Processing (UX-30). **Add model file...** stays disabled: no speech provider accepts a
+//!   user's file today.
 //! - Summaries: the summary models, and the Ollama steps when Ollama does not answer.
 //! - Storage: the data folder, its size, and Show in Finder.
 
@@ -27,6 +28,7 @@ use crate::app::AppState;
 use crate::models_view::{
     self, LanguagePicker, Mark, ModelList, Models, button, language_name, note, option, size_text,
 };
+use crate::processing::PACE_CHOICES;
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
 use crate::theme::Theme;
 
@@ -378,6 +380,32 @@ impl SettingsWindow {
         .text_size(theme.text(13.))
         .text_color(theme.text_secondary)
         .child("Add model file...");
+        let mut paces = div().flex().flex_col().gap(px(2.));
+        if let Some(settings) = self.models.read(cx).settings().cloned() {
+            for choice in &PACE_CHOICES {
+                let focus = self.focus(choice.id, cx);
+                let models = self.models.clone();
+                let setting = choice.setting;
+                paces = paces.child(
+                    option(
+                        choice.id,
+                        Mark::Radio(settings.processing == setting),
+                        choice.label,
+                        choice.effect,
+                        &focus,
+                        theme,
+                        move |_, cx| {
+                            models.update(cx, |m, cx| m.edit(move |s| s.processing = setting, cx))
+                        },
+                    )
+                    .aria_label(format!("{}. {}", choice.label, choice.effect)),
+                );
+            }
+            paces = paces.child(note(
+                "Light limits both transcription and summaries.",
+                theme,
+            ));
+        }
         div()
             .flex()
             .flex_col()
@@ -407,6 +435,7 @@ impl SettingsWindow {
                             .child(note(ADD_MODEL_FILE_REASON, theme).flex_1()),
                     ),
             ))
+            .child(section("settings-pace", "Processing", theme, paces))
     }
 
     fn summaries(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::Div {

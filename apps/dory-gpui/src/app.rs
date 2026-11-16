@@ -479,7 +479,16 @@ impl AppState {
                     job,
                     stage,
                     fraction,
-                } => self.on_progress(job, Progress { stage, fraction }, cx),
+                    budget,
+                } => self.on_progress(
+                    job,
+                    Progress {
+                        stage,
+                        fraction,
+                        budget,
+                    },
+                    cx,
+                ),
                 Event::Recorder(status) => {
                     self.on_recorder(status, cx);
                     rows = true;

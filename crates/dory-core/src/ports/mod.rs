@@ -6,6 +6,7 @@ mod clock;
 mod diarize;
 mod error;
 mod llm;
+mod machine;
 mod playback;
 mod provider;
 mod speech;
@@ -18,6 +19,7 @@ pub use clock::Clock;
 pub use diarize::{Diarizer, Turn};
 pub use error::{Classify, EngineError, ProvisionError, StoreError, TakeError};
 pub use llm::{CompletionRequest, LanguageModel, TextSink};
+pub use machine::{Conditions, Machine, Pace, Power, Thermal};
 pub use playback::{
     PlayState, Playback, PlaybackError, PlaybackSource, Player, PlayerStatus, SYSTEM_GAIN,
     channel_gains, mix_down,

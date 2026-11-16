@@ -85,6 +85,7 @@ impl Rig {
                 stt: self.stt.clone(),
                 llm: self.llm.clone(),
                 diar: Vec::new(),
+                machine: Arc::new(dory_core::testing::FakeMachine::default()),
                 guard: None,
             },
             Options {

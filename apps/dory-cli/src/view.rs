@@ -1,5 +1,6 @@
 //! Plain-text rendering of domain values. Pure, so the shapes are tested without a data folder.
 
+use dory_core::app::{Budget, LightReason};
 use dory_core::domain::Channel;
 use dory_core::domain::{
     Blocker, ChannelLayout, Job, JobState, Ms, Segment, SpeakerId, SpeakerNames, Stage, Timestamp,
@@ -44,6 +45,24 @@ pub fn stage(stage: Stage) -> &'static str {
     match stage {
         Stage::Transcribe => "transcribe",
         Stage::Summarize => "summarize",
+    }
+}
+
+/// `fast, 4 threads`, or `light, 2 threads, on battery`.
+pub fn budget(budget: Budget) -> String {
+    let threads = budget.threads();
+    match budget.reason() {
+        None => format!("fast, {threads} threads"),
+        Some(reason) => format!(
+            "light, {threads} threads, {}",
+            match reason {
+                LightReason::Chosen => "set to light",
+                LightReason::Battery => "on battery",
+                LightReason::LowPower => "Low Power Mode",
+                LightReason::Hot => "the Mac is hot",
+                LightReason::Recording => "recording",
+            }
+        ),
     }
 }
 

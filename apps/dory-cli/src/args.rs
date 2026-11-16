@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use dory_core::domain::{ChannelLayout, LangTag, Ms, RecordingId};
+use dory_core::domain::{ChannelLayout, LangTag, Ms, Processing, RecordingId};
 use dory_core::ports::capture::MicSelection;
 
 #[derive(Debug, PartialEq)]
@@ -91,6 +91,8 @@ pub struct ProcessArgs {
     pub fake_engines: bool,
     /// Summarizes the stored transcript again without transcribing.
     pub summary_only: bool,
+    /// Overrides the Processing setting for this run, for the bench.
+    pub pace: Option<Processing>,
 }
 
 impl ProcessArgs {
@@ -98,10 +100,19 @@ impl ProcessArgs {
         let mut id = None;
         let mut fake_engines = false;
         let mut summary_only = false;
-        for arg in args {
+        let mut pace = None;
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--fake-engines" => fake_engines = true,
                 "--summary" => summary_only = true,
+                "--pace" => {
+                    pace = Some(match it.next().map(String::as_str) {
+                        Some("fast") => Processing::Fast,
+                        Some("light") => Processing::Light,
+                        _ => return Err("--pace takes fast or light".into()),
+                    })
+                }
                 flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
                 _ if id.is_none() => id = Some(parse_id(arg)?),
                 _ => return Err("process takes one recording id".into()),
@@ -111,6 +122,7 @@ impl ProcessArgs {
             id: id.ok_or("process needs a recording id")?,
             fake_engines,
             summary_only,
+            pace,
         })
     }
 }
@@ -373,6 +385,21 @@ mod tests {
                 .unwrap()
                 .summary_only
         );
+        assert_eq!(
+            ProcessArgs::parse(&words("rec_1 --pace light"))
+                .unwrap()
+                .pace,
+            Some(Processing::Light)
+        );
+        assert_eq!(
+            ProcessArgs::parse(&words("--pace fast rec_1"))
+                .unwrap()
+                .pace,
+            Some(Processing::Fast)
+        );
+        assert_eq!(ProcessArgs::parse(&words("rec_1")).unwrap().pace, None);
+        assert!(ProcessArgs::parse(&words("rec_1 --pace auto")).is_err());
+        assert!(ProcessArgs::parse(&words("rec_1 --pace")).is_err());
         assert!(ImportArgs::parse(&words("/tmp/old")).is_ok());
         assert!(ImportArgs::parse(&[]).is_err());
         assert_eq!(

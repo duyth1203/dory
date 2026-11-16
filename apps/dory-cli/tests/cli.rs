@@ -165,8 +165,18 @@ fn records_from_the_fake_capture_then_processes_with_fake_engines() {
     assert!(why.contains("blocked at transcribe"), "{why}");
     assert!(why.contains("fix: "), "{why}");
 
-    let done = env.ok(&["process", &id, "--fake-engines"]);
+    let out = env
+        .cmd(&["process", &id, "--fake-engines"])
+        .env("DORY_MACHINE", "battery")
+        .output()
+        .unwrap();
+    let done = text(&out.stdout);
+    assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(done.contains("done"), "{done}");
+    assert!(
+        done.contains("pace light, 2 threads, on battery"),
+        "Automatic runs light on battery: {done}"
+    );
 
     let shown = env.ok(&["show", &id]);
     for want in [
@@ -453,6 +463,25 @@ fn fake_flags_are_refused_unless_the_data_folder_is_named() {
         !home.path().join("Library").exists(),
         "nothing was written to the default folder"
     );
+}
+
+#[test]
+fn pretend_conditions_are_refused_unless_the_data_folder_is_named() {
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_dory-cli"))
+        .args(["process", "rec_1"])
+        .env_remove("DORY_DATA_DIR")
+        .env("DORY_MACHINE", "battery")
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("DORY_MACHINE") && stderr.contains("DORY_DATA_DIR"),
+        "{stderr}"
+    );
+    assert!(!home.path().join("Library").exists());
 }
 
 #[cfg(unix)]

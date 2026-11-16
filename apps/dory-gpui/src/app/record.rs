@@ -263,8 +263,9 @@ impl AppState {
         processing::time_left(self.audio_of(id)?, progress.fraction, self.rate?)
     }
 
-    /// The status words a row and the detail show: "Transcribing, 40%, about 3 min left", or
-    /// "Downloading, 12%" while the model a blocked job needs downloads.
+    /// The status words a row and the detail show: "Transcribing, 40%, about 3 min left", with
+    /// "· Light, on battery" after it while the job runs light, or "Downloading, 12%" while the
+    /// model a blocked job needs downloads.
     pub fn status_text(&self, row: &RecordingRow) -> String {
         let status = self.status(row);
         if let Some(JobState::Blocked {
@@ -278,11 +279,20 @@ impl AppState {
                 None => "Downloading".into(),
             };
         }
-        match (status, self.time_left(&row.recording.id)) {
+        let words = match (status, self.time_left(&row.recording.id)) {
             (RowStatus::Transcribing(Some(_)), Some(left)) => {
                 format!("{}, {}", status.label(), processing::left_label(left))
             }
             _ => status.label(),
+        };
+        let light = self
+            .progress
+            .get(&row.recording.id)
+            .and_then(|p| p.budget.reason())
+            .filter(|_| matches!(status, RowStatus::Transcribing(_) | RowStatus::Summarizing));
+        match light {
+            Some(reason) => format!("{words} · {}", processing::light_label(reason)),
+            None => words,
         }
     }
 
@@ -299,6 +309,7 @@ impl AppState {
         let now = self.epoch.elapsed().as_millis() as u64;
         let fresh = Run {
             stage: progress.stage,
+            pace: progress.budget.pace(),
             from: progress.fraction,
             at_ms: now,
         };
@@ -306,7 +317,7 @@ impl AppState {
             .runs
             .entry(id.clone())
             .and_modify(|run| {
-                if run.stage != progress.stage {
+                if run.stage != fresh.stage || run.pace != fresh.pace {
                     *run = fresh;
                 }
             })

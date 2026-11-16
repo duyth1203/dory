@@ -12,7 +12,11 @@ use crate::{open, view};
 const TICK: Duration = Duration::from_millis(25);
 
 pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
-    let dory = open(config, args.fake_engines)?;
+    let config = Config {
+        processing: args.pace,
+        ..config.clone()
+    };
+    let dory = open(&config, args.fake_engines)?;
     if dory
         .library()
         .recording(&args.id)
@@ -42,12 +46,20 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
 
     let mut shown = None;
     let mut last_progress = None;
+    let mut last_budget = None;
     loop {
         while let Some(event) = events.try_recv() {
             match event {
                 Event::StageProgress {
-                    stage, fraction, ..
+                    stage,
+                    fraction,
+                    budget,
+                    ..
                 } => {
+                    if last_budget != Some(budget) {
+                        last_budget = Some(budget);
+                        println!("  pace {}", view::budget(budget));
+                    }
                     let tenth = (fraction.get() * 10.0) as u32 * 10;
                     if last_progress != Some((stage, tenth)) {
                         last_progress = Some((stage, tenth));

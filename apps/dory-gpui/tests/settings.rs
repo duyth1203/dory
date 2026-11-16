@@ -9,20 +9,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use dory_core::app::{Dory, Options, Ports};
-use dory_core::domain::{LangSet, LangTag, Settings, Timestamp};
+use dory_core::domain::{
+    ChannelLayout, Goal, LangSet, LangTag, LanguagePref, Ms, Priority, Processing, Recording,
+    RecordingId, Settings, Timestamp,
+};
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, LangSupport, Llm, ModelAbout, ModelEntry, ModelId,
     ProviderId, Stt, Unavailable, UnavailableReason,
 };
 use dory_core::ports::{
-    CancelToken, Change, EngineError, ModelProvider, ProvisionError, ProvisionSink, Store as _,
-    StoreRead as _, Transcriber,
+    CancelToken, Change, Conditions, EngineError, ModelProvider, Power, ProvisionError,
+    ProvisionSink, Store as _, StoreRead as _, Takes as _, Thermal, Transcriber,
 };
 use dory_core::testing::playback::FakePlayback;
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
-    FakeCapture, FakeLanguageModel, FakeLlmProvider, FakeSttProvider, FakeTranscriber, FakeTrash,
-    ManualClock, MemTakes, llm_entry, stt_entry,
+    FakeCapture, FakeLanguageModel, FakeLlmProvider, FakeMachine, FakeSttProvider, FakeTranscriber,
+    FakeTrash, ManualClock, MemTakes, llm_entry, stt_entry,
 };
 use dory_gpui::app::AppState;
 use dory_gpui::{fixtures, models_view, set_up_summaries, settings_window};
@@ -51,6 +54,7 @@ fn speech(id: &str, name: &str, languages: &[&str], recommended: bool) -> ModelE
         tags: LangSet::Only(tags(languages)),
     };
     entry.recommended = recommended;
+    entry.caps.window = Some(Ms(30_000));
     entry.disk_bytes = Some(1_036_613_791);
     entry.about = ModelAbout {
         summary: format!("{name} turns speech into text."),
@@ -117,6 +121,10 @@ impl ModelProvider<Stt> for HeldProvider {
 struct Rig {
     store: Arc<MemStore>,
     llm: Arc<FakeLlmProvider>,
+    machine: Arc<FakeMachine>,
+    transcriber: Arc<FakeTranscriber>,
+    dir: std::path::PathBuf,
+    takes: MemTakes,
 }
 
 fn rig(meeting: &[&str]) -> Rig {
@@ -130,8 +138,18 @@ fn rig(meeting: &[&str]) -> Rig {
     gemma.display_name = "Gemma 4 E4B".into();
     gemma.disk_bytes = Some(9_461_576_343);
     gemma.recommended = true;
+    let dir = std::env::temp_dir().join(format!(
+        "dory-settings-test-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
     Rig {
         store,
+        machine: Arc::new(FakeMachine::default()),
+        transcriber: Arc::new(FakeTranscriber::new()),
+        takes: MemTakes::in_dir(&dir),
+        dir,
         llm: Arc::new(FakeLlmProvider::new(
             "ollama",
             vec![gemma],
@@ -141,19 +159,14 @@ fn rig(meeting: &[&str]) -> Rig {
 }
 
 fn open(rig: &Rig, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
-    let dir = std::env::temp_dir().join(format!(
-        "dory-settings-test-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = &rig.dir;
     let stt = Arc::new(FakeSttProvider::new(
         "sherpa",
         vec![
             speech(PARAKEET, "Parakeet", &["en", "fr", "de"], true),
             speech(WHISPER, "Whisper", &["en", "tl", "fr", "de"], false),
         ],
-        Arc::new(FakeTranscriber::new()),
+        rig.transcriber.clone(),
     ));
     let held = Arc::new(HeldProvider {
         release: AtomicBool::new(false),
@@ -162,8 +175,8 @@ fn open(rig: &Rig, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState
     let dory = Dory::open(
         Ports {
             store: rig.store.clone(),
-            takes: Arc::new(MemTakes::in_dir(&dir)),
-            trash: Arc::new(FakeTrash::new(&dir)),
+            takes: Arc::new(rig.takes.clone()),
+            trash: Arc::new(FakeTrash::new(dir)),
             capture: Arc::new(FakeCapture::new()),
             playback: Arc::new(FakePlayback::new()),
             clock: Arc::new(ManualClock::new(Timestamp(
@@ -172,6 +185,7 @@ fn open(rig: &Rig, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState
             stt: vec![stt, held],
             llm: vec![rig.llm.clone()],
             diar: Vec::new(),
+            machine: rig.machine.clone(),
             guard: None,
         },
         Options::default(),
@@ -546,4 +560,90 @@ fn the_speech_step_offers_the_model_auto_picks_for_tagalog(cx: &mut TestAppConte
         label(window, "meeting-languages-summary", cx).as_deref(),
         Some("Meetings are in Tagalog and English.")
     );
+}
+
+#[gpui_kit::test]
+fn processing_saves_by_click_and_keyboard_and_speaks_each_effect(cx: &mut TestAppContext) {
+    let rig = rig(&[]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
+    until(cx, "the Processing choices", |cx| {
+        has(window, "processing-auto", cx)
+    });
+    for (id, name, effect) in [
+        ("processing-auto", "Automatic", "Runs light on battery"),
+        ("processing-fast", "Fast", "Uses up to 4 cores."),
+        ("processing-light", "Light", "Uses 2 efficiency cores."),
+    ] {
+        let spoken = label(window, id, cx).unwrap();
+        assert!(
+            spoken.starts_with(name) && spoken.contains(effect),
+            "{id}: {spoken}"
+        );
+    }
+    let checked = |id: &str, cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| window.find(id.to_owned()).checked())
+            .unwrap()
+    };
+    assert_eq!(checked("processing-auto", cx), Some(true), "the default");
+
+    click(window, "processing-fast", cx);
+    until(cx, "Fast saved", |_| {
+        settings(&rig).processing == Processing::Fast
+    });
+    assert!(focused(window, "processing-fast", cx));
+    press(window, "tab", cx);
+    assert!(
+        focused(window, "processing-light", cx),
+        "Tab reaches the next choice"
+    );
+    press(window, "space", cx);
+    until(cx, "Light saved by Space", |_| {
+        settings(&rig).processing == Processing::Light
+    });
+    until(cx, "Light shows as chosen", |cx| {
+        checked("processing-light", cx) == Some(true)
+    });
+}
+
+#[gpui_kit::test]
+fn a_job_running_light_says_why_on_its_row(cx: &mut TestAppContext) {
+    let rig = rig(&[]);
+    rig.machine.set(Conditions {
+        power: Power::Battery,
+        low_power: false,
+        thermal: Thermal::Nominal,
+    });
+    rig.transcriber.hold(true);
+    let id = RecordingId::parse("on-battery").unwrap();
+    let mut writer = rig.takes.begin(&id, ChannelLayout::MicOnly, 1_000).unwrap();
+    writer.write(&vec![0.1; 90_000]).unwrap();
+    writer.finish().unwrap();
+    let take = rig.takes.seal(&id).unwrap();
+    rig.store
+        .apply(vec![Change::RecordingCreated(Recording {
+            id: id.clone(),
+            title: Some("Unplugged sync".into()),
+            created_at: Timestamp(fixtures::now().timestamp_millis()),
+            language: LanguagePref::Auto,
+            layout: ChannelLayout::MicOnly,
+            take: Some(take),
+        })])
+        .unwrap();
+    rig.store
+        .apply(vec![Change::JobEnqueued {
+            id: id.clone(),
+            goal: Goal::TRANSCRIBE,
+            priority: Priority::Normal,
+            at: Timestamp(fixtures::now().timestamp_millis()),
+        }])
+        .unwrap();
+    let (main, _) = open(&rig, cx);
+    let row = format!("row-{id}");
+    // Events before the window subscribed are gone, so the next window is what it hears.
+    rig.transcriber.hold_from(1);
+    until(cx, "the light row", |cx| {
+        label(main, &row, cx).is_some_and(|l| l.contains("Transcribing, 33% · Light, on battery"))
+    });
+    rig.transcriber.hold(false);
 }

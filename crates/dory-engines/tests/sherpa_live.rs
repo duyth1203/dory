@@ -67,6 +67,7 @@ fn installed_models_transcribe_a_wav() {
             language: language.clone(),
             diarize: false,
             hint: None,
+            threads: 4,
         };
         match engine.transcribe(&request, &mut sink, &cancel) {
             Err(EngineError::UnsupportedLanguage(lang)) => {

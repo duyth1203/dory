@@ -26,10 +26,10 @@ use crate::ports::capture::{
     InputDevice, Source,
 };
 use crate::ports::{
-    Activity, CancelToken, Clip, Clock, CompletionRequest, Diarizer, EngineError, LanguageModel,
-    ModelProvider, Moved, ProvisionError, ProvisionSink, RawSegment, SegmentSink, TakeError,
-    TakeWriter, Takes, TextSink, TranscribeOutcome, TranscribeRequest, Transcriber, Trash,
-    TrashError, TrashReceipt, Turn,
+    Activity, CancelToken, Clip, Clock, CompletionRequest, Conditions, Diarizer, EngineError,
+    LanguageModel, Machine, ModelProvider, Moved, Pace, ProvisionError, ProvisionSink, RawSegment,
+    SegmentSink, TakeError, TakeWriter, Takes, TextSink, TranscribeOutcome, TranscribeRequest,
+    Transcriber, Trash, TrashError, TrashReceipt, Turn,
 };
 
 /// A clock that moves only when a test says so.
@@ -729,6 +729,50 @@ impl<K: ModelKind> ModelProvider<K> for FakeProvider<K> {
     }
 }
 
+/// A machine whose conditions a test sets. It records every `set_pace` and the thread it ran on.
+#[derive(Debug, Default)]
+pub struct FakeMachine {
+    conditions: Mutex<Conditions>,
+    paces: Mutex<Vec<PaceCall>>,
+}
+
+/// One `set_pace` call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaceCall {
+    pub pace: Pace,
+    pub thread: Option<String>,
+}
+
+impl FakeMachine {
+    pub fn new(conditions: Conditions) -> Self {
+        Self {
+            conditions: Mutex::new(conditions),
+            paces: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn set(&self, conditions: Conditions) {
+        *lock(&self.conditions) = conditions;
+    }
+
+    pub fn paces(&self) -> Vec<PaceCall> {
+        lock(&self.paces).clone()
+    }
+}
+
+impl Machine for FakeMachine {
+    fn conditions(&self) -> Conditions {
+        *lock(&self.conditions)
+    }
+
+    fn set_pace(&self, pace: Pace) {
+        lock(&self.paces).push(PaceCall {
+            pace,
+            thread: std::thread::current().name().map(str::to_owned),
+        });
+    }
+}
+
 /// A speech engine that returns scripted segments per channel. A call returns the segments that
 /// start inside its clip, on the clip's time axis, the way an engine reads only the audio it gets.
 pub struct FakeTranscriber {
@@ -760,6 +804,7 @@ pub struct TranscribeCall {
     pub span: TimeRange,
     pub language: LanguagePref,
     pub diarize: bool,
+    pub threads: u8,
 }
 
 impl FakeTranscriber {
@@ -821,6 +866,7 @@ impl Transcriber for FakeTranscriber {
                 span: TimeRange::new(origin, end).expect("start before end"),
                 language: req.language.clone(),
                 diarize: req.diarize,
+                threads: req.threads,
             });
             calls.len() - 1
         };
@@ -873,6 +919,7 @@ pub struct Completion {
     pub system: String,
     pub user: String,
     pub max_output_tokens: u32,
+    pub threads: u8,
 }
 
 impl FakeLanguageModel {
@@ -906,6 +953,7 @@ impl LanguageModel for FakeLanguageModel {
             system: req.system.to_owned(),
             user: req.user.to_owned(),
             max_output_tokens: req.max_output_tokens,
+            threads: req.threads,
         });
         for piece in self.reply.split_inclusive(' ') {
             sink.text(piece);

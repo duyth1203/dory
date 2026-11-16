@@ -10,6 +10,7 @@ mod windows;
 
 use super::events::{Db, Event};
 use super::models::{Engines, Registries};
+use super::pace::Budget;
 use crate::domain::{
     Blocker, Channel, ChannelLayout, FailureClass, Fraction, Job, JobError, LangTag, LanguagePref,
     Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, TimeRange, Transcript,
@@ -77,6 +78,8 @@ pub(crate) struct StageCx<'a> {
     pub cancel: &'a CancelToken,
     pub settings: &'a Settings,
     pub now_mono: u64,
+    /// The budget for the next window or pass, with its pace already applied to this thread.
+    pub pace: &'a mut dyn FnMut() -> Budget,
 }
 
 pub(crate) fn run(stage: Stage, cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
@@ -186,6 +189,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         None
     };
 
+    let budget = (cx.pace)();
     let stt = cx
         .engines
         .get::<Stt>(cx.models, &stt_id, cx.cancel, cx.now_mono)
@@ -241,6 +245,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         job: cx.job,
         total,
         done: 0,
+        budget,
     };
     let mut segments = Vec::new();
     let mut languages = Vec::new();
@@ -254,7 +259,10 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
                     }
                     saved.clone()
                 }
-                None => transcribe_window(&wx, run, *span, &mut progress)?,
+                None => {
+                    progress.start_window((cx.pace)());
+                    transcribe_window(&wx, run, *span, &mut progress)?
+                }
             };
             progress.finished(span.len());
             languages.extend(
@@ -313,6 +321,7 @@ fn transcribe_window(
         fetched = wx.takes.slice(&run.whole, span).map_err(failed)?;
         &fetched
     };
+    let threads = progress.budget.threads();
     let mut sink = Drafts {
         plan: run.plan,
         origin: clip.origin,
@@ -325,6 +334,7 @@ fn transcribe_window(
         language: wx.language.clone(),
         diarize: run.diarize,
         hint: wx.hint,
+        threads,
     };
     let outcome = wx
         .stt
@@ -403,6 +413,8 @@ struct Progress<'a> {
     job: &'a Job,
     total: u64,
     done: u64,
+    /// The running window's.
+    budget: Budget,
 }
 
 impl Progress<'_> {
@@ -411,7 +423,13 @@ impl Progress<'_> {
             job: self.job.id,
             stage: Stage::Transcribe,
             fraction: Fraction::new(done / self.total.max(1) as f32),
+            budget: self.budget,
         });
+    }
+
+    fn start_window(&mut self, budget: Budget) {
+        self.budget = budget;
+        self.publish(self.done as f32);
     }
 
     fn within(&self, window: Ms, fraction: Fraction) {
@@ -488,6 +506,7 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .ok_or_else(|| permanent("the summary model left the catalog"))?;
     let names = store.speaker_names(id).map_err(failed)?;
     let lines = summary::transcript_lines(&transcript, &names);
+    let stage_budget = (cx.pace)();
     let llm = cx
         .engines
         .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)
@@ -496,30 +515,37 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         db: cx.db,
         job: cx.job,
     };
+    let budget = std::cell::Cell::new(stage_budget);
+    let mut publish = |fraction: Fraction| {
+        cx.db.publish(Event::StageProgress {
+            job: cx.job.id,
+            stage: Stage::Summarize,
+            fraction,
+            budget: budget.get(),
+        });
+    };
+    publish(Fraction::new(0.0));
+    let pace = cx.pace;
     let text = summary::summarize(
         &lines,
         language.as_ref(),
         context,
         &|text| llm.count_tokens(text),
         &mut |call| {
+            budget.set(pace());
             let request = CompletionRequest {
                 system: call.system,
                 user: call.user,
                 max_output_tokens: call.max_output_tokens,
                 temperature: 0.2,
+                threads: stage_budget.threads(),
             };
             match call.pass {
                 Pass::Summary => llm.complete(&request, &mut drafts, cx.cancel),
                 Pass::Notes => llm.complete(&request, &mut Discard, cx.cancel),
             }
         },
-        &mut |fraction| {
-            cx.db.publish(Event::StageProgress {
-                job: cx.job.id,
-                stage: Stage::Summarize,
-                fraction,
-            });
-        },
+        &mut publish,
     )
     .map_err(|error| match error {
         SummaryError::Engine(error) => engine_failed(llm_id.erase())(error),

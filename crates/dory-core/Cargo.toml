@@ -28,3 +28,7 @@ required-features = ["testing"]
 [[test]]
 name = "pipeline"
 required-features = ["testing"]
+
+[[test]]
+name = "pace"
+required-features = ["testing"]

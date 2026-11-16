@@ -346,6 +346,7 @@ mod tests {
             (id.as_str() == "r1").then(|| Progress {
                 stage: Stage::Transcribe,
                 fraction: Fraction::new(0.42),
+                budget: dory_core::app::Budget::Fast { threads: 4 },
             })
         };
         let lines = lines(&jobs, |id| id.as_str().to_owned(), progress);

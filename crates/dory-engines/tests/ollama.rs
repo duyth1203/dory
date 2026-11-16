@@ -210,6 +210,7 @@ fn request() -> CompletionRequest<'static> {
         user: "Alice: ship Friday.",
         max_output_tokens: 512,
         temperature: 0.5,
+        threads: 4,
     }
 }
 
@@ -257,7 +258,12 @@ fn chat_request_carries_the_context_window_and_options() {
             ],
             "stream": true,
             "think": false,
-            "options": {"num_ctx": 32768, "temperature": 0.5, "num_predict": 512},
+            "options": {
+                "num_ctx": 32768,
+                "temperature": 0.5,
+                "num_predict": 512,
+                "num_thread": 4,
+            },
         })
     );
     assert!(
@@ -265,6 +271,27 @@ fn chat_request_carries_the_context_window_and_options() {
             .requests()
             .contains(&("POST".to_owned(), "/api/chat".to_owned()))
     );
+}
+
+#[test]
+fn chat_request_sends_the_threads_as_num_thread() {
+    let server = tags_server();
+    let engine = open(&Ollama::new(&server.url()), &e4b());
+    for threads in [2, 4] {
+        let request = CompletionRequest {
+            threads,
+            ..request()
+        };
+        engine
+            .complete(&request, &mut Pieces::default(), &CancelToken::new())
+            .unwrap();
+    }
+    let sent: Vec<_> = server
+        .bodies("/api/chat")
+        .iter()
+        .map(|b| b["options"]["num_thread"].clone())
+        .collect();
+    assert_eq!(sent, [json!(2), json!(4)]);
 }
 
 #[test]
@@ -744,6 +771,7 @@ fn live_gemma_summarizes_a_short_transcript() {
                 user: "Alice: We ship on Friday.\nBob: Agreed, I will cut the release branch Thursday.",
                 max_output_tokens: 200,
                 temperature: 0.2,
+                threads: 2,
             },
             &mut sink,
             &CancelToken::new(),

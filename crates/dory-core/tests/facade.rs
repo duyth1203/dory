@@ -132,6 +132,7 @@ impl Rig {
             stt: vec![self.stt.clone()],
             llm: vec![self.llm_provider.clone()],
             diar: vec![],
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         }
     }

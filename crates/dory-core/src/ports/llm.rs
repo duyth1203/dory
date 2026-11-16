@@ -19,6 +19,9 @@ pub struct CompletionRequest<'a> {
     pub user: &'a str,
     pub max_output_tokens: u32,
     pub temperature: f32,
+    /// Threads the engine may compute with. The same for every pass of one summary stage, because
+    /// a server engine may reload the model when it changes.
+    pub threads: u8,
 }
 
 pub trait TextSink {

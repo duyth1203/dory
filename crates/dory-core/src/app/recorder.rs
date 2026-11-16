@@ -102,6 +102,16 @@ pub(crate) struct RecorderHandle {
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
+/// Whether the recorder is not idle, without the facade's command channel.
+#[derive(Clone)]
+pub(crate) struct RecorderWatch(Arc<Mutex<Shared>>);
+
+impl RecorderWatch {
+    pub fn busy(&self) -> bool {
+        lock(&self.0).status != RecorderStatus::Idle
+    }
+}
+
 #[derive(Debug, Error)]
 #[error("the recorder has shut down")]
 pub struct RecorderGone;
@@ -113,6 +123,11 @@ impl RecorderHandle {
 
     pub fn status(&self) -> RecorderStatus {
         lock(&self.shared).status.clone()
+    }
+
+    /// A read-only view of whether the recorder is busy, for the pipeline worker.
+    pub fn watch(&self) -> RecorderWatch {
+        RecorderWatch(Arc::clone(&self.shared))
     }
 
     /// Refuses a take that is being recorded or sealed.

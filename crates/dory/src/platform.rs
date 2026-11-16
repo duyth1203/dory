@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dory_core::ports::capture::CaptureBackend;
-use dory_core::ports::{Playback, Trash};
+use dory_core::ports::{Machine, Playback, Trash};
 
 #[cfg(target_os = "macos")]
 pub fn capture() -> Arc<dyn CaptureBackend> {
@@ -16,6 +16,26 @@ pub fn playback() -> Arc<dyn Playback> {
 #[cfg(target_os = "macos")]
 pub fn trash() -> Arc<dyn Trash> {
     Arc::new(dory_macos::MacTrash::new())
+}
+
+#[cfg(target_os = "macos")]
+pub fn machine() -> Arc<dyn Machine> {
+    Arc::new(dory_macos::MacMachine::new())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn machine() -> Arc<dyn Machine> {
+    Arc::new(Unsupported)
+}
+
+/// Reports nothing it cannot read, so Automatic runs fast, and leaves threads as they are.
+#[cfg(not(target_os = "macos"))]
+impl Machine for Unsupported {
+    fn conditions(&self) -> dory_core::ports::Conditions {
+        dory_core::ports::Conditions::default()
+    }
+
+    fn set_pace(&self, _: dory_core::ports::Pace) {}
 }
 
 #[cfg(not(target_os = "macos"))]

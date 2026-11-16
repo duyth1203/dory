@@ -9,6 +9,7 @@ mod config;
 #[cfg(feature = "fake-engines")]
 mod fake;
 mod lock;
+mod machine;
 mod platform;
 
 use std::path::Path;
@@ -24,7 +25,8 @@ use thiserror::Error;
 
 pub use clock::SystemClock;
 pub use config::{
-    Config, ConfigError, DATA_DIR_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR, legacy_data_dir,
+    Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
+    legacy_data_dir, machine_override,
 };
 pub use dory_core::app::{Dory, LibraryReader};
 pub use dory_store::{ImportReport, Skipped};
@@ -115,6 +117,10 @@ fn open_with(
     options: Options,
     providers: Providers,
 ) -> Result<Dory, OpenError> {
+    let options = Options {
+        processing: config.processing,
+        ..options
+    };
     create_data_dir(config)?;
     // Before anything reads the folder: recovery must never see another process's live take.
     let lock = lock::DataLock::acquire(&config.data_dir)?;
@@ -126,6 +132,7 @@ fn open_with(
         capture,
         playback: platform::playback(),
         clock: Arc::new(SystemClock::new()),
+        machine: machine::for_config(config),
         stt: providers.stt,
         llm: providers.llm,
         diar: Vec::new(),

@@ -141,6 +141,6 @@ impl ModelProvider<Stt> for Sherpa {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
-        Ok(Arc::new(SherpaEngine::open(model.clone(), dir)?))
+        Ok(Arc::new(SherpaEngine::open(model.clone(), dir)))
     }
 }

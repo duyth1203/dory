@@ -1,9 +1,14 @@
-//! The processing rules of UX-11 to UX-13 as plain data and pure functions: what a stopped job
-//! says and the one button it offers, how long the rest of a run takes at the rate observed so
-//! far, and which rows just finished or failed. Nothing here touches GPUI or the store.
+//! The processing rules of UX-11 to UX-13 and UX-30 as plain data and pure functions: what a
+//! stopped job says and the one button it offers, how long the rest of a run takes at the rate
+//! observed so far, why a job runs light, the Processing choices, and which rows just finished or
+//! failed. Nothing here touches GPUI or the store.
 
-use dory_core::domain::{Blocker, Fraction, JobState, Ms, RecordingId, RecordingRow, Stage};
+use dory_core::app::LightReason;
+use dory_core::domain::{
+    Blocker, Fraction, JobState, Ms, Processing, RecordingId, RecordingRow, Stage,
+};
 use dory_core::models::{KindTag, ModelRef, UnavailableReason};
+use dory_core::ports::Pace;
 
 /// The one button a stopped job offers (UX-13).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,13 +139,55 @@ pub fn finish_estimate(audio: Ms, rate: Option<Rate>) -> String {
     format!("Transcribing takes about {minutes} {unit} on this Mac.")
 }
 
-/// The first progress seen for a recording's running stage, so a rate covers only this run.
+/// The first progress seen for a recording's running stage at its current pace, so a rate covers
+/// only this run at this pace.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Run {
     pub stage: Stage,
+    pub pace: Pace,
     pub from: Fraction,
     pub at_ms: u64,
 }
+
+/// What the row and the detail add after the stage while a job runs light (UX-30).
+pub fn light_label(reason: LightReason) -> &'static str {
+    match reason {
+        LightReason::Chosen => "Light, chosen in Settings",
+        LightReason::Battery => "Light, on battery",
+        LightReason::LowPower => "Light, Low Power Mode",
+        LightReason::Hot => "Light, Mac is hot",
+        LightReason::Recording => "Light, while recording",
+    }
+}
+
+/// A Processing choice in Settings > Transcription and its effect in one line (UX-30).
+pub struct PaceChoice {
+    pub setting: Processing,
+    pub id: &'static str,
+    pub label: &'static str,
+    pub effect: &'static str,
+}
+
+pub const PACE_CHOICES: [PaceChoice; 3] = [
+    PaceChoice {
+        setting: Processing::Auto,
+        id: "processing-auto",
+        label: "Automatic",
+        effect: "Runs fast when the Mac is plugged in and cool. Runs light on battery, in Low Power Mode, when the Mac is hot, and while you record.",
+    },
+    PaceChoice {
+        setting: Processing::Fast,
+        id: "processing-fast",
+        label: "Fast",
+        effect: "Uses up to 4 cores. Finishes soonest, but the fans may spin up and the battery drains faster.",
+    },
+    PaceChoice {
+        setting: Processing::Light,
+        id: "processing-light",
+        label: "Light",
+        effect: "Uses 2 efficiency cores. Takes longer, stays quiet, and is easy on the battery.",
+    },
+];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {

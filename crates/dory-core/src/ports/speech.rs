@@ -20,6 +20,9 @@ pub struct TranscribeRequest<'a> {
     pub diarize: bool,
     /// Vocabulary or context, such as the meeting title. Engines may ignore it.
     pub hint: Option<&'a str>,
+    /// Threads the engine may compute with. An engine that holds a thread pool rebuilds it when
+    /// this changes; the pace policy's hold bounds how often.
+    pub threads: u8,
 }
 
 pub trait SegmentSink {

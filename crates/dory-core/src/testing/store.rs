@@ -323,7 +323,7 @@ mod contract {
     use super::*;
     use crate::domain::{
         Blocker, Channel, ChannelLayout, FailureClass, Goal, JobError, LangTag, LanguagePref, Ms,
-        Revision, Segment, SpeakerId, Stage, TakeContainer, TakeInfo, TimeRange,
+        Processing, Revision, Segment, SpeakerId, Stage, TakeContainer, TakeInfo, TimeRange,
     };
     use crate::models::{Choice, KindTag, ModelRef};
     use crate::ports::{Checkpoint, CheckpointKey, RawSegment};
@@ -890,6 +890,7 @@ mod contract {
             language: LanguagePref::Pinned(LangTag::parse("zh-Hans-CN").unwrap()),
             meeting_languages: vec![LangTag::parse("tl").unwrap(), LangTag::parse("en").unwrap()],
             auto_process: false,
+            processing: Processing::Light,
         };
         let off = Settings {
             stt: Choice::Auto,
@@ -898,6 +899,7 @@ mod contract {
             language: LanguagePref::Auto,
             meeting_languages: Vec::new(),
             auto_process: true,
+            processing: Processing::Fast,
         };
         for settings in [pinned, off, Settings::default()] {
             store

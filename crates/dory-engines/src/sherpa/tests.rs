@@ -15,7 +15,7 @@ use sherpa_onnx::OfflineRecognizerResult;
 
 use super::Sherpa;
 use super::catalog::{self, Archive, Layout, Model};
-use super::engine::{engine_code, recognizer_config, segments};
+use super::engine::{Built, Recipe, engine_code, recognizer_config, segments};
 use super::fetch::hex;
 
 const ROOT: &str = "tiny-int8";
@@ -367,12 +367,15 @@ fn cancel_returns_within_a_second_and_a_later_call_resumes() {
     assert_eq!(*healthy.ranges.lock().unwrap(), [1000]);
 }
 
-fn configured_paths(
-    layout: Layout,
-    dir: &Path,
-    language: Option<&str>,
-) -> HashMap<&'static str, Option<String>> {
-    let config = recognizer_config(layout, dir, language);
+fn recipe(whisper_language: Option<&'static str>, threads: u8) -> Recipe {
+    Recipe {
+        whisper_language,
+        threads,
+    }
+}
+
+fn configured_paths(layout: Layout, dir: &Path) -> HashMap<&'static str, Option<String>> {
+    let config = recognizer_config(layout, dir, recipe(None, 4));
     let m = &config.model_config;
     HashMap::from([
         ("transducer.encoder", m.transducer.encoder.clone()),
@@ -408,7 +411,7 @@ fn each_layout_configures_the_files_its_archive_holds() {
         ),
     ];
     for (layout, want) in cases {
-        let got = configured_paths(layout, &dir, None);
+        let got = configured_paths(layout, &dir);
         for (field, path) in &got {
             let expected = want
                 .iter()
@@ -422,16 +425,16 @@ fn each_layout_configures_the_files_its_archive_holds() {
                 "{layout:?} extracts {file}"
             );
         }
-        let config = recognizer_config(layout, &dir, None);
+        let config = recognizer_config(layout, &dir, recipe(None, 2));
         assert_eq!(config.model_config.provider.as_deref(), Some("cpu"));
-        assert!(config.model_config.num_threads >= 1);
+        assert_eq!(config.model_config.num_threads, 2, "{layout:?}");
     }
-    let parakeet = recognizer_config(Layout::Parakeet, &dir, None);
+    let parakeet = recognizer_config(Layout::Parakeet, &dir, recipe(None, 4));
     assert_eq!(
         parakeet.model_config.model_type.as_deref(),
         Some("nemo_transducer")
     );
-    let whisper = recognizer_config(Layout::WhisperTurbo, &dir, Some("tl"));
+    let whisper = recognizer_config(Layout::WhisperTurbo, &dir, recipe(Some("tl"), 4));
     assert_eq!(whisper.model_config.whisper.language.as_deref(), Some("tl"));
     assert_eq!(
         whisper.model_config.whisper.task.as_deref(),
@@ -538,4 +541,52 @@ fn opening_a_missing_model_fails_without_loading() {
     let provider = sherpa(dir.path(), "http://127.0.0.1:9", model(b"", ""));
     let err = provider.open(&tiny(), &CancelToken::new()).err().unwrap();
     assert!(matches!(err, EngineError::ModelMissing(_)), "{err:?}");
+}
+
+#[test]
+fn the_recognizer_is_rebuilt_only_when_threads_or_the_whisper_language_change() {
+    let mut built = Built::empty();
+    let mut builds = Vec::new();
+    let windows = [
+        recipe(None, 4),
+        recipe(None, 4),
+        recipe(None, 2),
+        recipe(None, 2),
+        recipe(Some("vi"), 2),
+        recipe(Some("vi"), 4),
+        recipe(Some("vi"), 4),
+    ];
+    for want in windows {
+        let got: &mut Recipe = built
+            .get(want, |r| {
+                builds.push(r);
+                Ok::<_, ()>(r)
+            })
+            .unwrap();
+        assert_eq!(*got, want, "each window runs on a recognizer built for it");
+    }
+    assert_eq!(
+        builds,
+        [
+            recipe(None, 4),
+            recipe(None, 2),
+            recipe(Some("vi"), 2),
+            recipe(Some("vi"), 4)
+        ]
+    );
+}
+
+#[test]
+fn a_failed_build_leaves_nothing_built_and_the_next_window_tries_again() {
+    let mut built = Built::<Recipe>::empty();
+    assert!(built.get(recipe(None, 4), |_| Err("corrupt")).is_err());
+    let mut tries = 0;
+    let got = built
+        .get(recipe(None, 4), |r| {
+            tries += 1;
+            Ok::<_, &str>(r)
+        })
+        .copied();
+    assert_eq!(got, Ok(recipe(None, 4)));
+    assert_eq!(tries, 1);
 }

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_channel::{Receiver, Sender, TrySendError};
 
+use super::pace::Budget;
 use super::recorder::RecorderStatus;
 use crate::domain::{Fraction, JobId, Ms, RecordingId, Segment, Stage};
 use crate::models::{KindTag, ModelRef};
@@ -45,10 +46,12 @@ pub enum Event {
         reason: FinalizeReason,
     },
 
+    /// Also sent when a window or pass starts, so a change of budget shows within one window.
     StageProgress {
         job: JobId,
         stage: Stage,
         fraction: Fraction,
+        budget: Budget,
     },
     /// A segment as the engine produced it, before the transcript commits.
     DraftSegment {

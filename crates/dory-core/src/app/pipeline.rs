@@ -11,12 +11,14 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use super::Options;
 use super::events::{Db, Event};
 use super::models::{Engines, Registries};
+use super::pace::{self, Budget, Pacer};
+use super::recorder::RecorderWatch;
 use super::stages::{self, StageCx, StageError};
 use crate::domain::{
-    FailureClass, Job, JobEvent, JobId, JobState, MAX_ATTEMPTS, RecordingId, RecordingQuery, Stage,
-    Timestamp,
+    FailureClass, Job, JobEvent, JobId, JobState, MAX_ATTEMPTS, Processing, RecordingId,
+    RecordingQuery, Stage, Timestamp,
 };
-use crate::ports::{CancelToken, Change, Clock, StoreError, Takes};
+use crate::ports::{CancelToken, Change, Clock, Machine, Store, StoreError, Takes};
 
 /// Wakes the worker. Wakes coalesce, so sending never blocks.
 #[derive(Clone)]
@@ -82,6 +84,8 @@ pub(crate) struct Deps {
     pub takes: Arc<dyn Takes>,
     pub clock: Arc<dyn Clock>,
     pub models: Arc<Registries>,
+    pub machine: Arc<dyn Machine>,
+    pub recorder: RecorderWatch,
 }
 
 pub(crate) fn spawn(
@@ -93,6 +97,14 @@ pub(crate) fn spawn(
     let stop = Arc::new(AtomicBool::new(false));
     let current = Arc::new(Current::default());
     let worker = Worker {
+        pacing: Pacing {
+            pacer: Pacer::new(pace::fast_threads()),
+            machine: Arc::clone(&deps.machine),
+            recorder: deps.recorder.clone(),
+            clock: Arc::clone(&deps.clock),
+            store: Arc::clone(&deps.db.store),
+            processing: options.processing,
+        },
         engines: Engines::new(options.engine_idle_ms),
         retry_base_ms: options.retry_base_ms,
         clock_poll: options.clock_poll,
@@ -112,8 +124,38 @@ pub(crate) fn spawn(
     })
 }
 
+/// Decides the budget for each window or pass and applies its pace to the worker's thread.
+struct Pacing {
+    pacer: Pacer,
+    machine: Arc<dyn Machine>,
+    recorder: RecorderWatch,
+    clock: Arc<dyn Clock>,
+    store: Arc<dyn Store>,
+    processing: Option<Processing>,
+}
+
+impl Pacing {
+    /// Reads the setting again each time, so a change applies from the next window.
+    fn budget(&mut self) -> Budget {
+        let setting = self.processing.unwrap_or_else(|| {
+            self.store
+                .settings()
+                .map_or(Processing::Auto, |s| s.processing)
+        });
+        let budget = self.pacer.next(
+            setting,
+            self.machine.conditions(),
+            self.recorder.busy(),
+            self.clock.monotonic_ms(),
+        );
+        self.machine.set_pace(budget.pace());
+        budget
+    }
+}
+
 struct Worker {
     deps: Deps,
+    pacing: Pacing,
     engines: Engines,
     retry_base_ms: u64,
     clock_poll: Duration,
@@ -219,6 +261,7 @@ impl Worker {
                     cancel: &cancel,
                     settings: &settings,
                     now_mono: self.deps.clock.monotonic_ms(),
+                    pace: &mut || self.pacing.budget(),
                 },
             ),
             Err(error) => Err(stages::failed(error)),

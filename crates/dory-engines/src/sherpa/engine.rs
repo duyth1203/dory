@@ -21,8 +21,9 @@ const GAP_SECS: f32 = 1.0;
 pub(super) fn recognizer_config(
     layout: Layout,
     dir: &Path,
-    language: Option<&str>,
+    recipe: Recipe,
 ) -> OfflineRecognizerConfig {
+    let language = recipe.whisper_language;
     let path = |file: &str| Some(dir.join(file).to_string_lossy().into_owned());
     let mut config = OfflineRecognizerConfig::default();
     let model = &mut config.model_config;
@@ -48,32 +49,56 @@ pub(super) fn recognizer_config(
             model.tokens = path("turbo-tokens.txt");
         }
     }
-    model.num_threads = threads();
+    model.num_threads = i32::from(recipe.threads);
     model.provider = Some("cpu".into());
     config
 }
 
-/// Leaves cores for Ollama and the UI. onnxruntime gains little past the performance cores.
-fn threads() -> i32 {
-    std::thread::available_parallelism().map_or(2, |n| n.get().min(4) as i32)
+/// What a recognizer is built for. onnxruntime sizes its thread pool when the recognizer is
+/// built, and only Whisper takes the language at load time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Recipe {
+    pub whisper_language: Option<&'static str>,
+    pub threads: u8,
 }
 
+/// One built recognizer and its recipe. A request with another recipe drops it before building
+/// the next, so two never sit in memory together.
+pub(super) struct Built<R>(Option<(Recipe, R)>);
+
+impl<R> Built<R> {
+    pub(super) fn empty() -> Self {
+        Self(None)
+    }
+
+    pub(super) fn get<E>(
+        &mut self,
+        recipe: Recipe,
+        build: impl FnOnce(Recipe) -> Result<R, E>,
+    ) -> Result<&mut R, E> {
+        if self.0.as_ref().is_none_or(|(built, _)| *built != recipe) {
+            self.0 = None;
+            self.0 = Some((recipe, build(recipe)?));
+        }
+        Ok(&mut self.0.as_mut().expect("built above").1)
+    }
+}
+
+/// Builds the recognizer on the first window, with that window's thread count, so a light first
+/// window does not build twice.
 pub(super) struct SherpaEngine {
     model: Model,
     dir: PathBuf,
-    /// The recognizer, with the Whisper language it was built for. Only Whisper takes the
-    /// language at load time, so a pinned Whisper run reloads once per language change.
-    loaded: Mutex<Option<(Option<&'static str>, OfflineRecognizer)>>,
+    built: Mutex<Built<OfflineRecognizer>>,
 }
 
 impl SherpaEngine {
-    pub(super) fn open(model: Model, dir: PathBuf) -> Result<SherpaEngine, EngineError> {
-        let recognizer = load(&model, &dir, None)?;
-        Ok(SherpaEngine {
+    pub(super) fn open(model: Model, dir: PathBuf) -> SherpaEngine {
+        SherpaEngine {
             model,
             dir,
-            loaded: Mutex::new(Some((None, recognizer))),
-        })
+            built: Mutex::new(Built::empty()),
+        }
     }
 }
 
@@ -86,12 +111,8 @@ pub(super) fn engine_code(model: &Model, wanted: &LangTag) -> Option<&'static st
         .map(|(_, code)| *code)
 }
 
-fn load(
-    model: &Model,
-    dir: &Path,
-    language: Option<&str>,
-) -> Result<OfflineRecognizer, EngineError> {
-    OfflineRecognizer::create(&recognizer_config(model.layout, dir, language)).ok_or_else(|| {
+fn load(model: &Model, dir: &Path, recipe: Recipe) -> Result<OfflineRecognizer, EngineError> {
+    OfflineRecognizer::create(&recognizer_config(model.layout, dir, recipe)).ok_or_else(|| {
         EngineError::Other {
             message: format!("sherpa-onnx could not load {}", model.display_name),
             source: None,
@@ -131,19 +152,12 @@ impl Transcriber for SherpaEngine {
         let clip_len = Ms(wave.samples().len() as u64 * 1000 / rate as u64);
         sink.progress(Fraction::new(0.0));
 
-        let whisper_language = code.filter(|_| self.model.layout == Layout::WhisperTurbo);
-        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
-        let (_, recognizer) = match &mut *loaded {
-            Some(current) if current.0 == whisper_language => current,
-            slot => {
-                // Drop the old recognizer first, so two never sit in memory together.
-                *slot = None;
-                slot.insert((
-                    whisper_language,
-                    load(&self.model, &self.dir, whisper_language)?,
-                ))
-            }
+        let recipe = Recipe {
+            whisper_language: code.filter(|_| self.model.layout == Layout::WhisperTurbo),
+            threads: req.threads.max(1),
         };
+        let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
+        let recognizer = built.get(recipe, |r| load(&self.model, &self.dir, r))?;
         let stream = recognizer.create_stream();
         stream.accept_waveform(rate, wave.samples());
         if cancel.is_cancelled() {
@@ -154,7 +168,7 @@ impl Transcriber for SherpaEngine {
             message: "sherpa-onnx returned no result".into(),
             source: None,
         })?;
-        drop(loaded);
+        drop(built);
 
         for (range, text) in segments(&result, clip_len) {
             sink.segment(RawSegment {

@@ -60,6 +60,7 @@ Facade methods that only send a command to an actor are synchronous and return a
 - **Summary.** Markdown, language, `produced_by`, and the `transcript_revision` it was made from. Staleness is derived by comparing revisions.
 - **Job.** `goal`, `done` stages, `state: JobState { Queued, Running { stage }, Blocked { stage, blocker }, Succeeded, Failed { stage, error }, Cancelled }`, priority, attempts, `not_before`. `Job::on(&JobEvent) -> Result<Job, IllegalTransition>` is the only transition function.
 - **Recorder.** `State { Idle, Recording, Paused, Grace { deadline } }` and the pure `step(state, input, limits, now) -> (state, effects)`. Elapsed time is the take writer's running total of frames divided by the (non-zero) sample rate, so the 2-hour cap fires at exactly that many frames whatever the chunk sizes, and pauses never count. Each `StartCapture` carries a generation, so a late `CaptureFailed` from a replaced device handle is ignored, and a `StartFailed` with nothing recorded discards the take and returns to Idle.
+- **Waveform.** `Levels` is the RMS of each of up to `BUCKETS` (1,000) even shares of a take, from its louder channel, measured by the pure `LevelMeter` in one pass. `Waveform::from_levels` maps them to bar heights on a decibel scale: the loudest bucket (never taken as quieter than -30 dBFS) is full height, and 40 dB below it is the floor, which silence also gets. `FsTakes` measures while sealing and keeps `<id>.levels`; legacy takes and older takes measure on the first `Library::waveform` call.
 - **Model selection.** A `ModelKind` marker per kind (`Stt`, `Llm`, `Diar`) with associated `Caps`, `Needs`, and engine type. `ModelId<K>` cannot cross kinds. `Choice<K> { Auto, Pinned, Off }`. A pure `fit(caps, needs)` and a pure `resolve(choice, statuses, needs) -> Use | Skip | Blocked(Blocker)`.
 
 ## Ports
@@ -88,6 +89,7 @@ pub trait Takes: Send + Sync {
     fn legacy_original(&self, id: &RecordingId) -> Result<Option<PathBuf>, TakeError>; // the old app's file a pointer names
     fn adopt(&self, id: &RecordingId) -> Result<TakeInfo, TakeError>;                   // copy it in as a FLAC take, then drop the pointer
     fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError>; // what delete removes, for the trash
+    fn levels(&self, id: &RecordingId) -> Result<Levels, TakeError>;     // loudness per bucket, one pass, kept beside the take
 }
 pub trait Trash: Send + Sync {
     fn move_to_trash(&self, paths: &[PathBuf]) -> Result<TrashReceipt, TrashError>; // all or nothing

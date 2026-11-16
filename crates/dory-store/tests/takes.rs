@@ -4,7 +4,7 @@ use std::path::Path;
 use dory_core::domain::{
     Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
 };
-use dory_core::ports::{TakeError, Takes};
+use dory_core::ports::{Activity, TakeError, Takes};
 use dory_store::FsTakes;
 
 fn rid(s: &str) -> RecordingId {
@@ -231,6 +231,56 @@ fn a_finished_take_seals_and_a_span_clip_starts_where_asked() {
     );
     let beyond = takes.clip(&id, Channel::Mic, span(8_000, 9_000)).unwrap();
     assert_eq!(beyond.duration, Ms(0));
+}
+
+/// Every span covers `want` and reaches no more than half a second past either end of it.
+fn assert_speech(activity: &Activity, want: &[(u64, u64)]) {
+    let Activity::Speech(spans) = activity else {
+        panic!("activity was not measured: {activity:?}");
+    };
+    assert_eq!(spans.len(), want.len(), "{spans:?}");
+    for (span, (start, end)) in spans.iter().zip(want) {
+        assert!(
+            span.start().0 <= *start && span.start().0 + 500 >= *start,
+            "{span:?} for {start}..{end}"
+        );
+        assert!(
+            span.end().0 >= *end && span.end().0 <= end + 500,
+            "{span:?} for {start}..{end}"
+        );
+    }
+}
+
+#[test]
+fn clips_report_where_someone_talks_on_their_own_time_axis() {
+    let dir = tempfile::tempdir().unwrap();
+    let takes = FsTakes::new(dir.path());
+    let id = rid("activity");
+    let rate = 48_000u32;
+    let frames = rate as usize * 10;
+    let mic: Vec<f32> = tone(300.0, rate, 1.0, 3.0, 0.3, frames)
+        .iter()
+        .zip(tone(300.0, rate, 6.0, 7.5, 0.3, frames))
+        .map(|(a, b)| a + b)
+        .collect();
+    let system = vec![0.0; frames];
+    let mut writer = takes.begin(&id, ChannelLayout::MicSystem, rate).unwrap();
+    write_in_chunks(&mut *writer, &interleave(&[&mic, &system]), 2, rate);
+    writer.finish().unwrap();
+    takes.seal(&id).unwrap();
+
+    let whole = takes.clip(&id, Channel::Mic, None).unwrap();
+    assert_speech(&whole.activity, &[(1_000, 3_000), (6_000, 7_500)]);
+    let silent = takes.clip(&id, Channel::System, None).unwrap();
+    assert_eq!(
+        silent.activity,
+        Activity::Speech(vec![]),
+        "measured and silent"
+    );
+
+    let span = TimeRange::new(Ms(5_000), Ms(9_000)).unwrap();
+    let late = takes.clip(&id, Channel::Mic, Some(span)).unwrap();
+    assert_speech(&late.activity, &[(1_000, 2_500)]);
 }
 
 #[test]

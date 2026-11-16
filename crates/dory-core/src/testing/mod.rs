@@ -26,9 +26,9 @@ use crate::ports::capture::{
     InputDevice, Source,
 };
 use crate::ports::{
-    CancelToken, Clip, Clock, CompletionRequest, EngineError, LanguageModel, ModelProvider,
-    ProvisionError, ProvisionSink, RawSegment, SegmentSink, TakeError, TakeWriter, Takes, TextSink,
-    TranscribeOutcome, TranscribeRequest, Transcriber,
+    Activity, CancelToken, Clip, Clock, CompletionRequest, EngineError, LanguageModel,
+    ModelProvider, ProvisionError, ProvisionSink, RawSegment, SegmentSink, TakeError, TakeWriter,
+    Takes, TextSink, TranscribeOutcome, TranscribeRequest, Transcriber,
 };
 
 /// A clock that moves only when a test says so.
@@ -350,7 +350,7 @@ impl Takes for MemTakes {
             channel,
             duration,
             origin,
-            Vec::new(),
+            Activity::Unmeasured,
             None,
         ))
     }

@@ -19,6 +19,7 @@ mod flac;
 mod meta;
 mod pcm;
 mod resample;
+mod vad;
 mod wavtake;
 
 use std::fs::File;
@@ -28,10 +29,11 @@ use std::path::{Path, PathBuf};
 use dory_core::domain::{
     Channel, ChannelLayout, Ms, RecordingId, TakeContainer, TakeInfo, TimeRange,
 };
-use dory_core::ports::{Clip, TakeError, TakeWriter, Takes};
+use dory_core::ports::{Activity, Clip, TakeError, TakeWriter, Takes};
 
 use pcm::{FlacReader, FrameReader, HoundReader, OwnWavReader, Pick};
 use resample::{Downsampler, TARGET_RATE_HZ};
+use vad::Vad;
 use wavtake::WavTake;
 
 pub(crate) fn io_err(e: std::io::Error) -> TakeError {
@@ -390,6 +392,7 @@ impl Takes for FsTakes {
         )
         .map_err(pcm::hound_err)?;
         let mut down = Downsampler::new(rate_hz)?;
+        let mut vad = Vad::new(TARGET_RATE_HZ);
         let (mut interleaved, mut mono, mut resampled) = (Vec::new(), Vec::new(), Vec::new());
         let mut out_frames = 0u64;
         let mut emit =
@@ -414,9 +417,11 @@ impl Takes for FsTakes {
             }
             pick.mono(&interleaved, channels, &mut mono);
             down.feed(&mono, &mut resampled)?;
+            vad.feed(&resampled);
             emit(&mut resampled, &mut writer)?;
         }
         down.finish(&mut resampled)?;
+        vad.feed(&resampled);
         emit(&mut resampled, &mut writer)?;
         writer.finalize().map_err(pcm::hound_err)?;
 
@@ -426,7 +431,7 @@ impl Takes for FsTakes {
             channel,
             duration,
             origin,
-            Vec::new(),
+            Activity::Speech(vad.finish(duration)),
             Some(Box::new(scratch)),
         ))
     }

@@ -452,7 +452,7 @@ mod tests {
             channel,
             Ms(60_000),
             Ms(origin),
-            vec![],
+            crate::ports::Activity::Unmeasured,
             None,
         )
     }

@@ -24,4 +24,4 @@ pub use playback::{
 pub use provider::{ModelProvider, ProvisionSink};
 pub use speech::{RawSegment, SegmentSink, TranscribeOutcome, TranscribeRequest, Transcriber};
 pub use store::{Change, Store, StoreRead};
-pub use takes::{Clip, TakeWriter, Takes};
+pub use takes::{Activity, Clip, TakeWriter, Takes};

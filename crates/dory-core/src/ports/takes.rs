@@ -72,9 +72,7 @@ pub struct Clip {
     /// Where this clip starts in the take. Engines report times relative to the clip, and the core
     /// shifts them by this.
     pub origin: Ms,
-    /// Spans where someone is talking, relative to the clip. Empty when the adapter did not
-    /// compute them.
-    pub activity: Vec<TimeRange>,
+    pub activity: Activity,
     _guard: Option<Box<dyn Any + Send + Sync>>,
 }
 
@@ -85,7 +83,7 @@ impl Clip {
         channel: Channel,
         duration: Ms,
         origin: Ms,
-        activity: Vec<TimeRange>,
+        activity: Activity,
         guard: Option<Box<dyn Any + Send + Sync>>,
     ) -> Clip {
         Clip {
@@ -99,6 +97,16 @@ impl Clip {
     }
 }
 
+/// Where someone talks in a clip. The core cuts windows at the silences between spans and skips
+/// clips and windows with no speech.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Activity {
+    /// The adapter did not measure it, so the core treats the whole clip as speech.
+    Unmeasured,
+    /// Spans relative to the clip, in order and disjoint. Empty means the clip is silent.
+    Speech(Vec<TimeRange>),
+}
+
 impl std::fmt::Debug for Clip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Clip")
@@ -106,6 +114,7 @@ impl std::fmt::Debug for Clip {
             .field("channel", &self.channel)
             .field("duration", &self.duration)
             .field("origin", &self.origin)
+            .field("activity", &self.activity)
             .finish_non_exhaustive()
     }
 }

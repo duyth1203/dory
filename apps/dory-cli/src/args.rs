@@ -72,6 +72,20 @@ impl ShowArgs {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct DeleteArgs {
+    pub id: RecordingId,
+}
+
+impl DeleteArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [id] => Ok(Self { id: parse_id(id)? }),
+            _ => Err("delete takes one argument: the recording id".into()),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub struct ProcessArgs {
     pub id: RecordingId,
     pub fake_engines: bool,
@@ -347,6 +361,8 @@ mod tests {
         assert!(ShowArgs::parse(&words("rec_1")).is_ok());
         assert!(ShowArgs::parse(&words("../etc")).is_err());
         assert!(ShowArgs::parse(&[]).is_err());
+        assert!(DeleteArgs::parse(&words("rec_1")).is_ok());
+        assert!(DeleteArgs::parse(&words("rec_1 rec_2")).is_err());
         let p = ProcessArgs::parse(&words("--fake-engines rec_1")).unwrap();
         assert!(p.fake_engines);
         assert_eq!(p.id.as_str(), "rec_1");

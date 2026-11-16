@@ -85,6 +85,11 @@ pub trait Takes: Send + Sync {
     fn orphans(&self) -> Result<Vec<RecordingId>, TakeError>;          // open WAVs a crash left
     fn stored(&self) -> Result<Vec<RecordingId>, TakeError>;           // every id with any file
     // inspect, import, playback_path, delete
+    fn files(&self, id: &RecordingId) -> Result<Vec<PathBuf>, TakeError>; // what delete removes, for the trash
+}
+pub trait Trash: Send + Sync {
+    fn move_to_trash(&self, paths: &[PathBuf]) -> Result<TrashReceipt, TrashError>; // all or nothing
+    fn put_back(&self, receipt: &TrashReceipt) -> Result<(), TrashError>;          // never overwrites
 }
 
 // Models. One lifecycle for every kind.
@@ -126,6 +131,7 @@ pub trait Clock: Send + Sync { fn now(&self) -> Timestamp; fn monotonic_ms(&self
 | --- | --- | --- |
 | `CaptureBackend` | `dory_macos::CoreAudioCapture` | A global stereo process tap that excludes Dory's own process, plus the chosen mic, in one private aggregate device. The default output device is the clock source. The mic gets drift compensation. One IOProc downmixes the tap to mono and pushes `[mic, system]`. Pure Rust through `objc2-core-audio`. |
 | `CaptureBackend` | `dory_core::testing::FakeCapture` | Scripted frames for tests. |
+| `Trash` | `dory_macos::MacTrash`, `dory_core::testing::FakeTrash` | `NSFileManager trashItemAtURL`. The receipt keeps each original and trashed path, and `put_back` renames them back. Other platforms get `Unsupported` from the composition root. |
 | `Store`, `Takes` | `dory_store::{SqliteStore, FsTakes}` | SQLite with one writer connection. Takes are files: crash-tolerant WAV during recording, FLAC after sealing. |
 | `ModelProvider<Stt>` | `dory_engines::Sona`, `dory_engines::Sherpa`, `dory_macos::AppleSpeech` | Apple Speech declares `FixedLocale` caps, so `Auto` resolves past it unless the recording pins a supported locale. |
 | `ModelProvider<Llm>` | `dory_engines::Ollama`, `dory_macos::FoundationModels` | Ollama sets `num_ctx` explicitly and reports that number as `context_tokens`. Foundation Models reports 4096. |
@@ -176,6 +182,8 @@ Events are hints. A slow subscriber loses droppable events (levels, progress, dr
 2. Every open WAV (`Takes::orphans()`) is sealed and committed.
 3. A row with no take whose audio is sealed gets its take committed.
 4. Jobs left Running go back to the queue through `JobEvent::Interrupted`.
+
+`Library::trash` moves the files to the system Trash, then deletes the row. A crash between the two leaves a row whose audio is in the Trash, which the user can put back by hand. `Library::restore` puts the files back, then recreates the row, transcript, summary, and names in one `apply`. A crash between those two steps leaves audio with no row, and step 1 deletes it at the next start, so the recording is lost for good. The window is one store commit. Jobs are not restored, and `trash` cancels any that are queued, running, or blocked.
 
 The recorder creates a take's files before its row, so a crash between the two leaves files that step 1 deletes, never a row with no audio.
 

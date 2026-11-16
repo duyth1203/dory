@@ -3,6 +3,7 @@
 //! `dory-capture` example of `dory-macos`.
 
 mod args;
+mod delete;
 mod library;
 mod play;
 mod process;
@@ -21,6 +22,7 @@ const USAGE: &str = "usage:
   dory-cli add AUDIO_FILE [--title TEXT]
   dory-cli list [--search TEXT]
   dory-cli show ID
+  dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--summary] [--fake-engines]
   dory-cli play ID [--seek SECONDS]
@@ -43,6 +45,8 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| library::list(&c, &a))),
             Some("show") => args::ShowArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| library::show(&c, &a))),
+            Some("delete") => args::DeleteArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| delete::run(&c, &a))),
             Some("models") => match rest.first().map(String::as_str) {
                 Some("choose") => args::ChooseArgs::parse(&rest[1..])
                     .and_then(|a| config().and_then(|c| settings::choose(&c, &a))),

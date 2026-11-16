@@ -416,22 +416,24 @@ impl Render for TranscriptView {
         if self.cursor.is_none() && count > 0 && self.focus.is_focused(window) {
             self.cursor = Some(self.playing.unwrap_or(0));
         }
-        let container = a11y::node("transcript", Role::List, "Transcript")
-            .track_focus(&self.focus.clone().tab_stop(true))
-            .on_key_down(cx.listener(Self::on_key))
-            .w_full();
         if count == 0 {
             let empty = if self.detail.is_some() {
                 "No transcript yet."
             } else {
                 ""
             };
-            return container
+            // Nothing to move through, so the empty list is no Tab stop.
+            return a11y::node("transcript", Role::List, "Transcript")
+                .w_full()
                 .text_size(theme.text(15.))
                 .text_color(theme.text_secondary)
                 .child(empty)
                 .into_any_element();
         }
+        let container = a11y::node("transcript", Role::List, "Transcript")
+            .track_focus(&self.focus.clone().tab_stop(true))
+            .on_key_down(cx.listener(Self::on_key))
+            .w_full();
         if count <= PAGED_TURNS {
             let turns: Vec<AnyElement> = (0..count)
                 .map(|ix| self.render_turn(ix, window, cx))

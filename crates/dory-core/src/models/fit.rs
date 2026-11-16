@@ -102,6 +102,10 @@ pub struct SttCaps {
     /// Engines that refuse long input. The core does not split for them, so a longer take is
     /// `Degraded`.
     pub max_input: Option<Ms>,
+    /// The longest window the engine takes in one call. The core cuts each clip into windows at
+    /// silence up to this length and checkpoints after each. `None` runs the whole clip in one call,
+    /// for engines whose speaker ids only hold within one call.
+    pub window: Option<Ms>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -113,6 +117,10 @@ pub enum DiarizationNeed {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SttNeeds {
     pub language: LanguagePref,
+    /// With `LanguagePref::Auto`, the languages the meeting may use. A model must support all of
+    /// them, so a meeting that mixes Tagalog and English never lands on an English-only model.
+    /// Empty means no constraint.
+    pub expected: Vec<LangTag>,
     pub diarization: DiarizationNeed,
     pub input: Ms,
 }
@@ -131,6 +139,9 @@ impl ModelKind for Stt {
         };
         match &needs.language {
             LanguagePref::Auto if !can_auto => return Fit::No(Mismatch::AutoLanguageUnsupported),
+            LanguagePref::Auto if needs.expected.iter().any(|lang| !tags.supports(lang)) => {
+                return Fit::No(Mismatch::LanguageUnsupported);
+            }
             LanguagePref::Pinned(lang) if !tags.supports(lang) => {
                 return Fit::No(Mismatch::LanguageUnsupported);
             }
@@ -217,6 +228,7 @@ mod tests {
     fn needs(language: LanguagePref, diarization: DiarizationNeed, input: u64) -> SttNeeds {
         SttNeeds {
             language,
+            expected: Vec::new(),
             diarization,
             input: Ms(input),
         }
@@ -231,6 +243,7 @@ mod tests {
             languages,
             diarization,
             max_input: max_input.map(Ms),
+            window: None,
         }
     }
 
@@ -239,6 +252,43 @@ mod tests {
             auto_detect: true,
             tags: only(&["en", "fr", "vi"]),
         }
+    }
+
+    #[test]
+    fn auto_needs_every_meeting_language() {
+        let european = LangSupport::Multilingual {
+            auto_detect: true,
+            tags: only(&["en", "fr", "de"]),
+        };
+        let with = |expected: &[&str]| SttNeeds {
+            expected: expected.iter().map(|t| tag(t)).collect(),
+            ..needs(LanguagePref::Auto, DiarizationNeed::NotNeeded, 1)
+        };
+        let fit = |expected: &[&str]| {
+            Stt::fit(
+                &caps(european.clone(), DiarizationSupport::None, None),
+                &with(expected),
+            )
+        };
+        assert_eq!(fit(&[]), Fit::Yes, "no meeting languages set");
+        assert_eq!(fit(&["en"]), Fit::Yes);
+        assert_eq!(
+            fit(&["tl", "en"]),
+            Fit::No(Mismatch::LanguageUnsupported),
+            "Tagalog and English meetings rule out a model without Tagalog"
+        );
+        let pinned_english = SttNeeds {
+            expected: vec![tag("tl")],
+            ..needs(pinned("en"), DiarizationNeed::NotNeeded, 1)
+        };
+        assert_eq!(
+            Stt::fit(
+                &caps(european, DiarizationSupport::None, None),
+                &pinned_english
+            ),
+            Fit::Yes,
+            "a recording pinned to one language ignores the meeting languages"
+        );
     }
 
     #[test]

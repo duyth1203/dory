@@ -664,6 +664,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
     ModelEntry {
         id: id.parse().expect("a valid model id"),
         display_name: id.to_owned(),
+        about: Default::default(),
         caps: SttCaps {
             languages: LangSupport::Multilingual {
                 auto_detect: true,
@@ -671,6 +672,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
             },
             diarization,
             max_input: None,
+            window: None,
         },
         recommended: false,
         rank: 0,
@@ -683,6 +685,7 @@ pub fn llm_entry(id: &str) -> ModelEntry<Llm> {
     ModelEntry {
         id: id.parse().expect("a valid model id"),
         display_name: id.to_owned(),
+        about: Default::default(),
         caps: LlmCaps {
             context_tokens: 8_192,
             languages: LangSet::Any,

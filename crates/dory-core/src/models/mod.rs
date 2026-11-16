@@ -156,12 +156,23 @@ impl fmt::Display for ModelRef {
 pub struct ModelEntry<K: ModelKind> {
     pub id: ModelId<K>,
     pub display_name: String,
+    /// What the model is good and bad at, for the model picker's explainer.
+    pub about: ModelAbout,
     pub caps: K::Caps,
     /// The pick when several models fit equally.
     pub recommended: bool,
     /// Tie-break among equals. Higher wins. The provider sets it.
     pub rank: i16,
     pub disk_bytes: Option<u64>,
+}
+
+/// Plain-language strengths and weaknesses of a model, written by its provider.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ModelAbout {
+    /// One sentence on what the model is.
+    pub summary: String,
+    pub pros: Vec<String>,
+    pub cons: Vec<String>,
 }
 
 /// What a probe says about this machine right now.

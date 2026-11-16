@@ -837,6 +837,7 @@ mod contract {
             llm: Choice::Pinned("ollama/hf.co/user/model:q4".parse().unwrap()),
             diar: Choice::Off,
             language: LanguagePref::Pinned(LangTag::parse("zh-Hans-CN").unwrap()),
+            meeting_languages: vec![LangTag::parse("tl").unwrap(), LangTag::parse("en").unwrap()],
             auto_process: false,
         };
         let off = Settings {
@@ -844,6 +845,7 @@ mod contract {
             llm: Choice::Off,
             diar: Choice::Auto,
             language: LanguagePref::Auto,
+            meeting_languages: Vec::new(),
             auto_process: true,
         };
         for settings in [pinned, off, Settings::default()] {

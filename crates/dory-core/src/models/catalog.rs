@@ -57,6 +57,7 @@ mod tests {
         ModelEntry {
             id: id.parse().unwrap(),
             display_name: id.into(),
+            about: Default::default(),
             caps: SttCaps {
                 languages: LangSupport::Multilingual {
                     auto_detect: true,
@@ -64,6 +65,7 @@ mod tests {
                 },
                 diarization: DiarizationSupport::None,
                 max_input: Some(Ms(1)),
+                window: None,
             },
             recommended: false,
             rank: 0,

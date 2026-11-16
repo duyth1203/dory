@@ -193,10 +193,12 @@ mod tests {
                     entry: ModelEntry {
                         id: id(r.id),
                         display_name: r.id.into(),
+                        about: Default::default(),
                         caps: SttCaps {
                             languages,
                             diarization: DiarizationSupport::None,
                             max_input: None,
+                            window: None,
                         },
                         recommended: r.recommended,
                         rank: r.rank,
@@ -211,6 +213,7 @@ mod tests {
     fn needs(language: LanguagePref) -> SttNeeds {
         SttNeeds {
             language,
+            expected: Vec::new(),
             diarization: DiarizationNeed::NotNeeded,
             input: Ms(1),
         }
@@ -447,6 +450,7 @@ mod tests {
                 entry: ModelEntry {
                     id: name.parse().unwrap(),
                     display_name: name.into(),
+                    about: Default::default(),
                     caps: LlmCaps {
                         context_tokens: 4096,
                         languages,
@@ -538,6 +542,7 @@ mod tests {
             entry: ModelEntry {
                 id: "sherpa/pyannote".parse().unwrap(),
                 display_name: "pyannote".into(),
+                about: Default::default(),
                 caps: DiarCaps { max_speakers: None },
                 recommended: false,
                 rank: 0,

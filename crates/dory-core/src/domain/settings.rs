@@ -1,4 +1,4 @@
-use super::{InvalidInput, LanguagePref};
+use super::{InvalidInput, LangTag, LanguagePref};
 use crate::models::{Choice, Diar, Llm, Stt};
 
 /// What the user chose. A model is a [`Choice`], never a path, so a removed model degrades to
@@ -10,6 +10,9 @@ pub struct Settings {
     pub diar: Choice<Diar>,
     /// Default for recordings that do not pin their own.
     pub language: LanguagePref,
+    /// The languages meetings are held in. With `language` on Auto, speech models must cover all
+    /// of them. Empty means any.
+    pub meeting_languages: Vec<LangTag>,
     /// Start processing after the undo grace ends.
     pub auto_process: bool,
 }
@@ -21,6 +24,7 @@ impl Default for Settings {
             llm: Choice::Auto,
             diar: Choice::Auto,
             language: LanguagePref::Auto,
+            meeting_languages: Vec::new(),
             auto_process: true,
         }
     }

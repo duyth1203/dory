@@ -135,6 +135,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .any(|p| matches!(p.speakers, Speakers::Diarized { .. }));
     let needs = SttNeeds {
         language: recording.language.clone(),
+        expected: cx.settings.meeting_languages.clone(),
         diarization: if any_diarized {
             DiarizationNeed::Required
         } else {

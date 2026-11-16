@@ -1,0 +1,25 @@
+[package]
+name = "dory-engines"
+version = "0.1.0"
+description = "Portable model providers: sherpa-onnx speech and Ollama summaries."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+dory-core.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+sherpa-onnx.workspace = true
+bzip2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+dory-core = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

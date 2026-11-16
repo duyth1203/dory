@@ -33,6 +33,7 @@ impl AppKind for Stt {
     fn listing_needs(settings: &Settings) -> SttNeeds {
         SttNeeds {
             language: settings.language.clone(),
+            expected: settings.meeting_languages.clone(),
             diarization: DiarizationNeed::NotNeeded,
             input: Ms(0),
         }

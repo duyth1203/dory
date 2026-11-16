@@ -563,6 +563,13 @@ impl StoreRead for SqliteStore {
             if let Some(v) = rows.get("language") {
                 settings.language = pref_from_setting(v)?;
             }
+            if let Some(v) = rows.get("meeting_languages") {
+                settings.meeting_languages = v
+                    .split(',')
+                    .filter(|t| !t.is_empty())
+                    .map(codec::parse_tag)
+                    .collect::<Result<_, _>>()?;
+            }
             if let Some(v) = rows.get("auto_process") {
                 settings.auto_process = match v.as_str() {
                     "1" => true,
@@ -883,6 +890,15 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 ("llm", choice_to_db(&settings.llm)),
                 ("diar", choice_to_db(&settings.diar)),
                 ("language", pref_to_setting(&settings.language)),
+                (
+                    "meeting_languages",
+                    settings
+                        .meeting_languages
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
                 (
                     "auto_process",
                     if settings.auto_process { "1" } else { "0" }.to_owned(),

@@ -12,9 +12,9 @@
 use dory_core::app::RecorderStatus;
 use dory_core::domain::Ms;
 use gpui_kit::{
-    Context, Entity, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription,
-    Window, div, prelude::FluentBuilder as _, px,
+    Context, Entity, FocusHandle, FontWeight, IntoElement, ParentElement as _, Render, Role,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
@@ -106,7 +106,7 @@ impl RecordControl {
         }
     }
 
-    fn record_button(&self, theme: &Theme, cx: &mut Context<Self>) -> a11y::Node {
+    fn record_button(&self, theme: &Theme) -> a11y::Node {
         let app = self.app.clone();
         a11y::focusable(
             a11y::node("record", Role::Button, "Start recording"),
@@ -116,12 +116,6 @@ impl RecordControl {
         )
         .aria_keyshortcuts("Command-Shift-R")
         .on_click(move |_, _, cx| app.update(cx, |app, cx| app.start_recording(cx)))
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                this.app.update(cx, |app, cx| app.start_recording(cx));
-                cx.stop_propagation();
-            }
-        }))
         .min_h(px(28.))
         .px(px(12.))
         .flex()
@@ -139,13 +133,7 @@ impl RecordControl {
         .child("Record")
     }
 
-    fn round_button(
-        &self,
-        round: Round,
-        focus: &FocusHandle,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> a11y::Node {
+    fn round_button(&self, round: Round, focus: &FocusHandle, theme: &Theme) -> a11y::Node {
         let app = self.app.clone();
         let act = round.act;
         a11y::focusable(
@@ -156,12 +144,6 @@ impl RecordControl {
         )
         .aria_keyshortcuts(round.keys)
         .on_click(move |_, _, cx| app.update(cx, act))
-        .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                this.app.update(cx, act);
-                cx.stop_propagation();
-            }
-        }))
         .min_w(px(28.))
         .min_h(px(28.))
         .px(px(4.))
@@ -194,7 +176,7 @@ impl Render for RecordControl {
             status,
             RecorderStatus::Recording { .. } | RecorderStatus::Paused { .. }
         ) {
-            return div().child(self.record_button(&theme, cx));
+            return div().child(self.record_button(&theme));
         }
         let paused = matches!(status, RecorderStatus::Paused { .. });
         let (fill, on_fill) = if live.cap_at.is_some() {
@@ -264,7 +246,6 @@ impl Render for RecordControl {
                 },
                 &self.pause_focus.clone(),
                 &theme,
-                cx,
             ))
             .child(self.round_button(
                 Round {
@@ -276,7 +257,6 @@ impl Render for RecordControl {
                 },
                 &self.stop_focus.clone(),
                 &theme,
-                cx,
             ))
     }
 }

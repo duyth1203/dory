@@ -382,7 +382,7 @@ impl DetailPane {
         if let Some(edit) = &self.title_edit {
             return a11y::node("title-editor", Role::Group, "Title")
                 .border_2()
-                .border_color(theme.accent)
+                .border_color(theme.ring)
                 .rounded(px(6.))
                 .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" {
@@ -409,12 +409,6 @@ impl DetailPane {
         .aria_level(1)
         .aria_description("Press Return to rename")
         .on_click(cx.listener(|this, _, window, cx| this.edit_title(window, cx)))
-        .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
-                this.edit_title(window, cx);
-                cx.stop_propagation();
-            }
-        }))
         .rounded(px(6.))
         .text_size(theme.text(30.))
         .font_weight(FontWeight::BOLD)
@@ -585,7 +579,6 @@ pub(crate) fn button(
     on_press: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> a11y::Node {
     let label: SharedString = label.into();
-    let on_key = on_press.clone();
     a11y::focusable(
         a11y::node(id, Role::Button, label.clone()),
         focus,
@@ -593,12 +586,6 @@ pub(crate) fn button(
         primary,
     )
     .on_click(move |_, window, cx| on_press(window, cx))
-    .on_key_down(move |event: &KeyDownEvent, window, cx| {
-        if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-            on_key(window, cx);
-            cx.stop_propagation();
-        }
-    })
     .min_h(px(28.))
     .px(px(12.))
     .flex()
@@ -712,16 +699,7 @@ impl DetailPane {
         } else {
             gpui_kit::accesskit::Toggled::False
         })
-        .on_click({
-            let toggle = toggle.clone();
-            move |_, window, cx| toggle(window, cx)
-        })
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "space" {
-                toggle(window, cx);
-                cx.stop_propagation();
-            }
-        })
+        .on_click(move |_, window, cx| toggle(window, cx))
         .min_h(px(28.))
         .flex()
         .items_center()

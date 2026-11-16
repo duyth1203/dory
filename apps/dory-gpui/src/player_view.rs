@@ -187,7 +187,6 @@ impl PlayerView {
                 })
             }
         };
-        let on_key = activate.clone();
         let button = a11y::focusable(
             a11y::node(id, Role::Button, label),
             &self.controls[ix],
@@ -195,12 +194,6 @@ impl PlayerView {
             filled,
         )
         .on_click(move |_, _, cx| activate(cx))
-        .on_key_down(move |event: &KeyDownEvent, _, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                on_key(cx);
-                cx.stop_propagation();
-            }
-        })
         .flex()
         .flex_none()
         .items_center()

@@ -251,12 +251,6 @@ impl Shell {
                 )
                 .aria_keyshortcuts("Command-Shift-R")
                 .on_click(move |_, _, cx| record.update(cx, |app, cx| app.start_recording(cx)))
-                .on_key_down(cx.listener(|this, event: &gpui_kit::KeyDownEvent, _, cx| {
-                    if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                        this.app.update(cx, |app, cx| app.start_recording(cx));
-                        cx.stop_propagation();
-                    }
-                }))
                 .flex()
                 .flex_col()
                 .items_center()

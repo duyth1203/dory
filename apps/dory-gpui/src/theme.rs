@@ -32,6 +32,9 @@ pub struct Theme {
     pub card_border: Hsla,
     pub accent: Hsla,
     pub accent_text: Hsla,
+    /// The 2 pt focus ring. `accent` in light; in dark, `accent` is darkened for white text and
+    /// falls under 3 to 1 on the dark controls, so the ring uses the lightened `accent_text`.
+    pub ring: Hsla,
     pub on_accent: Hsla,
     pub selection_inactive: Hsla,
     pub wave_rest: Hsla,
@@ -270,6 +273,11 @@ impl Theme {
             card_border: border(base.card_border),
             accent,
             accent_text: with_contrast_all(system_accent, &reading, MIN_CONTRAST),
+            ring: if dark {
+                with_contrast_all(system_accent, &reading, MIN_CONTRAST)
+            } else {
+                accent
+            },
             on_accent,
             selection_inactive,
             wave_rest,
@@ -331,13 +339,13 @@ impl Theme {
         px(points * self.text_scale)
     }
 
-    /// The focus ring (2 pt `accent`). On an `accent` fill it switches to `on_accent`, or the
-    /// ring would vanish into the fill (spike finding, lane 4).
+    /// The focus ring (2 pt [`Theme::ring`]). On an `accent` fill it switches to `on_accent`, or
+    /// the ring would vanish into the fill (spike finding, lane 4).
     pub fn focus_ring(&self, on_accent_fill: bool) -> Hsla {
         if on_accent_fill {
             self.on_accent
         } else {
-            self.accent
+            self.ring
         }
     }
 
@@ -393,11 +401,7 @@ impl Theme {
             ("card_bg", self.card_bg),
             ("control_bg", self.control_bg),
         ] {
-            pairs.push(graphic(
-                &format!("focus ring on {bg_name}"),
-                self.accent,
-                bg,
-            ));
+            pairs.push(graphic(&format!("focus ring on {bg_name}"), self.ring, bg));
         }
         pairs.extend([
             text("on_accent on accent", self.on_accent, self.accent),
@@ -449,8 +453,10 @@ pub fn sync(cx: &mut App) {
     cx.set_global(theme);
     gpui_kit::component::Theme::change(appearance, None, cx);
     let kit = gpui_kit::component::Theme::global_mut(cx);
-    kit.ring = theme.accent;
-    kit.font_size = px(16. * theme.text_scale);
+    kit.ring = theme.ring;
+    // Kit sizes its controls in rems, so below 100% its buttons would shrink under 24 pt
+    // (A11Y-9). They grow with the text but never shrink.
+    kit.font_size = px(16. * theme.text_scale.max(1.0));
     kit.shadow = theme.shadows;
     if theme.high_contrast {
         kit.border = theme.control_border;

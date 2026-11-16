@@ -11,9 +11,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _, px,
+    IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
@@ -31,19 +30,12 @@ pub(crate) fn pill_button(
     theme: &Theme,
     press: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> impl IntoElement {
-    let on_key = press.clone();
     let on_confirm = press.clone();
     a11y::focusable(a11y::node(id, Role::Button, label), focus, theme, false)
         .on_click(move |_, window, cx| press(window, cx))
         .on_action(move |_: &Confirm, window, cx| {
             on_confirm(window, cx);
             cx.stop_propagation();
-        })
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "space" {
-                on_key(window, cx);
-                cx.stop_propagation();
-            }
         })
         .min_h(px(28.))
         .px(px(12.))

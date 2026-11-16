@@ -44,7 +44,8 @@ pub fn focusable(el: Node, focus: &FocusHandle, theme: &Theme, on_accent_fill: b
         .focus_visible(move |style| style.border_color(ring))
 }
 
-/// An underline tab (UX-2) that takes focus and activates with a click, Return, or Space. The
+/// An underline tab (UX-2) that takes focus and activates with a click, Return, or Space (GPUI
+/// turns either key on a focused element with a click handler into a click). The
 /// selected tab is semibold over a 2 pt `accent` underline, a shape as well as a color, and at
 /// least 28 pt tall however small the text.
 pub fn tab(
@@ -56,16 +57,9 @@ pub fn tab(
     on_select: impl Fn(&mut Window, &mut App) + Clone + 'static,
 ) -> Node {
     let label: SharedString = label.into();
-    let on_key = on_select.clone();
     focusable(node(id, Role::Tab, label.clone()), focus, theme, false)
         .aria_selected(selected)
         .on_click(move |_, window, cx| on_select(window, cx))
-        .on_key_down(move |event: &KeyDownEvent, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                on_key(window, cx);
-                cx.stop_propagation();
-            }
-        })
         .min_h(px(28.))
         .min_w(px(24.))
         .px(px(8.))

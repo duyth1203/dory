@@ -784,6 +784,7 @@ fn explainer(
     .items_center()
     .justify_center()
     .rounded_full()
+    .bg(theme.field_bg)
     .text_size(theme.text(12.))
     .font_weight(FontWeight::SEMIBOLD)
     .text_color(theme.accent_text)

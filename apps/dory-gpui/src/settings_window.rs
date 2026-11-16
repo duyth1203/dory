@@ -173,10 +173,10 @@ impl SettingsWindow {
     }
 
     pub fn select(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        self.tab = tab;
-        if tab == Tab::Storage && matches!(self.storage, Storage::Unread | Storage::Failed(_)) {
-            self.read_storage(cx);
+        if tab == Tab::Storage && self.tab != tab {
+            self.storage = Storage::Unread;
         }
+        self.tab = tab;
         cx.notify();
     }
 
@@ -465,6 +465,9 @@ impl SettingsWindow {
     }
 
     fn storage(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::Div {
+        if matches!(self.storage, Storage::Unread) {
+            self.read_storage(cx);
+        }
         let (path, size) = match &self.storage {
             Storage::Unread => (None, "Measuring".to_owned()),
             Storage::Reading(path) => (Some(path.clone()), "Measuring".to_owned()),
@@ -541,7 +544,7 @@ impl Render for SettingsWindow {
             .flex()
             .justify_center()
             .gap(px(4.))
-            .pt(px(36.))
+            .pt(px(12.))
             .pb(px(8.))
             .border_b_1()
             .border_color(theme.divider);

@@ -207,7 +207,7 @@ impl Sample {
 /// Every sample as the store lists it: newest first.
 pub fn rows() -> Vec<RecordingRow> {
     let mut rows: Vec<RecordingRow> = SAMPLES.iter().map(Sample::row).collect();
-    rows.sort_by(|a, b| b.recording.created_at.cmp(&a.recording.created_at));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.recording.created_at));
     rows
 }
 

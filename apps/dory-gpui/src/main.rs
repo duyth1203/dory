@@ -1,1 +1,60 @@
-fn main() {}
+use std::cell::RefCell;
+use std::process::ExitCode;
+use std::rc::Rc;
+
+use dory_gpui::{menus, prefs};
+use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
+
+fn main() -> ExitCode {
+    let config = match dory::Config::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("dory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let dory = match dory::open(&config) {
+        Ok(dory) => dory,
+        Err(error) => {
+            eprintln!("dory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    eprintln!("dory: data folder {}", config.data_dir.display());
+    let prefs = prefs::load(&config);
+    let dory = Rc::new(RefCell::new(Some(dory)));
+    gpui_kit::application().run(move |cx| {
+        gpui_kit::init(cx);
+        menus::install(cx);
+        let (width, height) = prefs.window_size;
+        let options = WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some("Dory".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(18.), px(18.))),
+            }),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(width), px(height)),
+                cx,
+            ))),
+            ..Default::default()
+        };
+        let core = dory.borrow_mut().take().expect("the app opens one window");
+        let prefs = prefs.clone();
+        let config = config.clone();
+        let opened = gpui_kit::open_window(options, cx, move |window, cx| {
+            let (state, shell) = dory_gpui::build(core, prefs, window, cx);
+            prefs::watch(&state, &config, window, cx);
+            shell
+        });
+        if let Err(error) = opened {
+            eprintln!("dory: could not open the window: {error}");
+            cx.quit();
+            return;
+        }
+        cx.activate(true);
+        eprintln!("first-frame: window opened, pid {}", std::process::id());
+    });
+    ExitCode::SUCCESS
+}

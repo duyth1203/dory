@@ -1,2 +1,44 @@
+//! The native Dory app. `main.rs` opens the core and the window; everything else is here so the
+//! tests can drive it with `TestAppContext`.
+//!
+//! Who owns what, so parallel work never edits the same file:
+//! - The shell (P4 part 1): `app` (state, the core boundary, `Session`, `PlayerHandle`),
+//!   `library` (pure rules), `theme`, `a11y`, `actions`, `sidebar`, `shell`, `platform`,
+//!   `fixtures`, and `main.rs`.
+//! - Agent 1: `detail`, `summary_view`.
+//! - Agent 2: `transcript_view`, `player_view`.
+//! - Agent 3: `export`, `menus`, `prefs`.
+//!
+//! Each agent-owned file's doc comment is its contract.
+
+pub mod a11y;
+pub mod actions;
+pub mod app;
+pub mod detail;
+pub mod export;
 pub mod fixtures;
 pub mod library;
+pub mod menus;
+pub mod platform;
+pub mod player_view;
+pub mod prefs;
+pub mod shell;
+pub mod sidebar;
+pub mod summary_view;
+pub mod theme;
+pub mod transcript_view;
+
+use gpui_kit::{App, AppContext as _, Entity, Window};
+
+/// Builds the window's root view on `dory`. `main` and the tests share it.
+pub fn build(
+    dory: dory_core::app::Dory,
+    prefs: prefs::Prefs,
+    window: &mut Window,
+    cx: &mut App,
+) -> (Entity<app::AppState>, Entity<shell::Shell>) {
+    theme::sync(window, cx);
+    let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
+    let shell = cx.new(|cx| shell::Shell::new(state.clone(), window, cx));
+    (state, shell)
+}

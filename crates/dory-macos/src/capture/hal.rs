@@ -18,12 +18,14 @@ use objc2_core_audio::{
     AudioObjectPropertyScope, AudioObjectPropertySelector, AudioObjectRemovePropertyListenerBlock,
     AudioObjectSetPropertyData, CATapDescription, CATapMuteBehavior, kAudioDevicePropertyDeviceUID,
     kAudioDevicePropertyIOProcStreamUsage, kAudioDevicePropertyStreamConfiguration,
-    kAudioDevicePropertyStreams, kAudioHardwarePropertyDefaultInputDevice,
-    kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDevices,
-    kAudioHardwarePropertyProcessObjectList, kAudioHardwarePropertyTranslatePIDToProcessObject,
-    kAudioObjectPropertyElementMain, kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal,
-    kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject,
-    kAudioObjectUnknown, kAudioProcessPropertyIsRunningOutput, kAudioTapPropertyFormat,
+    kAudioDevicePropertyStreams, kAudioDevicePropertyTransportType,
+    kAudioDevicePropertyVolumeScalar, kAudioDeviceTransportTypeBuiltIn,
+    kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioHardwarePropertyDevices, kAudioHardwarePropertyProcessObjectList,
+    kAudioHardwarePropertyTranslatePIDToProcessObject, kAudioObjectPropertyElementMain,
+    kAudioObjectPropertyName, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
+    kAudioObjectPropertyScopeOutput, kAudioObjectSystemObject, kAudioObjectUnknown,
+    kAudioProcessPropertyIsRunningOutput, kAudioTapPropertyFormat,
 };
 use objc2_core_audio_types::{
     AudioBuffer, AudioBufferList, AudioStreamBasicDescription, AudioTimeStamp,
@@ -39,6 +41,7 @@ pub type OsStatus = i32;
 pub const SYSTEM: AudioObjectID = kAudioObjectSystemObject as AudioObjectID;
 pub const GLOBAL: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal;
 pub const INPUT: AudioObjectPropertyScope = kAudioObjectPropertyScopeInput;
+pub const OUTPUT: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput;
 
 /// A failed HAL call: what was attempted and the four-char status.
 #[derive(Debug)]
@@ -245,6 +248,63 @@ pub fn default_device(input: bool) -> Result<Option<AudioObjectID>, HalError> {
 
 pub fn all_devices() -> Result<Vec<AudioObjectID>, HalError> {
     get_ids(SYSTEM, kAudioHardwarePropertyDevices)
+}
+
+/// Whether the device has at least one channel in `scope`.
+pub fn has_channels(device: AudioObjectID, scope: AudioObjectPropertyScope) -> bool {
+    buffer_shapes(device, scope).is_ok_and(|shapes| shapes.iter().any(|s| s.channels > 0))
+}
+
+pub fn is_builtin(device: AudioObjectID) -> bool {
+    get::<u32>(device, kAudioDevicePropertyTransportType, GLOBAL)
+        .is_ok_and(|t| t == kAudioDeviceTransportTypeBuiltIn)
+}
+
+fn set_value<T: Copy>(
+    object: AudioObjectID,
+    selector: AudioObjectPropertySelector,
+    scope: AudioObjectPropertyScope,
+    value: T,
+) -> Result<(), HalError> {
+    let addr = address(selector, scope);
+    // SAFETY: valid address and a readable buffer of `size_of::<T>()` bytes for the call.
+    let status = unsafe {
+        AudioObjectSetPropertyData(
+            object,
+            NonNull::from(&addr),
+            0,
+            std::ptr::null(),
+            size_of::<T>() as u32,
+            NonNull::from(&value).cast(),
+        )
+    };
+    check(status, || {
+        format!("set '{}' on object {object}", fourcc(selector))
+    })
+}
+
+pub fn set_default_device(input: bool, device: AudioObjectID) -> Result<(), HalError> {
+    let selector = if input {
+        kAudioHardwarePropertyDefaultInputDevice
+    } else {
+        kAudioHardwarePropertyDefaultOutputDevice
+    };
+    set_value(SYSTEM, selector, GLOBAL, device)
+}
+
+pub fn set_output_volume(device: AudioObjectID, scalar: f32) -> Result<(), HalError> {
+    set_value(
+        device,
+        kAudioDevicePropertyVolumeScalar,
+        kAudioObjectPropertyScopeOutput,
+        scalar.clamp(0.0, 1.0),
+    )
+}
+
+pub fn destroy_aggregate(device: AudioObjectID) -> Result<(), HalError> {
+    // SAFETY: the id names a device the caller found in the HAL's list.
+    let status = unsafe { AudioHardwareDestroyAggregateDevice(device) };
+    check(status, || format!("destroy aggregate device {device}"))
 }
 
 /// This process's HAL process object. The translation is itself a HAL call, so it registers the

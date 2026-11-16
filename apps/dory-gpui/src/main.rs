@@ -21,6 +21,7 @@ fn main() -> ExitCode {
         }
     };
     eprintln!("dory: data folder {}", config.data_dir.display());
+    dory::cleanup_legacy_audio(&config);
     let prefs = prefs::load(&config);
     let dory = Rc::new(RefCell::new(Some(dory)));
     gpui_kit::application().run(move |cx| {

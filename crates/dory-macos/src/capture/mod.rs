@@ -3,7 +3,7 @@
 //! See "The capture contract" in `docs/architecture/hexagonal.md`.
 
 mod dsp;
-mod hal;
+pub(crate) mod hal;
 mod io;
 mod permission;
 mod rebuild;

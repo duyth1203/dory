@@ -196,7 +196,7 @@ pub fn open_with_fake_capture(config: &Config) -> Result<Dory, OpenError> {
     open_with(config, capture, options, providers(config))
 }
 
-/// Imports the old Tauri app's data folder into the store under `config.data_dir`. The old folder
+/// Imports the old app's data folder into the store under `config.data_dir`. The old folder
 /// is only read, and no actors start. Holds the data folder's lock while it writes, so it fails
 /// with [`OpenError::InUse`] while Dory runs there.
 pub fn import_legacy(config: &Config, old_data_dir: &Path) -> Result<ImportReport, ImportError> {
@@ -204,4 +204,29 @@ pub fn import_legacy(config: &Config, old_data_dir: &Path) -> Result<ImportRepor
     let _lock = lock::DataLock::acquire(&config.data_dir)?;
     let Storage { store, takes } = storage(config)?;
     Ok(dory_store::import_legacy(&store, &takes, old_data_dir)?)
+}
+
+/// Removes the audio devices the old app left behind and puts the system default devices
+/// back, once. Reads the old app's restore files from its data folder and writes only a marker
+/// under `config.data_dir`. A no-op off macOS and when `HOME` is unset. It is also skipped when
+/// `DORY_DATA_DIR` is set, because the devices are system wide and a throwaway data folder must
+/// never change the machine's audio setup.
+pub fn cleanup_legacy_audio(config: &Config) {
+    #[cfg(target_os = "macos")]
+    {
+        if std::env::var_os(DATA_DIR_VAR).is_some() {
+            eprintln!("legacy-cleanup: skipped, {DATA_DIR_VAR} is set");
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) else {
+            return;
+        };
+        let paths = dory_macos::legacy_cleanup::Paths {
+            legacy_dir: legacy_data_dir(Path::new(&home)),
+            marker: config.data_dir.join("legacy-audio-cleanup.done"),
+        };
+        dory_macos::legacy_cleanup::run_at_launch(&paths);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = config;
 }

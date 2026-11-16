@@ -3,6 +3,8 @@
 #[cfg(target_os = "macos")]
 mod capture;
 
+pub mod legacy_cleanup;
+
 #[cfg(target_os = "macos")]
 mod machine;
 

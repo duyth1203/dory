@@ -1086,6 +1086,40 @@ fn the_combobox_works_from_the_keyboard_alone(cx: &mut TestAppContext) {
     assert!(focused(window, "meeting-languages", cx));
 }
 
+/// Section 4.3: the popover sits 6 pt under the field and is as wide as it, so the chips stay
+/// in view while the list is open.
+#[gpui_kit::test]
+fn the_languages_popover_opens_under_the_field(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the field", |cx| has(window, "meeting-languages", cx));
+    focus_by_tab(window, "meeting-languages", cx);
+    press(window, "down", cx);
+    until(cx, "the popover", |cx| {
+        has(window, "meeting-languages-popover", cx)
+    });
+    let (field, popover) = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find("meeting-languages").bounds(),
+                window.find("meeting-languages-popover").bounds(),
+            )
+        })
+        .unwrap();
+    let gap = f32::from(popover.top() - field.bottom());
+    assert!(
+        (gap - 6.).abs() < 0.5,
+        "6 pt under the field, not {gap} (field {field:?}, popover {popover:?})"
+    );
+    assert!(
+        f32::from((popover.left() - field.left()).abs()) < 0.5
+            && f32::from((popover.size.width - field.size.width).abs()) < 0.5,
+        "as wide as the field: field {field:?}, popover {popover:?}"
+    );
+}
+
 #[gpui_kit::test]
 fn language_follows_the_meeting_languages(cx: &mut TestAppContext) {
     let rig = rig(&["en", "de"]);

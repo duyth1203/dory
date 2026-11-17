@@ -515,6 +515,14 @@ impl Render for LanguageCombobox {
             .border_1()
             .border_color(theme.control_border)
             .focus_visible(move |style| style.border_color(ring))
+            .children(chips)
+            .child(add);
+        // `anchored` is absolutely positioned, so it starts at its parent's origin. This
+        // zero-height strip puts that origin at the field's bottom edge, at the field's width.
+        let anchor = div()
+            .relative()
+            .w_full()
+            .h_0()
             .child(
                 canvas(
                     move |bounds, _, _| width.set(bounds.size.width),
@@ -523,19 +531,14 @@ impl Render for LanguageCombobox {
                 .absolute()
                 .size_full(),
             )
-            .children(chips)
-            .child(add);
-        let popover = self.open.then(|| self.popover(&theme, cx));
+            .children(self.open.then(|| self.popover(&theme, cx)));
         let status = self.said.clone().map(|said| {
             a11y::node("meeting-languages-status", Role::Status, said)
                 .absolute()
                 .size_0()
                 .overflow_hidden()
         });
-        wrap.relative()
-            .child(field)
-            .children(popover)
-            .children(status)
+        wrap.relative().child(field).child(anchor).children(status)
     }
 }
 

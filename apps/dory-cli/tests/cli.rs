@@ -628,3 +628,82 @@ fn an_output_language_translates_the_transcript_beside_the_original() {
     let again = env.ok(&["process", &id, "--fake-engines"]);
     assert!(!again.contains("translate"), "{again}");
 }
+
+#[test]
+fn a_summary_is_translated_beside_the_original_and_a_new_summary_drops_the_translation() {
+    let env = Env::new();
+    let mut child = env
+        .cmd(&["record", "--fake-capture", "3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take();
+    let out = child.wait_with_output().unwrap();
+    drop(stdin);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", text(&out.stderr));
+    let id = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("recorded "))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no recorded line in\n{stdout}"))
+        .to_owned();
+
+    let before = env.run(&["translate-summary", &id, "fr", "--fake-engines"]);
+    assert!(!before.status.success());
+    assert!(
+        text(&before.stderr).contains("There is no summary to translate yet."),
+        "{}",
+        text(&before.stderr)
+    );
+
+    env.ok(&["process", &id, "--fake-engines"]);
+    let same = env.run(&["translate-summary", &id, "en", "--fake-engines"]);
+    assert!(!same.status.success());
+    assert!(
+        text(&same.stderr).contains("The summary is already written in en."),
+        "{}",
+        text(&same.stderr)
+    );
+    assert!(
+        env.ok(&["show", &id, "--summary-translation"])
+            .contains("Summary translation: none")
+    );
+
+    let done = env.ok(&["translate-summary", &id, "fr", "--fake-engines"]);
+    for want in [
+        "translate summary 100%",
+        "translated into fr by fake/llm in ",
+        "## [fake translation] Fake summary",
+        "- [fake translation] The fake engines wrote this.",
+    ] {
+        assert!(done.contains(want), "missing {want:?} in\n{done}");
+    }
+    let shown = env.ok(&["show", &id, "--summary-translation"]);
+    for want in [
+        "## Fake summary\n- The fake engines wrote this.",
+        "Summary translated into fr by fake/llm\n## [fake translation] Fake summary",
+    ] {
+        assert!(shown.contains(want), "missing {want:?} in\n{shown}");
+    }
+    assert!(
+        !env.ok(&["show", &id])
+            .contains("[fake translation] Fake summary"),
+        "show prints the translation only when asked"
+    );
+
+    env.ok(&["process", &id, "--summary", "--fake-engines"]);
+    assert!(
+        env.ok(&["show", &id, "--summary-translation"])
+            .contains("Summary translation: none")
+    );
+    env.ok(&["translate-summary", &id, "de", "--fake-engines"]);
+    env.ok(&["summary", "restore", &id]);
+    assert!(
+        env.ok(&["show", &id, "--summary-translation"])
+            .contains("Summary translation: none"),
+        "restoring a summary drops the translation too"
+    );
+}

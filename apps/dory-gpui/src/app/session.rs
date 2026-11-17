@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use dory_core::domain::{
     Channel, LangTag, Recording, RecordingId, RecordingRow, SpeakerId, SpeakerNames, Summary,
-    TimeRange, Transcript, Translation,
+    SummaryTranslation, TimeRange, Transcript, Translation,
 };
 use dory_core::ports::StoreError;
 use dory_core::search::Query;
@@ -29,6 +29,37 @@ pub struct Detail {
     /// The same turns, written in the output language. Present exactly when `translation` is, and
     /// the same length as `turns`, so a turn number means the same turn in both.
     pub translated_turns: Option<Vec<Turn>>,
+    /// The summary translated on request. It always describes `summary`, because the store drops
+    /// it whenever a summary is written or restored.
+    pub summary_translation: Option<SummaryTranslation>,
+    /// The language a translation of the summary is being made in, while one is.
+    pub translating_into: Option<LangTag>,
+}
+
+/// Which text of a translated summary the Summary tab shows, and so what Copy Summary and Export
+/// put out. Only a recording with a summary translation has a choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SummaryVersion {
+    /// The translation, as soon as there is one.
+    #[default]
+    Translated,
+    Original,
+}
+
+/// What each tab shows. Copy and Export put out the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    pub transcript: TranscriptText,
+    pub summary: SummaryVersion,
+}
+
+impl From<TranscriptText> for Shown {
+    fn from(transcript: TranscriptText) -> Shown {
+        Shown {
+            transcript,
+            ..Shown::default()
+        }
+    }
 }
 
 /// Which text of a translated transcript the transcript tab shows, and so what Copy and Export
@@ -53,6 +84,21 @@ impl Detail {
     /// Whether `text` ends up showing the translation.
     pub fn translated(&self, text: TranscriptText) -> bool {
         text == TranscriptText::Translated && self.translated_turns.is_some()
+    }
+
+    /// The summary's Markdown as `version` asks for it: the translation when there is one and it
+    /// is asked for, else what was written. `None` without a summary.
+    pub fn shown_summary(&self, version: SummaryVersion) -> Option<&str> {
+        let summary = self.summary.as_ref()?;
+        Some(match (&self.summary_translation, version) {
+            (Some(translation), SummaryVersion::Translated) => &translation.markdown,
+            _ => &summary.markdown,
+        })
+    }
+
+    /// Whether `version` ends up showing the summary's translation.
+    pub fn summary_translated(&self, version: SummaryVersion) -> bool {
+        version == SummaryVersion::Translated && self.summary_translation.is_some()
     }
 }
 
@@ -215,6 +261,7 @@ pub struct Session {
     player: Entity<PlayerHandle>,
     error: Option<SharedString>,
     text: TranscriptText,
+    summary_version: SummaryVersion,
     generation: u64,
     query: Option<Query>,
     found: Option<Matches>,
@@ -254,6 +301,7 @@ impl Session {
             player,
             error: None,
             text: TranscriptText::default(),
+            summary_version: SummaryVersion::default(),
             generation: 0,
             query,
             found: None,
@@ -299,6 +347,33 @@ impl Session {
         }
     }
 
+    /// Which text of a translated summary the Summary tab shows, and Copy Summary and Export use.
+    pub fn summary_version(&self) -> SummaryVersion {
+        self.summary_version
+    }
+
+    /// What both tabs show, which Copy and Export put out.
+    pub fn shown(&self) -> Shown {
+        Shown {
+            transcript: self.text,
+            summary: self.summary_version,
+        }
+    }
+
+    pub fn set_summary_version(&mut self, version: SummaryVersion, cx: &mut Context<Self>) {
+        if self.summary_version == version {
+            return;
+        }
+        self.summary_version = version;
+        let markdown = self
+            .detail()
+            .and_then(|d| d.shown_summary(version).map(str::to_owned))
+            .unwrap_or_default();
+        self.summary
+            .update(cx, |state, cx| state.set_text(&markdown, cx));
+        cx.notify();
+    }
+
     /// The last write that failed, for the detail pane to show. Cleared by the next write.
     pub fn error(&self) -> Option<&SharedString> {
         self.error.as_ref()
@@ -341,8 +416,10 @@ impl Session {
         let found = self.found.as_mut()?;
         let at = found.step(delta).clone();
         let spoken = found.spoken(&detail.turns);
-        // Matches are found in what was spoken, so stepping shows that text, where they are marked.
+        // Matches are found in what was spoken and written, so stepping shows those texts, where
+        // they are marked.
         self.text = TranscriptText::Spoken;
+        self.set_summary_version(SummaryVersion::Original, cx);
         self.reveal += 1;
         cx.notify();
         Some(Moved { at, spoken })
@@ -354,9 +431,19 @@ impl Session {
     fn rematch(&mut self, jump: bool, cx: &mut Context<Self>) {
         let kept = self.found.take();
         self.counted = None;
+        // A search opens on what was written, as it does on what was spoken. The summary's text
+        // view then renders again and this runs once more over the written text.
+        if jump
+            && self.query.is_some()
+            && self
+                .detail()
+                .is_some_and(|d| d.summary_translated(self.summary_version))
+        {
+            self.set_summary_version(SummaryVersion::Original, cx);
+        }
         if let (Some(query), Some(detail)) = (self.query.clone(), self.detail()) {
             let rendered = self.summary.read(cx).rendered_text();
-            let ready = rendered.source() == markdown_of(&detail);
+            let ready = rendered.source() == self.shown_markdown(&detail);
             let summary = if ready { rendered.as_str() } else { "" };
             let title = crate::library::given_title(&detail.recording).unwrap_or_default();
             let turns: Vec<&str> = detail.turns.iter().map(|t| t.text.as_str()).collect();
@@ -443,13 +530,18 @@ impl Session {
                 };
                 let markdown = this
                     .detail()
-                    .map(|d| markdown_of(&d).to_owned())
+                    .map(|d| this.shown_markdown(&d).to_owned())
                     .unwrap_or_default();
                 this.summary
                     .update(cx, |state, cx| state.set_text(&markdown, cx));
                 this.rematch(first, cx);
             });
         }));
+    }
+
+    /// The summary's Markdown as the tab shows it, empty without a summary.
+    fn shown_markdown<'a>(&self, detail: &'a Detail) -> &'a str {
+        detail.shown_summary(self.summary_version).unwrap_or("")
     }
 
     fn write(
@@ -469,11 +561,6 @@ impl Session {
         })
         .detach();
     }
-}
-
-/// The summary's Markdown, empty without a summary.
-fn markdown_of(detail: &Detail) -> &str {
-    detail.summary.as_ref().map_or("", |s| s.markdown.as_str())
 }
 
 fn read_detail(
@@ -514,6 +601,8 @@ fn read_detail(
         turns,
         translation,
         translated_turns,
+        summary_translation: library.summary_translation(id)?,
+        translating_into: library.summary_translation_wanted(id)?,
     }))
 }
 

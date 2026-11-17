@@ -46,6 +46,7 @@ pub fn stage(stage: Stage) -> &'static str {
         Stage::Transcribe => "transcribe",
         Stage::Translate => "translate",
         Stage::Summarize => "summarize",
+        Stage::TranslateSummary => "translate summary",
     }
 }
 

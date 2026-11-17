@@ -5,7 +5,11 @@
 //! since Kit emits none (spike finding 3). A stale summary says so above the text. No summary
 //! says why, from the recording's phase. A summary that failed shows here only, with the one
 //! button that fixes it (UX-13), which `detail.rs` builds, while the transcript stays readable.
-//! Copy and Export sit in the tab row, which `detail.rs` draws.
+//! Copy and Export sit in the tab row, which `detail.rs` draws, with **Translate…** and, once the
+//! summary has a translation, the Original / Translated switch. The text drawn is the version the
+//! switch picks, and under the tab row a line says what it was translated from and by what. While
+//! a translation is made the tab says so, and a translation that could not be made says why,
+//! with its one button, above the summary that is still there.
 //!
 //! The Markdown is drawn by [`SummaryText`], one per detail pane, from the text view state the
 //! session owns, which keeps its state across tab switches. The session counts the matches over
@@ -32,10 +36,11 @@ use gpui_kit::{
 use std::ops::Range;
 
 use crate::a11y;
-use crate::app::{Detail, Session};
+use crate::app::{Detail, Session, SummaryVersion};
 use crate::find::shift_into_view;
 use crate::fonts;
 use crate::icons::{self, Icon};
+use crate::languages;
 use crate::processing::{Fix, Phase};
 use crate::theme::{Presentation, Theme};
 use crate::transcript_view::{DOCK_CLEARANCE, TAB_ROW};
@@ -43,6 +48,7 @@ use crate::transcript_view::{DOCK_CLEARANCE, TAB_ROW};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SummaryState<'a> {
     Markdown {
+        /// The version `SummaryState::of` was asked for: the translation or what was written.
         markdown: &'a str,
         /// Written from an older transcript revision than the one stored.
         stale: bool,
@@ -55,11 +61,41 @@ pub enum SummaryState<'a> {
 
 pub const STALE: &str = "This summary is from an earlier version of the transcript.";
 
+/// What the line under the tab row says about a translated summary: "Translated from Tagalog by
+/// gemma4:e4b". Without a recorded language it only says by what.
+pub fn translation_note(detail: &Detail) -> Option<String> {
+    let translation = detail.summary_translation.as_ref()?;
+    let model = translation.produced_by.as_str();
+    let model = model.split_once('/').map_or(model, |(_, name)| name);
+    Some(
+        match detail.summary.as_ref().and_then(|s| s.language.as_ref()) {
+            Some(from) => format!(
+                "Translated from {} by {model}",
+                languages::primary_name(from)
+            ),
+            None => format!("Translated by {model}"),
+        },
+    )
+}
+
+/// What the tab says while a translation of the summary is made.
+pub fn translating_text(detail: &Detail) -> String {
+    match &detail.translating_into {
+        Some(target) => format!("Translating the summary into {}…", languages::name(target)),
+        None => "Translating the summary…".to_owned(),
+    }
+}
+
 impl<'a> SummaryState<'a> {
-    pub fn of(detail: &'a Detail, phase: Option<&Phase>) -> SummaryState<'a> {
-        if let Some(summary) = &detail.summary {
+    pub fn of(
+        detail: &'a Detail,
+        phase: Option<&Phase>,
+        version: SummaryVersion,
+    ) -> SummaryState<'a> {
+        if let Some(markdown) = detail.shown_summary(version) {
+            let summary = detail.summary.as_ref().expect("shown text has a summary");
             return SummaryState::Markdown {
-                markdown: &summary.markdown,
+                markdown,
                 stale: detail
                     .transcript
                     .as_ref()
@@ -255,13 +291,14 @@ impl Render for SummaryText {
 pub fn summary(
     detail: &Detail,
     phase: Option<&Phase>,
+    version: SummaryVersion,
     text: &Entity<SummaryText>,
     fix_button: Option<AnyElement>,
     theme: &Theme,
     presentation: Presentation,
 ) -> AnyElement {
     let doc = a11y::node("summary-document", Role::Document, "Summary");
-    match SummaryState::of(detail, phase) {
+    match SummaryState::of(detail, phase, version) {
         SummaryState::Missing { text, fix } => doc
             .child(
                 a11y::node("summary-missing", Role::Status, text.clone())
@@ -279,6 +316,38 @@ pub fn summary(
                 .flex()
                 .flex_col()
                 .gap(px(12.));
+            let aside = |id: &'static str, text: String| {
+                a11y::node(id, Role::Status, text.clone())
+                    .text_size(theme.text(13.))
+                    .text_color(theme.text_secondary)
+                    .child(text)
+            };
+            let body = match phase {
+                Some(Phase::TranslatingSummary { .. }) => {
+                    body.child(aside("summary-translating", translating_text(detail)))
+                }
+                Some(Phase::Failed(problem)) if problem.stage() == Stage::TranslateSummary => body
+                    .child(
+                        a11y::node("summary-translation-failed", Role::Status, problem.text())
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .px(px(12.))
+                            .py(px(8.))
+                            .rounded(px(7.))
+                            .bg(theme.control_bg)
+                            .text_size(theme.text(13.))
+                            .text_color(theme.text_secondary)
+                            .child(problem.text())
+                            .children(fix_button),
+                    ),
+                _ => body,
+            };
+            let body = match translation_note(detail).filter(|_| detail.summary_translated(version))
+            {
+                Some(note) => body.child(aside("summary-translation-note", note)),
+                None => body,
+            };
             let body = if stale {
                 body.child(
                     a11y::node("summary-stale", Role::Status, STALE)
@@ -511,6 +580,8 @@ mod tests {
             turns: Vec::new(),
             translation: None,
             translated_turns: None,
+            summary_translation: None,
+            translating_into: None,
         }
     }
 
@@ -518,12 +589,12 @@ mod tests {
     fn a_summary_from_an_older_transcript_is_stale() {
         let mut done = detail("Design review");
         assert!(matches!(
-            SummaryState::of(&done, None),
+            SummaryState::of(&done, None, SummaryVersion::default()),
             SummaryState::Markdown { stale: false, .. }
         ));
         done.transcript.as_mut().unwrap().revision = Revision(2);
         assert!(matches!(
-            SummaryState::of(&done, None),
+            SummaryState::of(&done, None, SummaryVersion::default()),
             SummaryState::Markdown { stale: true, .. }
         ));
     }
@@ -532,16 +603,22 @@ mod tests {
     fn a_missing_summary_says_why() {
         let hiring = detail("Hiring debrief");
         assert_eq!(
-            SummaryState::of(&hiring, Some(&Phase::Failed(Problem::SummaryModelMissing))),
+            SummaryState::of(
+                &hiring,
+                Some(&Phase::Failed(Problem::SummaryModelMissing)),
+                SummaryVersion::default()
+            ),
             SummaryState::Missing {
                 text: "The transcript is ready, but summaries aren't set up.".into(),
                 fix: Some(Fix::SetUpSummaries),
             }
         );
-        let missing = |phase: Phase| match SummaryState::of(&hiring, Some(&phase)) {
-            SummaryState::Missing { text, .. } => text,
-            other => panic!("{other:?}"),
-        };
+        let missing =
+            |phase: Phase| match SummaryState::of(&hiring, Some(&phase), SummaryVersion::default())
+            {
+                SummaryState::Missing { text, .. } => text,
+                other => panic!("{other:?}"),
+            };
         assert_eq!(
             missing(Phase::Summarizing {
                 left: Left::Estimating

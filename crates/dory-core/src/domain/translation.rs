@@ -1,6 +1,8 @@
-//! A transcript written in the output language, kept beside the spoken one, never over it.
+//! A transcript or a summary written in another language, kept beside the original, never over it.
 
-use super::{LangTag, Revision, Segment, Transcript};
+use thiserror::Error;
+
+use super::{LangTag, Revision, Segment, Summary, Transcript};
 use crate::models::ModelRef;
 
 /// The spoken transcript translated into `target`. It belongs to one transcript revision: a
@@ -37,6 +39,45 @@ impl Translation {
     /// The text of `segment` at `ix`: its translation when it has one, else what was spoken.
     pub fn shown<'a>(&'a self, ix: usize, segment: &'a Segment) -> &'a str {
         self.text(ix).unwrap_or(&segment.text)
+    }
+}
+
+/// The recording's summary translated into `target`, on the user's request. A recording has at
+/// most one. It is never stale: the store drops it in the commit that writes or restores a
+/// summary, so it always describes the summary now stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummaryTranslation {
+    pub target: LangTag,
+    pub produced_by: ModelRef,
+    pub markdown: String,
+}
+
+/// Why a summary cannot be translated into the language asked for.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum SummaryRefusal {
+    #[error("There is no summary to translate yet.")]
+    NoSummary,
+    #[error("The summary is already written in {0}.")]
+    AlreadyWritten(LangTag),
+    /// A translation of this summary is running. Another request waits until it ends, so the
+    /// stage never works for one language while the store holds a wish for another.
+    #[error("The summary is being translated already.")]
+    InProgress,
+}
+
+impl SummaryTranslation {
+    /// The one rule for asking: there must be a summary, and it must not already be in the target.
+    /// A summary with no recorded language is translated, as a segment of unknown language is.
+    /// `en-US` against `en` is the same language.
+    pub fn refusal(summary: Option<&Summary>, target: &LangTag) -> Option<SummaryRefusal> {
+        let Some(summary) = summary else {
+            return Some(SummaryRefusal::NoSummary);
+        };
+        summary
+            .language
+            .as_ref()
+            .filter(|written| written.primary() == target.primary())
+            .map(|_| SummaryRefusal::AlreadyWritten(target.clone()))
     }
 }
 
@@ -155,6 +196,44 @@ mod tests {
         assert!(translation(3, &[Some("A"), None]).applies_to(&t));
         assert!(!translation(2, &[Some("A"), None]).applies_to(&t));
         assert!(!translation(3, &[Some("A")]).applies_to(&t));
+    }
+
+    fn summary(language: Option<&str>) -> Summary {
+        Summary {
+            markdown: "## Key points\n- one".into(),
+            language: language.map(tag),
+            produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+            transcript_revision: Revision(1),
+        }
+    }
+
+    #[test]
+    fn a_summary_is_translated_only_when_it_exists_and_is_in_another_language() {
+        let en = tag("en");
+        let cases = [
+            (None, SummaryRefusal::NoSummary.into()),
+            (
+                Some(summary(Some("en"))),
+                Some(SummaryRefusal::AlreadyWritten(en.clone())),
+            ),
+            (
+                Some(summary(Some("en-US"))),
+                Some(SummaryRefusal::AlreadyWritten(en.clone())),
+            ),
+            (Some(summary(Some("tl"))), None),
+            (Some(summary(None)), None),
+        ];
+        for (summary, want) in cases {
+            assert_eq!(
+                SummaryTranslation::refusal(summary.as_ref(), &en),
+                want,
+                "{summary:?}"
+            );
+        }
+        assert_eq!(
+            SummaryRefusal::AlreadyWritten(en).to_string(),
+            "The summary is already written in en."
+        );
     }
 
     #[test]

@@ -74,6 +74,7 @@ pub(crate) fn stage_to_db(stage: Stage) -> &'static str {
         Stage::Transcribe => "transcribe",
         Stage::Translate => "translate",
         Stage::Summarize => "summarize",
+        Stage::TranslateSummary => "translate_summary",
     }
 }
 
@@ -82,6 +83,7 @@ pub(crate) fn stage_from_db(s: &str) -> Result<Stage, StoreError> {
         "transcribe" => Stage::Transcribe,
         "translate" => Stage::Translate,
         "summarize" => Stage::Summarize,
+        "translate_summary" => Stage::TranslateSummary,
         other => return Err(corrupt(format!("unknown stage {other:?}"))),
     })
 }
@@ -104,9 +106,13 @@ pub(crate) fn goal_to_db(goal: Goal) -> i64 {
     i64::from(goal.wants(Stage::Transcribe))
         | i64::from(goal.wants(Stage::Summarize)) << 1
         | i64::from(goal.wants(Stage::Translate)) << 2
+        | i64::from(goal.wants(Stage::TranslateSummary)) << 3
 }
 
 pub(crate) fn goal_from_db(bits: i64) -> Result<Goal, StoreError> {
+    if bits & 8 != 0 {
+        return Ok(Goal::TRANSLATE_SUMMARY);
+    }
     Goal::new(bits & 1 != 0, bits & 2 != 0)
         .map(|goal| goal.translating(bits & 4 != 0))
         .ok_or_else(|| corrupt(format!("empty job goal {bits}")))

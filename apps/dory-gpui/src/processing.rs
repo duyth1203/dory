@@ -65,6 +65,9 @@ pub struct Facts<'a> {
     /// The job still has the translate stage ahead: the recording is being written in the
     /// output language.
     pub translating: bool,
+    /// The job is the translation of the summary the user asked for, which touches neither the
+    /// transcript nor the summary.
+    pub translating_summary: bool,
     /// `None` until the queue is read.
     pub spot: Option<Spot>,
     /// The smoothed time left of the running stage.
@@ -107,6 +110,11 @@ pub enum Phase {
     Summarizing {
         left: Left,
     },
+    /// The user asked for the summary in another language. Transcript and summary are ready to
+    /// read as they were written, and the translation comes beside them.
+    TranslatingSummary {
+        done: Fraction,
+    },
     /// P7.
     Done {
         summary: bool,
@@ -142,6 +150,11 @@ pub enum Problem {
     Summary(String),
     /// The translate stage failed, in the core's words.
     Translation(String),
+    /// The summary cannot be translated because summaries are not set up, or the model is
+    /// missing or stopped.
+    SummaryTranslationModelMissing,
+    /// The translate-summary stage failed, in the core's words.
+    SummaryTranslation(String),
 }
 
 /// The one button a stopped job offers (UX-13).
@@ -202,6 +215,14 @@ impl Phase {
         }
         let progress = |stage| facts.progress.filter(|p| p.stage == stage);
         match &row.job {
+            Some(JobState::Queued) if facts.translating_summary => Phase::TranslatingSummary {
+                done: Fraction::new(0.0),
+            },
+            Some(JobState::Running {
+                stage: Stage::TranslateSummary,
+            }) => Phase::TranslatingSummary {
+                done: progress(Stage::TranslateSummary).map_or(Fraction::new(0.0), |p| p.fraction),
+            },
             Some(JobState::Queued) if facts.done.contains(&Stage::Transcribe) => {
                 if facts.translating && !facts.done.contains(&Stage::Translate) {
                     Phase::Translating {
@@ -256,7 +277,8 @@ impl Phase {
             | Phase::Preparing
             | Phase::Transcribing { .. }
             | Phase::Translating { .. }
-            | Phase::Summarizing { .. } => true,
+            | Phase::Summarizing { .. }
+            | Phase::TranslatingSummary { .. } => true,
             Phase::Failed(problem) => problem.stage() == Stage::Transcribe,
             Phase::Recording | Phase::Ready | Phase::Done { .. } => false,
         }
@@ -286,6 +308,7 @@ impl Phase {
                 Phase::Transcribing { .. } => "Transcribing",
                 Phase::Translating { .. } => "Translating the transcript",
                 Phase::Summarizing { .. } => "Writing the summary",
+                Phase::TranslatingSummary { .. } => "Translating the summary",
                 Phase::Failed(problem) => return Some(problem.headline().into()),
                 Phase::Recording | Phase::Ready | Phase::Done { .. } => return None,
             }
@@ -339,6 +362,10 @@ impl Phase {
                     ms.0.div_ceil(60_000)
                 ),
             },
+            Phase::TranslatingSummary { done } => format!(
+                "The summary is ready to read as it was written. {}% translated.",
+                Percent::of(*done).get()
+            ),
             Phase::Failed(problem) => problem.detail(),
             Phase::Recording | Phase::Ready | Phase::Done { .. } => return None,
         })
@@ -404,6 +431,15 @@ impl Phase {
                 step("Transcript", Check, "Ready"),
                 step("Summary", Dots, "Writing"),
             ],
+            Phase::TranslatingSummary { done } => [
+                saved,
+                step("Transcript", Check, "Ready"),
+                step(
+                    "Summary",
+                    Dots,
+                    &format!("Translating {}%", Percent::of(*done).get()),
+                ),
+            ],
             Phase::Failed(problem) if problem.stage() == Stage::Transcribe => [
                 saved,
                 step("Transcript", Warning, problem.step_word()),
@@ -463,6 +499,10 @@ impl Phase {
                     format!("Transcript ready. Writing the summary, {}.", left.spoken())
                 }
             },
+            Phase::TranslatingSummary { done } => format!(
+                "Summary ready as written. Translating it, {}%.",
+                Percent::of(*done).get()
+            ),
             Phase::Done { summary: true } => format!("Summary ready for {title}."),
             Phase::Done { summary: false } => format!("Transcript ready for {title}."),
             Phase::Failed(problem) => problem.sentence(),
@@ -483,6 +523,7 @@ impl Phase {
             },
             Phase::Translating { .. } => RowStatus::Translating,
             Phase::Summarizing { .. } => RowStatus::Summarizing,
+            Phase::TranslatingSummary { .. } => RowStatus::Translating,
             Phase::Done { .. } => RowStatus::Done,
             Phase::Failed(_) => RowStatus::NeedsAttention,
         }
@@ -511,9 +552,10 @@ impl Phase {
     pub fn transcribed(&self) -> Fraction {
         match self {
             Phase::Transcribing { done, .. } => *done,
-            Phase::Translating { .. } | Phase::Summarizing { .. } | Phase::Done { .. } => {
-                Fraction::new(1.0)
-            }
+            Phase::Translating { .. }
+            | Phase::Summarizing { .. }
+            | Phase::TranslatingSummary { .. }
+            | Phase::Done { .. } => Fraction::new(1.0),
             Phase::Failed(problem) if problem.stage() != Stage::Transcribe => Fraction::new(1.0),
             _ => Fraction::new(0.0),
         }
@@ -556,6 +598,7 @@ impl Phase {
             Phase::Done { .. } => 8,
             Phase::Failed(problem) => return (9, Some(std::mem::discriminant(problem))),
             Phase::Translating { .. } => 10,
+            Phase::TranslatingSummary { .. } => 11,
         };
         (key, None)
     }
@@ -580,6 +623,9 @@ impl Problem {
     ) -> Problem {
         match job {
             JobState::Blocked { stage, blocker } => {
+                if *stage == Stage::TranslateSummary {
+                    return Problem::SummaryTranslationModelMissing;
+                }
                 // Translating runs on the summary model, so it is blocked the way a summary is.
                 if matches!(stage, Stage::Summarize | Stage::Translate)
                     || matches!(blocker, Blocker::NoModel { kind: KindTag::Llm })
@@ -616,6 +662,10 @@ impl Problem {
                 stage: Stage::Translate,
                 error,
             } => Problem::Translation(error.message.clone()),
+            JobState::Failed {
+                stage: Stage::TranslateSummary,
+                error,
+            } => Problem::SummaryTranslation(error.message.clone()),
             JobState::Failed { error, .. } => match error.cause {
                 FailureCause::DiskFull => Problem::DiskFull,
                 FailureCause::AudioUnreadable => Problem::AudioUnreadable,
@@ -637,6 +687,9 @@ impl Problem {
         match self {
             Problem::SummaryModelMissing | Problem::Summary(_) => Stage::Summarize,
             Problem::Translation(_) => Stage::Translate,
+            Problem::SummaryTranslationModelMissing | Problem::SummaryTranslation(_) => {
+                Stage::TranslateSummary
+            }
             _ => Stage::Transcribe,
         }
     }
@@ -654,6 +707,9 @@ impl Problem {
             Problem::NothingRecognized => "No words recognized",
             Problem::SummaryModelMissing | Problem::Summary(_) => "No summary yet",
             Problem::Translation(_) => "No translation yet",
+            Problem::SummaryTranslationModelMissing | Problem::SummaryTranslation(_) => {
+                "The summary wasn't translated"
+            }
         }
     }
 
@@ -690,6 +746,14 @@ impl Problem {
                 "The transcript is ready as it was spoken, but translating it failed: {}",
                 sentence_end(message)
             ),
+            Problem::SummaryTranslationModelMissing => {
+                "The summary is ready, but summaries aren't set up, so it can't be translated."
+                    .into()
+            }
+            Problem::SummaryTranslation(message) => format!(
+                "The summary is ready as it was written, but translating it failed: {}",
+                sentence_end(message)
+            ),
         }
     }
 
@@ -719,9 +783,11 @@ impl Problem {
             Problem::NothingRecognized => "Needs attention",
             Problem::Transcription { started: false, .. } => "Didn't start",
             Problem::Transcription { .. } => "Needs attention",
-            Problem::SummaryModelMissing | Problem::Summary(_) | Problem::Translation(_) => {
-                "Waiting"
-            }
+            Problem::SummaryModelMissing
+            | Problem::Summary(_)
+            | Problem::Translation(_)
+            | Problem::SummaryTranslationModelMissing
+            | Problem::SummaryTranslation(_) => "Waiting",
         }
     }
 
@@ -732,14 +798,17 @@ impl Problem {
             } => return None,
             Problem::SpeechModelMissing { model, .. } => Fix::Download(model.clone()),
             Problem::NoSpeechModel => Fix::ChooseSpeechModel,
-            Problem::SummaryModelMissing => Fix::SetUpSummaries,
+            Problem::SummaryModelMissing | Problem::SummaryTranslationModelMissing => {
+                Fix::SetUpSummaries
+            }
             Problem::DiskFull => Fix::FreeUpSpace,
             Problem::AudioUnreadable => Fix::ShowInFinder,
             Problem::NothingRecognized => Fix::AddMeetingLanguages,
             Problem::Crashed
             | Problem::Transcription { .. }
             | Problem::Summary(_)
-            | Problem::Translation(_) => Fix::TryAgain,
+            | Problem::Translation(_)
+            | Problem::SummaryTranslation(_) => Fix::TryAgain,
         })
     }
 
@@ -1019,6 +1088,7 @@ mod tests {
         progress: Option<Progress>,
         done: Vec<Stage>,
         translating: bool,
+        translating_summary: bool,
         spot: Option<Spot>,
         left: Left,
         models: HashMap<ModelRef, ModelInfo>,
@@ -1041,6 +1111,7 @@ mod tests {
             progress: None,
             done: Vec::new(),
             translating: false,
+            translating_summary: false,
             spot: None,
             left: Left::Estimating,
             models: HashMap::new(),
@@ -1072,6 +1143,7 @@ mod tests {
                 progress: self.progress,
                 done: &self.done,
                 translating: self.translating,
+                translating_summary: self.translating_summary,
                 spot: self.spot,
                 left: self.left,
                 auto_process: true,
@@ -1366,6 +1438,101 @@ mod tests {
         let mut case = weekly().job(JobState::Queued);
         case.done = vec![Stage::Transcribe];
         assert_eq!(case.phase().row(), RowStatus::Summarizing);
+    }
+
+    #[test]
+    fn translating_the_summary_is_its_own_phase_on_a_finished_recording() {
+        let mut case = weekly().job(running(Stage::TranslateSummary)).progress(
+            Stage::TranslateSummary,
+            0.5,
+            None,
+        );
+        case.row.has_transcript = true;
+        case.row.summary = SummaryFlag::Current;
+        let phase = case.phase();
+        assert_eq!(
+            phase,
+            Phase::TranslatingSummary {
+                done: Fraction::new(0.5)
+            }
+        );
+        assert!(phase.is_processing());
+        assert!(!phase.before_transcript(), "the transcript stays readable");
+        assert_eq!(
+            words(&phase),
+            want(
+                Some("Translating the summary"),
+                Some("The summary is ready to read as it was written. 50% translated."),
+                Some([
+                    (Check, "Saved"),
+                    (Check, "Ready"),
+                    (Dots, "Translating 50%")
+                ]),
+                "Summary ready as written. Translating it, 50%.",
+                (Glyph::Dots, "Translating", Tone::Accent),
+            )
+        );
+
+        let mut waiting = weekly().job(JobState::Queued);
+        waiting.row.has_transcript = true;
+        waiting.translating_summary = true;
+        assert_eq!(
+            waiting.phase(),
+            Phase::TranslatingSummary {
+                done: Fraction::new(0.0)
+            },
+            "queued, it is not \"Waiting to transcribe\""
+        );
+        waiting.translating_summary = false;
+        assert!(matches!(waiting.phase(), Phase::Queued(_)));
+    }
+
+    #[test]
+    fn a_blocked_or_failed_summary_translation_says_so_and_offers_the_fix() {
+        let blocked = JobState::Blocked {
+            stage: Stage::TranslateSummary,
+            blocker: Blocker::NeedsProvision {
+                model: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+                bytes: None,
+            },
+        };
+        let problem = Problem::of(&blocked, &HashMap::new(), &HashMap::new());
+        assert_eq!(problem, Problem::SummaryTranslationModelMissing);
+        assert_eq!(problem.stage(), Stage::TranslateSummary);
+        assert_eq!(problem.fix(), Some(Fix::SetUpSummaries));
+        assert_eq!(
+            problem.sentence(),
+            "The summary wasn't translated. The summary is ready, but summaries aren't set up, so it can't be translated. Set Up Summaries."
+        );
+        let failed = Problem::of(
+            &failed(
+                Stage::TranslateSummary,
+                FailureClass::Permanent,
+                FailureCause::Other,
+            ),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            failed,
+            Problem::SummaryTranslation("the engine said no".into())
+        );
+        assert_eq!(failed.fix(), Some(Fix::TryAgain));
+        assert!(
+            failed
+                .text()
+                .starts_with("The summary is ready as it was written, but translating it failed:")
+        );
+        for problem in [&problem, &failed] {
+            assert!(
+                !Phase::Failed(problem.clone()).is_processing(),
+                "the card gives way to the player"
+            );
+            assert_eq!(
+                Phase::Failed(problem.clone()).row(),
+                RowStatus::NeedsAttention
+            );
+        }
     }
 
     #[test]

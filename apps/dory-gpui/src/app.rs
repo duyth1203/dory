@@ -30,7 +30,8 @@ use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Tas
 
 pub use player::PlayerHandle;
 pub use session::{
-    Detail, Loadable, Moved, Session, TranscriptText, Turn, speaker_label, translated_turns, turns,
+    Detail, Loadable, Moved, Session, Shown, SummaryVersion, TranscriptText, Turn, speaker_label,
+    translated_turns, turns,
 };
 
 pub use self::assistants::{

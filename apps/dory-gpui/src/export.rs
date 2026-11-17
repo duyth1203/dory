@@ -5,8 +5,8 @@
 //! after the label, `**Label (English)** [12:24]`, on the turns the tab tags. Text is the same
 //! without markup. SRT numbers each segment (not each turn) with `00:12:24,000 --> 00:12:27,500`. Names
 //! come from `Detail.turns` and the speaker names, so an export always matches what the
-//! transcript tab shows. A translated transcript exports the text the tab shows, translated or
-//! as spoken, whichever the Original / Translated switch is on.
+//! transcript tab shows. A translated transcript or summary exports the text its tab shows,
+//! translated or as written, whichever the Original / Translated switch is on.
 //!
 //! `export` asks for a path with the native save panel and writes off the UI thread. `copy`
 //! puts the summary Markdown or the transcript text on the clipboard. A failure becomes a
@@ -21,7 +21,7 @@ use dory_core::domain::{Ms, Segment};
 use gpui_kit::{App, ClipboardItem, Entity};
 
 use crate::a11y;
-use crate::app::{AppState, Detail, TranscriptText, Turn, speaker_label};
+use crate::app::{AppState, Detail, Shown, Turn, speaker_label};
 use crate::library::{local, short_duration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,28 +70,34 @@ impl ExportFormat {
 pub fn render(
     format: ExportFormat,
     detail: &Detail,
-    text: TranscriptText,
+    shown: impl Into<Shown>,
 ) -> Result<String, ExportBlocked> {
     let at = Local
         .timestamp_millis_opt(detail.recording.created_at.0)
         .earliest()
         .map_or_else(|| FixedOffset::east_opt(0).unwrap(), |t| *t.offset());
-    render_in(format, detail, text, &at)
+    render_in(format, detail, shown, &at)
 }
 
 pub fn render_in(
     format: ExportFormat,
     detail: &Detail,
-    text: TranscriptText,
+    shown: impl Into<Shown>,
     tz: &FixedOffset,
 ) -> Result<String, ExportBlocked> {
+    let shown = shown.into();
     match format {
-        ExportFormat::Srt => srt(detail, text),
+        ExportFormat::Srt => srt(detail, shown),
         ExportFormat::Markdown | ExportFormat::Text => {
             if detail.transcript.is_none() && detail.summary.is_none() {
                 return Err(ExportBlocked::NoTranscript);
             }
-            Ok(document(format == ExportFormat::Markdown, detail, text, tz))
+            Ok(document(
+                format == ExportFormat::Markdown,
+                detail,
+                shown,
+                tz,
+            ))
         }
     }
 }
@@ -123,7 +129,7 @@ fn metadata(detail: &Detail, tz: &FixedOffset) -> String {
     parts.join(" · ")
 }
 
-fn document(markdown: bool, detail: &Detail, text: TranscriptText, tz: &FixedOffset) -> String {
+fn document(markdown: bool, detail: &Detail, shown: Shown, tz: &FixedOffset) -> String {
     let mut out = String::new();
     let title = title(detail, tz);
     let meta = metadata(detail, tz);
@@ -132,11 +138,11 @@ fn document(markdown: bool, detail: &Detail, text: TranscriptText, tz: &FixedOff
     } else {
         let _ = write!(out, "{title}\n{meta}\n");
     }
-    if let Some(summary) = &detail.summary {
+    if let Some(summary) = detail.shown_summary(shown.summary) {
         if markdown {
-            let _ = write!(out, "\n## Summary\n\n{}\n", summary.markdown.trim());
+            let _ = write!(out, "\n## Summary\n\n{}\n", summary.trim());
         } else {
-            let _ = write!(out, "\nSummary\n\n{}\n", plain(&summary.markdown));
+            let _ = write!(out, "\nSummary\n\n{}\n", plain(summary));
         }
     }
     if detail.transcript.is_some() {
@@ -145,7 +151,7 @@ fn document(markdown: bool, detail: &Detail, text: TranscriptText, tz: &FixedOff
         } else {
             "\nTranscript\n"
         });
-        out.push_str(&turns_text(markdown, detail.shown(text)));
+        out.push_str(&turns_text(markdown, detail.shown(shown.transcript)));
     }
     out
 }
@@ -190,7 +196,7 @@ fn plain(markdown: &str) -> String {
     out.trim().to_owned()
 }
 
-fn srt(detail: &Detail, text: TranscriptText) -> Result<String, ExportBlocked> {
+fn srt(detail: &Detail, shown: Shown) -> Result<String, ExportBlocked> {
     let Some(transcript) = detail
         .transcript
         .as_ref()
@@ -204,7 +210,7 @@ fn srt(detail: &Detail, text: TranscriptText) -> Result<String, ExportBlocked> {
     let translation = detail
         .translation
         .as_ref()
-        .filter(|_| detail.translated(text));
+        .filter(|_| detail.translated(shown.transcript));
     let mut out = String::new();
     for (ix, segment) in transcript.segments.iter().enumerate() {
         let Segment {
@@ -260,7 +266,7 @@ pub fn export(
     app: &Entity<AppState>,
     detail: Arc<Detail>,
     format: ExportFormat,
-    shown: TranscriptText,
+    shown: Shown,
     cx: &mut App,
 ) {
     let text = match render(format, &detail, shown) {
@@ -305,13 +311,14 @@ pub fn export(
 }
 
 /// Does nothing when the recording has no such text.
-pub fn copy(detail: &Detail, what: CopyWhat, shown: TranscriptText, cx: &mut App) {
+pub fn copy(detail: &Detail, what: CopyWhat, shown: Shown, cx: &mut App) {
     let text = match what {
-        CopyWhat::Summary => detail.summary.as_ref().map(|s| s.markdown.clone()),
-        CopyWhat::Transcript => detail
-            .transcript
-            .as_ref()
-            .map(|_| turns_text(false, detail.shown(shown)).trim().to_owned()),
+        CopyWhat::Summary => detail.shown_summary(shown.summary).map(str::to_owned),
+        CopyWhat::Transcript => detail.transcript.as_ref().map(|_| {
+            turns_text(false, detail.shown(shown.transcript))
+                .trim()
+                .to_owned()
+        }),
     };
     if let Some(text) = text {
         cx.write_to_clipboard(ClipboardItem::new_string(text));

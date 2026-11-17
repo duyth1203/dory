@@ -19,9 +19,10 @@ use std::time::Duration;
 
 use dory_core::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
-    Job, JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
-    RecordingQuery, RecordingRow, Recovery, Revision, Segment, Settings, SpeakerId, SpeakerNames,
-    Summary, SummaryFlag, TakeInfo, Timestamp, Transcript, Translation, Writes,
+    Job, JobEvent, JobId, JobState, LangTag, Priority, Processing, Recording, RecordingEdit,
+    RecordingId, RecordingQuery, RecordingRow, Recovery, Revision, Segment, Settings, SpeakerId,
+    SpeakerNames, Summary, SummaryFlag, SummaryTranslation, TakeInfo, Timestamp, Transcript,
+    Translation, Writes,
 };
 use dory_core::models::{Diar, Llm, Stt};
 use dory_core::ports::{
@@ -71,6 +72,7 @@ const MIGRATIONS: &[Migration] = &[
         then: Some(search::rebuild),
     },
     Migration::sql(include_str!("schema_v9.sql")),
+    Migration::sql(include_str!("schema_v10.sql")),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -849,6 +851,17 @@ impl StoreRead for $t {
         self.read(|conn| load_translation(conn, id))
     }
 
+    fn summary_translation(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<SummaryTranslation>, StoreError> {
+        self.read(|conn| load_summary_translation(conn, id))
+    }
+
+    fn summary_translation_wanted(&self, id: &RecordingId) -> Result<Option<LangTag>, StoreError> {
+        self.read(|conn| load_summary_translation_wanted(conn, id))
+    }
+
     fn translation_batches(
         &self,
         key: &TranslationKey,
@@ -1104,6 +1117,59 @@ pub(crate) fn load_translation(
         })
     })
     .transpose()
+}
+
+pub(crate) fn load_summary_translation(
+    conn: &Connection,
+    id: &RecordingId,
+) -> Result<Option<SummaryTranslation>, StoreError> {
+    let raw = conn
+        .prepare_cached(
+            "SELECT target, produced_by, markdown FROM summary_translations
+             WHERE recording_id = ?1",
+        )
+        .map_err(db)?
+        .query_row([id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .optional()
+        .map_err(db)?;
+    raw.map(|(target, produced_by, markdown)| {
+        Ok(SummaryTranslation {
+            target: codec::parse_tag(&target)?,
+            produced_by: parse_model_ref(&produced_by)?,
+            markdown,
+        })
+    })
+    .transpose()
+}
+
+pub(crate) fn load_summary_translation_wanted(
+    conn: &Connection,
+    id: &RecordingId,
+) -> Result<Option<LangTag>, StoreError> {
+    conn.prepare_cached("SELECT target FROM summary_translation_wishes WHERE recording_id = ?1")
+        .map_err(db)?
+        .query_row([id.as_str()], |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(db)?
+        .map(|target| codec::parse_tag(&target))
+        .transpose()
+}
+
+/// A summary written or restored takes its translation and any wish for one with it.
+fn drop_summary_translation(tx: &Connection, id: &RecordingId) -> Result<(), StoreError> {
+    for table in ["summary_translations", "summary_translation_wishes"] {
+        tx.prepare_cached(&format!("DELETE FROM {table} WHERE recording_id = ?1"))
+            .map_err(db)?
+            .execute([id.as_str()])
+            .map_err(db)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn load_summary(
@@ -1434,7 +1500,42 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 i64::from(summary.transcript_revision.0),
             ])
             .map_err(db)?;
+            drop_summary_translation(tx, id)?;
             search::reindex(tx, id)?;
+            Ok(None)
+        }
+        Change::SummaryTranslationWanted { id, target } => {
+            require_recording(tx, id)?;
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO summary_translation_wishes (recording_id, target)
+                 VALUES (?1, ?2)",
+            )
+            .map_err(db)?
+            .execute(params![id.as_str(), target.as_str()])
+            .map_err(db)?;
+            Ok(None)
+        }
+        Change::SummaryTranslated { id, translation } => {
+            require_recording(tx, id)?;
+            if load_summary_translation_wanted(tx, id)?.as_ref() == Some(&translation.target) {
+                tx.prepare_cached(
+                    "INSERT OR REPLACE INTO summary_translations
+                       (recording_id, target, produced_by, markdown)
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .map_err(db)?
+                .execute(params![
+                    id.as_str(),
+                    translation.target.as_str(),
+                    translation.produced_by.as_str(),
+                    translation.markdown,
+                ])
+                .map_err(db)?;
+                tx.prepare_cached("DELETE FROM summary_translation_wishes WHERE recording_id = ?1")
+                    .map_err(db)?
+                    .execute([id.as_str()])
+                    .map_err(db)?;
+            }
             Ok(None)
         }
         Change::JobEnqueued {
@@ -1579,6 +1680,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                         .map_err(db)?;
                 }
             }
+            drop_summary_translation(tx, id)?;
             search::reindex(tx, id)?;
             Ok(None)
         }

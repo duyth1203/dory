@@ -115,41 +115,71 @@ impl SeedArgs {
     }
 }
 
-/// `show ID [--languages] [--original]`. With `--languages` it prints only the languages heard,
-/// most heard first.
+/// `show ID [--languages] [--original] [--summary-translation]`. With `--languages` it prints only
+/// the languages heard, most heard first.
 #[derive(Debug, PartialEq)]
 pub struct ShowArgs {
     pub id: RecordingId,
     pub languages: bool,
     /// Prints the spoken transcript even when a translation exists.
     pub original: bool,
+    /// Also prints the summary's saved translation, when there is one.
+    pub summary_translation: bool,
 }
 
 impl ShowArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
-        match args {
-            [id, flags @ ..] if !id.starts_with("--") => {
-                let mut show = Self {
-                    id: parse_id(id)?,
-                    languages: false,
-                    original: false,
-                };
-                for flag in flags {
-                    let seen = match flag.as_str() {
-                        "--languages" => &mut show.languages,
-                        "--original" => &mut show.original,
-                        _ => return Err(format!("show does not take {flag:?}")),
-                    };
-                    if std::mem::replace(seen, true) {
-                        return Err(format!("show takes {flag} once"));
-                    }
-                }
-                Ok(show)
+        let usage =
+            "show takes the recording id, --languages, --original, and --summary-translation";
+        let mut id = None;
+        let (mut languages, mut original, mut summary_translation) = (false, false, false);
+        for arg in args {
+            match arg.as_str() {
+                "--languages" => languages = true,
+                "--original" => original = true,
+                "--summary-translation" => summary_translation = true,
+                _ if arg.starts_with("--") => return Err(usage.into()),
+                _ if id.is_none() => id = Some(parse_id(arg)?),
+                _ => return Err(usage.into()),
             }
-            [flag, id] if flag.starts_with("--") && !id.starts_with("--") => {
-                Self::parse(&[id.clone(), flag.clone()])
+        }
+        Ok(Self {
+            id: id.ok_or(usage)?,
+            languages,
+            original,
+            summary_translation,
+        })
+    }
+}
+
+/// `translate-summary ID TAG` writes the recording's summary in another language, beside the
+/// original, and prints it.
+#[derive(Debug, PartialEq)]
+pub struct TranslateSummaryArgs {
+    pub id: RecordingId,
+    pub target: LangTag,
+    pub fake_engines: bool,
+}
+
+impl TranslateSummaryArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let usage = "translate-summary takes a recording id and a language tag";
+        let mut words = Vec::new();
+        let mut fake_engines = false;
+        for arg in args {
+            match arg.as_str() {
+                "--fake-engines" => fake_engines = true,
+                _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}")),
+                _ => words.push(arg),
             }
-            _ => Err("show takes the recording id, then --languages or --original".into()),
+        }
+        match words.as_slice() {
+            [id, tag] => Ok(Self {
+                id: parse_id(id)?,
+                target: LangTag::parse(tag).map_err(|e| e.to_string())?,
+                fake_engines,
+            }),
+            _ => Err(usage.into()),
         }
     }
 }
@@ -655,5 +685,46 @@ mod tests {
         assert!(ShowArgs::parse(&words("--original r1")).unwrap().original);
         assert!(ShowArgs::parse(&words("--original")).is_err());
         assert!(ShowArgs::parse(&words("r1 --nope")).is_err());
+        assert!(ShowArgs::parse(&words("r1 r2")).is_err());
+    }
+
+    #[test]
+    fn show_prints_a_saved_summary_translation_only_when_asked() {
+        let plain = ShowArgs::parse(&words("r1")).unwrap();
+        assert!(!plain.summary_translation);
+        let asked = ShowArgs::parse(&words("r1 --summary-translation --original")).unwrap();
+        assert!(asked.summary_translation && asked.original);
+        assert!(
+            ShowArgs::parse(&words("--summary-translation r1"))
+                .unwrap()
+                .summary_translation
+        );
+    }
+
+    #[test]
+    fn translate_summary_takes_an_id_and_a_language_tag() {
+        assert_eq!(
+            TranslateSummaryArgs::parse(&words("r1 en")).unwrap(),
+            TranslateSummaryArgs {
+                id: RecordingId::parse("r1").unwrap(),
+                target: LangTag::parse("en").unwrap(),
+                fake_engines: false,
+            }
+        );
+        assert!(
+            TranslateSummaryArgs::parse(&words("--fake-engines r1 tl-PH"))
+                .unwrap()
+                .fake_engines
+        );
+        for bad in [
+            "",
+            "r1",
+            "r1 en fr",
+            "r1 not_a_tag!",
+            "../etc en",
+            "r1 en --nope",
+        ] {
+            assert!(TranslateSummaryArgs::parse(&words(bad)).is_err(), "{bad:?}");
+        }
     }
 }

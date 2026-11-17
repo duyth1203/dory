@@ -15,8 +15,8 @@ use dory_core::domain::{
     AssistantAccess, AssistantClient, AssistantQuery, Blocker, Channel, ChannelLayout, ClientKey,
     Fields, Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms, Priority, Recording,
     RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision, Segment, Settings,
-    SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange, Timestamp,
-    Transcript, Translation, Waveform,
+    SpeakerId, SpeakerNames, Stage, Summary, SummaryTranslation, TakeContainer, TakeInfo,
+    TimeRange, Timestamp, Transcript, Translation, Waveform,
 };
 use dory_core::models::{
     Availability, CatalogError, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId,
@@ -211,6 +211,15 @@ impl StoreRead for HookedStore {
     }
     fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
         self.inner.translation(id)
+    }
+    fn summary_translation(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<SummaryTranslation>, StoreError> {
+        self.inner.summary_translation(id)
+    }
+    fn summary_translation_wanted(&self, id: &RecordingId) -> Result<Option<LangTag>, StoreError> {
+        self.inner.summary_translation_wanted(id)
     }
     fn translation_batches(
         &self,

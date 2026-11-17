@@ -24,6 +24,7 @@ fn status(row: &RecordingRow, recorder: &RecorderStatus, progress: Option<Progre
         progress,
         done: &[],
         translating: false,
+        translating_summary: false,
         spot: None,
         left: Left::Estimating,
         auto_process: true,

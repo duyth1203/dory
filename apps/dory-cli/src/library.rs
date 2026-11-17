@@ -165,6 +165,16 @@ pub fn show(config: &Config, args: &ShowArgs) -> Result<(), String> {
         }
         None => println!("Summary: none"),
     }
+    if args.summary_translation {
+        println!();
+        match lib.summary_translation(&args.id).map_err(crate::chain)? {
+            Some(t) => {
+                println!("Summary translated into {} by {}", t.target, t.produced_by);
+                println!("{}", t.markdown);
+            }
+            None => println!("Summary translation: none"),
+        }
+    }
     Ok(())
 }
 

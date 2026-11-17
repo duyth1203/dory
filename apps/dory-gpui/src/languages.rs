@@ -128,6 +128,30 @@ pub fn output_description(choice: Option<&LangTag>) -> String {
     }
 }
 
+/// What **Translate…** offers for a summary written in `written`: the meeting languages, a
+/// separator (`None`), then every other language Dory names by its English name. The summary's
+/// own language is never offered, whichever list it is in, and no language is offered twice.
+pub fn translate_choices(meeting: &[LangTag], written: Option<&LangTag>) -> Vec<Option<LangTag>> {
+    let skip = |tag: &LangTag| written.is_some_and(|w| w.primary() == tag.primary());
+    let mut first: Vec<LangTag> = Vec::new();
+    for tag in meeting {
+        if !skip(tag) && !first.iter().any(|t| t.primary() == tag.primary()) {
+            first.push(tag.clone());
+        }
+    }
+    let rest: Vec<LangTag> = output_choices()
+        .into_iter()
+        .filter(|tag| !skip(tag) && !first.iter().any(|t| t.primary() == tag.primary()))
+        .collect();
+    let separator = (!first.is_empty() && !rest.is_empty()).then_some(None);
+    first
+        .into_iter()
+        .map(Some)
+        .chain(separator)
+        .chain(rest.into_iter().map(Some))
+        .collect()
+}
+
 pub const KEEP_ONE: &str = "Keep at least one meeting language.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -440,6 +464,65 @@ mod tests {
         assert!(choices.contains(&tag("en")));
         assert_eq!(output_label(None), "Same as spoken");
         assert_eq!(output_label(Some(&tag("tl"))), "Tagalog");
+    }
+
+    #[test]
+    fn translate_offers_the_meeting_languages_then_every_other_language_but_the_summarys_own() {
+        let names = |choices: Vec<Option<LangTag>>| -> Vec<Option<String>> {
+            choices.iter().map(|c| c.as_ref().map(name)).collect()
+        };
+        let got = names(translate_choices(&[tag("tl"), tag("en")], Some(&tag("tl"))));
+        assert_eq!(got.first(), Some(&Some("English".to_owned())));
+        assert_eq!(
+            got.get(1),
+            Some(&None),
+            "a separator follows the meeting languages"
+        );
+        assert!(
+            !got.contains(&Some("Tagalog".to_owned())),
+            "not the summary's own language"
+        );
+        let others: Vec<&String> = got[2..].iter().flatten().collect();
+        assert_eq!(others.len(), LANGUAGES.len() - 2);
+        assert!(
+            !others.contains(&&"English".to_owned()),
+            "no language twice"
+        );
+        let mut sorted: Vec<String> = others.iter().map(|n| (*n).clone()).collect();
+        sorted.sort_by_key(|n| fold(n));
+        assert_eq!(
+            others.iter().map(|n| (*n).clone()).collect::<Vec<_>>(),
+            sorted
+        );
+
+        let all = translate_choices(&[tag("tl"), tag("en")], None);
+        assert_eq!(all[..2], [Some(tag("tl")), Some(tag("en"))]);
+        assert_eq!(all[2], None);
+        assert_eq!(all.iter().flatten().count(), LANGUAGES.len());
+    }
+
+    #[test]
+    fn translate_has_no_separator_without_meeting_languages_or_without_others() {
+        let none = translate_choices(&[], Some(&tag("en-US")));
+        assert!(none.iter().all(Option::is_some));
+        assert_eq!(none.len(), LANGUAGES.len() - 1, "en-US is English");
+        let only = translate_choices(&[tag("tl")], Some(&tag("tl")));
+        assert!(
+            only.iter().all(Option::is_some),
+            "the meeting list gave nothing to separate"
+        );
+        assert_eq!(
+            translate_choices(&[tag("fr-CA"), tag("fr")], None)[0],
+            Some(tag("fr-CA"))
+        );
+        assert_eq!(
+            translate_choices(&[tag("fr-CA"), tag("fr")], None)
+                .iter()
+                .flatten()
+                .filter(|t| t.primary() == "fr")
+                .count(),
+            1
+        );
     }
 
     #[test]

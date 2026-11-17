@@ -102,6 +102,8 @@ fn main() {
             turns: grouped,
             translation: None,
             translated_turns: None,
+            summary_translation: None,
+            translating_into: None,
         };
         for format in [ExportFormat::Markdown, ExportFormat::Srt] {
             println!("---- {format:?}");

@@ -1,5 +1,5 @@
-//! What the transcribe, translate, and summarize stages do. Each returns the changes to commit with its
-//! `StageDone`, or why it could not finish.
+//! What the transcribe, translate, summarize, and translate-summary stages do. Each returns the
+//! changes to commit with its `StageDone`, or why it could not finish.
 //!
 //! Transcribe plans every clip's windows first, so progress covers the whole job. Each finished
 //! window is checkpointed on its own, and a rerun skips the windows its run already finished.
@@ -16,8 +16,8 @@ use super::models::{Engines, Registries};
 use super::pace::Budget;
 use crate::domain::{
     Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Fraction, Job, JobError, LangTag,
-    LanguagePref, Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, TimeRange,
-    Transcript, Translation,
+    LanguagePref, Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, SummaryTranslation,
+    TimeRange, Transcript, Translation,
 };
 use crate::models::{
     Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
@@ -94,6 +94,7 @@ pub(crate) fn run(stage: Stage, cx: StageCx<'_>) -> Result<Vec<Change>, StageErr
         Stage::Transcribe => transcribe(cx),
         Stage::Translate => translate(cx),
         Stage::Summarize => summarize(cx),
+        Stage::TranslateSummary => translate_summary(cx),
     }
 }
 
@@ -821,6 +822,94 @@ fn translate(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         },
         Change::TranslationBatchesCleared(id.clone()),
     ])
+}
+
+/// Writes the stored summary in the language the user asked for, beside the original. The
+/// model is resolved as Summarize resolves it, so the same blockers apply. The policy is in
+/// `translate.rs`.
+fn translate_summary(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
+    let id = &cx.job.recording;
+    let store = cx.db.store.as_ref();
+    // A summary written since the request took the wish with it, and nothing is left to do.
+    let Some(target) = store.summary_translation_wanted(id).map_err(failed)? else {
+        return Ok(Vec::new());
+    };
+    let summary = store
+        .summary(id)
+        .map_err(failed)?
+        .ok_or_else(|| permanent("there is no summary to translate"))?;
+    let needs = LlmNeeds {
+        language: Some(target.clone()),
+    };
+    // Turning summaries off or having no model is not a quiet skip here: the user asked for this.
+    let llm_id = settle(cx.models.get::<Llm>().resolve(&cx.settings.llm, &needs))?
+        .ok_or(StageError::Blocked(Blocker::NoModel { kind: KindTag::Llm }))?;
+    let context = cx
+        .models
+        .get::<Llm>()
+        .entry(&llm_id)
+        .map(|e| e.caps.context_tokens)
+        .ok_or_else(|| permanent("the summary model left the catalog"))?;
+    let model = llm_id.erase();
+    let llm = cx
+        .engines
+        .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)
+        .map_err(engine_failed(model.clone()))?;
+
+    let system = translate::summary_system_prompt(&target);
+    let system_tokens = llm.count_tokens(&system);
+    let budget = translate::input_budget(context, system_tokens);
+    if budget == 0 {
+        return Err(permanent(
+            "the summary model's context window is too small for its instructions",
+        ));
+    }
+    let progress = |fraction: f32, pace: Budget| {
+        cx.db.publish(Event::StageProgress {
+            job: cx.job.id,
+            stage: Stage::TranslateSummary,
+            fraction: Fraction::new(fraction),
+            budget: Some(pace),
+        });
+    };
+    let markdown = translate::translate_summary(
+        &summary.markdown,
+        translate::SummaryRun {
+            system: &system,
+            budget,
+            cost: &|text| llm.count_tokens(text),
+            output: &|user| translate::max_output(context, system_tokens, llm.count_tokens(user)),
+            before_batch: &mut |done, all| {
+                if cx.cancel.is_cancelled() {
+                    return Err(EngineError::Cancelled);
+                }
+                progress(done as f32 / all as f32, (cx.pace)());
+                Ok(())
+            },
+            call: &mut |call| {
+                let request = CompletionRequest {
+                    system: call.system,
+                    user: call.user,
+                    max_output_tokens: call.max_output_tokens,
+                    temperature: 0.1,
+                };
+                llm.complete(&request, &mut Discard, cx.cancel)
+            },
+        },
+    )
+    .map_err(engine_failed(model.clone()))?;
+    let Some(markdown) = markdown else {
+        return Ok(Vec::new());
+    };
+    progress(1.0, (cx.pace)());
+    Ok(vec![Change::SummaryTranslated {
+        id: id.clone(),
+        translation: SummaryTranslation {
+            target,
+            produced_by: model,
+            markdown,
+        },
+    }])
 }
 
 fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {

@@ -262,6 +262,7 @@ impl AppState {
             translating: job.is_some_and(|j| {
                 j.goal.wants(Stage::Translate) && !j.done.contains(&Stage::Translate)
             }),
+            translating_summary: job.is_some_and(|j| j.goal.wants(Stage::TranslateSummary)),
             spot: self.spot_of(id),
             left: self
                 .estimates
@@ -357,7 +358,7 @@ impl AppState {
                 })
             }
             // A translation has no rate history yet, so it shows its percent and no time left.
-            Stage::Translate => None,
+            Stage::Translate | Stage::TranslateSummary => None,
             Stage::Summarize => {
                 estimate::summary_left(run.from, progress.fraction, now - run.at_ms)
             }

@@ -25,7 +25,7 @@ const USAGE: &str = "usage:
   dory-cli list
   dory-cli search TEXT
   dory-cli seed --recordings N --words N [--seed N]
-  dory-cli show ID [--languages] [--original]
+  dory-cli show ID [--languages] [--original] [--summary-translation]
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]
@@ -45,6 +45,7 @@ const USAGE: &str = "usage:
   dory-cli assistants prune
   dory-cli private ID on|off
   dory-cli summary restore ID
+  dory-cli translate-summary ID TAG [--fake-engines]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
 The --fake-* flags and seed write fake audio or fake recordings, so they need $DORY_DATA_DIR set.
@@ -92,6 +93,8 @@ fn main() -> ExitCode {
             }
             Some("process") => args::ProcessArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::run(&c, &a))),
+            Some("translate-summary") => args::TranslateSummaryArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| process::translate_summary(&c, &a))),
             Some("assistants") => assistants::AssistantsArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| assistants::run(&c, &a))),
             Some("private") => assistants::PrivateArgs::parse(rest)

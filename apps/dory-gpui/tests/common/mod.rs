@@ -20,6 +20,9 @@ use gpui_kit::{
     AnyWindowHandle, Bounds, Entity, TestAppContext, WindowBounds, WindowOptions, px, size,
 };
 
+/// The sample whose summary has a translation into Spanish, for the checks that walk every view.
+pub const TRANSLATED_SUMMARY: &str = "Customer interview: Ortega";
+
 /// The samples as store changes: recordings, then their transcripts and summaries.
 pub fn sample_changes() -> Vec<Change> {
     let mut changes = Vec::new();
@@ -36,6 +39,21 @@ pub fn sample_changes() -> Vec<Change> {
                 id: sample.id(),
                 summary,
             });
+            if sample.title == TRANSLATED_SUMMARY {
+                changes.push(Change::SummaryTranslationWanted {
+                    id: sample.id(),
+                    target: dory_core::domain::LangTag::parse("es").unwrap(),
+                });
+                changes.push(Change::SummaryTranslated {
+                    id: sample.id(),
+                    translation: dory_core::domain::SummaryTranslation {
+                        target: dory_core::domain::LangTag::parse("es").unwrap(),
+                        produced_by: dory_core::models::ModelRef::parse("ollama/gemma4:e4b")
+                            .unwrap(),
+                        markdown: format!("## Puntos clave\n\n- {}\n", sample.title),
+                    },
+                });
+            }
         }
     }
     changes

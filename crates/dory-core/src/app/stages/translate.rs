@@ -1,5 +1,6 @@
 //! The translation policy: which segments need translating, how they are batched to fit the
-//! model's context, the prompts, and how a reply is read back.
+//! model's context, the prompts, and how a reply is read back. A summary is translated the same
+//! way, a line at a time, with the Markdown around each line kept by code.
 //!
 //! Every function here is pure. The stage in `mod.rs` owns the store, the engine, and progress.
 //! Segments go to the model a batch at a time as numbered lines, and the reply must give the same
@@ -38,13 +39,26 @@ pub(crate) fn pending(transcript: &Transcript, target: &LangTag) -> Vec<usize> {
 }
 
 pub(crate) fn system_prompt(target: &LangTag) -> String {
+    prompt("a meeting transcript", target, "")
+}
+
+/// The same instructions for the lines of a summary, which may carry Markdown emphasis.
+pub(crate) fn summary_system_prompt(target: &LangTag) -> String {
+    prompt(
+        "a meeting summary",
+        target,
+        " Keep Markdown emphasis marks such as ** where they are.",
+    )
+}
+
+fn prompt(of: &str, target: &LangTag, extra: &str) -> String {
     let language = crate::domain::languages::for_prompt(target);
     format!(
-        "You translate lines of a meeting transcript into {language}. The input is numbered \
+        "You translate lines of {of} into {language}. The input is numbered \
          lines like \"[1] text\". Reply with exactly the same numbered lines, translated, one \
          per input line, with the same numbers and nothing else. Keep names, numbers, and \
          technical terms as they are. A line already in {language} stays as it is. Never merge, \
-         split, skip, answer, or explain a line. Translate only."
+         split, skip, answer, or explain a line. Translate only.{extra}"
     )
 }
 
@@ -172,6 +186,179 @@ pub(crate) fn translate_batch<E>(
     let mut lines = translate_batch(first, system, output, call)?;
     lines.extend(translate_batch(second, system, output, call)?);
     Ok(lines)
+}
+
+/// One line of summary Markdown. `markup` is what the line keeps whatever the language: its
+/// indent, a heading's `#` run, a bullet or a number, a quote mark, a task box. `text` is what is
+/// translated. A line with nothing to read, a blank line or a rule or a line in a code fence, is
+/// all `markup` and has no text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SummaryLine {
+    pub markup: String,
+    pub text: String,
+}
+
+impl SummaryLine {
+    fn verbatim(line: &str) -> SummaryLine {
+        SummaryLine {
+            markup: line.to_owned(),
+            text: String::new(),
+        }
+    }
+}
+
+/// Splits `markdown` at every `\n`, so joining the lines untranslated gives the input back byte
+/// for byte, a trailing newline and a `\r` included.
+pub(crate) fn summary_lines(markdown: &str) -> Vec<SummaryLine> {
+    let mut fenced = false;
+    markdown
+        .split('\n')
+        .map(|line| {
+            let start = line.trim_start();
+            if start.starts_with("```") || start.starts_with("~~~") {
+                fenced = !fenced;
+                return SummaryLine::verbatim(line);
+            }
+            if fenced {
+                return SummaryLine::verbatim(line);
+            }
+            let (markup, text) = line.split_at(markup_len(line));
+            if text.chars().any(char::is_alphanumeric) {
+                SummaryLine {
+                    markup: markup.to_owned(),
+                    text: text.to_owned(),
+                }
+            } else {
+                SummaryLine::verbatim(line)
+            }
+        })
+        .collect()
+}
+
+/// Spaces and tabs at the start of `s`.
+fn blanks(s: &str) -> usize {
+    s.len() - s.trim_start_matches([' ', '\t']).len()
+}
+
+/// How much of `line` is markup: the indent, quote marks, then one heading, bullet, or number.
+fn markup_len(line: &str) -> usize {
+    let mut at = blanks(line);
+    while line[at..].starts_with('>') {
+        at += 1;
+        at += blanks(&line[at..]);
+    }
+    let rest = &line[at..];
+    let hashes = rest.bytes().take_while(|b| *b == b'#').count();
+    let after_hashes = &rest[hashes..];
+    if (1..=6).contains(&hashes)
+        && (after_hashes.is_empty() || after_hashes.starts_with([' ', '\t']))
+    {
+        return at + hashes + blanks(after_hashes);
+    }
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let (marker, bullet) = if (1..=9).contains(&digits) && rest[digits..].starts_with(['.', ')']) {
+        (digits + 1, false)
+    } else if rest.starts_with(['-', '*', '+']) {
+        (1, true)
+    } else {
+        return at;
+    };
+    let after = &rest[marker..];
+    if !after.starts_with([' ', '\t']) {
+        return at;
+    }
+    let mut len = at + marker + blanks(after);
+    let task = &line[len..];
+    if bullet && ["[ ] ", "[x] ", "[X] "].iter().any(|b| task.starts_with(b)) {
+        len += 4 + blanks(&task[4..]);
+    }
+    len
+}
+
+/// The lines back as Markdown, each text part replaced by the next of `translated`, in order. A
+/// blank reply keeps the line's own text. A reply is one line whatever the model wrote, so the
+/// number of lines, their order, and all markup are what the summary had. A line that was bold
+/// from end to end stays bold.
+pub(crate) fn join_lines(lines: &[SummaryLine], translated: &[String]) -> String {
+    let mut replies = translated.iter();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line.text.is_empty() {
+            out.push(line.markup.clone());
+            continue;
+        }
+        let reply = replies.next().map_or("", String::as_str);
+        let one_line = if reply.contains(['\n', '\r']) {
+            reply
+                .split(['\n', '\r'])
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            reply.to_owned()
+        };
+        let text = if one_line.trim().is_empty() {
+            line.text.clone()
+        } else {
+            let original = line.text.trim();
+            let bold = original.len() > 4 && original.starts_with("**") && original.ends_with("**");
+            let mut text = if bold && !(one_line.starts_with("**") && one_line.ends_with("**")) {
+                format!("**{}**", one_line.trim_matches('*'))
+            } else {
+                one_line
+            };
+            if line.text.ends_with('\r') {
+                text.push('\r');
+            }
+            text
+        };
+        out.push(format!("{}{text}", line.markup));
+    }
+    out.join("\n")
+}
+
+/// What translating a summary needs from its surroundings: sizes taken from the model's
+/// context, and the calls to the model.
+pub(crate) struct SummaryRun<'a, E> {
+    pub system: &'a str,
+    /// Tokens of input one batch may take.
+    pub budget: u32,
+    pub cost: &'a dyn Fn(&str) -> u32,
+    pub output: &'a dyn Fn(&str) -> u32,
+    /// Called before each batch with the batches done and all of them. An error stops the run.
+    pub before_batch: &'a mut dyn FnMut(usize, usize) -> Result<(), E>,
+    pub call: &'a mut dyn FnMut(Call<'_>) -> Result<String, E>,
+}
+
+/// The summary in another language with the Markdown of every line as it was, or `None` when no
+/// line has text to translate.
+pub(crate) fn translate_summary<E>(
+    markdown: &str,
+    run: SummaryRun<'_, E>,
+) -> Result<Option<String>, E> {
+    let lines = summary_lines(markdown);
+    let texts: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.text.is_empty())
+        .map(|l| l.text.as_str())
+        .collect();
+    if texts.is_empty() {
+        return Ok(None);
+    }
+    let costs: Vec<u32> = texts.iter().map(|t| (run.cost)(&line(99, t))).collect();
+    let batches = plan_batches(&costs, run.budget);
+    let mut translated = Vec::with_capacity(texts.len());
+    for (done, range) in batches.iter().enumerate() {
+        (run.before_batch)(done, batches.len())?;
+        translated.extend(translate_batch(
+            &texts[range.clone()],
+            run.system,
+            run.output,
+            run.call,
+        )?);
+    }
+    Ok(Some(join_lines(&lines, &translated)))
 }
 
 #[cfg(test)]
@@ -382,5 +569,253 @@ mod tests {
         );
         assert!(system_prompt(&tag("xq")).contains("into the language with BCP 47 tag xq"));
         assert!(prompt.contains("same numbers"));
+    }
+
+    const SUMMARY: &str = "# Summary\n\n## Key points\n- Ship it **Friday**.\n* Login is fixed.\n+ Docs next.\n\n### Decisions\nNone\n\n## Action items\n1. Maria reviews invoices.\n12) Ana books the room.\n   - nested under Ana\n\t* tab nested\n- [ ] open task\n- [x] done task\n> Quoted note\n---\n**Owners**\n";
+
+    fn parts(markdown: &str) -> Vec<(String, String)> {
+        summary_lines(markdown)
+            .into_iter()
+            .map(|l| (l.markup, l.text))
+            .collect()
+    }
+
+    fn untranslated(lines: &[SummaryLine]) -> Vec<String> {
+        lines
+            .iter()
+            .filter(|l| !l.text.is_empty())
+            .map(|l| l.text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn markup_is_the_headings_bullets_numbers_and_indents_and_the_text_is_the_rest() {
+        let got = parts(SUMMARY);
+        let pair = |m: &str, t: &str| (m.to_owned(), t.to_owned());
+        let want = [
+            pair("# ", "Summary"),
+            pair("", ""),
+            pair("## ", "Key points"),
+            pair("- ", "Ship it **Friday**."),
+            pair("* ", "Login is fixed."),
+            pair("+ ", "Docs next."),
+            pair("", ""),
+            pair("### ", "Decisions"),
+            pair("", "None"),
+            pair("", ""),
+            pair("## ", "Action items"),
+            pair("1. ", "Maria reviews invoices."),
+            pair("12) ", "Ana books the room."),
+            pair("   - ", "nested under Ana"),
+            pair("\t* ", "tab nested"),
+            pair("- [ ] ", "open task"),
+            pair("- [x] ", "done task"),
+            pair("> ", "Quoted note"),
+            pair("---", ""),
+            pair("", "**Owners**"),
+            pair("", ""),
+        ];
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn each_heading_level_and_a_lone_hash_run_is_markup() {
+        for level in 1..=6 {
+            let hashes = "#".repeat(level);
+            assert_eq!(
+                parts(&format!("{hashes} Points")),
+                [(format!("{hashes} "), "Points".to_owned())]
+            );
+        }
+        assert_eq!(
+            parts("####### seven"),
+            [(String::new(), "####### seven".to_owned())]
+        );
+        assert_eq!(parts("#hashtag"), [(String::new(), "#hashtag".to_owned())]);
+        assert_eq!(parts("##"), [("##".to_owned(), String::new())]);
+    }
+
+    #[test]
+    fn a_line_that_only_looks_like_a_marker_keeps_its_text() {
+        for line in [
+            "**bold start** then more",
+            "-5 degrees",
+            "2024 was long",
+            "*emphasis* word",
+        ] {
+            assert_eq!(parts(line), [(String::new(), line.to_owned())], "{line}");
+        }
+    }
+
+    #[test]
+    fn a_line_with_only_bold_text_is_text_and_stays_bold_when_the_reply_drops_the_marks() {
+        let lines = summary_lines("**Decisions**");
+        assert_eq!(lines[0].markup, "");
+        assert_eq!(lines[0].text, "**Decisions**");
+        assert_eq!(
+            join_lines(&lines, &["Mga desisyon".into()]),
+            "**Mga desisyon**"
+        );
+        assert_eq!(
+            join_lines(&lines, &["**Mga desisyon**".into()]),
+            "**Mga desisyon**"
+        );
+        let mixed = summary_lines("**Owner:** Ana");
+        assert_eq!(
+            join_lines(&mixed, &["**May-ari:** Ana".into()]),
+            "**May-ari:** Ana"
+        );
+    }
+
+    #[test]
+    fn a_blank_line_a_rule_and_a_code_fence_have_no_text() {
+        let lines = summary_lines("a\n\n   \n***\n```\n# not a heading\n```\nb");
+        let with_text: Vec<&str> = lines
+            .iter()
+            .filter(|l| !l.text.is_empty())
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(with_text, ["a", "b"]);
+        assert_eq!(lines.len(), 8);
+    }
+
+    #[test]
+    fn joining_the_untranslated_lines_gives_back_the_input_byte_for_byte() {
+        let inputs = [
+            SUMMARY,
+            "",
+            "\n",
+            "no newline at the end",
+            "trailing spaces  \nand\ttabs\t\n\n\n",
+            "win\r\nlines\r\n- b\r\n",
+            "None",
+            "# only a heading",
+            "- é ü ñ 日本語\n\n   \n",
+        ];
+        for input in inputs {
+            let lines = summary_lines(input);
+            assert_eq!(
+                join_lines(&lines, &untranslated(&lines)),
+                input,
+                "{input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_translated_line_takes_back_its_own_markup_and_none_of_the_models() {
+        let lines = summary_lines("## Key points\n- Ship it.\n\n1. Do it.\n   - sub\n");
+        let got = join_lines(
+            &lines,
+            &[
+                "Mga punto".into(),
+                "Ipadala.".into(),
+                "Gawin.".into(),
+                "ilalim".into(),
+            ],
+        );
+        assert_eq!(got, "## Mga punto\n- Ipadala.\n\n1. Gawin.\n   - ilalim\n");
+        assert_eq!(got.lines().count(), 5);
+    }
+
+    #[test]
+    fn a_reply_that_wraps_or_comes_back_blank_cannot_change_the_line_count() {
+        let lines = summary_lines("- one\n- two\n- three");
+        let got = join_lines(&lines, &["uno\ndos extra\n\n- tres".into(), "  ".into()]);
+        assert_eq!(got, "- uno dos extra - tres\n- two\n- three");
+        assert_eq!(got.split('\n').count(), 3);
+        let carriage = summary_lines("- a\r\n- b\r\n");
+        assert_eq!(
+            join_lines(&carriage, &["x".into(), "y".into()]),
+            "- x\r\n- y\r\n"
+        );
+    }
+
+    /// A model that translates each numbered line by upper-casing it, and counts its calls.
+    fn run_summary(
+        markdown: &str,
+        budget: u32,
+    ) -> (Option<String>, Vec<String>, Vec<(usize, usize)>) {
+        let mut users = Vec::new();
+        let mut steps = Vec::new();
+        let out = translate_summary(
+            markdown,
+            SummaryRun::<()> {
+                system: "system",
+                budget,
+                cost: &|text| text.split_whitespace().count() as u32,
+                output: &|_| 100,
+                before_batch: &mut |done, all| {
+                    steps.push((done, all));
+                    Ok(())
+                },
+                call: &mut |call| {
+                    users.push(call.user.to_owned());
+                    Ok(call.user.to_uppercase())
+                },
+            },
+        )
+        .unwrap();
+        (out, users, steps)
+    }
+
+    #[test]
+    fn a_summary_goes_to_the_model_as_numbered_text_with_no_markup() {
+        let (out, users, steps) = run_summary("## Key points\n- Ship it.\n\n1. Do it.", 1_000);
+        assert_eq!(users, ["[1] Key points\n[2] Ship it.\n[3] Do it.\n"]);
+        assert_eq!(steps, [(0, 1)]);
+        assert_eq!(
+            out.as_deref(),
+            Some("## KEY POINTS\n- SHIP IT.\n\n1. DO IT.")
+        );
+    }
+
+    #[test]
+    fn a_long_summary_goes_in_batches_and_each_batch_is_announced_first() {
+        let md: String = (1..=7).map(|n| format!("- item number {n}\n")).collect();
+        let (out, users, steps) = run_summary(&md, 8);
+        assert!(users.len() > 2, "{} batches", users.len());
+        assert_eq!(steps.len(), users.len());
+        assert!(
+            steps
+                .iter()
+                .enumerate()
+                .all(|(i, s)| *s == (i, users.len()))
+        );
+        let want: String = (1..=7).map(|n| format!("- ITEM NUMBER {n}\n")).collect();
+        assert_eq!(out, Some(want));
+    }
+
+    #[test]
+    fn a_summary_with_nothing_to_translate_makes_no_call() {
+        for md in ["", "\n\n", "---\n***", "```\ncode\n```"] {
+            let (out, users, steps) = run_summary(md, 100);
+            assert_eq!((out, users, steps), (None, vec![], vec![]), "{md:?}");
+        }
+    }
+
+    #[test]
+    fn a_stop_before_a_batch_ends_the_run_without_a_result() {
+        let out = translate_summary(
+            "- a\n- b",
+            SummaryRun {
+                system: "system",
+                budget: 100,
+                cost: &|_| 1,
+                output: &|_| 100,
+                before_batch: &mut |_, _| Err("cancelled"),
+                call: &mut |_| Ok::<_, &str>(String::new()),
+            },
+        );
+        assert_eq!(out, Err("cancelled"));
+    }
+
+    #[test]
+    fn the_summary_prompt_is_the_transcript_prompt_for_summary_lines() {
+        let transcript = system_prompt(&tag("en"));
+        let summary = summary_system_prompt(&tag("en"));
+        assert!(transcript.starts_with("You translate lines of a meeting transcript into"));
+        assert!(summary.starts_with("You translate lines of a meeting summary into"));
+        assert!(summary.contains("same numbers") && summary.contains("Markdown emphasis"));
     }
 }

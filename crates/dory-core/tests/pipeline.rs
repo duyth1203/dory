@@ -1729,3 +1729,355 @@ fn an_engine_that_detects_nothing_still_labels_segments_with_the_pinned_language
     assert_eq!(translate_prompts(&rig), Vec::<String>::new());
     assert_eq!(dory.library().translation(&id).unwrap(), None);
 }
+
+const TAGALOG_SUMMARY: &str = "# Buod\n\n## Mga pangunahing punto\n- Ihatid sa **Biyernes**.\n- Ayos na ang login.\n\n## Mga desisyon\nWala\n\n## Mga gawain\n1. Susuriin ni Maria ang mga invoice.\n   - bago mag-lunes\n";
+
+/// A recording whose Tagalog summary is stored and nothing else.
+fn summarized_in_tagalog(model: FakeLanguageModel, context: u32) -> (Rig, RecordingId) {
+    let rig = Rig::with_model(
+        FakeTranscriber::new(),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(context),
+        model,
+    );
+    let id = rig.seed("buod", ChannelLayout::Mixed, 3);
+    write_summary(&rig, &id, TAGALOG_SUMMARY, Some("tl"));
+    (rig, id)
+}
+
+fn write_summary(rig: &Rig, id: &RecordingId, markdown: &str, language: Option<&str>) {
+    rig.store
+        .apply(vec![Change::SummaryReplaced {
+            id: id.clone(),
+            summary: dory_core::domain::Summary {
+                markdown: markdown.into(),
+                language: language.map(|l| LangTag::parse(l).unwrap()),
+                produced_by: dory_core::models::ModelRef::parse(LLM).unwrap(),
+                transcript_revision: Revision(1),
+            },
+        }])
+        .unwrap();
+}
+
+fn translate_job(dory: &Dory, id: &RecordingId) -> Option<dory_core::domain::Job> {
+    dory.library()
+        .jobs(id)
+        .unwrap()
+        .into_iter()
+        .find(|j| j.goal == Goal::TRANSLATE_SUMMARY)
+}
+
+fn wait_for_translation_job(dory: &Dory, id: &RecordingId, state: JobState) {
+    eventually(&format!("the translate job to be {state:?}"), || {
+        translate_job(dory, id).is_some_and(|j| j.state == state)
+    });
+}
+
+fn wait_for_translation_to_block(dory: &Dory, id: &RecordingId) {
+    eventually("the translation to block", || {
+        translate_job(dory, id).is_some_and(|j| matches!(j.state, JobState::Blocked { .. }))
+    });
+}
+
+#[test]
+fn summary_is_translated_line_by_line() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    let dory = rig.open();
+    let events = dory.events();
+    dory.library().translate_summary(&id, english()).unwrap();
+    wait_for_translation_job(&dory, &id, JobState::Succeeded);
+
+    let job = translate_job(&dory, &id).unwrap();
+    assert_eq!(job.done, [Stage::TranslateSummary]);
+    assert_eq!(
+        job.priority,
+        dory_core::domain::Priority::Front,
+        "the user is waiting"
+    );
+    assert_eq!(
+        translate_prompts(&rig),
+        [
+            "[1] Buod\n[2] Mga pangunahing punto\n[3] Ihatid sa **Biyernes**.\n[4] Ayos na ang login.\n[5] Mga desisyon\n[6] Wala\n[7] Mga gawain\n[8] Susuriin ni Maria ang mga invoice.\n[9] bago mag-lunes\n"
+        ],
+        "the model sees each line's text and none of its markup"
+    );
+    let translation = dory.library().summary_translation(&id).unwrap().unwrap();
+    assert_eq!(translation.target, english());
+    assert_eq!(translation.produced_by.to_string(), LLM);
+    assert_eq!(
+        translation.markdown,
+        "# EN: Buod\n\n## EN: Mga pangunahing punto\n- EN: Ihatid sa **Biyernes**.\n- EN: Ayos na ang login.\n\n## EN: Mga desisyon\nEN: Wala\n\n## EN: Mga gawain\n1. EN: Susuriin ni Maria ang mga invoice.\n   - EN: bago mag-lunes\n"
+    );
+    assert_eq!(
+        translation.markdown.lines().count(),
+        TAGALOG_SUMMARY.lines().count(),
+        "every line of the original has a translated line"
+    );
+    assert_eq!(
+        dory.library().summary(&id).unwrap().unwrap().markdown,
+        TAGALOG_SUMMARY,
+        "the original is untouched"
+    );
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        None
+    );
+    assert_climbs_to_done(&progress(&drain(&events), Stage::TranslateSummary));
+    assert_eq!(
+        dory.library().transcript(&id).unwrap(),
+        None,
+        "a summary translation touches no transcript"
+    );
+}
+
+#[test]
+fn asking_again_for_another_language_replaces_the_translation_and_a_new_summary_drops_it() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    wait_for_translation_job(&dory, &id, JobState::Succeeded);
+    let german = LangTag::parse("de").unwrap();
+    dory.library()
+        .translate_summary(&id, german.clone())
+        .unwrap();
+    eventually("the German translation", || {
+        dory.library()
+            .summary_translation(&id)
+            .unwrap()
+            .is_some_and(|t| t.target == german)
+    });
+    wait_for_translation_job(&dory, &id, JobState::Succeeded);
+    assert_eq!(dory.library().jobs(&id).unwrap().len(), 2);
+
+    write_summary(&rig, &id, "## Bago", Some("tl"));
+    assert_eq!(dory.library().summary_translation(&id).unwrap(), None);
+}
+
+#[test]
+fn translating_into_the_summary_language_is_refused() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    let dory = rig.open();
+    for target in ["tl", "tl-PH"] {
+        let error = dory
+            .library()
+            .translate_summary(&id, LangTag::parse(target).unwrap())
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                dory_core::app::DoryError::SummaryRefused(
+                    dory_core::domain::SummaryRefusal::AlreadyWritten(_)
+                )
+            ),
+            "{error:?}"
+        );
+    }
+    let nothing = rig.seed("walang-buod", ChannelLayout::Mixed, 3);
+    let error = dory
+        .library()
+        .translate_summary(&nothing, english())
+        .unwrap_err();
+    assert_eq!(error.to_string(), "There is no summary to translate yet.");
+    assert!(
+        dory.library()
+            .translate_summary(&RecordingId::parse("ghost").unwrap(), english())
+            .is_err()
+    );
+    assert_eq!(dory.library().jobs(&id).unwrap(), vec![]);
+    assert_eq!(dory.library().jobs(&nothing).unwrap(), vec![]);
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        None
+    );
+    assert_eq!(rig.llm.prompts(), vec![]);
+}
+
+#[test]
+fn a_second_request_while_one_runs_is_refused_and_the_wish_stays() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    rig.llm.hold_from(0);
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    eventually("the translation to start", || !rig.llm.prompts().is_empty());
+    let error = dory
+        .library()
+        .translate_summary(&id, LangTag::parse("de").unwrap())
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "The summary is being translated already."
+    );
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        Some(english())
+    );
+}
+
+#[test]
+fn no_summary_model_blocks_translation_like_summary() {
+    let model: ModelId<Llm> = LLM.parse().unwrap();
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    rig.llm_provider
+        .set_availability(&model, Availability::NeedsProvision { bytes: None });
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            llm: Choice::Pinned(model.clone()),
+            ..Settings::default()
+        })])
+        .unwrap();
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    wait_for_translation_to_block(&dory, &id);
+    assert_eq!(
+        translate_job(&dory, &id).unwrap().state,
+        JobState::Blocked {
+            stage: Stage::TranslateSummary,
+            blocker: Blocker::NeedsProvision {
+                model: model.erase(),
+                bytes: None,
+            },
+        },
+        "the blocker is the one a missing model gives Summarize"
+    );
+    assert_eq!(rig.llm.prompts(), vec![]);
+    assert_eq!(dory.library().summary_translation(&id).unwrap(), None);
+
+    rig.llm_provider
+        .set_availability(&model, Availability::Ready);
+    let job = translate_job(&dory, &id).unwrap();
+    dory.pipeline().unblock(job.id).unwrap();
+    wait_for_translation_job(&dory, &id, JobState::Succeeded);
+    assert!(dory.library().summary_translation(&id).unwrap().is_some());
+}
+
+#[test]
+fn turning_the_summary_model_off_blocks_a_requested_translation_instead_of_skipping_it() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            llm: Choice::Off,
+            ..Settings::default()
+        })])
+        .unwrap();
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    wait_for_translation_job(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::TranslateSummary,
+            blocker: Blocker::NoModel { kind: KindTag::Llm },
+        },
+    );
+    assert_eq!(rig.llm.prompts(), vec![]);
+}
+
+#[test]
+fn a_quit_mid_translation_resumes_once() {
+    let lines: String = (0..40)
+        .map(|n| format!("- puntong numero {n} {}\n", "ka ".repeat(8)))
+        .collect();
+    let (rig, id) = summarized_in_tagalog(translator(), 400);
+    write_summary(&rig, &id, &lines, Some("tl"));
+    rig.llm.hold_from(2);
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    eventually("the third batch to start", || rig.llm.prompts().len() == 3);
+    drop(dory);
+    rig.llm.hold_from(usize::MAX);
+
+    assert_eq!(rig.store.summary_translation(&id).unwrap(), None);
+    assert_eq!(
+        rig.store.summary_translation_wanted(&id).unwrap(),
+        Some(english()),
+        "the wish survives the quit, so the next run knows its target"
+    );
+    let before = rig.llm.prompts().len();
+    let job = rig.store.jobs_for(&id).unwrap().remove(0);
+    rig.store
+        .apply(vec![Change::Job {
+            job: job.id,
+            event: JobEvent::Started {
+                stage: Stage::TranslateSummary,
+            },
+        }])
+        .unwrap();
+
+    let dory = rig.open();
+    wait_for_translation_job(&dory, &id, JobState::Succeeded);
+    let jobs = dory.library().jobs(&id).unwrap();
+    assert_eq!(jobs.len(), 1, "the same job finishes, no second one");
+    assert_eq!(jobs[0].done, [Stage::TranslateSummary]);
+    let translation = dory.library().summary_translation(&id).unwrap().unwrap();
+    assert_eq!(translation.markdown.lines().count(), 40);
+    assert!(
+        translation
+            .markdown
+            .lines()
+            .all(|l| l.starts_with("- EN: puntong numero"))
+    );
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        None
+    );
+    assert!(rig.llm.prompts().len() > before);
+}
+
+#[test]
+fn cancelling_a_translation_keeps_the_summary_and_stores_nothing() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    rig.llm.hold_from(0);
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    eventually("the translation to start", || !rig.llm.prompts().is_empty());
+    let job = translate_job(&dory, &id).unwrap();
+    assert_eq!(
+        job.state,
+        JobState::Running {
+            stage: Stage::TranslateSummary
+        }
+    );
+    dory.pipeline().cancel(job.id).unwrap();
+    wait_for_translation_job(&dory, &id, JobState::Cancelled);
+    assert_eq!(dory.library().summary_translation(&id).unwrap(), None);
+    assert_eq!(
+        dory.library().summary(&id).unwrap().unwrap().markdown,
+        TAGALOG_SUMMARY
+    );
+}
+
+#[test]
+fn a_summary_written_while_translating_never_gets_the_old_translation() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    rig.llm.hold_from(0);
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    eventually("the translation to start", || !rig.llm.prompts().is_empty());
+    write_summary(&rig, &id, "## Bago", Some("tl"));
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        None,
+        "the new summary took the wish with it"
+    );
+    let job = translate_job(&dory, &id).unwrap();
+    dory.pipeline().cancel(job.id).unwrap();
+    wait_for_translation_job(&dory, &id, JobState::Cancelled);
+    assert_eq!(dory.library().summary_translation(&id).unwrap(), None);
+}
+
+#[test]
+fn trashing_and_restoring_a_recording_brings_its_summary_translation_back() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    let dory = rig.open();
+    dory.library().translate_summary(&id, english()).unwrap();
+    wait_for_translation_job(&dory, &id, JobState::Succeeded);
+    let kept = dory.library().summary_translation(&id).unwrap().unwrap();
+    let trashed = dory.library().trash(&id).unwrap();
+    assert_eq!(dory.library().summary_translation(&id).unwrap(), None);
+    dory.library().restore(trashed).unwrap();
+    assert_eq!(dory.library().summary_translation(&id).unwrap(), Some(kept));
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        None
+    );
+}

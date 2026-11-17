@@ -103,7 +103,7 @@ pub fn lines(state: &InProgress) -> Vec<Line> {
     if let Some(running) = &state.running {
         let verb = match running.stage {
             Stage::Transcribe => "Transcribing",
-            Stage::Translate => "Translating",
+            Stage::Translate | Stage::TranslateSummary => "Translating",
             Stage::Summarize => "Summarizing",
         };
         let title = &running.title;

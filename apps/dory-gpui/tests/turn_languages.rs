@@ -62,6 +62,8 @@ fn detail(transcript: Transcript, translation: Option<Translation>) -> Detail {
         turns: turns_spoken,
         translation,
         translated_turns: translated,
+        summary_translation: None,
+        translating_into: None,
     }
 }
 

@@ -27,6 +27,10 @@
 //!   leaves it in place, still carrying the revision it was made from. Its batches are read per
 //!   run (recording, revision, target, model) in save order, and clearing or deleting the
 //!   recording drops them. Saving either for a missing recording is `NotFound`.
+//! - A summary translation is stored beside the summary, at most one per recording. Asking for one
+//!   records a wish and leaves any stored translation alone. Storing a translation applies only
+//!   while a wish for its target stands, and ends the wish. Writing or restoring the summary drops
+//!   the translation and the wish in the same change, and deleting the recording drops both.
 //! - Checkpoints are read per run (recording, model, channel, language), earliest window first. A
 //!   second save of the same run and span replaces the first. Clearing drops every run of one
 //!   recording, and so does deleting the recording. Saving for a missing recording is `NotFound`.
@@ -36,8 +40,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Fields, Job,
-    JobEvent, JobId, JobState, Ms, Priority, Recording, RecordingEdit, RecordingId, RecordingQuery,
-    RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, Timestamp, Transcript, Translation,
+    JobEvent, JobId, JobState, LangTag, Ms, Priority, Recording, RecordingEdit, RecordingId,
+    RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, SummaryTranslation,
+    Timestamp, Transcript, Translation,
 };
 use crate::ports::{
     Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead, TranslationBatch,
@@ -55,6 +60,16 @@ struct Entry {
     previous: Option<Summary>,
     instruction: Option<String>,
     translation: Option<Translation>,
+    summary_translation: Option<SummaryTranslation>,
+    summary_translation_wanted: Option<LangTag>,
+}
+
+impl Entry {
+    /// A summary written or restored takes its translation and any wish for one with it.
+    fn drop_summary_translation(&mut self) {
+        self.summary_translation = None;
+        self.summary_translation_wanted = None;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -91,6 +106,8 @@ impl State {
                         previous: None,
                         instruction: None,
                         translation: None,
+                        summary_translation: None,
+                        summary_translation_wanted: None,
                     });
             }
             Change::RecordingEdited { id, edit } => {
@@ -115,6 +132,7 @@ impl State {
             Change::SummaryReplaced { id, summary } => {
                 let entry = self.entry_mut(&id)?;
                 entry.previous = entry.summary.replace(summary).or(entry.previous.take());
+                entry.drop_summary_translation();
             }
             Change::SummaryRestored(id) => {
                 let entry = self.entry_mut(&id)?;
@@ -123,6 +141,17 @@ impl State {
                     .take()
                     .ok_or_else(|| StoreError::NotFound(format!("previous summary of {id}")))?;
                 entry.previous = entry.summary.replace(previous);
+                entry.drop_summary_translation();
+            }
+            Change::SummaryTranslationWanted { id, target } => {
+                self.entry_mut(&id)?.summary_translation_wanted = Some(target);
+            }
+            Change::SummaryTranslated { id, translation } => {
+                let entry = self.entry_mut(&id)?;
+                if entry.summary_translation_wanted.as_ref() == Some(&translation.target) {
+                    entry.summary_translation_wanted = None;
+                    entry.summary_translation = Some(translation);
+                }
             }
             Change::SummaryInstructionSet { id, instruction } => {
                 self.entry_mut(&id)?.instruction = instruction;
@@ -492,6 +521,25 @@ impl StoreRead for MemStore {
             .and_then(|e| e.translation.clone()))
     }
 
+    fn summary_translation(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<SummaryTranslation>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.summary_translation.clone()))
+    }
+
+    fn summary_translation_wanted(&self, id: &RecordingId) -> Result<Option<LangTag>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.summary_translation_wanted.clone()))
+    }
+
     fn translation_batches(
         &self,
         key: &TranslationKey,
@@ -707,6 +755,26 @@ mod contract {
         (
             "translation_data_needs_a_recording_and_goes_with_it",
             translation_follows_the_recording,
+        ),
+        (
+            "summary_translation_round_trips",
+            summary_translation_round_trips,
+        ),
+        (
+            "a_summary_translation_applies_only_while_its_wish_stands",
+            summary_translation_needs_its_wish,
+        ),
+        (
+            "a_new_summary_drops_its_translation",
+            a_new_summary_drops_its_translation,
+        ),
+        (
+            "restoring_a_summary_drops_its_translation",
+            restoring_a_summary_drops_its_translation,
+        ),
+        (
+            "deleting_a_recording_drops_its_translation",
+            deleting_a_recording_drops_its_translation,
         ),
     ];
 
@@ -2850,6 +2918,227 @@ mod contract {
         create(store, "gone", 20);
         assert_eq!(store.translation(&rid("gone")).unwrap(), None);
         assert_eq!(store.translation_batches(&key).unwrap(), vec![]);
+    }
+
+    fn summary_translation_of(target: &str, markdown: &str) -> SummaryTranslation {
+        SummaryTranslation {
+            target: tag(target),
+            produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+            markdown: markdown.into(),
+        }
+    }
+
+    fn want(store: &dyn Store, id: &str, target: &str) {
+        store
+            .apply(vec![Change::SummaryTranslationWanted {
+                id: rid(id),
+                target: tag(target),
+            }])
+            .unwrap();
+    }
+
+    fn store_translation(store: &dyn Store, id: &str, translation: &SummaryTranslation) {
+        store
+            .apply(vec![Change::SummaryTranslated {
+                id: rid(id),
+                translation: translation.clone(),
+            }])
+            .unwrap();
+    }
+
+    /// A recording with a summary and a stored translation of it into `en`.
+    fn translated_summary(store: &dyn Store, id: &str) -> SummaryTranslation {
+        create(store, id, 10);
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: rid(id),
+                summary: summary(1, "## Mga punto\n- Sige"),
+            }])
+            .unwrap();
+        want(store, id, "en");
+        let done = summary_translation_of("en", "## Points\n- \"Okay\"\n\n- Fine");
+        store_translation(store, id, &done);
+        done
+    }
+
+    fn summary_translation_round_trips(store: &dyn Store) {
+        create(store, "r", 10);
+        let id = rid("r");
+        assert_eq!(store.summary_translation(&id).unwrap(), None);
+        assert_eq!(store.summary_translation_wanted(&id).unwrap(), None);
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: id.clone(),
+                summary: summary(1, "## Mga punto\n- Sige"),
+            }])
+            .unwrap();
+
+        want(store, "r", "en");
+        assert_eq!(
+            store.summary_translation_wanted(&id).unwrap(),
+            Some(tag("en"))
+        );
+        assert_eq!(store.summary_translation(&id).unwrap(), None);
+        let english = summary_translation_of("en", "## Points\n- \"Okay\"\n\n- Fine");
+        store_translation(store, "r", &english);
+        assert_eq!(
+            store.summary_translation(&id).unwrap(),
+            Some(english.clone())
+        );
+        assert_eq!(
+            store.summary_translation_wanted(&id).unwrap(),
+            None,
+            "storing it ends the wish"
+        );
+        assert_eq!(
+            store.summary(&id).unwrap().unwrap().markdown,
+            "## Mga punto\n- Sige",
+            "the summary is untouched"
+        );
+
+        want(store, "r", "de");
+        assert_eq!(
+            store.summary_translation(&id).unwrap(),
+            Some(english),
+            "a new wish leaves the stored translation in place"
+        );
+        let german = summary_translation_of("de", "## Punkte\n- Gut");
+        store_translation(store, "r", &german);
+        assert_eq!(
+            store.summary_translation(&id).unwrap(),
+            Some(german),
+            "the new translation replaces the old"
+        );
+        assert_eq!(store.summary_translation(&rid("other")).unwrap(), None);
+        assert_not_found(store.apply(vec![Change::SummaryTranslationWanted {
+            id: rid("ghost"),
+            target: tag("en"),
+        }]));
+        assert_not_found(store.apply(vec![Change::SummaryTranslated {
+            id: rid("ghost"),
+            translation: summary_translation_of("en", "x"),
+        }]));
+    }
+
+    fn summary_translation_needs_its_wish(store: &dyn Store) {
+        create(store, "r", 10);
+        let id = rid("r");
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: id.clone(),
+                summary: summary(1, "## Mga punto"),
+            }])
+            .unwrap();
+        store_translation(store, "r", &summary_translation_of("en", "no wish"));
+        assert_eq!(store.summary_translation(&id).unwrap(), None);
+        want(store, "r", "de");
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("en", "another language"),
+        );
+        assert_eq!(store.summary_translation(&id).unwrap(), None);
+        assert_eq!(
+            store.summary_translation_wanted(&id).unwrap(),
+            Some(tag("de"))
+        );
+
+        want(store, "r", "en");
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: id.clone(),
+                summary: summary(1, "## Written while translating"),
+            }])
+            .unwrap();
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("en", "of the old summary"),
+        );
+        assert_eq!(
+            store.summary_translation(&id).unwrap(),
+            None,
+            "a translation of a replaced summary is never stored"
+        );
+        assert_eq!(store.summary_translation_wanted(&id).unwrap(), None);
+    }
+
+    fn a_new_summary_drops_its_translation(store: &dyn Store) {
+        translated_summary(store, "r");
+        want(store, "r", "fr");
+        let id = rid("r");
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: id.clone(),
+                summary: summary(1, "## Nouveau"),
+            }])
+            .unwrap();
+        assert_eq!(store.summary_translation(&id).unwrap(), None);
+        assert_eq!(store.summary_translation_wanted(&id).unwrap(), None);
+        assert_eq!(store.summary(&id).unwrap().unwrap().markdown, "## Nouveau");
+    }
+
+    fn restoring_a_summary_drops_its_translation(store: &dyn Store) {
+        translated_summary(store, "r");
+        let id = rid("r");
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: id.clone(),
+                summary: summary(1, "## Second"),
+            }])
+            .unwrap();
+        let again = summary_translation_of("en", "## Second, in English");
+        want(store, "r", "en");
+        store_translation(store, "r", &again);
+        assert_eq!(store.summary_translation(&id).unwrap(), Some(again));
+        want(store, "r", "de");
+        store
+            .apply(vec![Change::SummaryRestored(id.clone())])
+            .unwrap();
+        assert_eq!(
+            store.summary(&id).unwrap().unwrap().markdown,
+            "## Mga punto\n- Sige"
+        );
+        assert_eq!(store.summary_translation(&id).unwrap(), None);
+        assert_eq!(store.summary_translation_wanted(&id).unwrap(), None);
+
+        let none_to_restore = rid("n");
+        create(store, "n", 20);
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: none_to_restore.clone(),
+                summary: summary(1, "## Only"),
+            }])
+            .unwrap();
+        want(store, "n", "en");
+        store_translation(store, "n", &summary_translation_of("en", "## Only"));
+        assert!(
+            store
+                .apply(vec![Change::SummaryRestored(none_to_restore.clone())])
+                .is_err()
+        );
+        assert!(
+            store
+                .summary_translation(&none_to_restore)
+                .unwrap()
+                .is_some(),
+            "a restore that finds nothing to restore changes nothing"
+        );
+    }
+
+    fn deleting_a_recording_drops_its_translation(store: &dyn Store) {
+        translated_summary(store, "gone");
+        want(store, "gone", "fr");
+        store
+            .apply(vec![Change::RecordingDeleted(rid("gone"))])
+            .unwrap();
+        create(store, "gone", 30);
+        assert_eq!(store.summary_translation(&rid("gone")).unwrap(), None);
+        assert_eq!(
+            store.summary_translation_wanted(&rid("gone")).unwrap(),
+            None
+        );
+        assert_eq!(store.summary_translation(&rid("gone")).unwrap(), None);
     }
 }
 

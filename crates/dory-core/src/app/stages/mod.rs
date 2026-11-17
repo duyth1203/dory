@@ -343,6 +343,7 @@ fn transcribe_window(
         hint: wx.hint,
         threads,
     };
+    let started = std::time::Instant::now();
     let outcome = wx
         .stt
         .transcribe(&request, &mut sink, wx.cancel)
@@ -352,6 +353,7 @@ fn transcribe_window(
         segments: sink.raw,
         detected_language: outcome.detected_language,
     };
+    log_window(wx.language, &checkpoint, started.elapsed());
     wx.db
         .apply(vec![Change::CheckpointSaved {
             key: run.key.clone(),
@@ -359,6 +361,26 @@ fn transcribe_window(
         }])
         .map_err(failed)?;
     Ok(checkpoint)
+}
+
+/// Two stderr lines per window, like `search ms=`, so a live run shows how long each window took
+/// and which language the engine reported for it.
+fn log_window(language: &LanguagePref, checkpoint: &Checkpoint, elapsed: std::time::Duration) {
+    let wanted = match language {
+        LanguagePref::Auto => "auto",
+        LanguagePref::Pinned(tag) => tag.as_str(),
+    };
+    let heard = checkpoint
+        .detected_language
+        .as_ref()
+        .or_else(|| checkpoint.segments.iter().find_map(|s| s.language.as_ref()))
+        .map_or("none", LangTag::as_str);
+    eprintln!("window ms={} lang={wanted}", elapsed.as_millis());
+    eprintln!(
+        "language heard={heard} window={}-{}",
+        checkpoint.span.start().0,
+        checkpoint.span.end().0
+    );
 }
 
 /// Turns one clip's raw segments, already on the take's time axis, into transcript segments.

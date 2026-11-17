@@ -148,6 +148,12 @@ pub fn name(tag: &LangTag) -> String {
     }
 }
 
+/// "French" for both `fr` and `fr-FR`: the language without its region, as the detail pane
+/// names a detected language.
+pub fn primary_name(tag: &LangTag) -> String {
+    find(tag.primary()).map_or_else(|| name(tag), |lang| lang.english.to_owned())
+}
+
 /// "Tagalog", "Tagalog and English", "Tagalog, English, and French", with `and` or `or`.
 pub fn name_list(names: &[String], conjunction: &str) -> String {
     match names {
@@ -331,7 +337,7 @@ pub fn search(query: &str) -> Matches {
             }
         })
         .collect();
-    ranked.sort_by(|a, b| fold(a.0.english).cmp(&fold(b.0.english)));
+    ranked.sort_by_key(|a| fold(a.0.english));
     let best = ranked
         .iter()
         .enumerate()

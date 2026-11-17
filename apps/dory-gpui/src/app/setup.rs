@@ -7,7 +7,7 @@ use dory_core::ports::capture::{Access, CaptureCaps, Source};
 use gpui_kit::Context;
 
 use super::{AppState, Sources};
-use crate::detail::language_name;
+use crate::languages::primary_name as language_name;
 use crate::onboarding::{self, OnboardingStep, Permission};
 
 impl AppState {

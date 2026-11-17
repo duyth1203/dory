@@ -327,7 +327,7 @@ fn retranscribe_in_pins_the_language_and_queues_the_whole_pipeline(cx: &mut Test
     cx.update_window(window, |_, window, cx| {
         window.dispatch_action(
             Box::new(RetranscribeIn {
-                language: Some("fr"),
+                language: LanguagePref::Pinned(LangTag::parse("fr").unwrap()),
             }),
             cx,
         )

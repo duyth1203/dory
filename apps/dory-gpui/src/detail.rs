@@ -128,7 +128,12 @@ where
         parts.push(library::short_duration(take.duration));
     }
     let languages: Vec<String> = transcript
-        .map(|t| t.detected_languages.iter().map(language_name).collect())
+        .map(|t| {
+            t.detected_languages
+                .iter()
+                .map(crate::languages::primary_name)
+                .collect()
+        })
         .unwrap_or_default();
     if !languages.is_empty() {
         parts.push(languages.join(" and "));
@@ -143,36 +148,6 @@ where
         .to_owned(),
     );
     parts.join(" · ")
-}
-
-/// The languages **Re-transcribe in…** offers, by primary subtag, in menu order.
-pub const LANGUAGES: [(&str, &str); 14] = [
-    ("en", "English"),
-    ("zh", "Chinese"),
-    ("nl", "Dutch"),
-    ("tl", "Filipino"),
-    ("fr", "French"),
-    ("de", "German"),
-    ("it", "Italian"),
-    ("ja", "Japanese"),
-    ("ko", "Korean"),
-    ("pt", "Portuguese"),
-    ("ru", "Russian"),
-    ("es", "Spanish"),
-    ("th", "Thai"),
-    ("vi", "Vietnamese"),
-];
-
-/// "French" for `fr-FR`, or the tag itself for a language outside [`LANGUAGES`].
-pub fn language_name(tag: &dory_core::domain::LangTag) -> String {
-    let primary = match tag.primary() {
-        "fil" => "tl",
-        other => other,
-    };
-    LANGUAGES
-        .iter()
-        .find(|(code, _)| *code == primary)
-        .map_or_else(|| tag.to_string(), |(_, name)| (*name).to_owned())
 }
 
 /// Where the column, the player card, and the tab row sat in the last prepaint.

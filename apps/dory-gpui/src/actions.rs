@@ -2,7 +2,7 @@
 //! `shell.rs` handles each one at the window root so it fires whatever has focus, and views
 //! dispatch them instead of declaring their own. A later phase adds its commands here.
 
-use dory_core::domain::{LangTag, LanguagePref};
+use dory_core::domain::LanguagePref;
 
 gpui_kit::actions!(
     dory,
@@ -43,20 +43,17 @@ gpui_kit::actions!(
     ]
 );
 
-/// **Re-transcribe in…** (UX-26) for the selected recording. `None` is Automatic; otherwise a
-/// language tag such as `fr`.
+/// **Re-transcribe in…** (UX-26) for the selected recording: Automatic or one of the meeting
+/// languages.
 #[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
 #[action(namespace = dory, no_json)]
 pub struct RetranscribeIn {
-    pub language: Option<&'static str>,
+    pub language: LanguagePref,
 }
 
 impl RetranscribeIn {
     pub fn pref(&self) -> LanguagePref {
-        match self.language.map(LangTag::parse) {
-            Some(Ok(tag)) => LanguagePref::Pinned(tag),
-            _ => LanguagePref::Auto,
-        }
+        self.language.clone()
     }
 
     /// Whether this is the recording's current choice, for the menu's check mark.

@@ -6,7 +6,8 @@
 //! item dispatches an action from `crate::actions`, and the window root handles it, so a menu
 //! item, a shortcut, and a button all take one path. The Recording menu follows the recorder:
 //! New Recording while idle, Pause or Resume and Stop while a take is live, Undo Stop in grace.
-//! Its **Re-transcribe in…** submenu and the row menu's offer Automatic and [`LANGUAGES`] (UX-26).
+//! Its **Re-transcribe in…** submenu and the row menu's offer Automatic and the meeting languages,
+//! by `languages::choices` (UX-26), computed when the menu is built or opened.
 //!
 //! Space for `TogglePlayback` is not bound here. A binding without a context would also take
 //! Space from a focused button and from the search field, so the player owns that key.
@@ -15,7 +16,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use dory_core::app::RecorderStatus;
-use dory_core::domain::RecordingId;
+use dory_core::domain::{LangTag, LanguagePref, RecordingId};
 use gpui_kit::component::input;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::{
@@ -24,11 +25,11 @@ use gpui_kit::{
 
 use crate::actions::*;
 use crate::app::AppState;
-use crate::detail::LANGUAGES;
+use crate::languages;
 use crate::library::Selection;
 
 /// What the commands need to know to be enabled.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MenuState {
     pub has_selection: bool,
     pub has_summary: bool,
@@ -38,6 +39,8 @@ pub struct MenuState {
     pub can_undo: bool,
     pub recorder: Recorder,
     pub text_scale: Scale,
+    /// The meeting languages, which Re-transcribe in… offers.
+    pub languages: Vec<LangTag>,
 }
 
 /// Where the text scale sits, so View > Bigger and Smaller grey out at the ends (A11Y-7).
@@ -100,6 +103,7 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
         can_undo: app.can_undo(),
         recorder: Recorder::of(app.recorder()),
         text_scale: Scale::of(app.prefs.text_scale),
+        languages: app.settings().meeting_languages.clone(),
     }
 }
 
@@ -168,9 +172,16 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Undo Stop", UndoStop).disabled(state.recorder != Recorder::Grace),
             MenuItem::separator(),
             MenuItem::submenu(
-                Menu::new("Re-transcribe in").items(retranscribe_choices().map(
-                    |(name, action)| MenuItem::action(name, action).disabled(!state.has_selection),
-                )),
+                Menu::new("Re-transcribe in").items(
+                    retranscribe_choices(&state.languages)
+                        .into_iter()
+                        .map(|choice| match choice {
+                            Some((name, action)) => {
+                                MenuItem::action(name, action).disabled(!state.has_selection)
+                            }
+                            None => MenuItem::separator(),
+                        }),
+                ),
             ),
             MenuItem::action("Play or Pause", TogglePlayback).disabled(!state.has_selection),
         ]),
@@ -254,7 +265,7 @@ pub fn watch(app: &Entity<AppState>, cx: &mut App) {
         let shown = shown.clone();
         Rc::new(move |cx: &mut App| {
             let state = menu_state(app.read(cx), cx);
-            if shown.replace(state) != state {
+            if shown.replace(state.clone()) != state {
                 cx.set_menus(build(state));
             }
         })
@@ -289,6 +300,10 @@ pub fn recording_menu(
     if let Some(app) = &target {
         app.update(cx, |app, cx| app.select(Selection::One(id.clone()), cx));
     }
+    let meeting = target
+        .as_ref()
+        .map(|app| app.read(cx).settings().meeting_languages.clone())
+        .unwrap_or_default();
     let current = target.and_then(|app| {
         let session = app.read(cx).session()?.read(cx).detail()?;
         Some(session.recording.language.clone())
@@ -301,26 +316,37 @@ pub fn recording_menu(
         .menu("Export as SRT…", Box::new(ExportSrt))
         .separator()
         .submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
-            retranscribe_choices().fold(menu, |menu, (name, action)| {
-                let checked = current.as_ref().is_some_and(|c| action.picks(c));
-                menu.menu_with_check(name, checked, Box::new(action))
-            })
+            retranscribe_choices(&meeting)
+                .into_iter()
+                .fold(menu, |menu, choice| match choice {
+                    Some((name, action)) => {
+                        let checked = current.as_ref().is_some_and(|c| action.picks(c));
+                        menu.menu_with_check(name, checked, Box::new(action))
+                    }
+                    None => menu.separator(),
+                })
         })
         .separator()
         .menu("Rename", Box::new(Rename))
         .menu("Move to Trash", Box::new(MoveToTrash))
 }
 
-/// Automatic, then each language of [`LANGUAGES`].
-pub fn retranscribe_choices() -> impl Iterator<Item = (&'static str, RetranscribeIn)> {
-    std::iter::once(("Automatic", RetranscribeIn { language: None })).chain(LANGUAGES.iter().map(
-        |(code, name)| {
-            (
-                *name,
-                RetranscribeIn {
-                    language: Some(*code),
-                },
-            )
-        },
-    ))
+/// Automatic, a separator (`None`), then each meeting language: the Language options of
+/// Settings, computed the same way.
+pub fn retranscribe_choices(meeting: &[LangTag]) -> Vec<Option<(String, RetranscribeIn)>> {
+    let mut items = Vec::new();
+    for (ix, language) in languages::choices(meeting, &LanguagePref::Auto)
+        .options
+        .into_iter()
+        .enumerate()
+    {
+        if ix == 1 {
+            items.push(None);
+        }
+        items.push(Some((
+            languages::label(&language),
+            RetranscribeIn { language },
+        )));
+    }
+    items
 }

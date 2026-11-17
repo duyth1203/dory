@@ -440,3 +440,25 @@ pub fn summaries_step(name: &str) -> Option<crate::set_up_summaries::Step> {
         _ => return None,
     })
 }
+
+/// A recording, a running job with one waiting, and a download: everything quitting asks about.
+pub fn busy() -> crate::in_progress::InProgress {
+    use crate::in_progress::{Downloading, InProgress, Running, Take, TakeState};
+    InProgress {
+        take: Some(Take {
+            title: "Weekly sync".into(),
+            state: TakeState::Recording,
+            elapsed: dory_core::domain::Ms(754_000),
+        }),
+        running: Some(Running {
+            title: "Design review".into(),
+            stage: dory_core::domain::Stage::Transcribe,
+            percent: Some(40),
+        }),
+        queued: 1,
+        downloads: vec![Downloading {
+            name: "Parakeet".into(),
+            percent: Some(30),
+        }],
+    }
+}

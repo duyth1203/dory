@@ -133,6 +133,7 @@ pub fn build(state: MenuState) -> Vec<Menu> {
         ]),
         Menu::new("File").items([
             MenuItem::action("New Recording", NewRecording).disabled(!idle),
+            MenuItem::action("Close Window", CloseWindow),
             MenuItem::separator(),
             MenuItem::action("Export as Markdown…", ExportMarkdown).disabled(!exportable),
             MenuItem::action("Export as Text…", ExportText).disabled(!exportable),
@@ -200,6 +201,7 @@ pub fn build(state: MenuState) -> Vec<Menu> {
 pub fn install(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-shift-r", NewRecording, None),
         KeyBinding::new("cmd-shift-p", PauseRecording, None),
         KeyBinding::new("cmd-.", StopRecording, None),
@@ -221,6 +223,12 @@ pub fn install(cx: &mut App) {
     ]);
     crate::processing_window::install(cx);
     cx.on_action(|_: &ShowAbout, cx| crate::about::open(cx));
+    // Closing the main window keeps Dory running in the menu bar (UX-8).
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(window) = cx.active_window() {
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+        }
+    });
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.minimize_window());
@@ -239,7 +247,7 @@ struct Target(Entity<AppState>);
 
 impl Global for Target {}
 
-/// Keeps the menus in step with `app`. Called once by `main` after the window opens.
+/// Keeps the menus in step with `app`. Called once by `main`, before the window opens.
 pub fn watch(app: &Entity<AppState>, cx: &mut App) {
     cx.set_global(Target(app.clone()));
     // Global rather than at the window root, so Command-Comma also works from the Settings window.

@@ -15,6 +15,7 @@
 //! - `queue`, the Processing window, and `queue:<state>` pinned to one of
 //!   [`fixtures::QUEUE_STATES`] (running, light, blocked, finished, empty, busy)
 //! - `summaries:<U1, U2, or U3>`, Set Up Summaries pinned to that step
+//! - `quit`, the "Quit Dory?" dialog with a recording, two jobs, and a download in progress
 //!
 //! The app prints `show: ready` once the view is in place.
 
@@ -28,7 +29,7 @@ use crate::app::{AppEvent, AppState, DetailTab};
 use crate::library::Selection;
 use crate::settings_window::{self, Pane};
 use crate::system_prefs::SystemPrefs;
-use crate::{about, fixtures, models_view, processing_window, set_up_summaries};
+use crate::{about, fixtures, models_view, processing_window, quit, set_up_summaries};
 
 pub const SHOW_VAR: &str = "DORY_SHOW";
 pub const APPEARANCE_VAR: &str = "DORY_APPEARANCE";
@@ -57,6 +58,7 @@ pub enum View {
     Queue(Option<String>),
     /// U1, U2, or U3.
     Summaries(String),
+    Quit,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +91,7 @@ impl fmt::Display for LaunchError {
             ),
             LaunchError::View(value) => write!(
                 f,
-                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer, queue[:<running|light|blocked|finished|empty|busy>], or summaries:<U1|U2|U3>, not {value:?}"
+                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer, queue[:<running|light|blocked|finished|empty|busy>], summaries:<U1|U2|U3>, or quit, not {value:?}"
             ),
             LaunchError::Appearance(value) => {
                 write!(f, "{APPEARANCE_VAR} takes light or dark, not {value:?}")
@@ -147,6 +149,7 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
         "about" => return Ok(View::About),
         "explainer" => return Ok(View::Explainer),
         "queue" => return Ok(View::Queue(None)),
+        "quit" => return Ok(View::Quit),
         _ => {}
     }
     if let Some(state) = trimmed.strip_prefix("queue:") {
@@ -256,6 +259,14 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
                 if let Some(step) = fixtures::summaries_step(&step) {
                     set_up_summaries::preview(step, window, cx);
                 }
+                ready(&view);
+            });
+        }
+        View::Quit => {
+            let app = app.clone();
+            window.defer(cx, move |window, cx| {
+                let prompt = quit::prompt(&fixtures::busy()).expect("the sample is busy");
+                quit::ask(prompt, app, window, cx);
                 ready(&view);
             });
         }
@@ -402,6 +413,7 @@ mod tests {
                 Ok(Some(View::Summaries(step.to_ascii_uppercase())))
             );
         }
+        assert_eq!(view("quit"), Ok(Some(View::Quit)));
         assert_eq!(
             view("recording:1:1 with Sam"),
             Ok(Some(View::Recording {

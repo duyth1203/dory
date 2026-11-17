@@ -314,7 +314,7 @@ impl Shell {
     }
 
     fn with_actions<E: InteractiveElement>(&self, el: E, cx: &mut Context<Self>) -> E {
-        el.on_action(cx.listener(|_, _: &Quit, _, cx| cx.quit()))
+        el.on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|this, _: &NewRecording, _, cx| {
                 this.app.update(cx, |app, cx| app.start_recording(cx))
             }))

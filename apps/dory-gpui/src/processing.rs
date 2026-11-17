@@ -877,8 +877,39 @@ pub fn outcomes(before: &[RecordingRow], after: &[RecordingRow]) -> Vec<(Recordi
         .collect()
 }
 
+/// Rows that had no transcript at the last reload and have one now, which is when the app posts
+/// Transcript ready (UX-14). A re-transcribe replaces a transcript, so it does not count.
+pub fn transcripts_ready(before: &[RecordingRow], after: &[RecordingRow]) -> Vec<RecordingId> {
+    after
+        .iter()
+        .filter(|row| row.has_transcript)
+        .filter(|row| {
+            before
+                .iter()
+                .any(|b| b.recording.id == row.recording.id && !b.has_transcript)
+        })
+        .map(|row| row.recording.id.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_transcript_is_ready_once_when_it_first_appears() {
+        let rows = fixtures::rows();
+        let with = |ix: usize, has_transcript| RecordingRow {
+            has_transcript,
+            ..rows[ix].clone()
+        };
+        let before = [with(0, false), with(1, true), with(2, false)];
+        let after = [with(0, true), with(1, true), with(2, false), with(3, true)];
+        assert_eq!(
+            transcripts_ready(&before, &after),
+            vec![rows[0].recording.id.clone()],
+            "1 already had one, 2 has none yet, and 3 was not listed before"
+        );
+    }
 
     #[test]
     fn the_reading_head_shows_only_while_transcribing() {

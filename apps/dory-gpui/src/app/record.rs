@@ -7,7 +7,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 use dory_core::app::{AppKind, Dory, Event, RecorderStatus, StartOptions};
-use dory_core::domain::{Goal, JobId, JobState, Ms, RecordingId, RecordingRow, Segment, Stage};
+use dory_core::domain::{
+    Goal, JobId, JobState, Ms, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
+};
 use dory_core::models::{Availability, Diar, KindTag, ModelId, ModelRef, Stt};
 use dory_core::ports::ProvisionError;
 use dory_core::ports::capture::CaptureIssue;
@@ -16,11 +18,12 @@ use gpui_kit::Context;
 
 use super::core::Core;
 use super::{AppState, DetailTab, Download, ModelInfo, Saved};
+use crate::a11y;
 use crate::estimate::{self, Estimate, Left, Rate};
 use crate::library::{self, Progress};
+use crate::notify::{self, Note, NoteKind};
 use crate::processing::{self, Facts, Outcome, Phase, Run, Spot};
 use crate::record_control::Live;
-use crate::{a11y, notify};
 
 /// Fills the model names the Download button shows.
 pub(super) fn load_models(core: &Core, cx: &mut Context<AppState>) {
@@ -115,7 +118,7 @@ impl AppState {
 
     /// The toolbar button, File > New Recording, the start screen, and the menu-bar extra.
     pub fn start_recording(&mut self, cx: &mut Context<Self>) {
-        if self.recorder != RecorderStatus::Idle {
+        if self.recorder != RecorderStatus::Idle || self.shut_down {
             return;
         }
         eprintln!("record-requested: {} ms", self.epoch.elapsed().as_millis());
@@ -445,8 +448,17 @@ impl AppState {
         .detach();
     }
 
+    /// Posts `note` when its kind is on and the window can't show it (UX-14).
+    fn notify(&self, kind: NoteKind, note: Note, cx: &mut Context<Self>) {
+        notify::send(kind, note, &self.prefs.notifications, cx);
+    }
+
     pub(super) fn on_recorder(&mut self, status: RecorderStatus, cx: &mut Context<Self>) {
         let before = std::mem::replace(&mut self.recorder, status.clone());
+        if let (RecorderStatus::Recording { id, .. }, RecorderStatus::Idle) = (&status, &before) {
+            let note = Note::recording_started(id, &self.title_or_new(id));
+            self.notify(NoteKind::Recording, note, cx);
+        }
         if let Some(said) = a11y::Announcement::of_recorder(&before, &status) {
             said.post();
         }
@@ -533,14 +545,21 @@ impl AppState {
                     cx.notify();
                 });
                 a11y::Announcement::TimeLeft(remaining).post();
-                notify::time_warning(cx);
+                self.notify(NoteKind::TimeLimit, Note::time_warning(), cx);
             }
             Event::Finished { id, reason } => {
-                self.sealing.insert(id);
-                if reason == FinalizeReason::CapReached {
-                    a11y::Announcement::CapReached.post();
-                    notify::cap_reached(cx);
+                match reason {
+                    FinalizeReason::CapReached => {
+                        a11y::Announcement::CapReached.post();
+                        self.notify(NoteKind::TimeLimit, Note::cap_reached(), cx);
+                    }
+                    FinalizeReason::Stopped => {
+                        let note = Note::recording_saved(&id, &self.title_or_new(&id));
+                        self.notify(NoteKind::Recording, note, cx);
+                    }
+                    FinalizeReason::Shutdown => {}
                 }
+                self.sealing.insert(id);
             }
             Event::CaptureIssue(issue) => {
                 if let Some(text) = issue_text(&issue) {
@@ -554,11 +573,13 @@ impl AppState {
             }
             Event::ProvisionFinished { model, result } => {
                 self.downloads.remove(&model);
-                if let Err(error) = result
-                    && error != ProvisionError::Cancelled.to_string()
-                {
-                    let name = self.model_name(&model);
-                    self.say(format!("Could not download {name}: {error}"), cx);
+                let name = self.model_name(&model);
+                match result {
+                    Ok(()) => self.notify(NoteKind::Download, Note::model_downloaded(&name), cx),
+                    Err(error) if error != ProvisionError::Cancelled.to_string() => {
+                        self.say(format!("Could not download {name}: {error}"), cx);
+                    }
+                    Err(_) => {}
                 }
             }
             Event::Error { context, message } => {
@@ -593,6 +614,10 @@ impl AppState {
                 .is_none_or(|owner| running.get(owner) == Some(&Stage::Transcribe))
         });
         let selected = self.selection.id().cloned();
+        for id in processing::transcripts_ready(before, &self.recordings) {
+            let note = Note::transcript_ready(&id, &self.title_or_new(&id));
+            self.notify(NoteKind::Transcript, note, cx);
+        }
         for (id, outcome) in processing::outcomes(before, &self.recordings) {
             let Some(row) = self.recordings.iter().find(|r| r.recording.id == id) else {
                 continue;
@@ -607,17 +632,23 @@ impl AppState {
                         }
                         .post();
                     }
-                    if cx.active_window().is_none() {
-                        notify::job_finished(&id, &title, cx);
+                    if row.summary != SummaryFlag::None {
+                        let note = Note::summary_ready(&id, &title);
+                        self.notify(NoteKind::Summary, note, cx);
                     }
                 }
-                Outcome::Failed if speaks => {
-                    a11y::Announcement::Failed {
-                        title: title.clone(),
+                Outcome::Failed => {
+                    if speaks {
+                        a11y::Announcement::Failed {
+                            title: title.clone(),
+                        }
+                        .post();
                     }
-                    .post();
+                    if let Phase::Failed(problem) = self.phase(row) {
+                        let note = Note::needs_attention(&id, &title, &problem.text());
+                        self.notify(NoteKind::Attention, note, cx);
+                    }
                 }
-                Outcome::Failed => {}
             }
         }
         let saved: Vec<RecordingId> = self

@@ -9,6 +9,7 @@
 //! progress and estimates, finish and fix actions.
 
 mod core;
+mod lifecycle;
 mod models;
 mod player;
 pub mod queue;
@@ -152,6 +153,8 @@ pub struct AppState {
     asking: HashSet<Source>,
     /// Settings > Storage's old-app WebM files (P7, moved from P8).
     originals: Originals,
+    /// The core was shut down for a quit, so nothing may start again.
+    shut_down: bool,
     epoch: Instant,
     _pump: Task<()>,
 }
@@ -237,6 +240,7 @@ impl AppState {
             settings: Settings::default(),
             asking: HashSet::new(),
             originals: Originals::Unread,
+            shut_down: false,
             epoch: Instant::now(),
             _pump: pump,
         };

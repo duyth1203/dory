@@ -177,3 +177,77 @@ pub fn open_with_prefs(
 pub fn id_of(title: &str) -> RecordingId {
     SAMPLES.iter().find(|s| s.title == title).unwrap().id()
 }
+
+/// A `Dory` whose fake device sends 20 steps of silence at 8 kHz, so a take records for real; the
+/// manual clock holds the Undo window open.
+pub fn recordable(store: Arc<MemStore>) -> Dory {
+    let dir = scratch_dir();
+    let capture = Arc::new(FakeCapture::new());
+    capture.push_script(
+        (0..20)
+            .map(|_| dory_core::testing::Step::Silence { frames: 800 })
+            .collect(),
+    );
+    Dory::open(
+        Ports {
+            store,
+            takes: Arc::new(MemTakes::in_dir(&dir)),
+            trash: Arc::new(FakeTrash::new(&dir)),
+            capture,
+            playback: Arc::new(FakePlayback::new()),
+            clock: Arc::new(ManualClock::new(Timestamp(
+                fixtures::now().timestamp_millis(),
+            ))),
+            stt: Vec::new(),
+            llm: Vec::new(),
+            diar: Vec::new(),
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
+            guard: None,
+        },
+        Options {
+            limits: dory_core::recorder::Limits {
+                rate_hz: std::num::NonZeroU32::new(8_000).unwrap(),
+                ..dory_core::recorder::Limits::default()
+            },
+            clock_poll: std::time::Duration::from_millis(2),
+            level_every: std::time::Duration::from_millis(10),
+            ..Options::default()
+        },
+    )
+    .expect("open a recordable Dory")
+}
+
+/// The app as `main` starts it: the state, the app-wide menus and Quit, then the main window.
+pub fn launch(
+    cx: &mut TestAppContext,
+    dory: Dory,
+    prefs: Prefs,
+) -> (AnyWindowHandle, Entity<AppState>) {
+    cx.update(gpui_kit::init);
+    let opened = cx.update(|cx| {
+        dory_gpui::menus::install(cx);
+        let app = dory_gpui::new_state(dory, prefs, cx);
+        dory_gpui::menus::watch(&app, cx);
+        dory_gpui::quit::install(&app, cx);
+        let window = dory_gpui::open_main_window(cx).expect("open the main window");
+        (window, app)
+    });
+    cx.run_until_parked();
+    opened
+}
+
+/// Polls until `ok`, for state that real threads (the recorder, the pipeline) bring about.
+pub fn until(cx: &mut TestAppContext, what: &str, mut ok: impl FnMut(&mut TestAppContext) -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        cx.run_until_parked();
+        if ok(cx) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}

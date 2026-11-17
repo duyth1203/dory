@@ -28,6 +28,9 @@
 //!
 //! - The visual pass: `show`, the launch state `scripts/visual-pass.sh` opens each view with.
 //!
+//! - Quit and the window's lifetime (UX-8): `in_progress`, `quit`, and the main-window functions
+//!   below. The state outlives the main window, which closes without quitting.
+//!
 //! Each agent-owned file's doc comment is its contract.
 
 pub mod a11y;
@@ -42,6 +45,7 @@ pub mod fixtures;
 pub mod glass;
 pub mod glyphs;
 pub mod icons;
+pub mod in_progress;
 pub mod languages;
 pub mod library;
 pub mod menus;
@@ -55,6 +59,7 @@ pub mod prefs;
 pub mod processing;
 pub mod processing_queue;
 pub mod processing_window;
+pub mod quit;
 pub mod radio;
 pub mod record_control;
 pub mod set_up_summaries;
@@ -69,7 +74,10 @@ pub mod system_prefs;
 pub mod theme;
 pub mod transcript_view;
 
-use gpui_kit::{App, AppContext as _, Entity, Window};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, TitlebarOptions, Window,
+    WindowBounds, WindowOptions, point, px, size,
+};
 
 /// Gives a library with no meeting languages the system's, as onboarding would. A library
 /// that skipped onboarding, such as an import, never had them chosen. `main` calls it once
@@ -88,17 +96,102 @@ pub fn seed_meeting_languages(
     })
 }
 
-/// Builds the window's root view on `dory`. `main` and the tests share it.
+/// Builds the window's root view on `dory`. The tests that need only one window use it.
 pub fn build(
     dory: dory_core::app::Dory,
     prefs: prefs::Prefs,
     window: &mut Window,
     cx: &mut App,
 ) -> (Entity<app::AppState>, Entity<shell::Shell>) {
+    let state = new_state(dory, prefs, cx);
+    let shell = cx.new(|cx| shell::Shell::new(state.clone(), window, cx));
+    cx.global_mut::<Main>().window = Some(window.window_handle());
+    (state, shell)
+}
+
+/// The app's state on `dory`, which outlives any window: closing the main window keeps Dory
+/// running in the menu bar (UX-8).
+pub fn new_state(
+    dory: dory_core::app::Dory,
+    prefs: prefs::Prefs,
+    cx: &mut App,
+) -> Entity<app::AppState> {
     theme::set_display(|display| display.text_scale = prefs.text_scale, cx);
-    set_up_summaries::set_main_window(window, cx);
     let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
     models_view::install(&state, cx);
-    let shell = cx.new(|cx| shell::Shell::new(state.clone(), window, cx));
-    (state, shell)
+    cx.set_global(Main {
+        app: state.clone(),
+        window: None,
+    });
+    state
+}
+
+/// Holds `AppState` for the life of the process, and the main window while it is open.
+struct Main {
+    app: Entity<app::AppState>,
+    window: Option<AnyWindowHandle>,
+}
+
+impl Global for Main {}
+
+pub fn main_window_options(prefs: &prefs::Prefs, cx: &App) -> WindowOptions {
+    let (width, height) = prefs.window_size;
+    WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some("Dory".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(18.), px(18.))),
+        }),
+        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+            None,
+            size(px(width), px(height)),
+            cx,
+        ))),
+        window_background: glass::window_background(cx),
+        window_min_size: Some(size(
+            px(prefs::MIN_WINDOW_SIZE.0),
+            px(prefs::MIN_WINDOW_SIZE.1),
+        )),
+        ..Default::default()
+    }
+}
+
+/// Opens the main window on the state [`new_state`] made.
+pub fn open_main_window(cx: &mut App) -> gpui_kit::Result<AnyWindowHandle> {
+    let app = cx.global::<Main>().app.clone();
+    let options = main_window_options(&app.read(cx).prefs, cx);
+    let (handle, _) = gpui_kit::open_window(options, cx, |window, cx| {
+        let shell = cx.new(|cx| shell::Shell::new(app.clone(), window, cx));
+        glass::follow(window, cx);
+        platform::print_window_id(window);
+        prefs::follow_window(&app, window, cx);
+        shell
+    })?;
+    cx.global_mut::<Main>().window = Some(handle);
+    Ok(handle)
+}
+
+/// The main window while it is open.
+pub fn main_window(cx: &App) -> Option<AnyWindowHandle> {
+    let window = cx.try_global::<Main>()?.window?;
+    cx.windows().contains(&window).then_some(window)
+}
+
+/// Brings the main window forward, reopening it on the same state when it was closed: "Show
+/// Dory", a click on the Dock icon or on a notification, and a quit that needs to ask.
+pub fn show_main_window(cx: &mut App) -> Option<AnyWindowHandle> {
+    cx.try_global::<Main>()?;
+    let window = match main_window(cx) {
+        Some(window) => window,
+        None => match open_main_window(cx) {
+            Ok(window) => window,
+            Err(error) => {
+                eprintln!("dory: could not open the window: {error}");
+                return None;
+            }
+        },
+    };
+    cx.activate(true);
+    let _ = window.update(cx, |_, window, _| window.activate_window());
+    Some(window)
 }

@@ -14,7 +14,7 @@ use dory_core::testing::{FakeCapture, FakeTrash, ManualClock, MemTakes, Step};
 use dory_gpui::app::{AppState, DetailTab};
 use dory_gpui::library::Selection;
 use dory_gpui::prefs::Prefs;
-use dory_gpui::{about, fixtures, processing_window, set_up_summaries, settings_window};
+use dory_gpui::{about, fixtures, processing_window, quit, set_up_summaries, settings_window};
 use gpui_kit::base::test_support::ElementSnapshot;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, InputEvent as _, TestAppContext,
@@ -231,6 +231,16 @@ fn library(views: &mut Vec<View>, scale: f32, window_size: (f32, f32), cx: &mut 
         })
         .unwrap();
     }
+    cx.update_window(window, |_, window, cx| {
+        let prompt = quit::prompt(&fixtures::busy()).unwrap();
+        quit::ask(prompt, app.clone(), window, cx);
+    })
+    .unwrap();
+    views.push(frame("quit dialog", window, cx));
+    cx.update_window(window, |_, window, cx| {
+        dory_gpui::surface::close_dialog(window, cx)
+    })
+    .unwrap();
     processing_queue(views, &app, at, cx);
 }
 
@@ -443,6 +453,15 @@ fn recording(views: &mut Vec<View>, cx: &mut TestAppContext) {
         })
     });
     views.push(frame("recording", window, cx));
+    cx.update_window(window, |_, window, cx| {
+        let prompt = quit::prompt(&app.read(cx).in_progress(cx)).expect("a take is live");
+        quit::ask(prompt, app.clone(), window, cx);
+    })
+    .unwrap();
+    views.push(frame("quit while recording", window, cx));
+    cx.update_window(window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    cx.run_until_parked();
     app.update(cx, |app, cx| app.stop_recording(cx));
     until(cx, "grace", |cx| {
         app.read_with(cx, |app, _| {

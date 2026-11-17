@@ -7,10 +7,11 @@
 //!
 //! `watch` restores the selection on the first list of rows (only after a short absence, see
 //! [`RESTORE_WITHIN`]) and saves with a debounce whenever the window size, the sidebar width, the
-//! selection, the onboarding step, the text scale, or the last Settings pane changes, and once
-//! more on quit with the quit time.
+//! selection, the onboarding step, the text scale, the last Settings pane, or a notification
+//! setting changes, and once more on quit with the quit time.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use crate::a11y;
 use crate::app::{AppEvent, AppState};
 use crate::library::Selection;
+use crate::notify::NoteKind;
 use crate::onboarding::OnboardingStep;
 use crate::settings_window::Pane;
 
@@ -62,6 +64,29 @@ pub struct Prefs {
     pub settings_pane: Pane,
     /// Where the Processing window last sat, its top-left corner in points.
     pub processing_origin: Option<(f32, f32)>,
+    /// Settings › General › Notifications (UX-14).
+    pub notifications: Notifications,
+}
+
+/// Which kinds of notification are on. All are on by default, so only the ones turned off are
+/// stored.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notifications {
+    off: BTreeSet<NoteKind>,
+}
+
+impl Notifications {
+    pub fn allows(&self, kind: NoteKind) -> bool {
+        !self.off.contains(&kind)
+    }
+
+    pub fn set(&mut self, kind: NoteKind, on: bool) {
+        if on {
+            self.off.remove(&kind);
+        } else {
+            self.off.insert(kind);
+        }
+    }
 }
 
 impl Default for Prefs {
@@ -75,6 +100,7 @@ impl Default for Prefs {
             text_scale: 1.0,
             settings_pane: Pane::General,
             processing_origin: None,
+            notifications: Notifications::default(),
         }
     }
 }
@@ -92,6 +118,7 @@ struct Disk {
     text_scale: f32,
     settings_pane: Option<String>,
     processing_origin: Option<(f32, f32)>,
+    notifications_off: Vec<String>,
 }
 
 impl Default for Disk {
@@ -113,6 +140,12 @@ impl From<&Prefs> for Disk {
             text_scale: prefs.text_scale,
             settings_pane: Some(prefs.settings_pane.slug().to_owned()),
             processing_origin: prefs.processing_origin,
+            notifications_off: prefs
+                .notifications
+                .off
+                .iter()
+                .map(|kind| kind.slug().to_owned())
+                .collect(),
         }
     }
 }
@@ -159,6 +192,13 @@ impl Prefs {
             processing_origin: disk
                 .processing_origin
                 .filter(|(x, y)| x.is_finite() && y.is_finite()),
+            notifications: Notifications {
+                off: disk
+                    .notifications_off
+                    .iter()
+                    .filter_map(|slug| NoteKind::parse(slug))
+                    .collect(),
+            },
         }
     }
 
@@ -181,6 +221,7 @@ impl Prefs {
             && self.text_scale == other.text_scale
             && self.settings_pane == other.settings_pane
             && self.processing_origin == other.processing_origin
+            && self.notifications == other.notifications
     }
 }
 
@@ -223,7 +264,6 @@ struct Persist {
     generation: u64,
     /// True once the launch selection is decided, by the restore rule or by the user first.
     decided: bool,
-    _bounds: Option<Entity<BoundsWatcher>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -238,15 +278,15 @@ impl Render for BoundsWatcher {
     }
 }
 
-/// Called once by `main` after the window opens.
-pub fn watch(app: &Entity<AppState>, config: &dory::Config, window: &mut Window, cx: &mut App) {
+/// Called once by `main`, before the main window opens. [`follow_window`] adds each main window's
+/// size.
+pub fn watch(app: &Entity<AppState>, config: &dory::Config, cx: &mut App) {
     // Compared with the file, not the launch prefs, so a step resolved at launch is saved at once.
     let persist = Rc::new(RefCell::new(Persist {
         dir: config.data_dir.clone(),
         saved: Prefs::read(&config.data_dir),
         generation: 0,
         decided: false,
-        _bounds: None,
         _subscriptions: Vec::new(),
     }));
 
@@ -302,7 +342,37 @@ pub fn watch(app: &Entity<AppState>, config: &dory::Config, window: &mut Window,
         }
     });
 
-    let bounds = {
+    let on_quit = cx.on_app_quit({
+        let app = app.clone();
+        let persist = persist.clone();
+        move |cx| {
+            let mut prefs = app.read(cx).prefs.clone();
+            prefs.quit_at = Some(now());
+            if let Err(error) = prefs.write(&persist.borrow().dir) {
+                eprintln!("dory: could not save window state: {error}");
+            }
+            async {}
+        }
+    });
+
+    persist.borrow_mut()._subscriptions = vec![on_event, on_change, on_quit];
+    // `persist` holds the subscriptions whose callbacks hold `persist`: a cycle that keeps the
+    // watcher alive for the life of the process, which is the point.
+    if app.read(cx).is_loaded() {
+        restore(app, &persist, cx);
+    }
+}
+
+/// The open main window's size watcher. Replaced when the window reopens.
+struct Following {
+    _watcher: Entity<BoundsWatcher>,
+}
+
+impl Global for Following {}
+
+/// Saves `window`'s size as the user resizes it. Called for each main window that opens.
+pub fn follow_window(app: &Entity<AppState>, window: &mut Window, cx: &mut App) {
+    let watcher = {
         let app = app.clone();
         cx.new(|cx| BoundsWatcher {
             _subscription: cx.observe_window_bounds(window, move |_, window, cx| {
@@ -320,30 +390,7 @@ pub fn watch(app: &Entity<AppState>, config: &dory::Config, window: &mut Window,
             }),
         })
     };
-
-    let on_quit = cx.on_app_quit({
-        let app = app.clone();
-        let persist = persist.clone();
-        move |cx| {
-            let mut prefs = app.read(cx).prefs.clone();
-            prefs.quit_at = Some(now());
-            if let Err(error) = prefs.write(&persist.borrow().dir) {
-                eprintln!("dory: could not save window state: {error}");
-            }
-            async {}
-        }
-    });
-
-    {
-        let mut state = persist.borrow_mut();
-        state._bounds = Some(bounds);
-        state._subscriptions = vec![on_event, on_change, on_quit];
-    }
-    // `persist` holds the subscriptions whose callbacks hold `persist`: a cycle that keeps the
-    // watcher alive for the life of the process, which is the point.
-    if app.read(cx).is_loaded() {
-        restore(app, &persist, cx);
-    }
+    cx.set_global(Following { _watcher: watcher });
 }
 
 fn restore(app: &Entity<AppState>, persist: &Rc<RefCell<Persist>>, cx: &mut App) {

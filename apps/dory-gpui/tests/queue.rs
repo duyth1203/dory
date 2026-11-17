@@ -372,9 +372,21 @@ fn notifications_are_a_no_op_without_a_bundle(cx: &mut TestAppContext) {
     let (_, app) = open_with(cx, dory_on(sample_store()));
     cx.update(|cx| {
         notify::install(&app, cx);
-        notify::job_finished(&id_of(FIRST), FIRST, cx);
-        notify::time_warning(cx);
-        notify::cap_reached(cx);
+        let settings = dory_gpui::prefs::Notifications::default();
+        let summary = notify::Note::summary_ready(&id_of(FIRST), FIRST);
+        notify::send(notify::NoteKind::Summary, summary, &settings, cx);
+        notify::send(
+            notify::NoteKind::TimeLimit,
+            notify::Note::time_warning(),
+            &settings,
+            cx,
+        );
+        notify::send(
+            notify::NoteKind::TimeLimit,
+            notify::Note::cap_reached(),
+            &settings,
+            cx,
+        );
     });
     cx.run_until_parked();
 }

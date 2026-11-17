@@ -16,8 +16,8 @@
 use dory_core::domain::Blocker;
 use dory_core::models::{Llm, ModelId, ModelRef, Resolution};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
-    Global, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
+    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
     StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
     prelude::FluentBuilder as _, px,
 };
@@ -241,16 +241,6 @@ pub(crate) fn ollama_steps(copy_focus: &[FocusHandle], theme: &Theme) -> gpui_ki
     steps
 }
 
-/// The window the dialog opens over: the main window, which draws the dialog layer.
-struct MainWindow(AnyWindowHandle);
-
-impl Global for MainWindow {}
-
-/// Called once when the main window opens.
-pub fn set_main_window(window: &Window, cx: &mut App) {
-    cx.set_global(MainWindow(window.window_handle()));
-}
-
 /// Opens the dialog over the main window, wherever it was asked for.
 pub fn sheet(window: &mut Window, cx: &mut App) {
     open(None, window, cx);
@@ -262,7 +252,7 @@ pub fn preview(step: Step, window: &mut Window, cx: &mut App) {
 }
 
 fn open(pinned: Option<Step>, window: &mut Window, cx: &mut App) {
-    if let Some(main) = cx.try_global::<MainWindow>().map(|m| m.0)
+    if let Some(main) = crate::main_window(cx)
         && main != window.window_handle()
     {
         let _ = main.update(cx, move |_, window, cx| {

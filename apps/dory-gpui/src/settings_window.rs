@@ -3,7 +3,8 @@
 //! five panes, then a 52 pt toolbar with the pane's title over one scrolling content area. The
 //! window is 860 wide, fixed, and at least 560 tall. It reopens on the pane it showed last.
 //!
-//! - General: process recordings automatically, and the appearance note.
+//! - General: process recordings automatically, each kind of notification (UX-14), and the
+//!   appearance note.
 //! - Recording: the Mac's inputs and system audio, as radio groups. No setting carries a
 //!   microphone or a layout yet; every take starts with `StartOptions::default()`, the system
 //!   default input plus system audio, so only those options are enabled.
@@ -45,6 +46,7 @@ use crate::combobox::LanguageCombobox;
 use crate::icons::{self, Icon};
 use crate::languages;
 use crate::models_view::{self, ModelList, Models, button, note, size_text};
+use crate::notify::{self, NoteKind};
 use crate::processing::PACE_CHOICES;
 use crate::radio::{self, Radio, RadioGroup};
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
@@ -135,6 +137,17 @@ pub const ENTRIES: &[Entry] = &[
         "Process recordings automatically",
         "row-auto-process",
     ),
+    entry(Pane::General, "Notifications", "row-note-recording"),
+    entry(
+        Pane::General,
+        "Recording started and saved",
+        "row-note-recording",
+    ),
+    entry(Pane::General, "Recording time limit", "row-note-time-limit"),
+    entry(Pane::General, "Transcript ready", "row-note-transcript"),
+    entry(Pane::General, "Summary ready", "row-note-summary"),
+    entry(Pane::General, "Needs attention", "row-note-attention"),
+    entry(Pane::General, "Model downloaded", "row-note-download"),
     entry(Pane::General, "Appearance", "row-appearance"),
     entry(Pane::Recording, "Microphone", "row-microphone"),
     entry(Pane::Recording, "System audio", "row-system-audio"),
@@ -312,6 +325,13 @@ impl SettingsWindow {
             }
         });
         let pane = app.read(cx).prefs.settings_pane;
+        notify::refresh_access(cx);
+        // Coming back from System Settings is when notifications may have been turned on.
+        let on_activation = cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                notify::refresh_access(cx);
+            }
+        });
         Self {
             speech: cx.new(|cx| ModelList::new(models.clone(), cx)),
             summaries: cx.new(|cx| ModelList::new(models.clone(), cx)),
@@ -332,7 +352,7 @@ impl SettingsWindow {
             pane,
             devices: None,
             storage: Storage::Unread,
-            _subscriptions: vec![observe, on_type, width],
+            _subscriptions: vec![observe, on_type, width, on_activation],
         }
     }
 
@@ -485,12 +505,19 @@ impl SettingsWindow {
             window,
             move |_, cx| models.update(cx, |m, cx| m.edit(move |s| s.auto_process = !on, cx)),
         );
+        let notifications = self.notifications(theme, window, cx);
         vec![
             section(
                 "settings-processing",
                 "Processing",
                 theme,
                 vec![self.mark("row-auto-process", auto, theme, cx)],
+            ),
+            section(
+                "settings-notifications",
+                "Notifications",
+                theme,
+                notifications,
             ),
             section(
                 "settings-appearance",
@@ -510,6 +537,62 @@ impl SettingsWindow {
                 )],
             ),
         ]
+    }
+
+    /// One checkbox per kind of notification, with a row first when macOS has them off for Dory.
+    fn notifications(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        if notify::access(cx) == notify::Access::Off {
+            let focus = self.focus("notifications-system-settings", cx);
+            let open = button(
+                "open-notification-settings",
+                "Open System Settings for notifications",
+                "Open System Settings",
+                false,
+                &focus,
+                theme,
+                |_, cx| cx.open_url(notify::SYSTEM_SETTINGS_URL),
+            )
+            .into_any_element();
+            rows.push(
+                row(
+                    "setting-notifications-off",
+                    "Notifications are off",
+                    "macOS has notifications turned off for Dory, so none of these appear.",
+                    Some(open),
+                    theme,
+                )
+                .into_any_element(),
+            );
+        }
+        let settings = self.app.read(cx).prefs.notifications.clone();
+        for kind in NoteKind::ALL {
+            let on = settings.allows(kind);
+            let focus = self.focus(format!("note-{}", kind.slug()), cx);
+            let app = self.app.clone();
+            let check = radio::checkbox(
+                Radio::new(format!("setting-note-{}", kind.slug()), kind.label())
+                    .description(kind.effect()),
+                on,
+                &focus,
+                theme,
+                window,
+                move |window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.prefs.notifications.set(kind, !on);
+                        cx.notify();
+                    });
+                    window.refresh();
+                },
+            );
+            rows.push(self.mark(note_row(kind), check, theme, cx));
+        }
+        rows
     }
 
     fn recording(
@@ -1100,6 +1183,18 @@ impl SettingsWindow {
                     ),
             )
             .into_any_element()
+    }
+}
+
+/// The search target of each notification setting, as [`ENTRIES`] names it.
+fn note_row(kind: NoteKind) -> &'static str {
+    match kind {
+        NoteKind::Recording => "row-note-recording",
+        NoteKind::TimeLimit => "row-note-time-limit",
+        NoteKind::Transcript => "row-note-transcript",
+        NoteKind::Summary => "row-note-summary",
+        NoteKind::Attention => "row-note-attention",
+        NoteKind::Download => "row-note-download",
     }
 }
 

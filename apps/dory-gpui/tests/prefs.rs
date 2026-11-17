@@ -24,6 +24,12 @@ fn prefs_round_trip_through_the_file() {
         text_scale: 1.5,
         settings_pane: dory_gpui::settings_window::Pane::Storage,
         processing_origin: Some((120., 64.)),
+        notifications: {
+            let mut notes = dory_gpui::prefs::Notifications::default();
+            notes.set(dory_gpui::notify::NoteKind::Transcript, false);
+            notes.set(dory_gpui::notify::NoteKind::Download, false);
+            notes
+        },
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);

@@ -41,6 +41,7 @@ pub mod combobox;
 pub mod detail;
 pub mod estimate;
 pub mod export;
+pub mod find;
 pub mod fixtures;
 pub mod glass;
 pub mod glyphs;

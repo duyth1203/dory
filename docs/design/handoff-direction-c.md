@@ -46,6 +46,8 @@ Implement these as one `Theme` struct with `light()` and `dark()` constructors. 
 
 **Accent rule (add to A11Y-8).** The brief says "use the system accent color", but macOS's default blue `#007AFF` measures about 4.0:1 against white, and white text on it is also about 4.0:1. Both fail the 4.5:1 body-text rule. Read the user's accent from AppKit (`NSColor.controlAccentColor`), then derive `accent`, `accent_text` and `on_accent` from it, darkening the lightness (in OKLCH or HSL) until each pair passes 4.5:1. The hex values above are what that rule produces for the default blue. Unit-test it against all eight macOS accent colors in both appearances.
 
+*Amended by `docs/design/floating-surfaces.md` section 2:* add `surface_raised`, `surface_border`, `surface_inset`, `inset_border`, `scrim`, `scrim_opaque`, `shadow_float`, `shadow_pop`, `close_bg`, and `track`; retire `menu_bg`, `menu_border`, and `toast_bg`; dark `wave_rest` becomes `#7C8193`. The operator set `surface_border` light to `#C3C7CF`.
+
 ### Type
 
 System font, SF Pro. Tabular figures for every time and duration.

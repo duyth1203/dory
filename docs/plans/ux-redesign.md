@@ -56,14 +56,19 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
   - Transcript lines for this recording stream into the Transcript tab as they are written, without speaker names until the job finishes. This is a committed requirement, separate from UX-27, which is about lines during recording.
   - VoiceOver announces the card's sentence when the stage changes, when processing fails, and when it is done. Percent changes update the sentence without announcing it.
   - One card, no jumps. When processing finishes, the card becomes the player in place (UX-2).
-- **UX-13. Failures say what to do.** A failed job shows one sentence and one button. When the audio is safe, the sentence says so first ("Your recording is saved, but …"). The button fixes the cause or retries. After the fix, the same card continues from where it stopped, without a new click. When the summary step fails, the transcript stays readable, and only the Summary tab shows the failure. The row shows "Needs attention" with the triangle glyph, and its VoiceOver sentence is the sentence plus the button's label.
+- **UX-13. Failures say what to do.** A failed job shows one sentence and one button. When the audio is safe, the sentence says so first ("Your recording is saved, but …"). The button fixes the cause or retries. After the fix, the same card continues from where it stopped, without a new click. When the summary step fails, the transcript stays readable, and only the Summary tab shows the failure. The row shows "Needs attention" with the triangle glyph, and its VoiceOver sentence is the sentence plus the button's label. Set Up Summaries is a two-step dialog: install Ollama, then download the model with progress. It can close while the download continues, and the waiting recordings are summarized when it finishes.
   - Speech model missing: "Your recording is saved, but the speech model isn't on this Mac." **Download Parakeet (487 MB)**, which then shows "Downloading Parakeet, 120 of 487 MB" in the same card.
   - Summary model missing: "The transcript is ready, but summaries aren't set up." **Set Up Summaries**.
   - Disk full: "Your recording is saved, but there isn't enough space to transcribe it." **Free Up Space…**, which opens Settings > Storage.
   - Transcriber crashed: "Transcription stopped partway. Your recording is saved." **Try Again**.
   - Audio unreadable: "This recording's audio can't be read." **Show in Finder**.
 - **UX-14. Done is announced once.** When a job finishes and the window is not key, the app posts a system notification. Clicking it opens that recording.
-- **UX-15. The queue stays out of the way.** The queue appears only as status on rows. A **Window > Processing Queue** popover lists jobs with **Move to top** and **Cancel**.
+- **UX-15. The queue stays out of the way.** The queue appears as status on sidebar rows. **Window > Processing Queue** opens a small non-modal Processing window, which floats and remembers its position, with sections in this order:
+  1. Now: the running job, with its stage, percent, time left, and mini waveform.
+  2. Up next: the queued jobs in order, with position, length, and start time.
+  3. Needs attention: each blocked job with its cause and its UX-13 fix.
+  4. Finished this session.
+  - The header shows the total ("3 recordings · about 24 min left"). Jobs can be reordered with Move to Top, Move Up, and Move Down (menu, keyboard, and VoiceOver actions) or by dragging. Cancel acts at once and offers Undo for 5 seconds. Choosing a row selects its recording in the main window and leaves the Processing window open. Layout in `docs/design/floating-surfaces.md` section 4.
 - **UX-30. Processing stays gentle.** **Settings > Transcription > Processing** has three choices, each with its effect in one line.
   - **Automatic** (default): "Runs fast when the Mac is plugged in and cool. Runs light on battery, in Low Power Mode, when the Mac is hot, and while you record."
   - **Fast**: "Uses up to 4 cores. Finishes soonest, but the fans may spin up and the battery drains faster."
@@ -96,7 +101,7 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
 - **UX-22. Delete is recoverable.** Delete moves the recording to the macOS Trash and offers Undo with Command-Z.
 - **UX-23. Export.** **File > Export** writes Markdown, plain text, or SRT subtitles through a native save panel.
 - **UX-24. Window state.** The app restores the window size and the sidebar width (240 to 380 pt) on relaunch. **Proposed.** It restores the selected recording only if the app quit less than 4 hours ago. Otherwise it opens on the start screen (UX-6).
-- **UX-25. Materials and type.** The main and Settings windows use a blurred window background. The sidebar column is translucent, and the content pane is opaque. Popovers and menus are opaque. Text uses the system font. Light and dark follow the system appearance. Icons come from Lucide, vendored in `assets/icons/` (`docs/design/settings-icons-blur.md` section 2).
+- **UX-25. Materials and type.** The main and Settings windows use a blurred window background. The sidebar column is translucent; the content pane is opaque. Everything that floats over the app (dialogs, popovers, menus, toasts) is opaque `surface_raised` with a 1 pt `surface_border`. In dark mode it is lighter than the window under it. Modal dialogs dim the window with `scrim`. Nothing uses per-element blur. Increase Contrast draws borders in `text_secondary` and removes shadows; Reduce Transparency makes the window and the scrim opaque. Text uses the system font. Light and dark follow the system appearance. Icons come from Lucide, vendored in `assets/icons/`. Tokens and sizes are in `docs/design/floating-surfaces.md`.
 
 ## Keyboard shortcuts
 

@@ -54,7 +54,7 @@ use crate::ports::{
     TrashReceipt,
 };
 use crate::recorder::{Input, Limits};
-use crate::search::{Query, SearchResults};
+use crate::search::{self, Excerpt, Query, SearchResults};
 
 /// Every adapter the core needs. Only the composition root builds this.
 pub struct Ports {
@@ -510,6 +510,15 @@ impl Library<'_> {
     /// See [`LibraryReader::search`].
     pub fn search(&self, text: &str) -> Result<Option<SearchResults>, StoreError> {
         self.dory.reader.search(text)
+    }
+
+    /// See [`LibraryReader::snippets`].
+    pub fn snippets(
+        &self,
+        query: &Query,
+        ids: &[RecordingId],
+    ) -> Result<Vec<Option<Excerpt>>, StoreError> {
+        self.dory.reader.snippets(query, ids)
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
@@ -1036,6 +1045,21 @@ pub(crate) fn find(store: &dyn StoreRead, query: Query) -> Result<SearchResults,
     })
 }
 
+/// What each speaker said in one go: consecutive segments of one speaker, joined by a space.
+fn turn_texts(transcript: &Transcript) -> Vec<String> {
+    let mut turns: Vec<(SpeakerId, String)> = Vec::new();
+    for segment in &transcript.segments {
+        match turns.last_mut() {
+            Some((speaker, text)) if *speaker == segment.speaker => {
+                text.push(' ');
+                text.push_str(&segment.text);
+            }
+            _ => turns.push((segment.speaker, segment.text.clone())),
+        }
+    }
+    turns.into_iter().map(|(_, text)| text).collect()
+}
+
 /// The read side of a data folder: the library and the model list. It starts no actors, repairs
 /// nothing, and writes nothing, so it is safe beside a process recording into the same folder.
 pub struct LibraryReader {
@@ -1072,6 +1096,37 @@ impl LibraryReader {
             results.corrections.len()
         );
         Ok(Some(results))
+    }
+
+    /// The line to show under each of `ids`, a hit of `query`, in the same order: where in the
+    /// transcript it first matches, else in the summary, else in a speaker name. `None` for a
+    /// recording that has been deleted since the search, or that holds no word of the query.
+    pub fn snippets(
+        &self,
+        query: &Query,
+        ids: &[RecordingId],
+    ) -> Result<Vec<Option<Excerpt>>, StoreError> {
+        ids.iter()
+            .map(|id| {
+                let transcript = self.store.transcript(id)?;
+                let names = self.store.speaker_names(id)?;
+                let summary = self.store.summary(id)?;
+                let turns = transcript.as_ref().map(turn_texts).unwrap_or_default();
+                let speakers: Vec<&str> = transcript.as_ref().map_or_else(Vec::new, |t| {
+                    t.speakers()
+                        .into_iter()
+                        .filter_map(|speaker| names.name_of(speaker, t.revision))
+                        .collect()
+                });
+                let blocks = summary
+                    .as_ref()
+                    .map(|s| search::summary_blocks(&s.markdown))
+                    .unwrap_or_default();
+                let turns: Vec<&str> = turns.iter().map(String::as_str).collect();
+                let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
+                Ok(search::excerpt(query, &turns, &blocks, &speakers))
+            })
+            .collect()
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {

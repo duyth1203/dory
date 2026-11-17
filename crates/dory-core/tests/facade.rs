@@ -31,7 +31,7 @@ use dory_core::ports::{
     Takes, Transcriber,
 };
 use dory_core::recorder::{FinalizeReason, Limits};
-use dory_core::search::{Found, Query, Vocabulary};
+use dory_core::search::{Found, Query, Source as Where, Vocabulary};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
     FakeCapture, FakeLanguageModel, FakeLlmProvider, FakePlayback, FakeSttProvider,
@@ -2095,5 +2095,126 @@ fn moving_a_job_that_is_not_queued_does_nothing() {
     assert_eq!(
         dory.pipeline().job(a).unwrap().unwrap().state,
         JobState::Cancelled
+    );
+}
+
+#[test]
+fn snippets_come_from_turns_then_summary() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = |name: &str| RecordingId::parse(name).unwrap();
+    let made = |name: &str, revision: u32, lines: &[(u16, &str)], markdown: Option<&str>| {
+        let mut changes = vec![Change::RecordingCreated(recording(&id(name), None))];
+        if !lines.is_empty() {
+            changes.push(Change::TranscriptReplaced {
+                id: id(name),
+                transcript: Transcript {
+                    revision: Revision(revision),
+                    segments: lines
+                        .iter()
+                        .map(|(speaker, text)| segment(0, 1_000, *speaker, Channel::System, text))
+                        .collect(),
+                    detected_languages: Vec::new(),
+                    produced_by: ModelRef::parse(STT).unwrap(),
+                },
+            });
+        }
+        if let Some(markdown) = markdown {
+            changes.push(Change::SummaryReplaced {
+                id: id(name),
+                summary: Summary {
+                    markdown: markdown.into(),
+                    language: None,
+                    produced_by: ModelRef::parse(LLM).unwrap(),
+                    transcript_revision: Revision(revision),
+                },
+            });
+        }
+        rig.store.apply(changes).unwrap();
+    };
+    made(
+        "talk",
+        1,
+        &[
+            (1, "Welcome everyone."),
+            (2, "We agreed the roadmap slips"),
+            (2, "to the third quarter."),
+        ],
+        Some("## Notes\n- The roadmap is in the summary too"),
+    );
+    made(
+        "notes",
+        1,
+        &[(1, "Nothing about it here.")],
+        Some("## Decisions\n- **Budget** approved"),
+    );
+    made("named", 1, &[(7, "Hello."), (8, "Hi.")], None);
+    made("empty", 1, &[], None);
+    rig.store
+        .apply(vec![Change::SpeakerNamesReplaced {
+            id: id("named"),
+            names: SpeakerNames {
+                for_revision: Revision(1),
+                names: [(SpeakerId(7), "Rita Roadmap".to_owned())].into(),
+            },
+        }])
+        .unwrap();
+
+    let library = dory.library();
+    let ids = [
+        id("talk"),
+        id("notes"),
+        id("named"),
+        id("empty"),
+        id("gone"),
+    ];
+    let shown = |text: &str| {
+        let query = Query::parse(text).unwrap();
+        library
+            .snippets(&query, &ids)
+            .unwrap()
+            .into_iter()
+            .map(|found| {
+                found.map(|e| {
+                    let marked: Vec<_> = e
+                        .snippet
+                        .marks
+                        .iter()
+                        .map(|m| e.snippet.text[m.clone()].to_owned())
+                        .collect();
+                    (e.source, e.snippet.text, marked)
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    let road = |s: &str| Some((Where::Transcript, s.to_owned(), vec!["roadmap".to_owned()]));
+    assert_eq!(
+        shown("roadmap"),
+        [
+            road("We agreed the roadmap slips to the third quarter."),
+            None,
+            Some((
+                Where::Speakers,
+                "Rita Roadmap".to_owned(),
+                vec!["Roadmap".to_owned()]
+            )),
+            None,
+            None,
+        ],
+        "a turn joins its segments, and a name is the last resort"
+    );
+    assert_eq!(
+        shown("budget")[1],
+        Some((
+            Where::Summary,
+            "Budget approved".to_owned(),
+            vec!["Budget".to_owned()]
+        )),
+        "the summary, without its Markdown"
+    );
+    assert_eq!(
+        shown("roadmap summary")[0].as_ref().map(|e| e.0),
+        Some(Where::Transcript),
+        "the transcript wins when both hold a word"
     );
 }

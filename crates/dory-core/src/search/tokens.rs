@@ -8,7 +8,7 @@ use unicode_normalization::char::is_combining_mark;
 
 /// Bump this whenever [`tokens`] or [`fold`] changes what they return. A store that indexed with
 /// another version rebuilds its index when it opens.
-pub const TOKENS_VERSION: u32 = 1;
+pub const TOKENS_VERSION: u32 = 2;
 
 /// One word of a text.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,11 +37,10 @@ impl Iterator for Tokens<'_> {
     fn next(&mut self) -> Option<Token> {
         loop {
             let rest = &self.text[self.at..];
-            let (offset, first) = rest.char_indices().find(|(_, c)| c.is_alphanumeric())?;
+            let (offset, first) = rest.char_indices().find(|(_, c)| in_word(*c))?;
             let start = self.at + offset;
             let mut end = start + first.len_utf8();
-            let ends_word =
-                |c: char| spaceless(c) || !(c.is_alphanumeric() || is_combining_mark(c));
+            let ends_word = |c: char| spaceless(c) || !(in_word(c) || is_combining_mark(c));
             for c in self.text[end..].chars() {
                 let part_of_this = if spaceless(first) {
                     is_combining_mark(c)
@@ -65,6 +64,22 @@ impl Iterator for Tokens<'_> {
     }
 }
 
+/// Whether `c` can be inside a word. Rust calls some characters alphanumeric that SQLite's
+/// unicode61 tokenizer, which splits the index again, reads as separators: the circled and squared
+/// capital letters, some New Tai Lue and Vedic signs. Treating them as separators here keeps every
+/// word the index holds a word of the matcher too. A test compares this with the bundled SQLite
+/// over every code point.
+fn in_word(c: char) -> bool {
+    c.is_alphanumeric()
+        && !matches!(c,
+            '\u{19B0}'..='\u{19C0}'
+            | '\u{19C8}'..='\u{19C9}'
+            | '\u{1CF2}'..='\u{1CF3}'
+            | '\u{1F150}'..='\u{1F169}'
+            | '\u{1F170}'..='\u{1F189}'
+        )
+}
+
 /// Scripts written without spaces between words.
 fn spaceless(c: char) -> bool {
     matches!(c,
@@ -81,19 +96,21 @@ fn spaceless(c: char) -> bool {
 
 /// The one rule for comparing words: lowercase, compatibility decomposition (so the `ﬁ` ligature
 /// is "fi"), no accents, and a table for the letters decomposition leaves alone, so "muller" finds
-/// "Müller", "strasse" finds "Straße", and "orsted" finds "Ørsted". Keeps only letters and digits,
-/// and Hangul stays in syllables.
+/// "Müller", "strasse" finds "Straße", and "orsted" finds "Ørsted". The Greek final sigma is a
+/// plain sigma, as it is in the index. Keeps only letters and digits, and Hangul stays in
+/// syllables.
 pub fn fold(word: &str) -> String {
     if word.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return word.to_ascii_lowercase();
     }
     let mut out = String::with_capacity(word.len());
     for c in word.nfkd().flat_map(char::to_lowercase) {
-        if is_combining_mark(c) || !c.is_alphanumeric() {
+        if is_combining_mark(c) || !in_word(c) {
             continue;
         }
         match c {
             'ß' => out.push_str("ss"),
+            'ς' => out.push('σ'),
             'ø' => out.push('o'),
             'ł' => out.push('l'),
             'æ' => out.push_str("ae"),
@@ -176,6 +193,16 @@ mod tests {
             ("ｶﾞ", &[("カ", "ｶ"), ("", "ﾞ")]),
             ("½ cup", &[("12", "½"), ("cup", "cup")]),
             ("서울 회의", &[("서울", "서울"), ("회의", "회의")]),
+            (
+                "δρόμος ΔΡΟΜΟΣ δρομοϲ",
+                &[
+                    ("δρομοσ", "δρόμος"),
+                    ("δρομοσ", "ΔΡΟΜΟΣ"),
+                    ("δρομοσ", "δρομοϲ"),
+                ],
+            ),
+            ("🅐 budget", &[("budget", "budget")]),
+            ("a🅐b ᦰk", &[("a", "a"), ("b", "b"), ("k", "k")]),
         ];
         for (text, want) in cases {
             let want: Vec<(String, &str)> = want
@@ -210,7 +237,7 @@ mod tests {
     fn the_token_rule_has_not_changed_without_a_version_bump() {
         let probe = "Hello, world! don't Q3.5 e-mail 🚀 Müller Mu\u{308}ller Straße Ørsted ﬁnance \
                      Łódź œuvre Þór Đorđe ÆON Tiếng Việt 東京タワーへ 会議はbudget ｶﾞ ½ 서울 회의 \
-                     Ⅻ ① ℌello ﬀ ǅ İstanbul ẞ ¼ x\u{2044}y ΟΔΟΣ ﬃ ŉ";
+                     Ⅻ ① ℌello ﬀ ǅ İstanbul ẞ ¼ x\u{2044}y ΟΔΟΣ ﬃ ŉ δρόμος 🅐b ᦰk";
         let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
         for token in tokens(probe) {
             let line = format!("{}:{}:{};", token.folded, token.span.start, token.span.end);
@@ -221,7 +248,7 @@ mod tests {
         }
         assert_eq!(
             (TOKENS_VERSION, digest),
-            (1, 0x9611_828d_b648_7cd2),
+            (2, 0x7cac_f337_bae3_a3a8),
             "bump TOKENS_VERSION"
         );
     }

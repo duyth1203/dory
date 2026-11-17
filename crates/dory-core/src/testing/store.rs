@@ -417,6 +417,10 @@ mod contract {
             "search_folds_accents_both_ways",
             search_folds_accents_both_ways,
         ),
+        (
+            "search_reads_final_sigma_and_letters_unicode61_splits",
+            search_reads_final_sigma_and_letters_unicode61_splits,
+        ),
         ("search_phrase_needs_order", search_phrase_needs_order),
         ("search_sets_in_title", search_sets_in_title),
         (
@@ -1161,6 +1165,25 @@ mod contract {
         assert_eq!(found(store, "STRAẞE orsted"), ["umlaut"]);
         assert_eq!(found(store, "cafe finance"), ["other"]);
         assert_eq!(found(store, "café ﬁ"), ["other"]);
+    }
+
+    fn search_reads_final_sigma_and_letters_unicode61_splits(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("greek", 200, "Ο δρόμος"),
+                titled("squared", 100, "🅐 budget"),
+            ])
+            .unwrap();
+        for text in ["ΔΡΟΜΟΣ", "δρομοσ", "δρόμος", "δρομοϲ", "δρομ"] {
+            assert_eq!(found(store, text), ["greek"], "{text}");
+            let marks = search::highlights(&Query::parse(text).unwrap(), "Ο δρόμος");
+            assert_eq!(marks, [3..15], "{text} marks the word");
+        }
+        for text in ["🅐 budget", "budget", "bud"] {
+            assert_eq!(found(store, text), ["squared"], "{text}");
+            let marks = search::highlights(&Query::parse(text).unwrap(), "🅐 budget");
+            assert_eq!(marks.len(), 1, "{text} marks what the index found");
+        }
     }
 
     fn search_phrase_needs_order(store: &dyn Store) {

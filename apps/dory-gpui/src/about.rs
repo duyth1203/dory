@@ -12,9 +12,12 @@ use crate::a11y;
 use crate::theme::Theme;
 
 pub const WIDTH: f32 = 440.;
-pub const HEIGHT: f32 = 520.;
+pub const HEIGHT: f32 = 640.;
 
 const LUCIDE_VERSION: &str = include_str!("../assets/icons/VERSION");
+/// The app icon at 128 pt, drawn at 2x from `icon/source.png` (the file `Dory.icns` is made from).
+pub const ICON_PNG: &[u8] = include_bytes!("../assets/about/dory-icon.png");
+pub const ICON_SIZE: f32 = 128.;
 const LUCIDE_LICENSE: &str = include_str!("../assets/icons/LICENSE");
 
 /// One acknowledged work: what it is and its license, as the license file wrote it.
@@ -134,7 +137,20 @@ impl Render for About {
                 div()
                     .flex()
                     .flex_col()
+                    .items_center()
                     .gap(px(2.))
+                    .child(
+                        a11y::node("dory-icon", Role::Image, "Dory app icon")
+                            .size(px(ICON_SIZE))
+                            .mb(px(8.))
+                            .child(
+                                gpui_kit::img(std::sync::Arc::new(gpui_kit::Image::from_bytes(
+                                    gpui_kit::ImageFormat::Png,
+                                    ICON_PNG.to_vec(),
+                                )))
+                                .size_full(),
+                            ),
+                    )
                     .child(
                         a11y::node("dory-name", Role::Heading, "Dory")
                             .aria_level(1)

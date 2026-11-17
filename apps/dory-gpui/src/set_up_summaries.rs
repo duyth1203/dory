@@ -66,6 +66,17 @@ pub enum Readiness {
     },
 }
 
+impl Readiness {
+    /// The name of the model the Ollama steps set up, when the catalog lists it.
+    fn model_name(&self) -> Option<String> {
+        match self {
+            Readiness::Checking => None,
+            Readiness::NotRunning { model } => model.as_ref().map(|m| m.name.clone()),
+            Readiness::Missing { name, .. } | Readiness::Ready { name } => Some(name.clone()),
+        }
+    }
+}
+
 /// A summary model as step 2 names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Model {
@@ -216,8 +227,12 @@ pub fn unsupported_note(system: Option<&System>) -> Option<String> {
 /// The dialog's state: the built-in model's path, then U1 to U3.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// A built-in model summarizes now. The Ollama steps are one button away.
-    System { name: String },
+    /// A built-in model summarizes now. The Ollama steps, which set up `ollama_model` when the
+    /// catalog names it, are one button away.
+    System {
+        name: String,
+        ollama_model: Option<String>,
+    },
     /// A built-in model waits on the user or the system. The Ollama steps are offered beside it.
     Waits { name: String, on: Wait },
     /// U1: Ollama is not found yet.
@@ -245,7 +260,10 @@ impl Step {
     ) -> Step {
         match (readiness, system.filter(|_| !ollama)) {
             (Readiness::Ready { .. }, _) => Step::Ready { waiting },
-            (_, Some(System::Ready { name })) => Step::System { name },
+            (readiness, Some(System::Ready { name })) => Step::System {
+                name,
+                ollama_model: readiness.model_name(),
+            },
             (_, Some(System::Waits { name, on })) => Step::Waits { name, on },
             (readiness, _) => Self::ollama(readiness, download, waiting),
         }
@@ -277,11 +295,20 @@ impl Step {
     /// The System path's sentence, also what VoiceOver reads for it.
     pub fn system_text(&self) -> Option<String> {
         match self {
-            Step::System { name } => Some(format!(
+            Step::System { name, .. } => Some(format!(
                 "Summaries use {name} on this Mac. Nothing to install."
             )),
             _ => None,
         }
+    }
+
+    /// The System path's way to the Ollama steps: "Use Gemma 4 E4B for long meetings".
+    pub fn ollama_text(&self) -> Option<String> {
+        let Step::System { ollama_model, .. } = self else {
+            return None;
+        };
+        let model = ollama_model.as_deref().unwrap_or("Ollama");
+        Some(format!("Use {model} for long meetings"))
     }
 
     /// The built-in model's card while it waits: its label, heading, and sentence.
@@ -659,10 +686,11 @@ impl Render for SetUp {
                     text,
                     &theme,
                 ));
+                let use_ollama = step.ollama_text().unwrap_or_default();
                 footer.push(surface::button(
                     "set-up-use-gemma",
-                    "Use Gemma for long meetings",
-                    "Use Gemma for long meetings",
+                    use_ollama.clone(),
+                    use_ollama,
                     Look::Secondary,
                     &self.use_ollama,
                     &theme,
@@ -1007,6 +1035,33 @@ mod tests {
         assert_eq!(
             ready.ready_text(),
             "Hiring debrief is being summarized now. New recordings get a summary automatically."
+        );
+    }
+
+    #[test]
+    fn the_system_path_names_the_model_the_ollama_steps_set_up() {
+        let apple = || {
+            Some(System::Ready {
+                name: "Apple Intelligence".into(),
+            })
+        };
+        let named = Step::of(
+            Readiness::NotRunning {
+                model: Some(gemma()),
+            },
+            apple(),
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            named.ollama_text().as_deref(),
+            Some("Use Gemma 4 E4B for long meetings")
+        );
+        let unnamed = Step::of(Readiness::Checking, apple(), false, None, None);
+        assert_eq!(
+            unnamed.ollama_text().as_deref(),
+            Some("Use Ollama for long meetings")
         );
     }
 

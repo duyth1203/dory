@@ -195,7 +195,7 @@ fn apple_ready_needs_no_setup(cx: &mut TestAppContext) {
     assert!(!has(main, "set-up-get-ollama", cx), "no install step");
     assert_eq!(
         label(main, "set-up-use-gemma", cx).as_deref(),
-        Some("Use Gemma for long meetings")
+        Some("Use Gemma 4 E4B for long meetings")
     );
     click(main, "set-up-use-gemma", cx);
     assert_eq!(

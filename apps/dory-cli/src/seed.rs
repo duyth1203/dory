@@ -262,6 +262,7 @@ impl<'a> Corpus<'a> {
                         Channel::System
                     },
                     text: sentence(chunk),
+                    language: None,
                 }
             })
             .collect();

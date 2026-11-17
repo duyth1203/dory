@@ -51,6 +51,7 @@ fn meeting(id: &str, at: i64, title: &str, said: &[&str], summary: &str) -> Vec<
                         speaker: SpeakerId(1 + i as u16),
                         channel: Channel::System,
                         text: (*text).into(),
+                        language: None,
                     })
                     .collect(),
                 detected_languages: vec![],

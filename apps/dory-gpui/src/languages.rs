@@ -95,6 +95,39 @@ pub fn description(meeting: &[LangTag], choice: &LanguagePref) -> String {
     }
 }
 
+/// Settings > Transcription > the output language: the popup's first item, and what the setting
+/// holds when there is no target.
+pub const SAME_AS_SPOKEN: &str = "Same as spoken";
+
+/// "Same as spoken" or the language's name, as the popup and the menu read.
+pub fn output_label(choice: Option<&LangTag>) -> String {
+    choice.map_or_else(|| SAME_AS_SPOKEN.to_owned(), name)
+}
+
+/// What the output-language popup offers after "Same as spoken": every language Dory names, by
+/// its English name.
+pub fn output_choices() -> Vec<LangTag> {
+    let mut all: Vec<&Language> = LANGUAGES.iter().collect();
+    all.sort_by_key(|lang| fold(lang.english));
+    all.into_iter()
+        .filter_map(|lang| LangTag::parse(lang.code).ok())
+        .collect()
+}
+
+/// The line under the output-language row: what the choice does, and what it leaves alone.
+pub fn output_description(choice: Option<&LangTag>) -> String {
+    match choice {
+        None => "Each transcript and summary stays in the language it was spoken in.".into(),
+        Some(tag) => format!(
+            "Dory translates new recordings into {} and writes their summaries in {}, using \
+             your summary model on this Mac. The spoken transcript is kept, and recordings \
+             you already have do not change.",
+            name(tag),
+            name(tag)
+        ),
+    }
+}
+
 pub const KEEP_ONE: &str = "Keep at least one meeting language.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -394,6 +427,35 @@ mod tests {
             name_list(&names(&["Tagalog", "English", "French"]), "and"),
             "Tagalog, English, and French"
         );
+    }
+
+    #[test]
+    fn the_output_choices_are_every_language_by_english_name() {
+        let choices = output_choices();
+        assert_eq!(choices.len(), LANGUAGES.len());
+        let names: Vec<String> = choices.iter().map(name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_by_key(|n| fold(n));
+        assert_eq!(names, sorted);
+        assert!(choices.contains(&tag("en")));
+        assert_eq!(output_label(None), "Same as spoken");
+        assert_eq!(output_label(Some(&tag("tl"))), "Tagalog");
+    }
+
+    #[test]
+    fn the_description_says_what_stays_and_what_changes() {
+        assert_eq!(
+            output_description(None),
+            "Each transcript and summary stays in the language it was spoken in."
+        );
+        let english = output_description(Some(&tag("en")));
+        for want in [
+            "into English",
+            "summaries in English",
+            "spoken transcript is kept",
+        ] {
+            assert!(english.contains(want), "{english}");
+        }
     }
 
     #[test]

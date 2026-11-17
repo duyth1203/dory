@@ -329,6 +329,7 @@ pub(crate) fn parse_transcript(text: &str) -> Vec<Segment> {
                 speaker,
                 channel: Channel::Mixed,
                 text: body.to_owned(),
+                language: None,
             })
         })
         .collect()

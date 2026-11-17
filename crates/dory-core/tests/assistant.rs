@@ -8,7 +8,7 @@ use dory_core::domain::{
     Segment, SpeakerId, Summary, TimeRange, Timestamp, Transcript, Writes,
 };
 use dory_core::models::ModelRef;
-use dory_core::ports::{AuditError, AuditSink, Change, Store};
+use dory_core::ports::{AuditError, AuditSink, Change, Store, StoreRead};
 use dory_core::testing::ManualClock;
 use dory_core::testing::store::MemStore;
 
@@ -56,6 +56,7 @@ fn meeting(id: &str, at: i64, title: &str, lines: &[&str], summary: &str) -> Vec
                         speaker: SpeakerId(1 + (i % 2) as u16),
                         channel: Channel::System,
                         text: (*text).into(),
+                        language: None,
                     })
                     .collect(),
                 detected_languages: vec![],
@@ -432,4 +433,66 @@ fn mem_store_search_stays_inside_each_grant() {
     let store = Arc::new(MemStore::new());
     dory_core::testing::assistants::seed(&*store);
     dory_core::testing::assistants::check_search(store);
+}
+
+#[test]
+fn a_transcript_with_a_translation_reads_as_translated_and_keeps_what_was_spoken() {
+    let rig = Rig::new(Exposure::Transcripts);
+    let id = rid("sync");
+    let mut transcript = rig.store.transcript(&id).unwrap().unwrap();
+    transcript.segments[0].language = Some(LangTag::parse("tl").unwrap());
+    let translation = dory_core::domain::Translation {
+        target: LangTag::parse("en").unwrap(),
+        transcript_revision: transcript.revision,
+        produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+        texts: vec![Some("We talked about job cuts.".into()), None],
+    };
+    rig.store
+        .apply(vec![
+            Change::TranscriptReplaced {
+                id: id.clone(),
+                transcript: transcript.clone(),
+            },
+            Change::TranslationReplaced {
+                id: id.clone(),
+                translation: translation.clone(),
+            },
+        ])
+        .unwrap();
+
+    let page = rig.me().transcript_page(None, &id, None, None).unwrap();
+    assert_eq!(page.translated_into, Some(LangTag::parse("en").unwrap()));
+    assert_eq!(page.turns[0].text, "We talked about job cuts.");
+    let translated = page.turns[0].translated.as_ref().unwrap();
+    assert_eq!(translated.original, "We talked about layoffs.");
+    assert_eq!(translated.from, Some(LangTag::parse("tl").unwrap()));
+    assert_eq!(page.turns[1].text, "The release ships Friday.");
+    assert_eq!(page.turns[1].translated, None);
+
+    // The grant rules are the ones they were: a titles-only assistant still reads no transcript.
+    let titles = Rig::new(Exposure::Titles);
+    titles
+        .store
+        .apply(vec![Change::TranslationReplaced {
+            id: id.clone(),
+            translation: translation.clone(),
+        }])
+        .unwrap();
+    assert!(matches!(
+        titles.me().transcript_page(None, &id, None, None),
+        Err(Refusal::NotShared { .. })
+    ));
+
+    // A translation of an older revision is not shown against the new transcript.
+    let mut next = transcript;
+    next.revision = Revision(2);
+    rig.store
+        .apply(vec![Change::TranscriptReplaced {
+            id: id.clone(),
+            transcript: next,
+        }])
+        .unwrap();
+    let page = rig.me().transcript_page(None, &id, None, None).unwrap();
+    assert_eq!(page.translated_into, None);
+    assert_eq!(page.turns[0].text, "We talked about layoffs.");
 }

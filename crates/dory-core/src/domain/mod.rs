@@ -10,6 +10,7 @@ mod settings;
 mod summary_sections;
 mod time;
 mod transcript;
+mod translation;
 mod waveform;
 
 pub use assistant::{
@@ -32,4 +33,5 @@ pub use settings::{Processing, Settings};
 pub use summary_sections::{Sections, list_items, sections};
 pub use time::{Fraction, TimeRange, Timestamp};
 pub use transcript::{Segment, SpeakerId, SpeakerNames, Summary, Transcript};
+pub use translation::{Translation, TranslationFlag};
 pub use waveform::{BUCKETS, LevelMeter, Levels, Waveform};

@@ -263,8 +263,14 @@ fn reveal(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
         render(window, cx);
         let (visible, scrollable) = cx
             .update_window(window, |_, window, _| {
+                let element = window.find(ElementId::from(id.to_owned()));
+                // A click lands on the center, so the center must be on screen, not just a corner.
+                let on_screen = match window.try_find("settings-panel") {
+                    Some(panel) => panel.bounds().contains(&element.bounds().center()),
+                    None => true,
+                };
                 (
-                    window.find(ElementId::from(id.to_owned())).visible(),
+                    element.visible() && on_screen,
                     window.try_find("settings-panel").is_some(),
                 )
             })
@@ -1578,4 +1584,50 @@ fn the_assistant_app_menu_picks_codex_and_copies_its_config(cx: &mut TestAppCont
     let clients = rig.store.assistant_access().unwrap().clients;
     assert_eq!(clients.len(), 1);
     assert_eq!(clients[0].label, "Codex");
+}
+
+#[gpui_kit::test]
+fn the_output_language_starts_as_same_as_spoken_and_saves_the_choice(cx: &mut TestAppContext) {
+    let rig = rig(&["en", "tl"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the output language row", |cx| {
+        has(window, "setting-output-language", cx)
+    });
+    assert_eq!(settings(&rig).output_language, None);
+    assert_eq!(
+        label(window, "output-language-popup", cx).as_deref(),
+        Some("Write transcripts and summaries in, Same as spoken")
+    );
+    let english = LangTag::parse("en").unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(settings_window::ChooseOutputLanguage {
+                language: Some(english.clone()),
+            }),
+            cx,
+        )
+    })
+    .unwrap();
+    until(cx, "English saved", |_| {
+        settings(&rig).output_language == Some(LangTag::parse("en").unwrap())
+    });
+    until(cx, "the popup shows English", |cx| {
+        label(window, "output-language-popup", cx).as_deref()
+            == Some("Write transcripts and summaries in, English")
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(settings_window::ChooseOutputLanguage { language: None }),
+            cx,
+        )
+    })
+    .unwrap();
+    until(cx, "Same as spoken saved", |_| {
+        settings(&rig).output_language.is_none()
+    });
+    until(cx, "the popup shows Same as spoken", |cx| {
+        label(window, "output-language-popup", cx).as_deref()
+            == Some("Write transcripts and summaries in, Same as spoken")
+    });
 }

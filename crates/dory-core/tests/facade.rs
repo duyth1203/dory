@@ -16,7 +16,7 @@ use dory_core::domain::{
     Fields, Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms, Priority, Recording,
     RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision, Segment, Settings,
     SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange, Timestamp,
-    Transcript, Waveform,
+    Transcript, Translation, Waveform,
 };
 use dory_core::models::{
     Availability, CatalogError, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId,
@@ -29,7 +29,7 @@ use dory_core::ports::capture::{
 use dory_core::ports::{
     CancelToken, Change, Checkpoint, CheckpointKey, Clip, EngineError, LegacyFile, ModelProvider,
     PlayState, ProvisionError, ProvisionSink, Store, StoreError, StoreRead, TakeError, TakeWriter,
-    Takes, Transcriber,
+    Takes, Transcriber, TranslationBatch, TranslationKey,
 };
 use dory_core::recorder::{FinalizeReason, Limits};
 use dory_core::search::{Found, Query, Source as Where, Vocabulary};
@@ -208,6 +208,15 @@ impl StoreRead for HookedStore {
     }
     fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
         self.inner.summary(id)
+    }
+    fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        self.inner.translation(id)
+    }
+    fn translation_batches(
+        &self,
+        key: &TranslationKey,
+    ) -> Result<Vec<TranslationBatch>, StoreError> {
+        self.inner.translation_batches(key)
     }
     fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
         self.inner.speaker_names(id)
@@ -498,6 +507,8 @@ fn segment(start: u64, end: u64, speaker: u16, channel: Channel, text: &str) -> 
         speaker: SpeakerId(speaker),
         channel,
         text: text.into(),
+        // The transcriber detects Vietnamese for every window of this test.
+        language: LangTag::parse("vi").ok(),
     }
 }
 

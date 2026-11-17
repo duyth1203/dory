@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use crate::domain::{Fraction, LangTag, SpeakerNames, Transcript};
+use crate::domain::{Fraction, LangTag, SpeakerNames, Transcript, Translation};
 
 /// Room left for the chat template the engine wraps around the prompt, and for `count_tokens`
 /// being an estimate.
@@ -82,12 +82,18 @@ fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
     }
 }
 
-/// One line per segment, `[mm:ss] Speaker: text`, each ending in a newline.
-pub(crate) fn transcript_lines(transcript: &Transcript, names: &SpeakerNames) -> Vec<String> {
+/// One line per segment, `[mm:ss] Speaker: text`, each ending in a newline. With a translation
+/// that applies, a segment reads as translated, else as spoken.
+pub(crate) fn transcript_lines(
+    transcript: &Transcript,
+    names: &SpeakerNames,
+    translation: Option<&Translation>,
+) -> Vec<String> {
     transcript
         .segments
         .iter()
-        .map(|segment| {
+        .enumerate()
+        .map(|(ix, segment)| {
             let mut line = String::new();
             if let Some(range) = segment.range {
                 let secs = range.start().0 / 1000;
@@ -97,7 +103,7 @@ pub(crate) fn transcript_lines(transcript: &Transcript, names: &SpeakerNames) ->
                 line,
                 "{}: {}",
                 names.label(segment, transcript.revision),
-                segment.text
+                translation.map_or(segment.text.as_str(), |t| t.shown(ix, segment))
             );
             line
         })
@@ -323,6 +329,7 @@ mod tests {
             speaker: SpeakerId(speaker),
             channel,
             text: text.into(),
+            language: None,
         };
         let transcript = Transcript {
             revision: Revision(2),
@@ -337,7 +344,7 @@ mod tests {
         let mut names = SpeakerNames::default();
         names.rename(Revision(2), SpeakerId(2), Some("Ana".into()));
         assert_eq!(
-            transcript_lines(&transcript, &names).concat(),
+            transcript_lines(&transcript, &names, None).concat(),
             "[00:00] Me: Ship it Friday.\n[01:05] Speaker 1: Agreed.\n[01:10] Ana: I'll write the notes.\n"
         );
         let vi = LangTag::parse("vi").unwrap();

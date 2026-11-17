@@ -23,6 +23,10 @@
 //!   title alone matches every clause. FTS syntax in typed text is never syntax.
 //! - `next_runnable_job` is Front first, then lowest `place`, then lowest job id. A job's `place`
 //!   starts as its enqueue time and changes only through `JobEvent::Place`.
+//! - A translation is stored beside the transcript and replaced whole. A new transcript revision
+//!   leaves it in place, still carrying the revision it was made from. Its batches are read per
+//!   run (recording, revision, target, model) in save order, and clearing or deleting the
+//!   recording drops them. Saving either for a missing recording is `NotFound`.
 //! - Checkpoints are read per run (recording, model, channel, language), earliest window first. A
 //!   second save of the same run and span replaces the first. Clearing drops every run of one
 //!   recording, and so does deleting the recording. Saving for a missing recording is `NotFound`.
@@ -33,9 +37,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Fields, Job,
     JobEvent, JobId, JobState, Ms, Priority, Recording, RecordingEdit, RecordingId, RecordingQuery,
-    RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, Timestamp, Transcript,
+    RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, Timestamp, Transcript, Translation,
 };
-use crate::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
+use crate::ports::{
+    Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead, TranslationBatch,
+    TranslationKey,
+};
 use crate::search::{self, Found, Query, Vocabulary};
 
 #[derive(Clone, Debug)]
@@ -47,6 +54,7 @@ struct Entry {
     hidden: bool,
     previous: Option<Summary>,
     instruction: Option<String>,
+    translation: Option<Translation>,
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +64,7 @@ struct State {
     last_job: u64,
     settings: Settings,
     checkpoints: HashMap<CheckpointKey, BTreeMap<(Ms, Ms), Checkpoint>>,
+    translation_batches: HashMap<TranslationKey, Vec<TranslationBatch>>,
     assistants_enabled: bool,
     /// By label. The fake keeps keys whole; a real store keeps only a digest.
     assistants: BTreeMap<String, (AssistantClient, ClientKey)>,
@@ -81,6 +90,7 @@ impl State {
                         hidden: false,
                         previous: None,
                         instruction: None,
+                        translation: None,
                     });
             }
             Change::RecordingEdited { id, edit } => {
@@ -95,6 +105,8 @@ impl State {
                 self.recordings.remove(&id);
                 self.jobs.retain(|_, job| job.recording != id);
                 self.checkpoints.retain(|key, _| key.recording != id);
+                self.translation_batches
+                    .retain(|key, _| key.recording != id);
             }
             Change::TranscriptReplaced { id, transcript } => {
                 self.entry_mut(&id)?.transcript = Some(transcript);
@@ -157,6 +169,17 @@ impl State {
                     .insert(span, checkpoint);
             }
             Change::CheckpointsCleared(id) => self.checkpoints.retain(|key, _| key.recording != id),
+            Change::TranslationReplaced { id, translation } => {
+                self.entry_mut(&id)?.translation = Some(translation);
+            }
+            Change::TranslationBatchSaved { key, batch } => {
+                self.entry_mut(&key.recording)?;
+                self.translation_batches.entry(key).or_default().push(batch);
+            }
+            Change::TranslationBatchesCleared(id) => {
+                self.translation_batches
+                    .retain(|key, _| key.recording != id);
+            }
             Change::Assistant(change) => self.apply_assistant(change)?,
         }
         Ok(())
@@ -210,6 +233,7 @@ impl MemStore {
                 last_job: 0,
                 settings: Settings::default(),
                 checkpoints: HashMap::new(),
+                translation_batches: HashMap::new(),
                 assistants_enabled: false,
                 assistants: BTreeMap::new(),
             }),
@@ -460,6 +484,26 @@ impl StoreRead for MemStore {
             .and_then(|e| e.instruction.clone()))
     }
 
+    fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.translation.clone()))
+    }
+
+    fn translation_batches(
+        &self,
+        key: &TranslationKey,
+    ) -> Result<Vec<TranslationBatch>, StoreError> {
+        Ok(self
+            .state()
+            .translation_batches
+            .get(key)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     fn assistant_recordings(&self, query: &AssistantQuery) -> Result<Vec<Found>, StoreError> {
         let state = self.state();
         let newer_than_cursor = |e: &Entry| {
@@ -533,6 +577,7 @@ mod contract {
     };
     use crate::models::{Choice, KindTag, ModelRef};
     use crate::ports::{Checkpoint, CheckpointKey, RawSegment};
+    use crate::ports::{TranslationBatch, TranslationKey};
 
     type Case = fn(&dyn Store);
 
@@ -643,6 +688,26 @@ mod contract {
             "checkpoints_need_a_recording_and_go_with_it",
             checkpoints_follow_the_recording,
         ),
+        (
+            "a_segment_keeps_the_language_it_was_heard_in",
+            segment_language_round_trips,
+        ),
+        (
+            "a_translation_sits_beside_the_transcript_and_is_replaced_whole",
+            translation_round_trips,
+        ),
+        (
+            "a_translation_outlives_a_new_transcript_revision_and_says_which_it_is_for",
+            translation_goes_stale_with_the_revision,
+        ),
+        (
+            "translation_batches_are_kept_per_run_in_save_order",
+            translation_batches_per_run,
+        ),
+        (
+            "translation_data_needs_a_recording_and_goes_with_it",
+            translation_follows_the_recording,
+        ),
     ];
 
     /// Runs every case against a fresh store from `make`. Panics with the case name on failure.
@@ -688,6 +753,7 @@ mod contract {
             speaker: SpeakerId(speaker),
             channel: Channel::System,
             text: text.into(),
+            language: None,
         }
     }
 
@@ -1132,6 +1198,7 @@ mod contract {
             diar: Choice::Off,
             language: LanguagePref::Pinned(LangTag::parse("zh-Hans-CN").unwrap()),
             meeting_languages: vec![LangTag::parse("tl").unwrap(), LangTag::parse("en").unwrap()],
+            output_language: Some(LangTag::parse("en-US").unwrap()),
             auto_process: false,
             processing: Processing::Light,
         };
@@ -1141,6 +1208,7 @@ mod contract {
             diar: Choice::Auto,
             language: LanguagePref::Auto,
             meeting_languages: Vec::new(),
+            output_language: None,
             auto_process: true,
             processing: Processing::Fast,
         };
@@ -2579,6 +2647,203 @@ mod contract {
             vec![],
             "no ghost checkpoints from the old life"
         );
+    }
+
+    fn tag(s: &str) -> LangTag {
+        LangTag::parse(s).unwrap()
+    }
+
+    fn translation(revision: u32, target: &str, texts: &[Option<&str>]) -> Translation {
+        Translation {
+            target: tag(target),
+            transcript_revision: Revision(revision),
+            produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+            texts: texts.iter().map(|t| t.map(str::to_owned)).collect(),
+        }
+    }
+
+    fn translation_run(id: &str, revision: u32, target: &str, model: &str) -> TranslationKey {
+        TranslationKey {
+            recording: rid(id),
+            revision: Revision(revision),
+            target: tag(target),
+            model: ModelRef::parse(model).unwrap(),
+        }
+    }
+
+    fn batch(texts: &[(usize, &str)]) -> TranslationBatch {
+        TranslationBatch {
+            texts: texts.iter().map(|(i, t)| (*i, (*t).to_owned())).collect(),
+        }
+    }
+
+    fn segment_language_round_trips(store: &dyn Store) {
+        create(store, "r", 10);
+        let mut t = transcript(1, &["hello", "kumusta", "unknown"]);
+        t.segments[0].language = Some(tag("en"));
+        t.segments[1].language = Some(tag("fil"));
+        store
+            .apply(vec![Change::TranscriptReplaced {
+                id: rid("r"),
+                transcript: t.clone(),
+            }])
+            .unwrap();
+        let back = store.transcript(&rid("r")).unwrap().unwrap();
+        let languages: Vec<Option<&str>> = back
+            .segments
+            .iter()
+            .map(|s| s.language.as_ref().map(LangTag::as_str))
+            .collect();
+        assert_eq!(languages, [Some("en"), Some("fil"), None]);
+        assert_eq!(back, t);
+    }
+
+    fn translation_round_trips(store: &dyn Store) {
+        create(store, "r", 10);
+        assert_eq!(store.translation(&rid("r")).unwrap(), None);
+        let t = transcript(1, &["bonjour", "ok"]);
+        let first = translation(1, "en", &[Some("hello \"there\"\nfriend"), None]);
+        store
+            .apply(vec![
+                Change::TranscriptReplaced {
+                    id: rid("r"),
+                    transcript: t.clone(),
+                },
+                Change::TranslationReplaced {
+                    id: rid("r"),
+                    translation: first.clone(),
+                },
+            ])
+            .unwrap();
+        assert_eq!(store.translation(&rid("r")).unwrap(), Some(first));
+        assert_eq!(
+            store.transcript(&rid("r")).unwrap().unwrap(),
+            t,
+            "the spoken transcript is untouched"
+        );
+
+        let second = translation(1, "de", &[Some("hallo"), Some("gut")]);
+        store
+            .apply(vec![Change::TranslationReplaced {
+                id: rid("r"),
+                translation: second.clone(),
+            }])
+            .unwrap();
+        assert_eq!(store.translation(&rid("r")).unwrap(), Some(second));
+        assert_eq!(store.translation(&rid("other")).unwrap(), None);
+    }
+
+    fn translation_goes_stale_with_the_revision(store: &dyn Store) {
+        create(store, "r", 10);
+        store
+            .apply(vec![
+                Change::TranscriptReplaced {
+                    id: rid("r"),
+                    transcript: transcript(1, &["a", "b"]),
+                },
+                Change::TranslationReplaced {
+                    id: rid("r"),
+                    translation: translation(1, "en", &[Some("A"), Some("B")]),
+                },
+            ])
+            .unwrap();
+        store
+            .apply(vec![Change::TranscriptReplaced {
+                id: rid("r"),
+                transcript: transcript(2, &["a", "b", "c"]),
+            }])
+            .unwrap();
+        let kept = store.translation(&rid("r")).unwrap().unwrap();
+        let current = store.transcript(&rid("r")).unwrap().unwrap();
+        assert_eq!(kept.transcript_revision, Revision(1));
+        assert!(!kept.applies_to(&current));
+        assert_eq!(
+            crate::domain::TranslationFlag::derive(
+                Some((kept.transcript_revision, &kept.target)),
+                Some(current.revision),
+                Some(&tag("en")),
+            ),
+            crate::domain::TranslationFlag::Stale
+        );
+    }
+
+    fn translation_batches_per_run(store: &dyn Store) {
+        create(store, "r", 10);
+        create(store, "other", 20);
+        let key = translation_run("r", 1, "en", "ollama/gemma4:e4b");
+        let save = |key: &TranslationKey, batch: TranslationBatch| {
+            store
+                .apply(vec![Change::TranslationBatchSaved {
+                    key: key.clone(),
+                    batch,
+                }])
+                .unwrap();
+        };
+        save(&key, batch(&[(4, "four"), (5, "five \"q\"")]));
+        save(&key, batch(&[(0, "zero")]));
+        assert_eq!(
+            store.translation_batches(&key).unwrap(),
+            vec![
+                batch(&[(4, "four"), (5, "five \"q\"")]),
+                batch(&[(0, "zero")])
+            ],
+            "save order, not index order"
+        );
+        let others = [
+            translation_run("r", 2, "en", "ollama/gemma4:e4b"),
+            translation_run("r", 1, "fr", "ollama/gemma4:e4b"),
+            translation_run("r", 1, "en", "ollama/other"),
+            translation_run("other", 1, "en", "ollama/gemma4:e4b"),
+        ];
+        for other in &others {
+            assert_eq!(
+                store.translation_batches(other).unwrap(),
+                vec![],
+                "{other:?}"
+            );
+        }
+        save(&others[3], batch(&[(1, "x")]));
+        store
+            .apply(vec![Change::TranslationBatchesCleared(rid("r"))])
+            .unwrap();
+        assert_eq!(store.translation_batches(&key).unwrap(), vec![]);
+        assert_eq!(store.translation_batches(&others[3]).unwrap().len(), 1);
+        store
+            .apply(vec![Change::TranslationBatchesCleared(rid("ghost"))])
+            .unwrap();
+    }
+
+    fn translation_follows_the_recording(store: &dyn Store) {
+        let key = translation_run("ghost", 1, "en", "ollama/gemma4:e4b");
+        assert_not_found(store.apply(vec![Change::TranslationBatchSaved {
+            key: key.clone(),
+            batch: batch(&[(0, "x")]),
+        }]));
+        assert_not_found(store.apply(vec![Change::TranslationReplaced {
+            id: rid("ghost"),
+            translation: translation(1, "en", &[Some("x")]),
+        }]));
+
+        create(store, "gone", 10);
+        let key = translation_run("gone", 1, "en", "ollama/gemma4:e4b");
+        store
+            .apply(vec![
+                Change::TranslationBatchSaved {
+                    key: key.clone(),
+                    batch: batch(&[(0, "x")]),
+                },
+                Change::TranslationReplaced {
+                    id: rid("gone"),
+                    translation: translation(1, "en", &[Some("x")]),
+                },
+            ])
+            .unwrap();
+        store
+            .apply(vec![Change::RecordingDeleted(rid("gone"))])
+            .unwrap();
+        create(store, "gone", 20);
+        assert_eq!(store.translation(&rid("gone")).unwrap(), None);
+        assert_eq!(store.translation_batches(&key).unwrap(), vec![]);
     }
 }
 

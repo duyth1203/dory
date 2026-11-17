@@ -45,7 +45,7 @@ use gpui_kit::{
 };
 
 use crate::a11y;
-use crate::app::{Detail, PlayerHandle, Session, Turn};
+use crate::app::{Detail, PlayerHandle, Session, TranscriptText, Turn};
 use crate::find::{Place, shift_into_view};
 use crate::fonts;
 use crate::icons::Icon;
@@ -69,6 +69,18 @@ pub fn playing_turn(turns: &[Turn], at: Ms) -> Option<usize> {
     let started = turns.partition_point(|t| t.range.is_some_and(|r| r.start() <= at));
     let ix = started.checked_sub(1)?;
     turns[ix].range.filter(|r| r.contains(at)).map(|_| ix)
+}
+
+/// What VoiceOver reads for a turn: "Sam, 12 minutes 30 seconds, translated from Tagalog, then the
+/// text". The note is only there on a translated turn.
+pub fn spoken_turn(turn: &Turn) -> String {
+    let mut parts = vec![turn.label.to_string()];
+    if let Some(range) = turn.range {
+        parts.push(a11y::spoken_duration(range.start()));
+    }
+    parts.extend(turn.translated_note());
+    parts.push(turn.text.clone());
+    parts.join(", ")
 }
 
 /// "Renames Speaker 3 in all 14 turns. Return to save, Escape to cancel."
@@ -130,6 +142,8 @@ pub struct TranscriptView {
     session: Entity<Session>,
     player: Entity<PlayerHandle>,
     detail: Option<Arc<Detail>>,
+    /// Which text of a translated transcript the list shows, as the session last said.
+    text: TranscriptText,
     list: ListState,
     playing: Option<usize>,
     cursor: Option<usize>,
@@ -165,6 +179,7 @@ impl TranscriptView {
             session,
             player,
             detail: None,
+            text: TranscriptText::default(),
             list: ListState::new(0, ListAlignment::Top, px(600.)),
             playing: None,
             cursor: None,
@@ -187,20 +202,28 @@ impl TranscriptView {
     }
 
     fn turns(&self) -> &[Turn] {
-        self.detail.as_deref().map_or(&[], |d| &d.turns)
+        self.detail.as_deref().map_or(&[], |d| d.shown(self.text))
     }
 
     fn sync_detail(&mut self, cx: &mut Context<Self>) {
         let detail = self.session.read(cx).detail();
+        let text = self.session.read(cx).text();
         let same = match (&detail, &self.detail) {
             (Some(new), Some(old)) => Arc::ptr_eq(new, old),
             (None, None) => true,
             _ => false,
         };
         if same {
+            if text != self.text {
+                // Same turns in the same order, so only their words and heights change.
+                self.text = text;
+                self.list.remeasure();
+                cx.notify();
+            }
             self.follow_search(cx);
             return;
         }
+        self.text = text;
         let count = detail.as_ref().map_or(0, |d| d.turns.len());
         if count == self.list.item_count() {
             self.list.remeasure();
@@ -425,28 +448,24 @@ impl TranscriptView {
         let Some(detail) = self.detail.clone() else {
             return div().into_any_element();
         };
-        let Some(turn) = detail.turns.get(ix) else {
+        let Some(turn) = detail.shown(self.text).get(ix) else {
             return div().into_any_element();
         };
         let playing = self.playing == Some(ix);
         let sounding = playing && self.player.read(cx).is_playing();
         let current = self.cursor == Some(ix);
         let ring = current && self.focus.is_focused(window);
-        let spoken = match turn.range {
-            Some(range) => format!(
-                "{}, {}, {}",
-                turn.label,
-                a11y::spoken_duration(range.start()),
-                turn.text
-            ),
-            None => format!("{}, {}", turn.label, turn.text),
+        let spoken = spoken_turn(turn);
+        // Matches are found in what was spoken, so they are drawn only on the spoken text.
+        let marks: Vec<Range<usize>> = if detail.translated(self.text) {
+            Vec::new()
+        } else {
+            self.session
+                .read(cx)
+                .found()
+                .map(|found| found.in_turn(ix).iter().map(|m| m.span.clone()).collect())
+                .unwrap_or_default()
         };
-        let marks: Vec<Range<usize>> = self
-            .session
-            .read(cx)
-            .found()
-            .map(|found| found.in_turn(ix).iter().map(|m| m.span.clone()).collect())
-            .unwrap_or_default();
         let mut described = Vec::new();
         if turn.range.is_none() {
             described.push("No timestamp, so it cannot play from here");
@@ -495,7 +514,7 @@ impl TranscriptView {
                 .into_any_element(),
             };
         let hint = self.rename.as_ref().filter(|r| r.turn == ix).map(|rename| {
-            let hint = rename_hint(&detail.turns, rename.speaker, &turn.label);
+            let hint = rename_hint(detail.shown(self.text), rename.speaker, &turn.label);
             a11y::node(format!("turn-{ix}-rename-hint"), Role::Label, hint.clone())
                 .text_size(theme.text(12.))
                 .text_color(theme.text_secondary)
@@ -538,7 +557,7 @@ impl TranscriptView {
 
         a11y::node(format!("turn-{ix}"), Role::ListItem, spoken)
             .aria_position_in_set(ix + 1)
-            .aria_size_of_set(detail.turns.len())
+            .aria_size_of_set(detail.shown(self.text).len())
             .when(current, |el| el.aria_active_descendant())
             .when(!described.is_empty(), |el| {
                 el.aria_description(described.join(". "))
@@ -945,6 +964,7 @@ mod tests {
             label: format!("Speaker {speaker}").into(),
             range: range.and_then(|(a, b)| TimeRange::new(Ms(a), Ms(b))),
             text: String::new(),
+            translated_from: None,
         }
     }
 

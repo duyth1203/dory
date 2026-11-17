@@ -5,7 +5,7 @@ use dory::Config;
 use dory_core::app::{AppKind, Event};
 use dory_core::models::{Choice, Diar, Llm, ModelId, Stt};
 
-use crate::args::{AddArgs, ChooseArgs, KindArg, LanguagesArgs, ProvisionArgs};
+use crate::args::{AddArgs, ChooseArgs, KindArg, LanguagesArgs, OutputLanguageArgs, ProvisionArgs};
 use crate::open;
 use crate::wait::block_on;
 
@@ -89,6 +89,20 @@ pub fn languages(config: &Config, args: &LanguagesArgs) -> Result<(), String> {
             .map(ToString::to_string)
             .collect();
         println!("meeting languages: {}", tags.join(", "));
+    }
+    Ok(())
+}
+
+pub fn output_language(config: &Config, args: &OutputLanguageArgs) -> Result<(), String> {
+    let dory = open(config, false)?;
+    if let OutputLanguageArgs::Set(tag) = args {
+        let tag = tag.clone();
+        dory.update_settings(|s| s.output_language = tag)
+            .map_err(crate::chain)?;
+    }
+    match dory.settings().map_err(crate::chain)?.output_language {
+        Some(tag) => println!("output language: {tag}"),
+        None => println!("output language: same as spoken"),
     }
     Ok(())
 }

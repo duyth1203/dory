@@ -48,7 +48,7 @@ use recorder::{Msg, RecorderHandle, commit_sealed};
 use crate::domain::{
     AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority,
     Processing, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings,
-    SpeakerId, SpeakerNames, Summary, TakeContainer, Transcript, Waveform,
+    SpeakerId, SpeakerNames, Summary, TakeContainer, Transcript, Translation, Waveform,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -177,6 +177,7 @@ pub struct Trashed {
     recording: Recording,
     transcript: Option<Transcript>,
     summary: Option<Summary>,
+    translation: Option<Translation>,
     names: SpeakerNames,
     receipt: TrashReceipt,
 }
@@ -546,6 +547,12 @@ impl Library<'_> {
         self.dory.reader.summary(id)
     }
 
+    /// The transcript in the output language, if the recording has one. Check
+    /// [`Translation::applies_to`] against the transcript before showing it.
+    pub fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        self.dory.reader.translation(id)
+    }
+
     pub fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
         self.dory.reader.speaker_names(id)
     }
@@ -638,6 +645,7 @@ impl Library<'_> {
         }
         let transcript = store.transcript(id)?;
         let summary = store.summary(id)?;
+        let translation = store.translation(id)?;
         let names = store.speaker_names(id)?;
         let receipt = dory.trash.move_to_trash(&dory.takes.files(id)?)?;
         if let Err(error) = dory.db.apply(vec![Change::RecordingDeleted(id.clone())]) {
@@ -648,6 +656,7 @@ impl Library<'_> {
             recording,
             transcript,
             summary,
+            translation,
             names,
             receipt,
         })
@@ -670,6 +679,7 @@ impl Library<'_> {
             recording,
             transcript,
             summary,
+            translation,
             names,
             receipt,
         } = trashed;
@@ -689,6 +699,12 @@ impl Library<'_> {
             changes.push(Change::SummaryReplaced {
                 id: id.clone(),
                 summary,
+            });
+        }
+        if let Some(translation) = translation {
+            changes.push(Change::TranslationReplaced {
+                id: id.clone(),
+                translation,
             });
         }
         if names != SpeakerNames::default() {
@@ -979,6 +995,7 @@ impl Pipeline<'_> {
         goal: Goal,
         priority: Priority,
     ) -> Result<(), DoryError> {
+        let goal = self.dory.db.store.settings()?.goal_for(goal);
         self.dory.db.apply(vec![Change::JobEnqueued {
             id: id.clone(),
             goal,
@@ -1167,6 +1184,10 @@ impl LibraryReader {
 
     pub fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
         self.store.summary(id)
+    }
+
+    pub fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        self.store.translation(id)
     }
 
     pub fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {

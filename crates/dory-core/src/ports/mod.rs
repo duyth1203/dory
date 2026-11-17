@@ -30,7 +30,9 @@ pub use playback::{
 pub use provider::{ModelProvider, ProvisionSink};
 pub use remote::{Consent, Remote};
 pub use speech::{RawSegment, SegmentSink, TranscribeOutcome, TranscribeRequest, Transcriber};
-pub use store::{Change, Checkpoint, CheckpointKey, Store, StoreRead};
+pub use store::{
+    Change, Checkpoint, CheckpointKey, Store, StoreRead, TranslationBatch, TranslationKey,
+};
 pub use takes::LegacyFile;
 pub use takes::{Activity, Clip, TakeWriter, Takes};
 pub use trash::{Moved, Trash, TrashError, TrashReceipt};

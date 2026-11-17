@@ -35,6 +35,7 @@ fn open_long(cx: &mut TestAppContext) -> AnyWindowHandle {
                 speaker: SpeakerId(1 + (i % 2) as u16),
                 channel: Channel::System,
                 text: format!("Line {i}."),
+                language: None,
             }
         })
         .collect();

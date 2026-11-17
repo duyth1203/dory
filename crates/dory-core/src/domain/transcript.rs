@@ -18,6 +18,10 @@ pub struct Segment {
     pub speaker: SpeakerId,
     pub channel: Channel,
     pub text: String,
+    /// The language the engine detected for this stretch of speech. `None` when unknown: an
+    /// import, or a transcript made before Dory kept it. Translation treats `None` as unknown
+    /// and translates it.
+    pub language: Option<LangTag>,
 }
 
 /// Replaced whole by the transcribe stage, never patched line by line.
@@ -126,6 +130,7 @@ mod tests {
             speaker: SpeakerId(speaker),
             channel: Channel::System,
             text: String::new(),
+            language: None,
         }
     }
 

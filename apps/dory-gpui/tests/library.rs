@@ -23,6 +23,7 @@ fn status(row: &RecordingRow, recorder: &RecorderStatus, progress: Option<Progre
         sealing: false,
         progress,
         done: &[],
+        translating: false,
         spot: None,
         left: Left::Estimating,
         auto_process: true,

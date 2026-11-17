@@ -125,11 +125,24 @@ pub fn show(config: &Config, args: &ShowArgs) -> Result<(), String> {
     match lib.transcript(&args.id).map_err(crate::chain)? {
         Some(transcript) => {
             let names = lib.speaker_names(&args.id).map_err(crate::chain)?;
-            println!(
-                "Transcript (revision {}, {})",
-                transcript.revision.0, transcript.produced_by
-            );
-            for line in view::transcript_lines(&transcript, &names) {
+            let stored = lib.translation(&args.id).map_err(crate::chain)?;
+            let translation = stored
+                .as_ref()
+                .filter(|t| t.applies_to(&transcript) && !args.original);
+            match translation {
+                Some(t) => println!(
+                    "Transcript (revision {}, {}), translated into {} by {}, spoken text with --original",
+                    transcript.revision.0, transcript.produced_by, t.target, t.produced_by
+                ),
+                None => println!(
+                    "Transcript (revision {}, {})",
+                    transcript.revision.0, transcript.produced_by
+                ),
+            }
+            if stored.as_ref().is_some_and(|t| !t.applies_to(&transcript)) {
+                println!("(a translation of an older revision is stored and not shown)");
+            }
+            for line in view::transcript_lines(&transcript, &names, translation) {
                 println!("{line}");
             }
         }

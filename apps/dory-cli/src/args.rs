@@ -118,13 +118,22 @@ impl SeedArgs {
 #[derive(Debug, PartialEq)]
 pub struct ShowArgs {
     pub id: RecordingId,
+    /// Prints the spoken transcript even when a translation exists.
+    pub original: bool,
 }
 
 impl ShowArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
         match args {
-            [id] => Ok(Self { id: parse_id(id)? }),
-            _ => Err("show takes one argument: the recording id".into()),
+            [id] if !id.starts_with("--") => Ok(Self {
+                id: parse_id(id)?,
+                original: false,
+            }),
+            [id, flag] | [flag, id] if flag == "--original" && !id.starts_with("--") => Ok(Self {
+                id: parse_id(id)?,
+                original: true,
+            }),
+            _ => Err("show takes the recording id and an optional --original".into()),
         }
     }
 }
@@ -320,6 +329,27 @@ impl LanguagesArgs {
                 .map(|t| LangTag::parse(t).map_err(|e| e.to_string()))
                 .collect::<Result<_, _>>()
                 .map(Self::Set),
+        }
+    }
+}
+
+/// `output-language` shows the language transcripts and summaries are written in. A tag sets it,
+/// and `same` goes back to writing in the language that was spoken.
+#[derive(Debug, PartialEq)]
+pub enum OutputLanguageArgs {
+    Show,
+    Set(Option<LangTag>),
+}
+
+impl OutputLanguageArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [] => Ok(Self::Show),
+            [word] if word == "same" => Ok(Self::Set(None)),
+            [tag] => LangTag::parse(tag)
+                .map(|tag| Self::Set(Some(tag)))
+                .map_err(|e| e.to_string()),
+            _ => Err("output-language takes one language tag, or same".into()),
         }
     }
 }
@@ -529,5 +559,32 @@ mod tests {
             LanguagesArgs::Set(Vec::new())
         );
         assert!(LanguagesArgs::parse(&words("not_a_tag!")).is_err());
+    }
+
+    #[test]
+    fn output_language_shows_sets_or_goes_back_to_same_as_spoken() {
+        assert_eq!(
+            OutputLanguageArgs::parse(&[]).unwrap(),
+            OutputLanguageArgs::Show
+        );
+        assert_eq!(
+            OutputLanguageArgs::parse(&words("en")).unwrap(),
+            OutputLanguageArgs::Set(Some(LangTag::parse("en").unwrap()))
+        );
+        assert_eq!(
+            OutputLanguageArgs::parse(&words("same")).unwrap(),
+            OutputLanguageArgs::Set(None)
+        );
+        assert!(OutputLanguageArgs::parse(&words("not_a_tag!")).is_err());
+        assert!(OutputLanguageArgs::parse(&words("en fr")).is_err());
+    }
+
+    #[test]
+    fn show_takes_an_id_and_an_optional_original_flag() {
+        assert!(!ShowArgs::parse(&words("r1")).unwrap().original);
+        assert!(ShowArgs::parse(&words("r1 --original")).unwrap().original);
+        assert!(ShowArgs::parse(&words("--original r1")).unwrap().original);
+        assert!(ShowArgs::parse(&words("--original")).is_err());
+        assert!(ShowArgs::parse(&words("r1 --nope")).is_err());
     }
 }

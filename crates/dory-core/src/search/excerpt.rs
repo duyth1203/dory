@@ -19,27 +19,30 @@ pub enum Source {
     Speakers,
 }
 
-/// What a conversation hit shows: a snippet, and where it came from.
+/// What a conversation hit shows: a snippet, where it came from, and which of that source's items
+/// it was cut from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Excerpt {
     pub source: Source,
+    pub item: usize,
     pub snippet: Snippet,
 }
 
 /// The snippet of `text` for the item [`locate`] chose. A phrase that no single item holds was
 /// located by its words, so the snippet follows them too.
-fn snippet_of(query: &Query, text: &str) -> Option<Snippet> {
-    snippet(query, text, SNIPPET_WIDTH).or_else(|| {
+fn snippet_of(query: &Query, text: &str, width: usize) -> Option<Snippet> {
+    snippet(query, text, width).or_else(|| {
         let words = query.phrase_words()?;
-        snippet(&words, text, SNIPPET_WIDTH)
+        snippet(&words, text, width)
     })
 }
 
-fn in_first_match(query: &Query, items: &[&str], source: Source) -> Option<Excerpt> {
-    let at = locate(query, items)?.item;
+fn in_first_match(query: &Query, items: &[&str], source: Source, width: usize) -> Option<Excerpt> {
+    let item = locate(query, items)?.item;
     Some(Excerpt {
         source,
-        snippet: snippet_of(query, items[at])?,
+        item,
+        snippet: snippet_of(query, items[item], width)?,
     })
 }
 
@@ -52,9 +55,20 @@ pub fn excerpt(
     blocks: &[&str],
     speakers: &[&str],
 ) -> Option<Excerpt> {
-    in_first_match(query, turns, Source::Transcript)
-        .or_else(|| in_first_match(query, blocks, Source::Summary))
-        .or_else(|| in_first_match(query, speakers, Source::Speakers))
+    excerpt_within(query, turns, blocks, speakers, SNIPPET_WIDTH)
+}
+
+/// [`excerpt`] with snippets of about `width` characters.
+pub fn excerpt_within(
+    query: &Query,
+    turns: &[&str],
+    blocks: &[&str],
+    speakers: &[&str],
+    width: usize,
+) -> Option<Excerpt> {
+    in_first_match(query, turns, Source::Transcript, width)
+        .or_else(|| in_first_match(query, blocks, Source::Summary, width))
+        .or_else(|| in_first_match(query, speakers, Source::Speakers, width))
 }
 
 /// The summary's Markdown as plain lines, so a snippet never shows a heading hash, a bullet, or
@@ -108,7 +122,7 @@ mod tests {
             &["Roadmap Rita"],
         )
         .unwrap();
-        assert_eq!(found.source, Source::Transcript);
+        assert_eq!((found.source, found.item), (Source::Transcript, 1));
         assert_eq!(found.snippet.text, "we agreed the roadmap slips");
         assert_eq!(marked(&found), ["roadmap"]);
     }

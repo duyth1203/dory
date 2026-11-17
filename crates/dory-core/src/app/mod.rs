@@ -60,7 +60,7 @@ use crate::ports::{
     TrashReceipt,
 };
 use crate::recorder::{Input, Limits};
-use crate::search::{self, Excerpt, Query, SearchResults};
+use crate::search::{self, Correction, Excerpt, Query, SearchResults, Vocabulary};
 
 /// Every adapter the core needs. Only the composition root builds this.
 pub struct Ports {
@@ -1046,29 +1046,25 @@ impl Models<'_> {
     }
 }
 
-/// Runs `query` exactly. Only when that finds nothing does it ask the store for its vocabulary
+/// Runs `query` exactly through `search`. Only when that finds nothing does it read `vocabulary`
 /// and run the corrected query. A correction that finds nothing either is dropped, so the results
-/// never name a correction that shows no recording.
-pub(crate) fn find(store: &dyn StoreRead, query: Query) -> Result<SearchResults, StoreError> {
-    let hits = store.search(&query)?;
-    if hits.is_empty() && query.is_correctable() {
-        let vocabulary = store.vocabulary()?;
-        if let Some((corrected, corrections)) = query.corrected(&vocabulary) {
-            let hits = store.search(&corrected)?;
-            if !hits.is_empty() {
-                return Ok(SearchResults {
-                    query: corrected,
-                    hits,
-                    corrections,
-                });
-            }
+/// never name a correction that shows no recording. Returns the query that found the hits.
+pub(crate) fn find<T>(
+    query: Query,
+    search: impl Fn(&Query) -> Result<Vec<T>, StoreError>,
+    vocabulary: impl FnOnce() -> Result<Arc<Vocabulary>, StoreError>,
+) -> Result<(Query, Vec<T>, Vec<Correction>), StoreError> {
+    let hits = search(&query)?;
+    if hits.is_empty()
+        && query.is_correctable()
+        && let Some((corrected, corrections)) = query.corrected(&*vocabulary()?)
+    {
+        let hits = search(&corrected)?;
+        if !hits.is_empty() {
+            return Ok((corrected, hits, corrections));
         }
     }
-    Ok(SearchResults {
-        query,
-        hits,
-        corrections: Vec::new(),
-    })
+    Ok((query, hits, Vec::new()))
 }
 
 /// What each speaker said in one go: consecutive segments of one speaker, joined by a space.
@@ -1114,7 +1110,13 @@ impl LibraryReader {
             return Ok(None);
         };
         let started = std::time::Instant::now();
-        let results = find(&*self.store, query)?;
+        let (query, hits, corrections) =
+            find(query, |q| self.store.search(q), || self.store.vocabulary())?;
+        let results = SearchResults {
+            query,
+            hits,
+            corrections,
+        };
         eprintln!(
             "search ms={:.2} hits={} corrected={}",
             started.elapsed().as_secs_f64() * 1000.0,

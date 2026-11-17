@@ -35,6 +35,8 @@ pub enum StoreError {
     SchemaTooOld { found: u32, supported: u32 },
     #[error("the library was updated while open (schema {found}, this build reads {supported})")]
     SchemaChanged { found: u32, supported: u32 },
+    #[error("the search index was built by another version of Dory, open Dory to rebuild it")]
+    SearchIndexStale,
 }
 
 impl Classify for StoreError {
@@ -47,7 +49,8 @@ impl Classify for StoreError {
             | StoreError::SchemaTooNew { .. }
             | StoreError::Missing(_)
             | StoreError::SchemaTooOld { .. }
-            | StoreError::SchemaChanged { .. } => FailureClass::Permanent,
+            | StoreError::SchemaChanged { .. }
+            | StoreError::SearchIndexStale => FailureClass::Permanent,
         }
     }
 }

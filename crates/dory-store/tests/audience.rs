@@ -5,6 +5,7 @@ use dory_core::domain::{
 };
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, Store, StoreError, StoreRead};
+use dory_core::search::Query;
 use dory_core::testing::store::MemStore;
 use dory_store::{SqliteReader, SqliteStore};
 
@@ -78,7 +79,7 @@ fn seed(store: &dyn Store) {
 
 fn query(text: Option<&str>, exposure: Exposure) -> AssistantQuery {
     AssistantQuery {
-        text: text.map(Into::into),
+        query: text.and_then(Query::parse),
         fields: exposure.fields(),
         since: None,
         until: None,
@@ -91,7 +92,7 @@ fn ids(read: &dyn StoreRead, q: &AssistantQuery) -> Vec<String> {
     read.assistant_recordings(q)
         .unwrap()
         .into_iter()
-        .map(|r| r.recording.id.to_string())
+        .map(|f| f.row.recording.id.to_string())
         .collect()
 }
 
@@ -149,6 +150,7 @@ fn check_audience(read: &dyn StoreRead) {
     assert_eq!(ids(read, &title_only), ["a"]);
     title_only.fields = Fields {
         title: false,
+        speakers: false,
         summary: false,
         transcript: false,
     };
@@ -157,6 +159,18 @@ fn check_audience(read: &dyn StoreRead) {
         none,
         "an empty mask matches no text"
     );
+}
+
+#[test]
+fn sqlite_store_and_reader_keep_assistant_search_inside_each_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.sqlite");
+    let store = SqliteStore::open(&path).unwrap();
+    dory_core::testing::assistants::seed(&store);
+    dory_core::testing::assistants::check_search(std::sync::Arc::new(store));
+    dory_core::testing::assistants::check_search(std::sync::Arc::new(
+        SqliteReader::open(&path).unwrap(),
+    ));
 }
 
 #[test]
@@ -318,5 +332,5 @@ fn v4_to_v5_keeps_every_row() {
         .assistant_recordings(&query(None, Exposure::Titles))
         .unwrap();
     assert_eq!(rows.len(), 1, "an old recording is visible until hidden");
-    assert_eq!(rows[0].recording.title.as_deref(), Some("Old"));
+    assert_eq!(rows[0].row.recording.title.as_deref(), Some("Old"));
 }

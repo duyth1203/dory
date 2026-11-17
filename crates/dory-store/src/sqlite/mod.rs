@@ -18,8 +18,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dory_core::domain::{
-    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Job,
-    JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
+    Job, JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
     RecordingQuery, RecordingRow, Revision, Segment, Settings, SpeakerId, SpeakerNames, Summary,
     SummaryFlag, TakeInfo, Timestamp, Transcript, Writes,
 };
@@ -568,33 +568,8 @@ impl StoreRead for $t {
         let all = search::match_text(query);
         let title = search::title_match_text(query);
         self.read(|conn| {
-            let mut stmt = conn
-                .prepare_cached(&format!(
-                    "SELECT {ROW_COLUMNS},
-                            k.key IN (SELECT rowid FROM search WHERE search MATCH ?2)
-                     FROM search
-                     JOIN search_keys k ON k.key = search.rowid
-                     JOIN recordings r ON r.id = k.recording_id
-                     {ROW_JOINS}
-                     WHERE search MATCH ?1
-                     ORDER BY r.created_at DESC, r.id ASC"
-                ))
-                .map_err(db)?;
-            let raws = stmt
-                .query_map(params![all, title], |row| {
-                    Ok((raw_row(row)?, row.get::<_, bool>(ROW_WIDTH)?))
-                })
-                .map_err(db)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(db)?;
-            raws.into_iter()
-                .map(|(raw, in_title)| {
-                    Ok(Found {
-                        row: decode_row(raw)?,
-                        in_title,
-                    })
-                })
-                .collect()
+            search::ready(conn)?;
+            found_where(conn, true, "1", params![all, -1, title])
         })
     }
 
@@ -852,52 +827,60 @@ impl StoreRead for $t {
         })
     }
 
-    fn assistant_recordings(
-        &self,
-        query: &AssistantQuery,
-    ) -> Result<Vec<RecordingRow>, StoreError> {
-        let needle = query
-            .text
-            .as_deref()
-            .map(|t| t.trim().to_lowercase())
-            .unwrap_or_default();
-        let haystack = [
-            (query.fields.title, "r.title_lc"),
-            (query.fields.summary, "r.summary_lc"),
-            (query.fields.transcript, "r.transcript_lc"),
-        ]
-        .into_iter()
-        .filter_map(|(on, column)| on.then_some(column))
-        .collect::<Vec<_>>()
-        .join(" || char(10) || ");
-        let text = if haystack.is_empty() {
-            "?1 = ''".to_owned()
-        } else {
-            format!("(?1 = '' OR instr({haystack}, ?1) > 0)")
-        };
-        let filter = format!(
-            "r.hidden = 0 AND {text}
-             AND (?3 IS NULL OR r.created_at >= ?3)
-             AND (?4 IS NULL OR r.created_at < ?4)
-             AND (?5 IS NULL OR r.created_at < ?5 OR (r.created_at = ?5 AND r.id > ?6))"
-        );
+    fn assistant_recordings(&self, query: &AssistantQuery) -> Result<Vec<Found>, StoreError> {
+        let window = "r.hidden = 0
+             AND (?4 IS NULL OR r.created_at >= ?4)
+             AND (?5 IS NULL OR r.created_at < ?5)
+             AND (?6 IS NULL OR r.created_at < ?6 OR (r.created_at = ?6 AND r.id > ?7))";
         let (after_at, after_id) = match &query.after {
             Some((at, id)) => (Some(at.0), Some(id.as_str().to_owned())),
             None => (None, None),
         };
+        let limit = i64::from(query.limit);
+        let (since, until) = (query.since.map(|t| t.0), query.until.map(|t| t.0));
+        let Some(q) = &query.query else {
+            return self.read(|conn| {
+                let rows = rows_where(
+                    conn,
+                    window,
+                    params![
+                        Option::<i64>::None,
+                        limit,
+                        Option::<i64>::None,
+                        since,
+                        until,
+                        after_at,
+                        after_id
+                    ],
+                )?;
+                Ok(rows
+                    .into_iter()
+                    .map(|row| Found {
+                        row,
+                        in_title: false,
+                    })
+                    .collect())
+            });
+        };
+        let Some(all) = search::scoped_match_text(q, query.fields) else {
+            return Ok(Vec::new());
+        };
+        let title = search::title_match_text(q);
         self.read(|conn| {
-            rows_where(
+            search::ready(conn)?;
+            found_where(
                 conn,
-                &filter,
-                params![
-                    needle,
-                    i64::from(query.limit),
-                    query.since.map(|t| t.0),
-                    query.until.map(|t| t.0),
-                    after_at,
-                    after_id,
-                ],
+                query.fields.title,
+                window,
+                params![all, limit, title, since, until, after_at, after_id],
             )
+        })
+    }
+
+    fn assistant_vocabulary(&self, fields: Fields) -> Result<Vocabulary, StoreError> {
+        self.read(|conn| {
+            search::ready(conn)?;
+            search::read_scoped_vocabulary(conn, fields)
         })
     }
 }
@@ -908,7 +891,7 @@ store_reads!(SqliteStore);
 store_reads!(reader::SqliteReader);
 
 /// Recording rows matching `filter`, newest first, at most `?2` of them. `filter` is SQL over the
-/// `recordings r` row whose first parameter is `?1`.
+/// `recordings r` row.
 fn rows_where(
     conn: &Connection,
     filter: &str,
@@ -927,6 +910,47 @@ fn rows_where(
         .collect::<Result<Vec<_>, _>>()
         .map_err(db)?;
     raws.into_iter().map(decode_row).collect()
+}
+
+/// The recordings the index finds for the MATCH text `?1` that also pass `filter`, newest first,
+/// at most `?2` of them. `filter` is SQL over the `recordings r` row whose parameters start at
+/// `?4`. With `titles`, each says whether the MATCH text `?3` finds it too.
+fn found_where(
+    conn: &Connection,
+    titles: bool,
+    filter: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<Found>, StoreError> {
+    let in_title = match titles {
+        true => "k.key IN (SELECT rowid FROM search WHERE search MATCH ?3)",
+        false => "?3 IS NULL",
+    };
+    let raws = conn
+        .prepare_cached(&format!(
+            "SELECT {ROW_COLUMNS}, {in_title}
+             FROM search
+             JOIN search_keys k ON k.key = search.rowid
+             JOIN recordings r ON r.id = k.recording_id
+             {ROW_JOINS}
+             WHERE search MATCH ?1 AND {filter}
+             ORDER BY r.created_at DESC, r.id ASC
+             LIMIT ?2"
+        ))
+        .map_err(db)?
+        .query_map(params, |row| {
+            Ok((raw_row(row)?, row.get::<_, bool>(ROW_WIDTH)?))
+        })
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    raws.into_iter()
+        .map(|(raw, in_title)| {
+            Ok(Found {
+                row: decode_row(raw)?,
+                in_title,
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn load_transcript(

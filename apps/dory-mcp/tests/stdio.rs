@@ -6,8 +6,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use dory_core::domain::{
     AssistantChange, AssistantClient, Channel, ChannelLayout, ClientKey, Exposure, LangTag,
-    LanguagePref, Ms, Recording, RecordingId, Revision, Segment, SpeakerId, Summary, TimeRange,
-    Timestamp, Transcript, Writes,
+    LanguagePref, Ms, Recording, RecordingId, Revision, Segment, SpeakerId, SpeakerNames, Summary,
+    TimeRange, Timestamp, Transcript, Writes,
 };
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, Store};
@@ -484,4 +484,122 @@ fn prompts_carry_instructions_and_links_never_meeting_text() {
     );
     assert_eq!(missing["error"]["code"], -32602, "{missing}");
     server.finish();
+}
+
+fn name_speaker(data: &Path, speaker: u16, name: &str) {
+    let config = dory::Config::new(data);
+    dory_store::SqliteStore::open(config.db_path())
+        .unwrap()
+        .apply(vec![Change::SpeakerNamesReplaced {
+            id: RecordingId::parse("weekly").unwrap(),
+            names: SpeakerNames {
+                for_revision: Revision(1),
+                names: [(SpeakerId(speaker), name.to_owned())].into(),
+            },
+        }])
+        .unwrap();
+}
+
+fn found(result: &Value) -> Vec<String> {
+    result["structuredContent"]["recordings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn search_corrects_a_typo_takes_any_order_and_folds_accents() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Transcripts);
+    name_speaker(dir.path(), 1, "José Müller");
+    let mut server = Server::start(dir.path(), Some(&key), true);
+
+    let typo = server.tool("search_recordings", json!({"query": "approvd"}));
+    let content = &typo["structuredContent"];
+    assert_eq!(found(&typo), ["weekly"]);
+    assert_eq!(content["showing_results_for"], "approved");
+    assert_eq!(
+        content["corrections"],
+        json!([{"typed": "approvd", "used": ["approved"]}])
+    );
+    let hit = &content["recordings"][0];
+    assert_eq!(hit["matched_in"], "conversation");
+    let snippet = &hit["snippet"];
+    assert_eq!(snippet["field"], "transcript");
+    assert_eq!(snippet["untrusted_text"], "The budget is approved.");
+    assert_eq!(snippet["marks"], json!([[14, 22]]));
+    assert_eq!(snippet["matched"], json!(["approved"]));
+    assert_eq!(
+        snippet["turn"],
+        json!({"cursor": "r1.t0", "speaker": "José Müller", "start_seconds": 0})
+    );
+    let around = server.tool(
+        "get_transcript",
+        json!({"id": "weekly", "cursor": snippet["turn"]["cursor"]}),
+    );
+    assert!(
+        text_of(&around).contains("The budget is approved."),
+        "the turn cursor starts get_transcript at the match"
+    );
+
+    let any_order = server.tool("search_recordings", json!({"query": "approved budget"}));
+    assert_eq!(found(&any_order), ["weekly"]);
+    assert_eq!(
+        any_order["structuredContent"]["recordings"][0]["snippet"]["matched"],
+        json!(["budget", "approved"])
+    );
+    assert_eq!(
+        any_order["structuredContent"]["showing_results_for"],
+        Value::Null
+    );
+    let quoted = server.tool("search_recordings", json!({"query": "\"approved budget\""}));
+    assert_eq!(
+        found(&quoted),
+        Vec::<String>::new(),
+        "a quoted phrase keeps its order"
+    );
+    let in_order = server.tool(
+        "search_recordings",
+        json!({"query": "\"budget is approved\""}),
+    );
+    assert_eq!(found(&in_order), ["weekly"]);
+
+    for query in ["jose muller", "MÜLLER José", "müll"] {
+        let named = server.tool("search_recordings", json!({"query": query}));
+        assert_eq!(found(&named), ["weekly"], "{query}");
+        let snippet = &named["structuredContent"]["recordings"][0]["snippet"];
+        assert_eq!(snippet["field"], "speakers", "{query}");
+        assert_eq!(snippet["untrusted_text"], "José Müller", "{query}");
+    }
+
+    let title = server.tool("search_recordings", json!({"query": "sync"}));
+    let hit = &title["structuredContent"]["recordings"][0];
+    assert_eq!(hit["matched_in"], "title");
+    assert_eq!(hit["snippet"]["matched"], json!(["sync"]));
+    assert!(server.finish().success());
+}
+
+#[test]
+fn a_summaries_client_finds_no_transcript_word_and_no_correction_toward_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Summaries);
+    let mut server = Server::start(dir.path(), Some(&key), true);
+    for query in ["obey", "obeyy", "previous instructions"] {
+        let result = server.tool("search_recordings", json!({"query": query}));
+        assert_eq!(found(&result), Vec::<String>::new(), "{query}");
+        assert_eq!(
+            result["structuredContent"]["showing_results_for"],
+            Value::Null,
+            "{query}"
+        );
+    }
+    let summary_word = server.tool("search_recordings", json!({"query": "budgt"}));
+    assert_eq!(found(&summary_word), ["weekly"]);
+    assert_eq!(
+        summary_word["structuredContent"]["recordings"][0]["snippet"]["field"],
+        "summary"
+    );
+    assert!(server.finish().success());
 }

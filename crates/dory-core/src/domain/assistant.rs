@@ -22,10 +22,12 @@ pub enum Exposure {
 impl Exposure {
     pub const ALL: [Exposure; 3] = [Exposure::Titles, Exposure::Summaries, Exposure::Transcripts];
 
-    /// The text a search at this level may match inside.
+    /// The text a search at this level may match inside: exactly the text a read at this level
+    /// shows. Speaker names come with summaries, because `get_recording` lists them from there.
     pub fn fields(self) -> Fields {
         Fields {
             title: true,
+            speakers: self >= Exposure::Summaries,
             summary: self >= Exposure::Summaries,
             transcript: self >= Exposure::Transcripts,
         }
@@ -44,10 +46,12 @@ impl Exposure {
     }
 }
 
-/// The searchable text of a recording, as a mask.
+/// The searchable text of a recording, as a mask. `speakers` is the names the user gave the
+/// speakers of the current transcript.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Fields {
     pub title: bool,
+    pub speakers: bool,
     pub summary: bool,
     pub transcript: bool,
 }
@@ -148,10 +152,11 @@ pub enum AssistantChange {
 }
 
 /// A search on behalf of an assistant. It matches only inside `fields` and never returns a
-/// recording hidden from assistants, so `limit` counts only what the assistant may see.
+/// recording hidden from assistants, so `limit` counts only what the assistant may see. Without a
+/// query it lists every recording the assistant may see.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssistantQuery {
-    pub text: Option<String>,
+    pub query: Option<crate::search::Query>,
     pub fields: Fields,
     /// Recordings created at or after this time.
     pub since: Option<Timestamp>,
@@ -236,6 +241,7 @@ mod tests {
             f(Exposure::Titles),
             Fields {
                 title: true,
+                speakers: false,
                 summary: false,
                 transcript: false
             }
@@ -244,6 +250,7 @@ mod tests {
             f(Exposure::Summaries),
             Fields {
                 title: true,
+                speakers: true,
                 summary: true,
                 transcript: false
             }
@@ -252,6 +259,7 @@ mod tests {
             f(Exposure::Transcripts),
             Fields {
                 title: true,
+                speakers: true,
                 summary: true,
                 transcript: true
             }

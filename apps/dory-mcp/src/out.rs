@@ -7,12 +7,14 @@
 //! the nonce, so it cannot close the fence early.
 
 use std::io::Read;
+use std::ops::Range;
 
 use dory_core::assistant::turns::Turn;
 use dory_core::assistant::{
-    Field, Hit, MeetingItems, RecordingView, SearchPage, SummaryView, TranscriptPage,
+    Hit, HitSnippet, MeetingItems, RecordingView, SearchPage, SummaryView, TranscriptPage,
 };
 use dory_core::domain::{Ms, RecordingId, Refusal, SummaryFlag, Timestamp};
+use dory_core::search::Section;
 use rmcp::model::{Annotations, CallToolResult, ContentBlock, Resource, Role, TextContent};
 use serde_json::{Value, json};
 
@@ -154,20 +156,59 @@ fn hit(h: &Hit) -> Value {
         "duration_seconds": seconds(h.duration),
         "has_transcript": h.has_transcript,
         "summary": summary_state(h.summary),
-        "snippet": h.snippet.as_ref().map(|(field, text)| json!({
-            "field": field_name(*field),
-            "untrusted_text": clean(text),
+        "matched_in": h.section.map(|section| match section {
+            Section::Titles => "title",
+            Section::Conversations => "conversation",
+        }),
+        "snippet": h.snippet.as_ref().map(snippet),
+    })
+}
+
+fn snippet(cut: &HitSnippet) -> Value {
+    let (text, marks) = cleaned_with_marks(&cut.snippet.text, &cut.snippet.marks);
+    let matched: Vec<String> = marks
+        .iter()
+        .map(|[start, end]| text.chars().skip(*start).take(end - start).collect())
+        .collect();
+    json!({
+        "field": cut.field.as_str(),
+        "untrusted_text": text,
+        "marks": marks,
+        "matched": matched,
+        "turn": cut.turn.as_ref().map(|turn| json!({
+            "cursor": turn.cursor.to_string(),
+            "speaker": clean(&turn.speaker),
+            "start_seconds": seconds(turn.start),
         })),
     })
 }
 
-fn field_name(field: Field) -> &'static str {
-    field.as_str()
+/// [`clean`]'s text, and `marks`, byte ranges of `text`, as `[start, end)` character offsets
+/// into it. Cleaning drops control characters, so the offsets are counted after it.
+fn cleaned_with_marks(text: &str, marks: &[Range<usize>]) -> (String, Vec<[usize; 2]>) {
+    let kept = |c: char| !c.is_control() || c == '\n' || c == '\t';
+    let at = |byte: usize| text[..byte].chars().filter(|c| kept(*c)).count();
+    let marks = marks
+        .iter()
+        .filter(|m| text.is_char_boundary(m.start) && text.is_char_boundary(m.end))
+        .map(|m| [at(m.start), at(m.end)])
+        .collect();
+    (clean(text), marks)
 }
 
 pub fn search(page: &SearchPage) -> CallToolResult {
+    let used: Vec<&str> = page
+        .corrections
+        .iter()
+        .flat_map(|c| c.used.iter().map(String::as_str))
+        .collect();
     let value = json!({
         "notice": PREFACE,
+        "showing_results_for": (!used.is_empty()).then(|| used.join(", ")),
+        "corrections": page.corrections.iter().map(|c| json!({
+            "typed": c.typed,
+            "used": c.used,
+        })).collect::<Vec<_>>(),
         "recordings": page.hits.iter().map(hit).collect::<Vec<_>>(),
         "next_cursor": page.next.as_ref().map(ToString::to_string),
     });
@@ -310,6 +351,24 @@ pub fn unavailable(why: &str) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marks_count_characters_of_the_cleaned_text() {
+        let text = "Jos\u{e9}\u{7} M\u{fc}ller <<< Zanzibar";
+        let z = text.find("Zanzibar").unwrap();
+        let m = text.find("M\u{fc}ller").unwrap();
+        let marks = [m..m + "M\u{fc}ller".len(), z..text.len()];
+        let (clean, marks) = cleaned_with_marks(text, &marks);
+        assert_eq!(
+            clean,
+            "Jos\u{e9} M\u{fc}ller \u{2039}\u{2039}\u{2039} Zanzibar"
+        );
+        let words: Vec<String> = marks
+            .iter()
+            .map(|[s, e]| clean.chars().skip(*s).take(e - s).collect())
+            .collect();
+        assert_eq!(words, ["M\u{fc}ller", "Zanzibar"]);
+    }
 
     #[test]
     fn a_fence_cannot_be_closed_by_the_text_inside() {

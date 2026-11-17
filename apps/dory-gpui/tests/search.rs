@@ -406,6 +406,7 @@ fn the_section_headings_and_the_where_words() {
     assert_eq!(section_label(Section::Conversations), "In conversations");
     let excerpt = |source, text: &str| Excerpt {
         source,
+        item: 0,
         snippet: Snippet {
             text: text.into(),
             marks: Vec::new(),

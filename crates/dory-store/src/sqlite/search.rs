@@ -7,9 +7,10 @@
 //! searchable text calls [`reindex`] inside its own transaction, so the index commits with the
 //! text. Queries quote every token, so a typed "or" or "near" is a word, never FTS syntax.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use dory_core::domain::RecordingId;
+use dory_core::domain::{Fields, RecordingId};
 use dory_core::ports::StoreError;
 use dory_core::search::{Clause, Query, TOKENS_VERSION, Vocabulary, tokens};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -24,16 +25,17 @@ fn push_words(out: &mut String, text: &str) {
     }
 }
 
-/// Writes the index row of one recording, whose key exists and whose old row is gone.
-fn write_row(tx: &Connection, key: i64, id: &str) -> Result<(), StoreError> {
-    let (title, names_revision) = tx
+/// The recording's folded words per index column: title, speakers, summary, transcript. Speaker
+/// names count only when they were given for the current transcript revision.
+fn row_words(conn: &Connection, id: &str) -> Result<[String; 4], StoreError> {
+    let (title, names_revision) = conn
         .prepare_cached("SELECT title, names_revision FROM recordings WHERE id = ?1")
         .map_err(db)?
         .query_row([id], |row| {
             Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(db)?;
-    let transcript_revision: Option<i64> = tx
+    let transcript_revision: Option<i64> = conn
         .prepare_cached("SELECT revision FROM transcripts WHERE recording_id = ?1")
         .map_err(db)?
         .query_row([id], |row| row.get(0))
@@ -45,7 +47,7 @@ fn write_row(tx: &Connection, key: i64, id: &str) -> Result<(), StoreError> {
 
     let mut speakers = String::new();
     if transcript_revision == Some(names_revision) {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT name FROM speaker_names WHERE recording_id = ?1 ORDER BY speaker",
             )
@@ -57,7 +59,7 @@ fn write_row(tx: &Connection, key: i64, id: &str) -> Result<(), StoreError> {
     }
 
     let mut summary = String::new();
-    if let Some(markdown) = tx
+    if let Some(markdown) = conn
         .prepare_cached("SELECT markdown FROM summaries WHERE recording_id = ?1")
         .map_err(db)?
         .query_row([id], |row| row.get::<_, String>(0))
@@ -69,7 +71,7 @@ fn write_row(tx: &Connection, key: i64, id: &str) -> Result<(), StoreError> {
 
     let mut transcript = String::new();
     {
-        let mut stmt = tx
+        let mut stmt = conn
             .prepare_cached("SELECT text FROM segments WHERE recording_id = ?1 ORDER BY idx")
             .map_err(db)?;
         let mut rows = stmt.query([id]).map_err(db)?;
@@ -77,13 +79,18 @@ fn write_row(tx: &Connection, key: i64, id: &str) -> Result<(), StoreError> {
             push_words(&mut transcript, &row.get::<_, String>(0).map_err(db)?);
         }
     }
+    Ok([title_words, speakers, summary, transcript])
+}
 
+/// Writes the index row of one recording, whose key exists and whose old row is gone.
+fn write_row(tx: &Connection, key: i64, id: &str) -> Result<(), StoreError> {
+    let [title, speakers, summary, transcript] = row_words(tx, id)?;
     tx.prepare_cached(
         "INSERT INTO search (rowid, title, speakers, summary, transcript)
          VALUES (?1, ?2, ?3, ?4, ?5)",
     )
     .map_err(db)?
-    .execute(params![key, title_words, speakers, summary, transcript])
+    .execute(params![key, title, speakers, summary, transcript])
     .map_err(db)?;
     Ok(())
 }
@@ -113,43 +120,7 @@ pub(super) fn reindex(tx: &Connection, id: &RecordingId) -> Result<(), StoreErro
         .execute([key])
         .map_err(db)?;
     write_row(tx, key, id.as_str())?;
-    lowercase_copies(tx, id)?;
     bump_generation(tx)
-}
-
-/// Keeps the lowercase columns the assistant search reads up to date.
-fn lowercase_copies(tx: &Connection, id: &RecordingId) -> Result<(), StoreError> {
-    let (title, summary): (Option<String>, Option<String>) = tx
-        .prepare_cached(
-            "SELECT r.title, s.markdown FROM recordings r
-             LEFT JOIN summaries s ON s.recording_id = r.id WHERE r.id = ?1",
-        )
-        .map_err(db)?
-        .query_row([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(db)?;
-    let mut transcript = String::new();
-    {
-        let mut stmt = tx
-            .prepare_cached("SELECT text FROM segments WHERE recording_id = ?1 ORDER BY idx")
-            .map_err(db)?;
-        let mut rows = stmt.query([id.as_str()]).map_err(db)?;
-        while let Some(row) = rows.next().map_err(db)? {
-            transcript.push_str(&row.get::<_, String>(0).map_err(db)?);
-            transcript.push('\n');
-        }
-    }
-    tx.prepare_cached(
-        "UPDATE recordings SET title_lc = ?2, summary_lc = ?3, transcript_lc = ?4 WHERE id = ?1",
-    )
-    .map_err(db)?
-    .execute(params![
-        id.as_str(),
-        title.unwrap_or_default().to_lowercase(),
-        summary.unwrap_or_default().to_lowercase(),
-        transcript.to_lowercase(),
-    ])
-    .map_err(db)?;
-    Ok(())
 }
 
 /// Drops the recording's index row. Runs before the recording row goes, which takes its key with
@@ -199,14 +170,89 @@ pub(super) fn rebuild(tx: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-/// Gives the reader connection a temporary view of the index's terms. A temp table lives in the
-/// connection, so the reader stays read-only and the schema gains nothing.
+/// Gives the reader connection two temporary views of the index's terms: one row per term, and
+/// one per term and column with the number of recordings that hold it there. A temp table lives
+/// in the connection, so the reader stays read-only and the schema gains nothing.
 pub(super) fn open_vocabulary_view(reader: &Connection) -> Result<(), StoreError> {
     reader
         .execute_batch(
-            "CREATE VIRTUAL TABLE temp.search_terms USING fts5vocab('main', 'search', 'row')",
+            "CREATE VIRTUAL TABLE temp.search_terms USING fts5vocab('main', 'search', 'row');
+             CREATE VIRTUAL TABLE temp.search_columns USING fts5vocab('main', 'search', 'col');",
         )
         .map_err(db)
+}
+
+/// The index columns in [`row_words`] order, each with whether `fields` reads it.
+fn columns(fields: Fields) -> [(&'static str, bool); 4] {
+    [
+        ("title", fields.title),
+        ("speakers", fields.speakers),
+        ("summary", fields.summary),
+        ("transcript", fields.transcript),
+    ]
+}
+
+/// The terms an assistant with `fields` could find: those some recording not hidden from
+/// assistants holds in one of those columns. The index counts, per term and column, the
+/// recordings that hold it, so a term is kept unless every one of them is hidden. Hidden
+/// recordings are few, so their words are read from their text rather than from the index.
+pub(super) fn read_scoped_vocabulary(
+    conn: &Connection,
+    fields: Fields,
+) -> Result<Vocabulary, StoreError> {
+    let started = Instant::now();
+    let granted: Vec<&str> = columns(fields)
+        .into_iter()
+        .filter_map(|(name, on)| on.then_some(name))
+        .collect();
+    let mut hidden: HashMap<(String, &str), i64> = HashMap::new();
+    let ids = conn
+        .prepare_cached(
+            "SELECT r.id FROM recordings r JOIN search_keys k ON k.recording_id = r.id
+             WHERE r.hidden = 1",
+        )
+        .map_err(db)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    for id in &ids {
+        for ((name, on), words) in columns(fields).into_iter().zip(row_words(conn, id)?) {
+            if !on {
+                continue;
+            }
+            let words: HashSet<&str> = words.split_whitespace().collect();
+            for word in words {
+                *hidden.entry((word.to_owned(), name)).or_default() += 1;
+            }
+        }
+    }
+    let mut terms = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare_cached("SELECT term, col, doc FROM temp.search_columns")
+            .map_err(db)?;
+        let mut rows = stmt.query([]).map_err(db)?;
+        while let Some(row) = rows.next().map_err(db)? {
+            let col: String = row.get(1).map_err(db)?;
+            let Some(&name) = granted.iter().find(|name| **name == col) else {
+                continue;
+            };
+            let term: String = row.get(0).map_err(db)?;
+            let doc: i64 = row.get(2).map_err(db)?;
+            if doc > hidden.get(&(term.clone(), name)).copied().unwrap_or(0) {
+                terms.push(term);
+            }
+        }
+    }
+    let vocabulary = Vocabulary::new(generation(conn)?, terms);
+    eprintln!(
+        "assistant-vocabulary ms={:.2} terms={} hidden={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        vocabulary.terms().len(),
+        ids.len()
+    );
+    Ok(vocabulary)
 }
 
 /// The index's write counter. It goes up with every index write, so a cache built from the index
@@ -281,6 +327,25 @@ pub(super) fn match_text(query: &Query) -> String {
 /// The same lookup restricted to the title.
 pub(super) fn title_match_text(query: &Query) -> String {
     format!("{{title}} : ({})", match_text(query))
+}
+
+/// The same lookup restricted to the columns `fields` reads, or `None` when it reads none. Every
+/// clause may match in any of them, as in the unrestricted lookup.
+pub(super) fn scoped_match_text(query: &Query, fields: Fields) -> Option<String> {
+    let granted: Vec<&str> = columns(fields)
+        .into_iter()
+        .filter_map(|(name, on)| on.then_some(name))
+        .collect();
+    (!granted.is_empty()).then(|| format!("{{{}}} : ({})", granted.join(" "), match_text(query)))
+}
+
+/// Refuses a lookup on an index another build's tokens wrote. The owner rebuilds it when it opens
+/// the library; a read-only reader cannot, and its words would disagree with the index's.
+pub(super) fn ready(conn: &Connection) -> Result<(), StoreError> {
+    match is_current(conn)? {
+        true => Ok(()),
+        false => Err(StoreError::SearchIndexStale),
+    }
 }
 
 #[cfg(test)]

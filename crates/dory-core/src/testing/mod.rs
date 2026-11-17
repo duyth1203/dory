@@ -1297,6 +1297,7 @@ mod tests {
     }
 }
 
+pub mod assistants;
 pub mod playback;
 pub mod store;
 pub use playback::FakePlayback;

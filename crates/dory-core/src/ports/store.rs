@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use super::{RawSegment, StoreError};
 use crate::domain::{
-    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Goal,
-    Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit, RecordingId,
-    RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange, Timestamp,
-    Transcript,
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Fields,
+    Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
+    RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange,
+    Timestamp, Transcript,
 };
 use crate::models::ModelRef;
 use crate::search::{Found, Query, Vocabulary};
@@ -50,9 +50,13 @@ pub trait StoreRead: Send + Sync {
     fn assistant_client(&self, key: &ClientKey) -> Result<Option<AssistantClient>, StoreError>;
     /// Whether the user hid this recording from every assistant. False for an unknown id.
     fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError>;
-    /// Newest first, matching only inside the query's fields and never a hidden recording.
-    fn assistant_recordings(&self, query: &AssistantQuery)
-    -> Result<Vec<RecordingRow>, StoreError>;
+    /// Newest first, as [`StoreRead::search`] matches but only inside the query's fields, and
+    /// never a recording hidden from assistants. `in_title` is false for a listing.
+    fn assistant_recordings(&self, query: &AssistantQuery) -> Result<Vec<Found>, StoreError>;
+    /// The words [`StoreRead::assistant_recordings`] can find with `fields`: only from those
+    /// fields, and never from a recording hidden from assistants, so a correction drawn from it
+    /// names no word the assistant could not read.
+    fn assistant_vocabulary(&self, fields: Fields) -> Result<Vocabulary, StoreError>;
     /// The summary the last replacement pushed aside, kept so the user can restore it.
     fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
     /// What the user asked the summary to focus on, if anything.

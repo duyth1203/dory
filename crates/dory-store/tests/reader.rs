@@ -159,3 +159,32 @@ fn a_wal_library_without_shm_opens() {
         "the database bytes did not change"
     );
 }
+
+#[test]
+fn a_reader_refuses_an_index_another_build_wrote_and_leaves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = library_with_one(dir.path());
+    let reader = SqliteReader::open(&path).unwrap();
+    let query = dory_core::search::Query::parse("one").unwrap();
+    assert!(reader.search(&query).is_ok());
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("UPDATE search_meta SET tokens_version = 0")
+        .unwrap();
+    let before = database(&path);
+    assert!(matches!(
+        reader.search(&query),
+        Err(StoreError::SearchIndexStale)
+    ));
+    assert!(matches!(
+        reader.assistant_vocabulary(dory_core::domain::Exposure::Transcripts.fields()),
+        Err(StoreError::SearchIndexStale)
+    ));
+    assert_eq!(
+        reader.recordings(&RecordingQuery::default()).unwrap().len(),
+        1,
+        "the rest of the library still reads"
+    );
+    drop(reader);
+    assert_eq!(database(&path), before, "the reader rebuilt nothing");
+}

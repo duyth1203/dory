@@ -13,3 +13,6 @@ CREATE TABLE search_meta (
     generation     INTEGER NOT NULL
 );
 INSERT INTO search_meta (tokens_version, generation) VALUES (0, 0);
+ALTER TABLE recordings DROP COLUMN title_lc;
+ALTER TABLE recordings DROP COLUMN transcript_lc;
+ALTER TABLE recordings DROP COLUMN summary_lc;

@@ -257,7 +257,10 @@ fn each_level_reads_only_what_it_may() {
     );
     let budget = a.search(None, &search("budget")).unwrap();
     assert_eq!(ids(&budget), ["plan"]);
-    assert_eq!(budget.hits[0].snippet.as_ref().unwrap().0, Field::Summary);
+    assert_eq!(
+        budget.hits[0].snippet.as_ref().unwrap().field,
+        Field::Summary
+    );
     assert!(a.search(None, &search("layoffs")).unwrap().hits.is_empty());
     assert_eq!(
         a.transcript_page(None, &sync, None, None),
@@ -270,7 +273,7 @@ fn each_level_reads_only_what_it_may() {
     let layoffs = a.search(None, &search("LAYOFFS")).unwrap();
     assert_eq!(ids(&layoffs), ["sync"]);
     assert_eq!(
-        layoffs.hits[0].snippet.as_ref().unwrap().0,
+        layoffs.hits[0].snippet.as_ref().unwrap().field,
         Field::Transcript
     );
 }
@@ -422,4 +425,11 @@ fn listings_and_prompts_are_audited_and_prompts_need_summaries() {
     let whole = rig.me();
     rig.set_exposure(Exposure::Transcripts);
     assert_eq!(whole.transcript(None, &rid("sync")).unwrap().turns.len(), 2);
+}
+
+#[test]
+fn mem_store_search_stays_inside_each_grant() {
+    let store = Arc::new(MemStore::new());
+    dory_core::testing::assistants::seed(&*store);
+    dory_core::testing::assistants::check_search(store);
 }

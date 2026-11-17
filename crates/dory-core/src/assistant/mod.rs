@@ -11,19 +11,23 @@ pub mod turns;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::app::find;
 use crate::domain::{
     Access, Actor, AssistantQuery, AuditEntry, AuditOutcome, ChannelLayout, ClientKey, Exposure,
     LangTag, LanguagePref, Ms, Recording, RecordingId, Refusal, RemoteCommand, RemoteOutcome,
-    RemoteRequest, Revision, Sections, SummaryFlag, Timestamp, list_items, sections,
+    RemoteRequest, Revision, Sections, SpeakerNames, SummaryFlag, Timestamp, list_items, sections,
 };
 use crate::models::ModelRef;
 use crate::ports::{AuditSink, Clock, Remote, StoreError, StoreRead};
+use crate::search::{self, Correction, Found, Query, Section, Snippet, Source};
 use policy::Grant;
 use turns::{Turn, TurnCursor};
 
 pub const MAX_SEARCH_RESULTS: u32 = 25;
 pub const DEFAULT_SEARCH_RESULTS: u32 = 10;
 pub const MAX_ITEM_MEETINGS: u32 = 20;
+/// Characters a search snippet aims for: enough for an assistant to judge the hit, while the
+/// turn it came from is one transcript page away.
 pub const SNIPPET_CHARS: usize = 200;
 
 /// A search on behalf of an assistant.
@@ -63,6 +67,8 @@ impl std::fmt::Display for SearchCursor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
     Title,
+    /// A name the user gave a speaker.
+    Speakers,
     Summary,
     Transcript,
 }
@@ -71,10 +77,30 @@ impl Field {
     pub fn as_str(self) -> &'static str {
         match self {
             Field::Title => "title",
+            Field::Speakers => "speakers",
             Field::Summary => "summary",
             Field::Transcript => "transcript",
         }
     }
+}
+
+/// The turn of [`Assistant::transcript_page`] a transcript snippet was cut from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnAt {
+    /// Starts a transcript page at this turn.
+    pub cursor: TurnCursor,
+    pub speaker: String,
+    /// `None` for transcripts imported without times.
+    pub start: Option<Ms>,
+}
+
+/// Text around a match, cut only from a field this assistant may read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HitSnippet {
+    pub field: Field,
+    /// `marks` are the byte ranges of `text` that hold matched words.
+    pub snippet: Snippet,
+    pub turn: Option<TurnAt>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,14 +111,17 @@ pub struct Hit {
     pub duration: Option<Ms>,
     pub has_transcript: bool,
     pub summary: SummaryFlag,
-    /// Text around the match, cut only from a field this assistant may read.
-    pub snippet: Option<(Field, String)>,
+    /// Where the search matched: the title alone, or the conversation. `None` in a listing.
+    pub section: Option<Section>,
+    pub snippet: Option<HitSnippet>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchPage {
     pub hits: Vec<Hit>,
     pub next: Option<SearchCursor>,
+    /// When nothing matched the words as typed, each word the search replaced, and with what.
+    pub corrections: Vec<Correction>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -232,7 +261,10 @@ impl Assistant {
     }
 
     fn lib(&self, e: StoreError) -> Refusal {
-        if matches!(e, StoreError::SchemaChanged { .. }) {
+        if matches!(
+            e,
+            StoreError::SchemaChanged { .. } | StoreError::SearchIndexStale
+        ) {
             self.library_changed.store(true, Ordering::Relaxed);
         }
         library(e)
@@ -390,6 +422,7 @@ impl Assistant {
                         duration: r.take.map(|t| t.duration),
                         has_transcript,
                         summary,
+                        section: None,
                         snippet: None,
                     }]);
                 }
@@ -407,85 +440,150 @@ impl Assistant {
         )
     }
 
+    /// The page `search` asks for, by the same rules as the app's search, inside the grant. A
+    /// correction draws only on words the grant could find, so it never names one it could not.
     fn find(&self, grant: &Grant, search: &Search) -> Result<SearchPage, Refusal> {
         let limit = search
             .limit
             .unwrap_or(DEFAULT_SEARCH_RESULTS)
             .clamp(1, MAX_SEARCH_RESULTS);
         let fields = grant.fields();
-        let rows = self
-            .store
-            .assistant_recordings(&AssistantQuery {
-                text: search.text.clone(),
-                fields,
-                since: search.since,
-                until: search.until,
-                after: search.cursor.as_ref().map(|c| (c.created_at, c.id.clone())),
-                limit,
-            })
-            .map_err(|e| self.lib(e))?;
-        let needle = search
-            .text
-            .as_deref()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty());
-        let mut hits = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let r = &row.recording;
-            let snippet = match &needle {
-                Some(n) => self.snippet(r, n, fields)?,
-                None => None,
+        let ask = |query: Option<Query>| AssistantQuery {
+            query,
+            fields,
+            since: search.since,
+            until: search.until,
+            after: search.cursor.as_ref().map(|c| (c.created_at, c.id.clone())),
+            limit,
+        };
+        let (query, found, corrections) = match search.text.as_deref().and_then(Query::parse) {
+            None => (
+                None,
+                self.store
+                    .assistant_recordings(&ask(None))
+                    .map_err(|e| self.lib(e))?,
+                Vec::new(),
+            ),
+            Some(query) => {
+                let (query, found, corrections) = find(
+                    query,
+                    |q| self.store.assistant_recordings(&ask(Some(q.clone()))),
+                    || self.store.assistant_vocabulary(fields).map(Arc::new),
+                )
+                .map_err(|e| self.lib(e))?;
+                (Some(query), found, corrections)
+            }
+        };
+        let mut hits = Vec::with_capacity(found.len());
+        for f in &found {
+            let r = &f.row.recording;
+            let (section, snippet) = match &query {
+                Some(query) => self.matched(grant, query, f)?,
+                None => (None, None),
             };
             hits.push(Hit {
                 id: r.id.clone(),
                 title: r.title.clone(),
                 created_at: r.created_at,
                 duration: r.take.map(|t| t.duration),
-                has_transcript: row.has_transcript,
-                summary: row.summary,
+                has_transcript: f.row.has_transcript,
+                summary: f.row.summary,
+                section,
                 snippet,
             });
         }
-        let next = (rows.len() as u32 == limit)
-            .then(|| rows.last())
+        let next = (found.len() as u32 == limit)
+            .then(|| found.last())
             .flatten()
-            .map(|row| SearchCursor {
-                created_at: row.recording.created_at,
-                id: row.recording.id.clone(),
+            .map(|f| SearchCursor {
+                created_at: f.row.recording.created_at,
+                id: f.row.recording.id.clone(),
             });
-        Ok(SearchPage { hits, next })
+        Ok(SearchPage {
+            hits,
+            next,
+            corrections,
+        })
     }
 
-    fn snippet(
+    /// Where `query` matched `found`, as the app's sidebar shows it: a title hit marks the title,
+    /// and a conversation hit takes the first matching turn, else summary line, else speaker
+    /// name, out of only the fields the grant reads.
+    fn matched(
         &self,
-        recording: &Recording,
-        needle: &str,
-        fields: crate::domain::Fields,
-    ) -> Result<Option<(Field, String)>, Refusal> {
-        if let Some(title) = &recording.title
-            && let Some(s) = cut_around(title, needle)
-        {
-            return Ok(Some((Field::Title, s)));
+        grant: &Grant,
+        query: &Query,
+        found: &Found,
+    ) -> Result<(Option<Section>, Option<HitSnippet>), Refusal> {
+        let r = &found.row.recording;
+        if found.in_title {
+            let title = r.title.clone().unwrap_or_default();
+            let marks = search::highlights(query, &title);
+            return Ok((
+                Some(Section::Titles),
+                Some(HitSnippet {
+                    field: Field::Title,
+                    snippet: Snippet { text: title, marks },
+                    turn: None,
+                }),
+            ));
         }
-        if fields.summary
-            && let Some(summary) = self.store.summary(&recording.id).map_err(|e| self.lib(e))?
-            && let Some(s) = cut_around(&summary.markdown, needle)
-        {
-            return Ok(Some((Field::Summary, s)));
-        }
-        if fields.transcript
-            && let Some(t) = self
+        let fields = grant.fields();
+        let transcript = match fields.transcript || fields.speakers {
+            true => self.store.transcript(&r.id).map_err(|e| self.lib(e))?,
+            false => None,
+        };
+        let names = match &transcript {
+            Some(_) => self.store.speaker_names(&r.id).map_err(|e| self.lib(e))?,
+            None => SpeakerNames::default(),
+        };
+        let turns = match (&transcript, fields.transcript) {
+            (Some(t), true) => turns::turns(t, &names),
+            _ => Vec::new(),
+        };
+        let speakers: Vec<&str> = match (&transcript, fields.speakers) {
+            (Some(t), true) => t
+                .speakers()
+                .into_iter()
+                .filter_map(|speaker| names.name_of(speaker, t.revision))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let blocks = match fields.summary {
+            true => self
                 .store
-                .transcript(&recording.id)
+                .summary(&r.id)
                 .map_err(|e| self.lib(e))?
-        {
-            for segment in &t.segments {
-                if let Some(s) = cut_around(&segment.text, needle) {
-                    return Ok(Some((Field::Transcript, s)));
-                }
+                .map(|s| search::summary_blocks(&s.markdown))
+                .unwrap_or_default(),
+            false => Vec::new(),
+        };
+        let texts: Vec<&str> = turns.iter().map(|t| t.text.as_str()).collect();
+        let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
+        let excerpt = search::excerpt_within(query, &texts, &blocks, &speakers, SNIPPET_CHARS);
+        let snippet = excerpt.map(|e| {
+            let turn = match (e.source, &transcript) {
+                (Source::Transcript, Some(t)) => turns.get(e.item).map(|turn| TurnAt {
+                    cursor: TurnCursor {
+                        revision: t.revision,
+                        turn: e.item as u32,
+                    },
+                    speaker: turn.speaker.clone(),
+                    start: turn.start,
+                }),
+                _ => None,
+            };
+            HitSnippet {
+                field: match e.source {
+                    Source::Transcript => Field::Transcript,
+                    Source::Summary => Field::Summary,
+                    Source::Speakers => Field::Speakers,
+                },
+                snippet: e.snippet,
+                turn,
             }
-        }
-        Ok(None)
+        });
+        Ok((Some(Section::Conversations), snippet))
     }
 
     pub fn recording(
@@ -664,7 +762,7 @@ impl Assistant {
                         }
                         self.store
                             .assistant_recordings(&AssistantQuery {
-                                text: None,
+                                query: None,
                                 fields: grant.fields(),
                                 since: scope.since,
                                 until: None,
@@ -676,7 +774,7 @@ impl Assistant {
                             })
                             .map_err(|e| self.lib(e))?
                             .into_iter()
-                            .map(|row| row.recording.id)
+                            .map(|found| found.row.recording.id)
                             .collect()
                     }
                 };
@@ -706,45 +804,9 @@ impl Assistant {
     }
 }
 
-/// About [`SNIPPET_CHARS`] of `text` around the first case-insensitive match of `needle`, which
-/// is already lowercase.
-fn cut_around(text: &str, needle: &str) -> Option<String> {
-    let lower: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let needle: Vec<char> = needle.chars().collect();
-    let at = lower
-        .windows(needle.len())
-        .position(|w| w == needle.as_slice())?;
-    let chars: Vec<char> = text.chars().collect();
-    let at = at.min(chars.len());
-    let half = SNIPPET_CHARS.saturating_sub(needle.len()) / 2;
-    let start = at.saturating_sub(half);
-    let end = (start + SNIPPET_CHARS).min(chars.len());
-    let mut s: String = chars[start..end].iter().collect();
-    if start > 0 {
-        s.insert(0, '…');
-    }
-    if end < chars.len() {
-        s.push('…');
-    }
-    Some(s)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn snippets_cut_around_the_match() {
-        assert_eq!(
-            cut_around("Weekly Sync", "sync").as_deref(),
-            Some("Weekly Sync")
-        );
-        assert_eq!(cut_around("Weekly", "budget"), None);
-        let long = format!("{}budget{}", "a".repeat(500), "b".repeat(500));
-        let s = cut_around(&long, "budget").unwrap();
-        assert!(s.contains("budget") && s.starts_with('…') && s.ends_with('…'));
-        assert!(s.chars().count() <= SNIPPET_CHARS + 2);
-    }
 
     #[test]
     fn search_cursors_round_trip() {

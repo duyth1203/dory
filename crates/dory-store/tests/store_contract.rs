@@ -330,6 +330,17 @@ fn v8_migrates_a_v7_file() {
         "the migration's write-ahead log is checkpointed and truncated"
     );
     let conn = rusqlite::Connection::open(&path).unwrap();
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('recordings')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        columns.iter().all(|c| !c.ends_with("_lc")),
+        "the _lc columns are gone: {columns:?}"
+    );
     assert_eq!(found(&store, "atlas"), ["a"], "a title");
     assert_eq!(found(&store, "kilimanjaro review"), ["a"], "a transcript");
     assert_eq!(found(&store, "priyanka"), ["a"], "a speaker name");

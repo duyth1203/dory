@@ -8,7 +8,7 @@ mod query;
 mod tokens;
 mod vocabulary;
 
-pub use excerpt::{Excerpt, SNIPPET_WIDTH, Source, excerpt, summary_blocks};
+pub use excerpt::{Excerpt, SNIPPET_WIDTH, Source, excerpt, excerpt_within, summary_blocks};
 pub use matcher::{Located, Snippet, highlights, locate, matches, snippet};
 pub use query::{Clause, Correction, Query};
 pub use tokens::{TOKENS_VERSION, Token, fold, tokens};

@@ -260,6 +260,23 @@ impl Entry {
             transcript,
         ]
     }
+
+    /// [`Entry::fields`] with each field `fields` leaves out emptied, so the title stays first.
+    fn granted(&self, fields: Fields) -> [String; 4] {
+        let keep = [
+            fields.title,
+            fields.speakers,
+            fields.summary,
+            fields.transcript,
+        ];
+        let mut all = self.fields();
+        for (text, keep) in all.iter_mut().zip(keep) {
+            if !keep {
+                text.clear();
+            }
+        }
+        all
+    }
 }
 
 impl State {
@@ -290,27 +307,6 @@ impl State {
         });
         entries
     }
-}
-
-fn matches_text(entry: &Entry, needle: &str, fields: Fields) -> bool {
-    let title = entry.recording.title.as_deref().unwrap_or_default();
-    let transcript = entry
-        .transcript
-        .iter()
-        .flat_map(|t| t.segments.iter())
-        .any(|s| s.text.to_lowercase().contains(needle));
-    let summary = entry
-        .summary
-        .as_ref()
-        .is_some_and(|s| s.markdown.to_lowercase().contains(needle));
-    (fields.title && title.to_lowercase().contains(needle))
-        || (fields.transcript && transcript)
-        || (fields.summary && summary)
-}
-
-fn needle(text: Option<&str>) -> Option<String> {
-    text.map(|t| t.trim().to_lowercase())
-        .filter(|t| !t.is_empty())
 }
 
 impl StoreRead for MemStore {
@@ -464,12 +460,8 @@ impl StoreRead for MemStore {
             .and_then(|e| e.instruction.clone()))
     }
 
-    fn assistant_recordings(
-        &self,
-        query: &AssistantQuery,
-    ) -> Result<Vec<RecordingRow>, StoreError> {
+    fn assistant_recordings(&self, query: &AssistantQuery) -> Result<Vec<Found>, StoreError> {
         let state = self.state();
-        let needle = needle(query.text.as_deref());
         let newer_than_cursor = |e: &Entry| {
             query.after.as_ref().is_none_or(|(at, id)| {
                 (e.recording.created_at, std::cmp::Reverse(&e.recording.id))
@@ -484,13 +476,35 @@ impl StoreRead for MemStore {
                     && query.since.is_none_or(|t| e.recording.created_at >= t)
                     && query.until.is_none_or(|t| e.recording.created_at < t)
                     && newer_than_cursor(e)
-                    && needle
-                        .as_deref()
-                        .is_none_or(|n| matches_text(e, n, query.fields))
+            })
+            .filter_map(|e| {
+                let fields = e.granted(query.fields);
+                let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+                match &query.query {
+                    None => Some(Found {
+                        row: state.row(e),
+                        in_title: false,
+                    }),
+                    Some(q) => search::matches(q, &fields).then(|| Found {
+                        row: state.row(e),
+                        in_title: query.fields.title && search::matches(q, &fields[..1]),
+                    }),
+                }
             })
             .take(query.limit as usize)
-            .map(|e| state.row(e))
             .collect())
+    }
+
+    fn assistant_vocabulary(&self, fields: Fields) -> Result<Vocabulary, StoreError> {
+        let state = self.state();
+        let terms: Vec<String> = state
+            .recordings
+            .values()
+            .filter(|e| !e.hidden)
+            .flat_map(|e| e.granted(fields))
+            .flat_map(|field| search::tokens(&field).map(|t| t.folded).collect::<Vec<_>>())
+            .collect();
+        Ok(Vocabulary::new(0, terms))
     }
 }
 
@@ -1575,18 +1589,17 @@ mod contract {
         store: &dyn Store,
         text: &str,
     ) -> (Vec<String>, Vec<(String, Vec<String>)>) {
-        let results = crate::app::find(store, Query::parse(text).unwrap()).unwrap();
+        let (_, hits, corrections) = crate::app::find(
+            Query::parse(text).unwrap(),
+            |q| store.search(q),
+            || store.vocabulary(),
+        )
+        .unwrap();
         (
-            results
-                .hits
-                .into_iter()
+            hits.into_iter()
                 .map(|f| f.row.recording.id.to_string())
                 .collect(),
-            results
-                .corrections
-                .into_iter()
-                .map(|c| (c.typed, c.used))
-                .collect(),
+            corrections.into_iter().map(|c| (c.typed, c.used)).collect(),
         )
     }
 

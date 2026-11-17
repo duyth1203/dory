@@ -36,8 +36,11 @@ pub struct Server {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SearchArgs {
-    /// Words to find. Matches titles, and summaries and transcripts when this assistant may read
-    /// them. Leave empty to list the newest meetings.
+    /// Words to find, in any order and case; accents need not match. Each word matches the start
+    /// of a word, so "budg" finds "budget". Put words in double quotes to find them together and in
+    /// order. Searches the title, and the speaker names and summary, and the transcript, as far as
+    /// this assistant may read them. When nothing matches, a misspelled word is corrected and
+    /// showing_results_for says to what. Leave empty to list the newest meetings.
     #[serde(default)]
     pub query: Option<String>,
     /// Only meetings on or after this UTC day, YYYY-MM-DD.
@@ -64,7 +67,8 @@ pub struct IdArgs {
 pub struct TranscriptArgs {
     /// The meeting's id, from search_recordings.
     pub id: String,
-    /// The cursor the previous page gave. Leave empty for the first page.
+    /// The cursor the previous page gave, or a search snippet's turn cursor to start at the turn
+    /// that matched. Leave empty for the first page.
     #[serde(default)]
     pub cursor: Option<String>,
     /// Characters per page, 4000 to 40000. Defaults to 20000.
@@ -248,7 +252,7 @@ impl Server {
 #[tool_router]
 impl Server {
     #[tool(
-        description = "Search the user's recorded meetings, newest first. Returns ids, titles, dates, and a short snippet around the match.",
+        description = "Search the user's recorded meetings, newest first, the same way Dory's search box does. Each result says where it matched (matched_in: title or conversation) and carries a snippet: the field it came from, the text, marks as [start, end) character offsets into that text, and the matched words. A transcript snippet names its turn: the speaker, the start time, and a cursor that get_transcript starts at, to read around the match. When nothing matched the words as typed, showing_results_for names the corrected words the results are for.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

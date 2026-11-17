@@ -13,10 +13,10 @@ use dory_core::app::{
 use dory_core::capture::FrameSink;
 use dory_core::domain::{
     AssistantAccess, AssistantClient, AssistantQuery, Blocker, Channel, ChannelLayout, ClientKey,
-    Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms, Priority, Recording, RecordingEdit,
-    RecordingId, RecordingQuery, RecordingRow, Revision, Segment, Settings, SpeakerId,
-    SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange, Timestamp, Transcript,
-    Waveform,
+    Fields, Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms, Priority, Recording,
+    RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision, Segment, Settings,
+    SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange, Timestamp,
+    Transcript, Waveform,
 };
 use dory_core::models::{
     Availability, CatalogError, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId,
@@ -239,11 +239,11 @@ impl StoreRead for HookedStore {
     fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError> {
         self.inner.hidden_from_assistants(id)
     }
-    fn assistant_recordings(
-        &self,
-        query: &AssistantQuery,
-    ) -> Result<Vec<RecordingRow>, StoreError> {
+    fn assistant_recordings(&self, query: &AssistantQuery) -> Result<Vec<Found>, StoreError> {
         self.inner.assistant_recordings(query)
+    }
+    fn assistant_vocabulary(&self, fields: Fields) -> Result<Vocabulary, StoreError> {
+        self.inner.assistant_vocabulary(fields)
     }
     fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
         self.inner.previous_summary(id)

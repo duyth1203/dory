@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use dory::Config;
-use dory_core::app::{Dory, Event, Subscription};
-use dory_core::domain::{Goal, Job, JobState};
+use dory_core::app::{Dory, DoryError, Event, Subscription};
+use dory_core::domain::{Goal, Job, JobState, SummaryRefusal};
 
 use crate::args::{ProcessArgs, TranslateSummaryArgs};
 use crate::{open, view};
@@ -125,9 +125,24 @@ pub fn translate_summary(config: &Config, args: &TranslateSummaryArgs) -> Result
     let dory = open(config, args.fake_engines)?;
     let events = dory.events();
     let started = std::time::Instant::now();
-    dory.library()
+    // A job that a blocker held resumes by itself once the engine is back, when this run opens
+    // the library. It is the translation asked for, so this run follows it to the end.
+    match dory
+        .library()
         .translate_summary(&args.id, args.target.clone())
-        .map_err(crate::chain)?;
+    {
+        Err(DoryError::SummaryRefused(SummaryRefusal::InProgress))
+            if dory
+                .library()
+                .summary_translation_wanted(&args.id)
+                .map_err(crate::chain)?
+                .as_ref()
+                == Some(&args.target) =>
+        {
+            println!("a translation of this summary is running, following it");
+        }
+        done => done.map_err(crate::chain)?,
+    }
     let job = dory
         .library()
         .jobs(&args.id)

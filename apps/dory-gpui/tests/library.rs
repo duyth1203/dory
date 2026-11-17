@@ -132,6 +132,24 @@ fn row_meta_follows_the_canvas_per_group() {
     assert_eq!(meta("Roadmap review"), "28 Oct · 71 min");
 }
 
+/// Book's contents line moves the length beside the title; the two parts are the same words.
+#[test]
+fn book_splits_the_meta_line_into_its_time_and_length() {
+    let now = fixtures::now();
+    let today = fixtures::today();
+    for sample in SAMPLES {
+        let row = sample.row();
+        let day = dory_gpui::library::local(row.recording.created_at, &now.timezone());
+        let group = DateGroup::of(day.date_naive(), today);
+        let (when, length) = dory_gpui::library::row_meta_parts(&row, group, &now);
+        let joined = match &length {
+            Some(length) => format!("{when} · {length}"),
+            None => when.clone(),
+        };
+        assert_eq!(joined, row_meta(&row, group, &now), "{}", sample.title);
+    }
+}
+
 #[test]
 fn row_status_reads_the_job_the_recorder_and_progress() {
     let rows = fixtures::rows();

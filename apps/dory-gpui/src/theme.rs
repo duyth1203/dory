@@ -313,7 +313,6 @@ impl Tokens {
             ("leader", leader),
         ]
     }
-
 }
 
 impl Global for Theme {}
@@ -1023,6 +1022,16 @@ impl Theme {
         }
     }
 
+    /// The detail pane's reading column, in points: 720 in Modern; in Book a 640 pt measure for
+    /// 17 pt serif, growing with the text to 720 at 200%.
+    pub fn column(&self) -> f32 {
+        if self.serif() {
+            (640. + (self.text_scale - 1.) * 80.).clamp(640., 720.)
+        } else {
+            720.
+        }
+    }
+
     /// Whether the reading roles use Book's serif sizes and small caps.
     pub fn serif(&self) -> bool {
         self.reading_font != ReadingFont::System
@@ -1274,6 +1283,52 @@ pub fn tabular() -> gpui_kit::FontFeatures {
     gpui_kit::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
 }
 
+/// How long a theme switch cross-fades the main window (`book-theme.md` section 5).
+pub const FADE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// A theme switch in progress: the old window color, laid over the new theme and fading out.
+#[derive(Clone, Copy)]
+struct Fade {
+    from: Hsla,
+    started: std::time::Instant,
+}
+
+impl Global for Fade {}
+
+/// Shows `name`, remembering the old window color so [`fade_veil`] can cross-fade from it. With
+/// Reduce Motion it switches at once.
+pub fn switch_to(name: ThemeName, cx: &mut App) {
+    if let Some(from) = cx.try_global::<Theme>().map(|t| t.window_bg)
+        && !cx.reduce_motion()
+    {
+        cx.set_global(Fade {
+            from,
+            started: std::time::Instant::now(),
+        });
+    }
+    set_display(|display| display.theme = name, cx);
+}
+
+/// The veil over the window while a switch fades: the old window color, from opaque to clear
+/// over [`FADE`]. It takes no input and is no accessibility node.
+pub fn fade_veil(window: &mut gpui_kit::Window, cx: &App) -> Option<gpui_kit::Div> {
+    use gpui_kit::Styled as _;
+    let fade = cx.try_global::<Fade>()?;
+    let t = crate::motion::elapsed(Some(fade.started), FADE);
+    if t >= 1.0 || cx.reduce_motion() {
+        return None;
+    }
+    window.request_animation_frame();
+    Some(
+        gpui_kit::div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .bg(fade.from.opacity(1.0 - crate::motion::ease_standard(t))),
+    )
+}
+
 /// Changes one input of the theme and rebuilds it.
 pub fn set_display(edit: impl FnOnce(&mut Display), cx: &mut App) {
     let mut display = cx.try_global::<Display>().copied().unwrap_or_default();
@@ -1418,7 +1473,10 @@ mod tests {
                     if MAY_MATCH.contains(&name) || (high && name == "close_bg") {
                         continue;
                     }
-                    assert_ne!(b, m, "Book {name} is Modern's (dark {dark}, contrast {high})");
+                    assert_ne!(
+                        b, m,
+                        "Book {name} is Modern's (dark {dark}, contrast {high})"
+                    );
                 }
             }
         }
@@ -1457,8 +1515,15 @@ mod tests {
             assert_eq!(border, book.text_secondary);
         }
         assert_eq!(book.highlight_outline(), Some(book.text_secondary));
-        assert_eq!(Theme::book(false, Display::default()).highlight_outline(), None);
-        let modern = Theme::modern(false, c(DEFAULT_ACCENT_LIGHT), display(ThemeName::Modern, true));
+        assert_eq!(
+            Theme::book(false, Display::default()).highlight_outline(),
+            None
+        );
+        let modern = Theme::modern(
+            false,
+            c(DEFAULT_ACCENT_LIGHT),
+            display(ThemeName::Modern, true),
+        );
         assert_eq!(modern.highlight_outline(), None);
     }
 
@@ -1505,7 +1570,10 @@ mod tests {
             assert!(Presentation::of(flags, 800., scale).toc_leaders, "{scale}");
         }
         for scale in [1.5, 1.75, 2.0] {
-            assert!(!Presentation::of(flags, 1280., scale).toc_leaders, "{scale}");
+            assert!(
+                !Presentation::of(flags, 1280., scale).toc_leaders,
+                "{scale}"
+            );
         }
     }
 

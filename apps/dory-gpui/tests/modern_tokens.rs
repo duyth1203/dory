@@ -61,11 +61,18 @@ const ADDED: [&str; 1] = ["leader"];
 
 #[test]
 fn modern_tokens_match_the_values_from_before_themes() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/modern-tokens.txt");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/golden/modern-tokens.txt"
+    );
     let now = listing();
     let kept: Vec<&str> = now
         .lines()
-        .filter(|line| !ADDED.iter().any(|t| line.split(' ').rev().nth(1) == Some(t)))
+        .filter(|line| {
+            !ADDED
+                .iter()
+                .any(|t| line.split(' ').rev().nth(1) == Some(t))
+        })
         .collect();
     if std::env::var_os("DORY_BLESS").is_some() {
         std::fs::write(path, kept.join("\n") + "\n").unwrap();

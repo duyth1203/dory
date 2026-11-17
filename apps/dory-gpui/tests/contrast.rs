@@ -30,43 +30,43 @@ fn every_theme() -> Vec<(String, Theme)> {
         (ThemeName::Modern, &ACCENTS[..]),
         (ThemeName::Book, &ACCENTS[..1]),
     ] {
-    for &(name, light, dark) in accents {
-        let name = match theme {
-            ThemeName::Modern => name.to_owned(),
-            ThemeName::Book => "Book".to_owned(),
-        };
-        for increase_contrast in [false, true] {
-            for differentiate_without_color in [false, true] {
-                let display = Display {
-                    theme,
-                    increase_contrast,
-                    differentiate_without_color,
-                    text_scale: 1.0,
-                };
-                let variant = format!(
-                    "{name}{}{}",
-                    if increase_contrast {
-                        ", increase contrast"
-                    } else {
-                        ""
-                    },
-                    if differentiate_without_color {
-                        ", differentiate without color"
-                    } else {
-                        ""
-                    }
-                );
-                themes.push((
-                    format!("light {variant}"),
-                    Theme::new(false, c(light), display),
-                ));
-                themes.push((
-                    format!("dark {variant}"),
-                    Theme::new(true, c(dark), display),
-                ));
+        for &(name, light, dark) in accents {
+            let name = match theme {
+                ThemeName::Modern => name.to_owned(),
+                ThemeName::Book => "Book".to_owned(),
+            };
+            for increase_contrast in [false, true] {
+                for differentiate_without_color in [false, true] {
+                    let display = Display {
+                        theme,
+                        increase_contrast,
+                        differentiate_without_color,
+                        text_scale: 1.0,
+                    };
+                    let variant = format!(
+                        "{name}{}{}",
+                        if increase_contrast {
+                            ", increase contrast"
+                        } else {
+                            ""
+                        },
+                        if differentiate_without_color {
+                            ", differentiate without color"
+                        } else {
+                            ""
+                        }
+                    );
+                    themes.push((
+                        format!("light {variant}"),
+                        Theme::new(false, c(light), display),
+                    ));
+                    themes.push((
+                        format!("dark {variant}"),
+                        Theme::new(true, c(dark), display),
+                    ));
+                }
             }
         }
-    }
     }
     themes
 }

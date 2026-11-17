@@ -17,15 +17,16 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
 use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
 use crate::app::AppState;
+use crate::fonts;
 use crate::icons::Icon;
 use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::menus;
@@ -132,6 +133,10 @@ impl Sidebar {
         let now = Local::now();
         let today = now.date_naive();
         let list_focused = self.list_focus.is_focused(window);
+        let leaders = theme
+            .presentation(f32::from(window.viewport_size().width))
+            .toc_leaders;
+        let outline = theme.highlight_outline();
         let selected = app.selection.id().cloned();
         let visible = app.visible();
         if visible.is_empty() {
@@ -176,7 +181,12 @@ impl Sidebar {
                 let words = status.label();
                 breathing |= status.glyph() == Glyph::Dots || status.glyph() == Glyph::DotsCircle;
                 let title = library::title(row, &now.timezone());
-                let meta = library::row_meta(row, group, &now);
+                let (meta, length) = if leaders {
+                    let (when, length) = library::row_meta_parts(row, group, &now);
+                    (when, length)
+                } else {
+                    (library::row_meta(row, group, &now), None)
+                };
                 let spoken_time = library::local(row.recording.created_at, &now.timezone())
                     .format("%H:%M")
                     .to_string();
@@ -227,15 +237,33 @@ impl Sidebar {
                         window.focus(&focus, cx);
                         app.update(cx, |app, cx| app.select(Selection::One(id.clone()), cx));
                     })
-                    .child(
+                    .when_some(
+                        outline.filter(|_| is_selected && !list_focused),
+                        |row, color| {
+                            row.relative().child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color),
+                            )
+                        },
+                    )
+                    .child(if theme.serif() {
+                        contents_line(title, length, fg, fg2, &theme)
+                    } else {
                         div()
                             .text_size(theme.text(14.))
                             .line_height(gpui_kit::relative(1.25))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(fg)
                             .when(theme.text_scale <= 1.25, |title| title.truncate())
-                            .child(title),
-                    )
+                            .child(title)
+                            .into_any_element()
+                    })
                     .child(
                         div()
                             .flex()
@@ -272,16 +300,70 @@ impl Sidebar {
 
 fn group_header(group: DateGroup, today: chrono::NaiveDate, theme: &Theme) -> impl IntoElement {
     let label = group.label(today);
-    a11y::node(format!("group-{label}"), Role::Heading, label.clone())
+    let header = a11y::node(format!("group-{label}"), Role::Heading, label.clone())
         .aria_level(3)
         .px(px(12.))
         .pt(px(12.))
         .pb(px(4.))
-        .text_size(theme.text(12.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_secondary)
-        .child(label)
+        .text_color(theme.text_secondary);
+    // Book sets the group in serif italic, as a part title in a table of contents.
+    if theme.serif() {
+        theme
+            .reading(header)
+            .italic()
+            .text_size(theme.text(13.))
+            .child(label)
+    } else {
+        header
+            .text_size(theme.text(12.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(label)
+    }
 }
+
+/// Book's entry title (serif 15). With leaders it reads "Title ...... 48 min": the title on one
+/// line, dotted leaders of at least 12 pt, and the length in oldstyle figures. Without them the
+/// title wraps and the length stays in the meta line. The leaders are drawing only.
+fn contents_line(
+    title: String,
+    length: Option<String>,
+    fg: Hsla,
+    fg2: Hsla,
+    theme: &Theme,
+) -> AnyElement {
+    let line = theme
+        .reading(div())
+        .text_size(theme.text(15.))
+        .line_height(gpui_kit::relative(1.3))
+        .text_color(fg);
+    let Some(length) = length else {
+        return line.child(title).into_any_element();
+    };
+    line.flex()
+        .items_baseline()
+        .gap(px(6.))
+        .child(div().min_w_0().truncate().child(title))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(12.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_color(theme.leader)
+                .child(LEADER_DOTS),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(fg2)
+                .font_features(fonts::oldstyle())
+                .child(length),
+        )
+        .into_any_element()
+}
+
+/// More dots than any sidebar is wide; the leader's box clips them.
+const LEADER_DOTS: &str = ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .";
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

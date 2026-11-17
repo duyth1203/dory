@@ -38,7 +38,10 @@ pub fn credits() -> Vec<Credit> {
         },
         Credit {
             id: "literata",
-            name: format!("Literata typeface {}", crate::fonts::LITERATA_VERSION.trim()),
+            name: format!(
+                "Literata typeface {}",
+                crate::fonts::LITERATA_VERSION.trim()
+            ),
             license: crate::fonts::LITERATA_LICENSE,
         },
     ]
@@ -215,7 +218,10 @@ mod tests {
             .expect("Literata is acknowledged");
         assert_eq!(literata.name, "Literata typeface 3.103");
         let text = paragraphs(literata.license).join("\n");
-        assert!(text.starts_with("Copyright 2017 The Literata Project Authors"), "{text}");
+        assert!(
+            text.starts_with("Copyright 2017 The Literata Project Authors"),
+            "{text}"
+        );
         assert!(text.contains("SIL OPEN FONT LICENSE Version 1.1"));
     }
 

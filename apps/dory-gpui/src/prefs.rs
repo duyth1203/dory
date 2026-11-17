@@ -32,6 +32,7 @@ use crate::library::Selection;
 use crate::notify::NoteKind;
 use crate::onboarding::OnboardingStep;
 use crate::settings_window::Pane;
+use crate::theme::ThemeName;
 
 pub const SIDEBAR_WIDTH: RangeInclusive<f32> = 240.0..=380.0;
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
@@ -66,6 +67,10 @@ pub struct Prefs {
     pub processing_origin: Option<(f32, f32)>,
     /// Settings › General › Notifications (UX-14).
     pub notifications: Notifications,
+    /// Settings › General › Theme › Try the Book theme: offers Book while it is experimental.
+    pub book_offered: bool,
+    /// The chosen theme. Book only counts while it is offered; see [`Prefs::shown_theme`].
+    pub theme: ThemeName,
 }
 
 /// Which kinds of notification are on. All are on by default, so only the ones turned off are
@@ -101,6 +106,8 @@ impl Default for Prefs {
             settings_pane: Pane::General,
             processing_origin: None,
             notifications: Notifications::default(),
+            book_offered: false,
+            theme: ThemeName::Modern,
         }
     }
 }
@@ -119,6 +126,8 @@ struct Disk {
     settings_pane: Option<String>,
     processing_origin: Option<(f32, f32)>,
     notifications_off: Vec<String>,
+    book_offered: bool,
+    theme: Option<String>,
 }
 
 impl Default for Disk {
@@ -146,6 +155,8 @@ impl From<&Prefs> for Disk {
                 .iter()
                 .map(|kind| kind.slug().to_owned())
                 .collect(),
+            book_offered: prefs.book_offered,
+            theme: Some(prefs.theme.slug().to_owned()),
         }
     }
 }
@@ -199,6 +210,21 @@ impl Prefs {
                     .filter_map(|slug| NoteKind::parse(slug))
                     .collect(),
             },
+            book_offered: disk.book_offered,
+            theme: disk
+                .theme
+                .as_deref()
+                .and_then(ThemeName::parse)
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The theme the app shows: the chosen one, or Modern while Book is not offered.
+    pub fn shown_theme(&self) -> ThemeName {
+        if self.book_offered {
+            self.theme
+        } else {
+            ThemeName::Modern
         }
     }
 
@@ -222,6 +248,8 @@ impl Prefs {
             && self.settings_pane == other.settings_pane
             && self.processing_origin == other.processing_origin
             && self.notifications == other.notifications
+            && self.book_offered == other.book_offered
+            && self.theme == other.theme
     }
 }
 

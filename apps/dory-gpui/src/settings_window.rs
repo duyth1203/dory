@@ -51,6 +51,7 @@ use crate::processing::PACE_CHOICES;
 use crate::radio::{self, Radio, RadioGroup};
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
 use crate::theme::Theme;
+use crate::theme::ThemeName;
 
 pub const WIDTH: f32 = 860.;
 pub const HEIGHT: f32 = 720.;
@@ -148,7 +149,10 @@ pub const ENTRIES: &[Entry] = &[
     entry(Pane::General, "Summary ready", "row-note-summary"),
     entry(Pane::General, "Needs attention", "row-note-attention"),
     entry(Pane::General, "Model downloaded", "row-note-download"),
+    entry(Pane::General, "Theme", "row-book-offered"),
+    entry(Pane::General, "Try the Book theme", "row-book-offered"),
     entry(Pane::General, "Appearance", "row-appearance"),
+    entry(Pane::General, "Text size", "row-text-size"),
     entry(Pane::Recording, "Microphone", "row-microphone"),
     entry(Pane::Recording, "System audio", "row-system-audio"),
     entry(Pane::Transcription, "Language", "row-language"),
@@ -520,23 +524,239 @@ impl SettingsWindow {
                 notifications,
             ),
             section(
-                "settings-appearance",
-                "Appearance",
+                "settings-theme",
+                "Theme",
                 theme,
-                vec![self.mark(
-                    "row-appearance",
-                    row(
-                        "setting-appearance",
-                        "Follows the system",
-                        "Dory follows the system's light or dark appearance and its accent color.",
-                        None,
-                        theme,
-                    ),
-                    theme,
-                    cx,
-                )],
+                self.theme_rows(theme, window, cx),
             ),
         ]
+    }
+
+    /// Settings › General › Theme (frame B4): Try the Book theme, then, once it is on, the Modern
+    /// and Book cards; the note that light and dark follow the Mac; and Text size (A11Y-7).
+    fn theme_rows(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let prefs = self.app.read(cx).prefs.clone();
+        let mut rows = Vec::new();
+        let focus = self.focus("book-offered", cx);
+        let app = self.app.clone();
+        let offered = prefs.book_offered;
+        let try_book = radio::checkbox(
+            Radio::new("setting-book-offered", "Try the Book theme").description(
+                "An experimental theme with warm paper and serif reading type. Turning it off \
+                 returns to Modern.",
+            ),
+            offered,
+            &focus,
+            theme,
+            window,
+            move |window, cx| {
+                app.update(cx, |app, cx| app.set_book_offered(!offered, cx));
+                window.refresh();
+            },
+        );
+        rows.push(self.mark("row-book-offered", try_book, theme, cx));
+        if offered {
+            let shown = prefs.shown_theme();
+            let cards = ThemeName::ALL.map(|name| {
+                self.theme_card(name, shown == name, theme, cx)
+                    .into_any_element()
+            });
+            rows.push(
+                self.mark(
+                    "row-theme",
+                    a11y::node("setting-theme", Role::RadioGroup, "Theme")
+                        .px(px(14.))
+                        .py(px(12.))
+                        .flex()
+                        .flex_wrap()
+                        .gap(px(12.))
+                        .children(cards),
+                    theme,
+                    cx,
+                ),
+            );
+        }
+        rows.push(
+            self.mark(
+                "row-appearance",
+                row(
+                    "setting-appearance",
+                    "Follows the system",
+                    "Light and dark follow the system appearance in both themes. Modern also takes \
+                 the system's accent color.",
+                    None,
+                    theme,
+                )
+                .into_any_element(),
+                theme,
+                cx,
+            ),
+        );
+        let text_size = self.text_size_row(prefs.text_scale, theme, cx);
+        rows.push(self.mark("row-text-size", text_size, theme, cx));
+        rows
+    }
+
+    /// A picture card: the theme's own paper and ink with "Aa" in its reading typeface, its name,
+    /// and one line on what it is. A radio button, so arrows and Space work as in any group.
+    fn theme_card(
+        &mut self,
+        name: ThemeName,
+        selected: bool,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> a11y::Node {
+        let focus = self.focus(format!("theme-{}", name.slug()), cx);
+        let preview = Theme::new(
+            theme.dark,
+            crate::platform::system_accent().unwrap_or_else(|| theme.accent),
+            crate::theme::Display {
+                theme: name,
+                ..crate::theme::Display::default()
+            },
+        );
+        let app = self.app.clone();
+        a11y::focusable(
+            a11y::node(
+                format!("theme-{}", name.slug()),
+                Role::RadioButton,
+                name.label(),
+            ),
+            &focus,
+            theme,
+            false,
+        )
+        .aria_toggled(if selected {
+            gpui_kit::accesskit::Toggled::True
+        } else {
+            gpui_kit::accesskit::Toggled::False
+        })
+        .aria_description(name.description())
+        .on_click(move |_, window, cx| {
+            app.update(cx, |app, cx| app.set_theme(name, cx));
+            window.refresh();
+        })
+        .cursor_pointer()
+        .w(theme.text(180.))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .p(px(6.))
+        .rounded(px(10.))
+        .child(
+            div()
+                .h(theme.text(72.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(if selected {
+                    theme.accent
+                } else {
+                    theme.control_border
+                })
+                .when(selected, |tile| tile.border_2())
+                .bg(preview.window_bg)
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .child(
+                    preview
+                        .reading(div())
+                        .text_size(theme.text(28.))
+                        .text_color(preview.text)
+                        .child("Aa"),
+                )
+                .child(div().size(px(10.)).rounded_full().bg(preview.accent)),
+        )
+        .child(
+            div()
+                .text_size(theme.text(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .child(name.label()),
+        )
+        .child(
+            div()
+                .text_size(theme.text(12.))
+                .line_height(relative(1.4))
+                .text_color(theme.text_secondary)
+                .child(name.description()),
+        )
+    }
+
+    /// A11Y-7's control in Settings: Smaller and Bigger around the current size.
+    fn text_size_row(&mut self, scale: f32, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let step = |id: &'static str,
+                    label: &'static str,
+                    text: &'static str,
+                    next: fn(f32) -> f32,
+                    at_end: bool,
+                    this: &mut Self,
+                    cx: &mut Context<Self>| {
+            let focus = this.focus(id, cx);
+            let app = this.app.clone();
+            button(id, label, text, false, &focus, theme, move |window, cx| {
+                app.update(cx, |app, cx| {
+                    let scale = next(app.prefs.text_scale);
+                    app.set_text_scale(scale, cx)
+                });
+                window.refresh();
+            })
+            .min_w(px(28.))
+            .when(at_end, |b| b.opacity(0.5))
+            .into_any_element()
+        };
+        let smaller = step(
+            "text-smaller",
+            "Smaller text",
+            "−",
+            crate::theme::smaller,
+            scale <= crate::theme::TEXT_SCALES[0],
+            self,
+            cx,
+        );
+        let bigger = step(
+            "text-bigger",
+            "Bigger text",
+            "+",
+            crate::theme::bigger,
+            scale >= crate::theme::TEXT_SCALES[crate::theme::TEXT_SCALES.len() - 1],
+            self,
+            cx,
+        );
+        let percent = format!("{}%", (scale * 100.).round() as u32);
+        let control = div()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .child(smaller)
+            .child(
+                a11y::node(
+                    "text-size-value",
+                    Role::Label,
+                    format!("Text size {percent}"),
+                )
+                .min_w(theme.text(40.))
+                .flex()
+                .justify_center()
+                .text_size(theme.text(13.))
+                .font_features(crate::theme::tabular())
+                .child(percent),
+            )
+            .child(bigger)
+            .into_any_element();
+        row(
+            "setting-text-size",
+            "Text size",
+            "Scales all text from 85% to 200%. Also in the View menu as Bigger and Smaller.",
+            Some(control),
+            theme,
+        )
+        .into_any_element()
     }
 
     /// One checkbox per kind of notification, with a row first when macOS has them off for Dory.

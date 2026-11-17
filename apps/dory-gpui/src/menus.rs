@@ -27,6 +27,7 @@ use crate::actions::*;
 use crate::app::AppState;
 use crate::languages;
 use crate::library::Selection;
+use crate::theme::ThemeName;
 
 /// What the commands need to know to be enabled.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,6 +40,9 @@ pub struct MenuState {
     pub can_undo: bool,
     pub recorder: Recorder,
     pub text_scale: Scale,
+    /// View › Theme: the theme shown, and whether Book is offered (it is experimental).
+    pub theme: ThemeName,
+    pub book_offered: bool,
     /// The meeting languages, which Re-transcribe in… offers.
     pub languages: Vec<LangTag>,
 }
@@ -103,6 +107,8 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
         can_undo: app.can_undo(),
         recorder: Recorder::of(app.recorder()),
         text_scale: Scale::of(app.prefs.text_scale),
+        theme: app.prefs.shown_theme(),
+        book_offered: app.prefs.book_offered,
         languages: app.settings().meeting_languages.clone(),
     }
 }
@@ -167,6 +173,8 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::action("Bigger", Bigger).disabled(state.text_scale >= Scale::Largest),
             MenuItem::action("Smaller", Smaller).disabled(state.text_scale <= Scale::Smallest),
             MenuItem::action("Actual Size", ActualSize).disabled(state.text_scale == Scale::Actual),
+            MenuItem::separator(),
+            MenuItem::submenu(Menu::new("Theme").items(theme_items(&state))),
         ]),
         Menu::new("Recording").items([
             MenuItem::action("New Recording", NewRecording).disabled(!idle),
@@ -247,6 +255,16 @@ struct Target(Entity<AppState>);
 
 impl Global for Target {}
 
+/// View › Theme: Modern, and Book once Settings offers it, the shown one checked.
+fn theme_items(state: &MenuState) -> Vec<MenuItem> {
+    let mut items =
+        vec![MenuItem::action("Modern", UseModernTheme).checked(state.theme == ThemeName::Modern)];
+    if state.book_offered {
+        items.push(MenuItem::action("Book", UseBookTheme).checked(state.theme == ThemeName::Book));
+    }
+    items
+}
+
 /// Keeps the menus in step with `app`. Called once by `main`, before the window opens.
 pub fn watch(app: &Entity<AppState>, cx: &mut App) {
     cx.set_global(Target(app.clone()));
@@ -271,6 +289,15 @@ pub fn watch(app: &Entity<AppState>, cx: &mut App) {
     cx.on_action(move |_: &Bigger, cx| bigger(cx));
     cx.on_action(move |_: &Smaller, cx| smaller(cx));
     cx.on_action(move |_: &ActualSize, cx| actual(cx));
+    let choose = |name: ThemeName| {
+        move |cx: &mut App| {
+            let app = cx.global::<Target>().0.clone();
+            app.update(cx, |app, cx| app.set_theme(name, cx));
+        }
+    };
+    let (modern, book) = (choose(ThemeName::Modern), choose(ThemeName::Book));
+    cx.on_action(move |_: &UseModernTheme, cx| modern(cx));
+    cx.on_action(move |_: &UseBookTheme, cx| book(cx));
     let shown = Rc::new(Cell::new(MenuState::default()));
     let refresh = {
         let app = app.clone();

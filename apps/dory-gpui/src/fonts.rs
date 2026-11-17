@@ -40,7 +40,10 @@ pub fn ensure(cx: &mut App) {
     if cx.has_global::<Loaded>() {
         return;
     }
-    let faces = FACES.iter().map(|(_, bytes)| Cow::Borrowed(*bytes)).collect();
+    let faces = FACES
+        .iter()
+        .map(|(_, bytes)| Cow::Borrowed(*bytes))
+        .collect();
     if let Err(error) = cx.text_system().add_fonts(faces) {
         eprintln!("fonts: could not load Literata: {error}");
     }

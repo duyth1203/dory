@@ -34,6 +34,7 @@ pub mod export;
 pub mod fixtures;
 pub mod glass;
 pub mod glyphs;
+pub mod languages;
 pub mod library;
 pub mod menus;
 pub mod models_view;

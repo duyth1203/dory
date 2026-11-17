@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use dory_core::app::{Dory, Options, Ports};
 use dory_core::domain::{
     ChannelLayout, Goal, LangSet, LangTag, LanguagePref, Ms, Priority, Processing, Recording,
-    RecordingId, Settings, Timestamp,
+    RecordingId, Recovery, Settings, Timestamp,
 };
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, LangSupport, Llm, ModelAbout, ModelEntry, ModelId,
@@ -1188,6 +1188,123 @@ fn language_follows_the_meeting_languages(cx: &mut TestAppContext) {
             Some("German".into())
         ],
         "Re-transcribe in… offers the same options"
+    );
+}
+
+const RECOVERY: &str = "setting-switch-recovery";
+
+#[gpui_kit::test]
+fn the_recovery_switch_reads_on_and_flips_the_stored_setting(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    assert_eq!(settings(&rig).switch_recovery, Recovery::Auto);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the switch", |cx| has(window, RECOVERY, cx));
+    assert_eq!(checked(window, RECOVERY, cx), Some(true));
+    click(window, RECOVERY, cx);
+    until(cx, "recovery off", |_| {
+        settings(&rig).switch_recovery == Recovery::Off
+    });
+    until(cx, "the switch reads off", |cx| {
+        checked(window, RECOVERY, cx) == Some(false)
+    });
+    click(window, RECOVERY, cx);
+    until(cx, "recovery back on Automatic", |_| {
+        settings(&rig).switch_recovery == Recovery::Auto
+    });
+    until(cx, "the switch reads on", |cx| {
+        checked(window, RECOVERY, cx) == Some(true)
+    });
+}
+
+fn recovery_reads(stored: Recovery, shown: bool, cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    let mut current = settings(&rig);
+    current.switch_recovery = stored;
+    rig.store
+        .apply(vec![Change::SettingsReplaced(current)])
+        .unwrap();
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the switch", |cx| has(window, RECOVERY, cx));
+    assert_eq!(checked(window, RECOVERY, cx), Some(shown), "{stored:?}");
+}
+
+#[gpui_kit::test]
+fn the_recovery_switch_reads_on_for_a_stored_on(cx: &mut TestAppContext) {
+    recovery_reads(Recovery::On, true, cx);
+}
+
+#[gpui_kit::test]
+fn the_recovery_switch_reads_off_for_a_stored_off(cx: &mut TestAppContext) {
+    recovery_reads(Recovery::Off, false, cx);
+}
+
+#[gpui_kit::test]
+fn the_recovery_switch_is_dimmed_below_two_languages_and_wakes_with_the_second(
+    cx: &mut TestAppContext,
+) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the switch", |cx| has(window, RECOVERY, cx));
+    assert_eq!(
+        label(window, RECOVERY, cx).as_deref(),
+        Some("Recover speech lost when the language changes, unavailable")
+    );
+    assert_eq!(
+        description(window, RECOVERY, cx).as_deref(),
+        Some("For meetings in more than one language. Transcribing takes a little longer."),
+        "the reason stays on screen"
+    );
+    click(window, RECOVERY, cx);
+    render(window, cx);
+    assert_eq!(settings(&rig).switch_recovery, Recovery::Auto);
+    assert_eq!(checked(window, RECOVERY, cx), Some(true));
+
+    focus_by_tab(window, "meeting-languages", cx);
+    press(window, "down", cx);
+    cx.update_window(window, |_, window, cx| window.input("tagalog", cx))
+        .unwrap();
+    render(window, cx);
+    click(window, "language-option-tl", cx);
+    until(cx, "Tagalog added", |_| chosen(&rig) == ["en", "tl"]);
+    press(window, "escape", cx);
+    until(cx, "the switch wakes", |cx| {
+        label(window, RECOVERY, cx).as_deref()
+            == Some("Recover speech lost when the language changes")
+    });
+    click(window, RECOVERY, cx);
+    until(cx, "recovery off", |_| {
+        settings(&rig).switch_recovery == Recovery::Off
+    });
+}
+
+#[gpui_kit::test]
+fn the_recovery_switch_says_what_it_does_and_sits_under_meeting_languages(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the switch", |cx| has(window, RECOVERY, cx));
+    assert_eq!(
+        label(window, RECOVERY, cx).as_deref(),
+        Some("Recover speech lost when the language changes")
+    );
+    assert_eq!(
+        description(window, RECOVERY, cx).as_deref(),
+        Some("For meetings in more than one language. Transcribing takes a little longer.")
+    );
+    let below_languages = cx
+        .update_window(window, |_, window, _| {
+            (
+                window.find("row-meeting-languages").bounds(),
+                window.find("row-switch-recovery").bounds(),
+            )
+        })
+        .unwrap();
+    assert!(
+        below_languages.1.top() >= below_languages.0.bottom(),
+        "directly under Meeting languages: {below_languages:?}"
     );
 }
 

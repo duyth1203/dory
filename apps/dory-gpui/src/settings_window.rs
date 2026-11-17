@@ -9,7 +9,8 @@
 //!   microphone or a layout yet; every take starts with `StartOptions::default()`, the system
 //!   default input plus system audio, so only those options are enabled.
 //! - Transcription: Language (UX-26), computed from the meeting languages by
-//!   `languages::choices`; the meeting-languages combobox (UX-29); the speech models (UX-28);
+//!   `languages::choices`; the meeting-languages combobox (UX-29) and, under it, the switch that
+//!   recovers speech lost when the language changes (UX-26); the speech models (UX-28);
 //!   Add model file, which stays disabled because no speech provider accepts a user's file today;
 //!   and Processing (UX-30).
 //! - Summaries: the summary models, and the Ollama steps when Ollama does not answer.
@@ -28,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use dory_core::domain::{Exposure, LanguagePref, Writes};
+use dory_core::domain::{Exposure, LanguagePref, Recovery, Writes};
 use dory_core::models::{Availability, Llm, Stt, UnavailableReason};
 use dory_core::ports::capture::InputDevice;
 use gpui_kit::component::button::Button;
@@ -169,6 +170,7 @@ pub const ENTRIES: &[Entry] = &[
         "Meeting languages",
         "row-meeting-languages",
     ),
+    entry(Pane::Transcription, RECOVERY_LABEL, "row-switch-recovery"),
     entry(Pane::Transcription, "Speech model", "row-speech-model"),
     entry(Pane::Transcription, "Add model file", "row-add-model-file"),
     entry(Pane::Transcription, "Processing", "row-processing"),
@@ -207,6 +209,10 @@ pub fn search(query: &str) -> (Vec<Pane>, Vec<Entry>) {
         .collect();
     (panes, entries)
 }
+
+pub const RECOVERY_LABEL: &str = "Recover speech lost when the language changes";
+pub const RECOVERY_DESCRIPTION: &str =
+    "For meetings in more than one language. Transcribing takes a little longer.";
 
 pub const ADD_MODEL_FILE_REASON: &str =
     "No speech engine in Dory can load a model file yet, so models come from the list above.";
@@ -1029,6 +1035,30 @@ impl SettingsWindow {
             theme,
         );
         let settings = self.models.read(cx).settings().cloned();
+        let recovery = settings.as_ref().map(|settings| {
+            let on = settings.switch_recovery != Recovery::Off;
+            let usable = settings.meeting_languages.len() >= 2;
+            let focus = self.focus("switch-recovery", cx);
+            let models = self.models.clone();
+            let line = radio::checkbox(
+                Radio::new("setting-switch-recovery", RECOVERY_LABEL)
+                    .description(RECOVERY_DESCRIPTION)
+                    .enabled(usable),
+                on,
+                &focus,
+                theme,
+                window,
+                move |_, cx| {
+                    let next = if on { Recovery::Off } else { Recovery::Auto };
+                    models.update(cx, |m, cx| m.edit(move |s| s.switch_recovery = next, cx))
+                },
+            );
+            if usable {
+                line
+            } else {
+                line.aria_label(format!("{RECOVERY_LABEL}, unavailable"))
+            }
+        });
         let paces = settings.map(|settings| {
             let selected = PACE_CHOICES
                 .iter()
@@ -1053,7 +1083,10 @@ impl SettingsWindow {
                 vec![
                     self.mark("row-language", language, theme, cx),
                     self.mark("row-meeting-languages", meeting, theme, cx),
-                ],
+                ]
+                .into_iter()
+                .chain(recovery.map(|r| self.mark("row-switch-recovery", r, theme, cx)))
+                .collect(),
             ),
             section(
                 "settings-speech-models",
@@ -2120,7 +2153,7 @@ mod tests {
         let (panes, hits) = search("lang");
         assert_eq!(panes, [Pane::Transcription]);
         let labels: Vec<&str> = hits.iter().map(|h| h.label).collect();
-        assert_eq!(labels, ["Language", "Meeting languages"]);
+        assert_eq!(labels, ["Language", "Meeting languages", RECOVERY_LABEL]);
         let (panes, hits) = search("STORAGE");
         assert_eq!(panes, [Pane::Storage]);
         assert!(hits.is_empty());

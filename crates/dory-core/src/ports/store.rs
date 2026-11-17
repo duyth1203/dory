@@ -6,6 +6,8 @@
 //! handle it. Adapters apply `Change::Job` with [`crate::domain::Job::on`] instead of
 //! re-implementing the state machine.
 
+use std::sync::Arc;
+
 use super::{RawSegment, StoreError};
 use crate::domain::{
     Channel, Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
@@ -13,7 +15,7 @@ use crate::domain::{
     Timestamp, Transcript,
 };
 use crate::models::ModelRef;
-use crate::search::{Found, Query};
+use crate::search::{Found, Query, Vocabulary};
 
 /// Reads are cheap and safe from any thread, including a UI thread.
 pub trait StoreRead: Send + Sync {
@@ -23,6 +25,9 @@ pub trait StoreRead: Send + Sync {
     /// revision, the summary, or the transcript, as [`crate::search::matches`] decides. Newest
     /// first, ties by id, unranked. An adapter keeps its index in the same commit as the text.
     fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError>;
+    /// Every word the search finds, for [`Query::corrected`]. An adapter may serve a cached copy
+    /// as long as it rebuilds it after any write that changed searchable text.
+    fn vocabulary(&self) -> Result<Arc<Vocabulary>, StoreError>;
     fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError>;
     fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
     /// Empty names for a recording that has none.

@@ -11,7 +11,7 @@ mod search;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dory_core::domain::{
@@ -21,7 +21,7 @@ use dory_core::domain::{
 };
 use dory_core::models::{Diar, Llm, Stt};
 use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
-use dory_core::search::{Found, Query};
+use dory_core::search::{Found, Query, Vocabulary};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
     params,
@@ -83,6 +83,9 @@ fn io(e: std::io::Error) -> StoreError {
 pub struct SqliteStore {
     writer: Mutex<Connection>,
     reader: Mutex<Connection>,
+    /// The index's terms as of the generation they carry. Rebuilt by [`StoreRead::vocabulary`]
+    /// when a write has moved the index's generation on.
+    vocabulary: Mutex<Option<Arc<Vocabulary>>>,
     path: PathBuf,
 }
 
@@ -129,9 +132,11 @@ impl SqliteStore {
         )
         .map_err(db)?;
         reader.busy_timeout(BUSY_TIMEOUT).map_err(db)?;
+        search::open_vocabulary_view(&reader)?;
         Ok(Self {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
+            vocabulary: Mutex::new(None),
             path: path.to_owned(),
         })
     }
@@ -577,6 +582,20 @@ impl StoreRead for SqliteStore {
                     })
                 })
                 .collect()
+        })
+    }
+
+    fn vocabulary(&self) -> Result<Arc<Vocabulary>, StoreError> {
+        // Held through the rebuild, so callers that arrive meanwhile wait for it, not repeat it.
+        let mut cached = lock(&self.vocabulary);
+        self.read(|conn| {
+            let generation = search::generation(conn)?;
+            if let Some(vocabulary) = cached.as_ref().filter(|v| v.generation() == generation) {
+                return Ok(Arc::clone(vocabulary));
+            }
+            let vocabulary = Arc::new(search::read_vocabulary(conn, generation)?);
+            *cached = Some(Arc::clone(&vocabulary));
+            Ok(vocabulary)
         })
     }
 

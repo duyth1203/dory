@@ -422,3 +422,59 @@ fn renumbered_rowids_keep_each_recording_its_own_index_row() {
     assert_eq!(found(&store, "gamma"), ["c"]);
     assert_eq!(found(&store, "alpha"), Vec::<String>::new());
 }
+
+fn titled(id: &str, at: i64, title: &str) -> Change {
+    Change::RecordingCreated(Recording {
+        title: Some(title.into()),
+        ..recording(id, at)
+    })
+}
+
+#[test]
+fn vocabulary_is_cached_until_a_write_moves_the_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    let store = SqliteStore::open(&path).unwrap();
+    store.apply(vec![titled("a", 1, "Roadmap")]).unwrap();
+    let first = store.vocabulary().unwrap();
+    assert_eq!(first.terms(), ["roadmap"]);
+    assert!(
+        std::sync::Arc::ptr_eq(&first, &store.vocabulary().unwrap()),
+        "no write, so the cached copy is served"
+    );
+
+    store
+        .apply(vec![titled("b", 2, "Zanzibar offsite")])
+        .unwrap();
+    let second = store.vocabulary().unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &second), "a write rebuilds");
+    assert!(second.generation() > first.generation());
+    assert_eq!(second.terms(), ["offsite", "roadmap", "zanzibar"]);
+
+    let other = SqliteStore::open(&path).unwrap();
+    other
+        .apply(vec![Change::RecordingDeleted(rid("b"))])
+        .unwrap();
+    assert_eq!(
+        store.vocabulary().unwrap().terms(),
+        ["roadmap"],
+        "a write through another connection invalidates this one's cache"
+    );
+}
+
+#[test]
+fn a_job_change_leaves_the_cached_vocabulary_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open(&dir);
+    store.apply(vec![titled("a", 1, "Roadmap")]).unwrap();
+    let first = store.vocabulary().unwrap();
+    store
+        .apply(vec![Change::JobEnqueued {
+            id: rid("a"),
+            goal: Goal::ALL,
+            priority: Priority::Normal,
+            at: Timestamp(5),
+        }])
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &store.vocabulary().unwrap()));
+}

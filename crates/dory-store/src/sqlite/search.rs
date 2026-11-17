@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use dory_core::domain::RecordingId;
 use dory_core::ports::StoreError;
-use dory_core::search::{Clause, Query, TOKENS_VERSION, tokens};
+use dory_core::search::{Clause, Query, TOKENS_VERSION, Vocabulary, tokens};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::db;
@@ -161,6 +161,47 @@ pub(super) fn rebuild(tx: &Connection) -> Result<(), StoreError> {
         keys.len()
     );
     Ok(())
+}
+
+/// Gives the reader connection a temporary view of the index's terms. A temp table lives in the
+/// connection, so the reader stays read-only and the schema gains nothing.
+pub(super) fn open_vocabulary_view(reader: &Connection) -> Result<(), StoreError> {
+    reader
+        .execute_batch(
+            "CREATE VIRTUAL TABLE temp.search_terms USING fts5vocab('main', 'search', 'row')",
+        )
+        .map_err(db)
+}
+
+/// The index's write counter. It goes up with every index write, so a cache built from the index
+/// is stale when this differs.
+pub(super) fn generation(conn: &Connection) -> Result<u64, StoreError> {
+    let generation: i64 = conn
+        .query_row("SELECT generation FROM search_meta", [], |row| row.get(0))
+        .map_err(db)?;
+    Ok(u64::try_from(generation).unwrap_or_default())
+}
+
+/// Every term of the index, read in the caller's snapshot together with `generation`.
+pub(super) fn read_vocabulary(
+    conn: &Connection,
+    generation: u64,
+) -> Result<Vocabulary, StoreError> {
+    let started = Instant::now();
+    let terms = conn
+        .prepare_cached("SELECT term FROM temp.search_terms")
+        .map_err(db)?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    let vocabulary = Vocabulary::new(generation, terms);
+    eprintln!(
+        "vocabulary ms={:.2} terms={}",
+        started.elapsed().as_secs_f64() * 1000.0,
+        vocabulary.terms().len()
+    );
+    Ok(vocabulary)
 }
 
 /// Whether the index was built by this build's tokens.

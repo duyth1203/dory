@@ -1011,6 +1011,31 @@ impl Models<'_> {
     }
 }
 
+/// Runs `query` exactly. Only when that finds nothing does it ask the store for its vocabulary
+/// and run the corrected query. A correction that finds nothing either is dropped, so the results
+/// never name a correction that shows no recording.
+pub(crate) fn find(store: &dyn StoreRead, query: Query) -> Result<SearchResults, StoreError> {
+    let hits = store.search(&query)?;
+    if hits.is_empty() && query.is_correctable() {
+        let vocabulary = store.vocabulary()?;
+        if let Some((corrected, corrections)) = query.corrected(&vocabulary) {
+            let hits = store.search(&corrected)?;
+            if !hits.is_empty() {
+                return Ok(SearchResults {
+                    query: corrected,
+                    hits,
+                    corrections,
+                });
+            }
+        }
+    }
+    Ok(SearchResults {
+        query,
+        hits,
+        corrections: Vec::new(),
+    })
+}
+
 /// The read side of a data folder: the library and the model list. It starts no actors, repairs
 /// nothing, and writes nothing, so it is safe beside a process recording into the same folder.
 pub struct LibraryReader {
@@ -1030,20 +1055,23 @@ impl LibraryReader {
         self.store.recordings(query)
     }
 
-    /// The recordings `text` finds, newest first, and the query it parsed to. `None` when the text
-    /// holds no word, such as blank text or punctuation alone.
+    /// The recordings `text` finds, newest first, and the query that found them. When nothing
+    /// matches what was typed, each long word that appears nowhere in the recordings is replaced
+    /// by the words one typo away, and the results say which. `None` when the text holds no word,
+    /// such as blank text or punctuation alone.
     pub fn search(&self, text: &str) -> Result<Option<SearchResults>, StoreError> {
         let Some(query) = Query::parse(text) else {
             return Ok(None);
         };
         let started = std::time::Instant::now();
-        let hits = self.store.search(&query)?;
+        let results = find(&*self.store, query)?;
         eprintln!(
-            "search ms={:.2} hits={}",
+            "search ms={:.2} hits={} corrected={}",
             started.elapsed().as_secs_f64() * 1000.0,
-            hits.len()
+            results.hits.len(),
+            results.corrections.len()
         );
-        Ok(Some(SearchResults { query, hits }))
+        Ok(Some(results))
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {

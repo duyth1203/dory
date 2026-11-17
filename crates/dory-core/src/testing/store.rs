@@ -28,7 +28,7 @@
 //!   recording, and so does deleting the recording. Saving for a missing recording is `NotFound`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::domain::{
     Job, JobEvent, JobId, JobState, Ms, Priority, Recording, RecordingEdit, RecordingId,
@@ -36,7 +36,7 @@ use crate::domain::{
     Transcript,
 };
 use crate::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
-use crate::search::{self, Found, Query};
+use crate::search::{self, Found, Query, Vocabulary};
 
 #[derive(Clone, Debug)]
 struct Entry {
@@ -266,6 +266,17 @@ impl StoreRead for MemStore {
             .collect())
     }
 
+    fn vocabulary(&self) -> Result<Arc<Vocabulary>, StoreError> {
+        let state = self.state();
+        let terms: Vec<String> = state
+            .recordings
+            .values()
+            .flat_map(|e| e.fields())
+            .flat_map(|field| search::tokens(&field).map(|t| t.folded).collect::<Vec<_>>())
+            .collect();
+        Ok(Arc::new(Vocabulary::new(0, terms)))
+    }
+
     fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError> {
         Ok(self
             .state()
@@ -417,6 +428,11 @@ mod contract {
             search_forgets_deleted_and_finds_restored,
         ),
         ("search_quotes_fts_keywords", search_quotes_fts_keywords),
+        (
+            "search_corrects_only_when_nothing_matches",
+            search_corrects_only_when_nothing_matches,
+        ),
+        ("vocabulary_follows_writes", vocabulary_follows_writes),
         (
             "list_rows_carry_job_transcript_and_summary_flag",
             list_row_fields,
@@ -1362,6 +1378,166 @@ mod contract {
             assert_eq!(found(store, text), ["k"], "{text}");
         }
         assert_eq!(found(store, "plain"), ["other"]);
+    }
+
+    /// The ids and corrections `text` gives through the same lookup the facade runs.
+    fn corrected_search(
+        store: &dyn Store,
+        text: &str,
+    ) -> (Vec<String>, Vec<(String, Vec<String>)>) {
+        let results = crate::app::find(store, Query::parse(text).unwrap()).unwrap();
+        (
+            results
+                .hits
+                .into_iter()
+                .map(|f| f.row.recording.id.to_string())
+                .collect(),
+            results
+                .corrections
+                .into_iter()
+                .map(|c| (c.typed, c.used))
+                .collect(),
+        )
+    }
+
+    fn corrected(typed: &str, used: &[&str]) -> (String, Vec<String>) {
+        (
+            typed.to_owned(),
+            used.iter().map(|u| u.to_string()).collect(),
+        )
+    }
+
+    fn search_corrects_only_when_nothing_matches(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("a", 300, "Planning"),
+                said("a", 1, &["the roadmap slips", "budget is fine"]),
+                titled("b", 200, "Atlas kickoff"),
+                said("b", 1, &["we reviewed roadmaps"]),
+                titled("c", 100, "Kilimanjaro"),
+                said("c", 1, &["antinational budget"]),
+            ])
+            .unwrap();
+        let none: Vec<String> = Vec::new();
+        let no_correction: Vec<(String, Vec<String>)> = Vec::new();
+
+        assert_eq!(
+            corrected_search(store, "roadmap"),
+            (vec!["a".into(), "b".into()], no_correction.clone()),
+            "an exact hit is never corrected, though roadmaps is one edit away"
+        );
+        assert_eq!(
+            corrected_search(store, "roadmpa"),
+            (vec!["a".into()], vec![corrected("roadmpa", &["roadmap"])]),
+            "a swap"
+        );
+        assert_eq!(
+            corrected_search(store, "kilimanjro").1,
+            vec![corrected("kilimanjro", &["kilimanjaro"])],
+            "a drop"
+        );
+        assert_eq!(
+            corrected_search(store, "antinatoinal"),
+            (
+                vec!["c".into()],
+                vec![corrected("antinatoinal", &["antinational"])]
+            ),
+            "two edits at nine letters"
+        );
+        assert_eq!(
+            corrected_search(store, "atlsa"),
+            (vec!["b".into()], vec![corrected("atlsa", &["atlas"])]),
+            "five letters"
+        );
+        assert_eq!(
+            corrected_search(store, "atls"),
+            (none.clone(), no_correction.clone()),
+            "four letters"
+        );
+        assert_eq!(
+            corrected_search(store, "\"roadmpa\""),
+            (none.clone(), no_correction.clone()),
+            "a phrase"
+        );
+        assert_eq!(
+            corrected_search(store, "budgte roadmap"),
+            (vec!["a".into()], vec![corrected("budgte", &["budget"])]),
+            "only the misspelt word changes"
+        );
+        assert_eq!(
+            corrected_search(store, "roadmpa kilimanjaro budget"),
+            (none.clone(), no_correction.clone()),
+            "a correction that finds nothing is dropped"
+        );
+        assert_eq!(
+            corrected_search(store, "qqqqqqq"),
+            (none, no_correction),
+            "no term is near"
+        );
+    }
+
+    fn terms(store: &dyn Store) -> Vec<String> {
+        store.vocabulary().unwrap().terms().to_vec()
+    }
+
+    fn vocabulary_follows_writes(store: &dyn Store) {
+        assert_eq!(terms(store), Vec::<String>::new(), "an empty library");
+        store
+            .apply(vec![
+                titled("r", 100, "Zanzibar offsite"),
+                said("r", 1, &["The Ørsted plan", "ok so"]),
+            ])
+            .unwrap();
+        assert_eq!(
+            terms(store),
+            ["offsite", "orsted", "plan", "zanzibar"],
+            "folded, four letters or more"
+        );
+        store
+            .apply(vec![Change::RecordingEdited {
+                id: rid("r"),
+                edit: RecordingEdit::Title(Some("Atlas kickoff".into())),
+            }])
+            .unwrap();
+        assert_eq!(
+            terms(store),
+            ["atlas", "kickoff", "orsted", "plan"],
+            "a rename drops the old title's words"
+        );
+        store
+            .apply(vec![
+                Change::SpeakerNamesReplaced {
+                    id: rid("r"),
+                    names: SpeakerNames {
+                        for_revision: Revision(1),
+                        names: BTreeMap::from([(SpeakerId(2), "Priyanka".to_owned())]),
+                    },
+                },
+                Change::SummaryReplaced {
+                    id: rid("r"),
+                    summary: summary(1, "Decision: ship Friday"),
+                },
+            ])
+            .unwrap();
+        assert_eq!(
+            terms(store),
+            [
+                "atlas", "decision", "friday", "kickoff", "orsted", "plan", "priyanka", "ship"
+            ],
+            "names and summary"
+        );
+        store.apply(vec![said("r", 2, &["fresh words"])]).unwrap();
+        assert_eq!(
+            terms(store),
+            [
+                "atlas", "decision", "fresh", "friday", "kickoff", "ship", "words"
+            ],
+            "a new transcript drops the old words and the names of its revision"
+        );
+        store
+            .apply(vec![Change::RecordingDeleted(rid("r"))])
+            .unwrap();
+        assert_eq!(terms(store), Vec::<String>::new(), "a deleted recording");
     }
 
     fn list_row_fields(store: &dyn Store) {

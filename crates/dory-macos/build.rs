@@ -1,14 +1,16 @@
-//! Compiles `swift/DoryAI.swift` into a static library and links it with the system Swift runtime.
+//! Compiles `swift/*.swift` into a static library and links it with the system Swift runtime.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-const SWIFT_SOURCE: &str = "swift/DoryAI.swift";
+const SWIFT_SOURCES: [&str; 2] = ["swift/DoryAI.swift", "swift/DorySpeech.swift"];
 /// `SystemLanguageModel.contextSize` first ships in this SDK.
 const MIN_SDK: (u32, u32) = (26, 4);
 
 fn main() {
-    println!("cargo:rerun-if-changed={SWIFT_SOURCE}");
+    for source in SWIFT_SOURCES {
+        println!("cargo:rerun-if-changed={source}");
+    }
     let macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
     if !macos || std::env::var_os("CARGO_FEATURE_APPLE_INTELLIGENCE").is_none() {
         return;
@@ -42,18 +44,22 @@ fn main() {
             "-O",
         ])
         .args(["-target", &format!("{arch}-apple-macosx26.0")])
-        .args(["-module-name", "DoryAI", SWIFT_SOURCE, "-o"])
+        .args(["-module-name", "DoryAI"])
+        .args(SWIFT_SOURCES)
+        .arg("-o")
         .arg(out.join("libdoryai.a"))
         .status()
         .unwrap_or_else(|_| fail(MISSING_XCODE));
     if !status.success() {
-        fail("dory-macos could not compile swift/DoryAI.swift; the swiftc output above says why.");
+        fail("dory-macos could not compile its Swift sources; the swiftc output above says why.");
     }
 
     println!("cargo:rustc-link-search=native={}", out.display());
     println!("cargo:rustc-link-lib=static=doryai");
     println!("cargo:rustc-link-search=native={sdk}/usr/lib/swift");
-    println!("cargo:rustc-link-lib=framework=FoundationModels");
+    for framework in ["FoundationModels", "Speech", "AVFoundation", "CoreMedia"] {
+        println!("cargo:rustc-link-lib=framework={framework}");
+    }
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
 }

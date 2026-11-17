@@ -45,5 +45,9 @@ test = true
 name = "foundation_models_live"
 required-features = ["apple-intelligence"]
 
+[[test]]
+name = "speech_live"
+required-features = ["apple-intelligence"]
+
 [lints]
 workspace = true

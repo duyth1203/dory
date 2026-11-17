@@ -19,6 +19,8 @@ mod trash;
 
 #[cfg(all(target_os = "macos", feature = "apple-intelligence"))]
 pub use ai::foundation_models::FoundationModels;
+#[cfg(all(target_os = "macos", feature = "apple-intelligence"))]
+pub use ai::speech::AppleSpeech;
 #[cfg(target_os = "macos")]
 pub use capture::{CaptureGraph, CoreAudioCapture, CoreAudioHandle, PcmFormat, TimelineClock};
 #[cfg(target_os = "macos")]

@@ -1,4 +1,5 @@
-//! The C ABI of `swift/DoryAI.swift`. Every `unsafe` line of the Swift bridge lives in this file.
+//! The C ABI of `swift/DoryAI.swift` and `swift/DorySpeech.swift`. Every `unsafe` line of the
+//! Swift bridge lives in this file.
 
 use std::any::Any;
 use std::ffi::{CStr, c_char, c_void};
@@ -19,12 +20,22 @@ pub(super) const RATE_LIMITED: i32 = 16;
 pub(super) const CONCURRENT_REQUESTS: i32 = 17;
 pub(super) const REFUSAL: i32 = 18;
 pub(super) const OTHER_GENERATION_ERROR: i32 = 19;
+pub(super) const SPEECH_ASSETS_MISSING: i32 = 30;
+pub(super) const SPEECH_UNSUPPORTED_LOCALE: i32 = 31;
+pub(super) const SPEECH_RESERVATION_LIMIT: i32 = 32;
+pub(super) const SPEECH_AUDIO_UNREADABLE: i32 = 33;
+pub(super) const SPEECH_BUSY: i32 = 34;
+pub(super) const SPEECH_NETWORK: i32 = 35;
 
 pub(super) const FM_AVAILABLE: i32 = 0;
 pub(super) const FM_NOT_ENABLED: i32 = 1;
 pub(super) const FM_NOT_ELIGIBLE: i32 = 2;
 pub(super) const FM_NOT_READY: i32 = 3;
 pub(super) const FM_OS_TOO_OLD: i32 = 4;
+
+pub(super) const ASSET_INSTALLED: i32 = 0;
+pub(super) const ASSET_SUPPORTED: i32 = 1;
+pub(super) const ASSET_DOWNLOADING: i32 = 2;
 
 #[repr(C)]
 struct DoryTask {
@@ -33,6 +44,9 @@ struct DoryTask {
 }
 
 type OnPiece = extern "C" fn(ctx: *mut c_void, piece: *const c_char, len: usize) -> bool;
+type OnSegment =
+    extern "C" fn(ctx: *mut c_void, start_ms: u64, end_ms: u64, text: *const c_char) -> bool;
+type OnProgress = extern "C" fn(ctx: *mut c_void, fraction: f64) -> bool;
 
 unsafe extern "C" {
     fn dory_task_new() -> *mut DoryTask;
@@ -53,6 +67,26 @@ unsafe extern "C" {
         ctx: *mut c_void,
         on_piece: Option<OnPiece>,
         full: *mut *mut c_char,
+        error: *mut *mut c_char,
+    ) -> i32;
+    fn dory_speech_locales(csv: *mut *mut c_char) -> i32;
+    fn dory_speech_asset_state(locale: *const c_char) -> i32;
+    fn dory_speech_install(
+        task: *mut DoryTask,
+        locale: *const c_char,
+        ctx: *mut c_void,
+        on_progress: Option<OnProgress>,
+        error: *mut *mut c_char,
+    ) -> i32;
+    fn dory_speech_transcribe(
+        task: *mut DoryTask,
+        path: *const c_char,
+        start_ms: u64,
+        end_ms: u64,
+        locale: *const c_char,
+        ctx: *mut c_void,
+        on_segment: Option<OnSegment>,
+        on_progress: Option<OnProgress>,
         error: *mut *mut c_char,
     ) -> i32;
 }
@@ -141,10 +175,16 @@ extern "C" fn on_piece_trampoline(ctx: *mut c_void, piece: *const c_char, len: u
     // SAFETY: Swift passes `len` bytes of one Swift string, valid for the duration of this call.
     let bytes = unsafe { std::slice::from_raw_parts(piece.cast::<u8>(), len) };
     let text = String::from_utf8_lossy(bytes);
-    match catch_unwind(AssertUnwindSafe(|| (sink.on_piece)(&text))) {
+    guarded(&mut sink.panic, || (sink.on_piece)(&text))
+}
+
+/// Runs a Rust callback for Swift. A panic must not unwind into Swift, so it is kept for the
+/// blocked caller to resume, and the call reports "stop".
+fn guarded(panic: &mut Option<Box<dyn Any + Send>>, call: impl FnOnce() -> bool) -> bool {
+    match catch_unwind(AssertUnwindSafe(call)) {
         Ok(keep_going) => keep_going,
         Err(payload) => {
-            sink.panic = Some(payload);
+            *panic = Some(payload);
             false
         }
     }
@@ -189,4 +229,149 @@ pub(super) fn fm_complete(
         resume_unwind(payload);
     }
     outcome
+}
+
+/// Every supported locale, comma-separated BCP 47 tags. Empty when the Mac has no SpeechTranscriber.
+pub(super) fn speech_locales() -> String {
+    let mut csv = null_mut();
+    // SAFETY: the out pointer is a live local, and Swift writes it once before returning.
+    unsafe { dory_speech_locales(&mut csv) };
+    take_string(csv)
+}
+
+pub(super) fn speech_asset_state(locale: &CStr) -> i32 {
+    // SAFETY: `locale` is a NUL-terminated string that outlives this blocking call.
+    unsafe { dory_speech_asset_state(locale.as_ptr()) }
+}
+
+pub(super) struct RawStatus {
+    pub code: i32,
+    pub error: String,
+}
+
+/// What Swift reports during a speech call.
+pub(super) enum SpeechEvent<'t> {
+    /// Times are relative to the start of the range Rust asked for.
+    Segment {
+        start_ms: u64,
+        end_ms: u64,
+        text: &'t str,
+    },
+    Progress(f64),
+}
+
+/// The callback of one speech call and any panic it raised, behind the `ctx` pointer.
+struct SpeechSink<'a> {
+    on_event: &'a mut dyn FnMut(SpeechEvent<'_>) -> bool,
+    panic: Option<Box<dyn Any + Send>>,
+}
+
+impl<'a> SpeechSink<'a> {
+    /// Hands the sink to Swift for one blocking call, then resumes any panic the callback raised.
+    fn run(
+        on_event: &'a mut dyn FnMut(SpeechEvent<'_>) -> bool,
+        call: impl FnOnce(*mut c_void) -> (i32, *mut c_char),
+    ) -> RawStatus {
+        let mut sink = SpeechSink {
+            on_event,
+            panic: None,
+        };
+        let (code, error) = call((&raw mut sink).cast());
+        let status = RawStatus {
+            code,
+            error: take_string(error),
+        };
+        if let Some(payload) = sink.panic {
+            resume_unwind(payload);
+        }
+        status
+    }
+
+    fn deliver(&mut self, event: SpeechEvent<'_>) -> bool {
+        if self.panic.is_some() {
+            return false;
+        }
+        guarded(&mut self.panic, || (self.on_event)(event))
+    }
+}
+
+extern "C" fn on_segment_trampoline(
+    ctx: *mut c_void,
+    start_ms: u64,
+    end_ms: u64,
+    text: *const c_char,
+) -> bool {
+    // SAFETY: `ctx` is the `SpeechSink` that `SpeechSink::run` borrows for the whole blocking call,
+    // and Swift calls back only on that same thread while it waits, so this is the only reference.
+    let sink = unsafe { &mut *ctx.cast::<SpeechSink<'_>>() };
+    if text.is_null() {
+        return false;
+    }
+    // SAFETY: Swift passes a NUL-terminated string valid for the duration of this call.
+    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
+    sink.deliver(SpeechEvent::Segment {
+        start_ms,
+        end_ms,
+        text: &text,
+    })
+}
+
+extern "C" fn on_progress_trampoline(ctx: *mut c_void, fraction: f64) -> bool {
+    // SAFETY: as in `on_segment_trampoline`.
+    let sink = unsafe { &mut *ctx.cast::<SpeechSink<'_>>() };
+    sink.deliver(SpeechEvent::Progress(fraction))
+}
+
+/// Blocks until Apple has the locale's assets, the task is cancelled, or `on_event` returns false.
+/// A panic in `on_event` stops it and resumes here.
+pub(super) fn speech_install(
+    task: &Task,
+    locale: &CStr,
+    on_event: &mut dyn FnMut(SpeechEvent<'_>) -> bool,
+) -> RawStatus {
+    SpeechSink::run(on_event, |ctx| {
+        let mut error = null_mut();
+        // SAFETY: the task handle, `locale`, the sink behind `ctx`, and `error` all outlive this
+        // blocking call, and Swift calls the trampoline only on this thread before it returns.
+        let code = unsafe {
+            dory_speech_install(
+                task.0.as_ptr(),
+                locale.as_ptr(),
+                ctx,
+                Some(on_progress_trampoline),
+                &mut error,
+            )
+        };
+        (code, error)
+    })
+}
+
+/// Blocks until Apple has transcribed `start_ms..end_ms` of the file, the task is cancelled, or
+/// `on_event` returns false. A panic in `on_event` stops the call and resumes here.
+pub(super) fn speech_transcribe(
+    task: &Task,
+    path: &CStr,
+    (start_ms, end_ms): (u64, u64),
+    locale: &CStr,
+    on_event: &mut dyn FnMut(SpeechEvent<'_>) -> bool,
+) -> RawStatus {
+    SpeechSink::run(on_event, |ctx| {
+        let mut error = null_mut();
+        // SAFETY: the task handle, both strings, the sink behind `ctx`, and `error` all outlive
+        // this blocking call, and Swift calls the trampolines only on this thread before it returns.
+        let code = unsafe {
+            dory_speech_transcribe(
+                task.0.as_ptr(),
+                path.as_ptr(),
+                start_ms,
+                end_ms,
+                locale.as_ptr(),
+                ctx,
+                Some(on_segment_trampoline),
+                Some(on_progress_trampoline),
+                &mut error,
+            )
+        };
+        (code, error)
+    })
 }

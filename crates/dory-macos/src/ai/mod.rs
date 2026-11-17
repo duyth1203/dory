@@ -3,3 +3,4 @@
 
 mod ffi;
 pub mod foundation_models;
+pub mod speech;

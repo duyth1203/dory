@@ -24,6 +24,12 @@ enum DoryCode: Int32 {
   case refusal = 18
   case otherGenerationError = 19
   case other = 20
+  case speechAssetsMissing = 30
+  case speechUnsupportedLocale = 31
+  case speechReservationLimit = 32
+  case speechAudioUnreadable = 33
+  case speechBusy = 34
+  case speechNetwork = 35
 }
 
 /// Apple's availability as `dory_fm_info` reports it. `src/ai/ffi.rs` mirrors it.

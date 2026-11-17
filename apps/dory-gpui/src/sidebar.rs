@@ -260,6 +260,7 @@ impl Sidebar {
                     .flex_col()
                     .justify_center()
                     .gap(px(2.))
+                    .flex_none()
                     .min_h(px(52.))
                     .px(px(12.))
                     .py(px(7.))
@@ -340,7 +341,9 @@ impl Sidebar {
                                 .line_height(relative(1.25))
                                 .text_color(fg2)
                                 .when(theme.text_scale <= 1.25, |line| line.truncate())
-                                .when(theme.text_scale > 1.25, |line| line.line_clamp(2))
+                                .when(theme.text_scale > 1.25, |line| {
+                                    line.line_clamp(2).text_ellipsis()
+                                })
                                 .child(marked(
                                     excerpt.snippet.text.clone(),
                                     &excerpt.snippet.marks,
@@ -377,6 +380,7 @@ fn correction_line(words: &str, theme: &Theme) -> impl IntoElement {
     let line = format!("{lead}{words}");
     let words = lead.len()..line.len();
     a11y::node("search-correction", Role::Label, line.clone())
+        .flex_none()
         .px(px(12.))
         .pt(px(8.))
         .text_size(theme.text(12.))
@@ -398,6 +402,7 @@ fn marked_words(text: String, words: Range<usize>, color: Hsla) -> AnyElement {
 fn heading(id: &str, label: &str, theme: &Theme) -> impl IntoElement {
     let header = a11y::node(id.to_owned(), Role::Heading, label.to_owned())
         .aria_level(3)
+        .flex_none()
         .px(px(12.))
         .pt(px(12.))
         .pb(px(4.))

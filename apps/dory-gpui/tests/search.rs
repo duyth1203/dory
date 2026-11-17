@@ -322,20 +322,20 @@ fn rows_grow_to_fit_their_snippet_and_never_overlap_at_200_percent(cx: &mut Test
     );
 }
 
-#[gpui_kit::test]
-fn snippets_past_the_first_screen_fill_in_after_the_rows(cx: &mut TestAppContext) {
-    use dory_core::domain::{
-        Channel, ChannelLayout, LanguagePref, Ms, Recording, RecordingId, Revision, Segment,
-        SpeakerId, TimeRange, Timestamp, Transcript,
-    };
-    use dory_core::models::ModelRef;
-    use dory_core::ports::{Change, Store as _};
-    use dory_core::testing::store::MemStore;
-
-    let store = std::sync::Arc::new(MemStore::new());
+/// `count` recordings titled "Call n", each with one turn that mentions "kilimanjaro", newest
+/// last in the returned ids.
+fn calls_about_kilimanjaro(
+    count: i64,
+) -> (
+    std::sync::Arc<dory_core::testing::store::MemStore>,
+    Vec<RecordingId>,
+) {
+    let store = std::sync::Arc::new(dory_core::testing::store::MemStore::new());
     let mut changes = Vec::new();
-    for n in 0..45_i64 {
+    let mut ids = Vec::new();
+    for n in 0..count {
         let id = RecordingId::generate(Timestamp(1_763_000_000_000 + n * 60_000), 0);
+        ids.push(id.clone());
         changes.push(Change::RecordingCreated(Recording {
             id: id.clone(),
             title: Some(format!("Call {n}")),
@@ -360,12 +360,46 @@ fn snippets_past_the_first_screen_fill_in_after_the_rows(cx: &mut TestAppContext
         });
     }
     store.apply(changes).unwrap();
+    (store, ids)
+}
+
+#[gpui_kit::test]
+fn snippets_past_the_first_screen_fill_in_after_the_rows(cx: &mut TestAppContext) {
+    let (store, _) = calls_about_kilimanjaro(45);
     let (_, app) = common::open_with(cx, common::dory_on(store));
     search(&app, "kilimanjaro", cx);
     app.read_with(cx, |app, _| {
         assert_eq!(app.recordings.len(), 45);
         assert_eq!(app.snippets.len(), 45, "the first 30 and the 15 after them");
     });
+}
+
+#[gpui_kit::test]
+fn more_hits_than_fit_keep_every_row_tall_enough_for_its_snippet(cx: &mut TestAppContext) {
+    let (store, ids) = calls_about_kilimanjaro(45);
+    let (window, app) = common::open_with(cx, common::dory_on(store));
+    search(&app, "kilimanjaro", cx);
+    let rows = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            ids.iter()
+                .rev()
+                .map(|rec| window.find(id(&format!("row-{rec}"))).bounds())
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    for row in &rows {
+        assert!(
+            f32::from(row.size.height) > 60.,
+            "a title, a meta line, and a snippet need more than 60 pt: {row:?}"
+        );
+    }
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0].bottom() <= pair[1].top(),
+            "rows stack without overlap: {pair:?}"
+        );
+    }
 }
 
 #[test]

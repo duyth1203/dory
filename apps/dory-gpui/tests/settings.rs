@@ -121,6 +121,8 @@ impl ModelProvider<Stt> for HeldProvider {
 struct Rig {
     store: Arc<MemStore>,
     llm: Arc<FakeLlmProvider>,
+    /// More summary providers after Ollama's, such as a built-in model.
+    more_llm: Vec<Arc<dyn ModelProvider<Llm>>>,
     machine: Arc<FakeMachine>,
     transcriber: Arc<FakeTranscriber>,
     dir: std::path::PathBuf,
@@ -145,6 +147,7 @@ fn rig(meeting: &[&str]) -> Rig {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     Rig {
+        more_llm: Vec::new(),
         store,
         machine: Arc::new(FakeMachine::default()),
         transcriber: Arc::new(FakeTranscriber::new()),
@@ -195,7 +198,9 @@ fn open_with_speech(
                 .into_iter()
                 .chain(more)
                 .collect(),
-            llm: vec![rig.llm.clone()],
+            llm: std::iter::once(rig.llm.clone() as Arc<dyn ModelProvider<Llm>>)
+                .chain(rig.more_llm.iter().cloned())
+                .collect(),
             diar: Vec::new(),
             machine: rig.machine.clone(),
             guard: None,
@@ -686,6 +691,50 @@ fn the_summaries_sheet_says_when_summaries_are_ready(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert!(!open, "Done closes it");
+}
+
+#[gpui_kit::test]
+fn ollama_section_only_for_ollama_choices(cx: &mut TestAppContext) {
+    let mut rig = rig(&["en"]);
+    let gemma: ModelId<Llm> = GEMMA.parse().unwrap();
+    rig.llm.set_availability(
+        &gemma,
+        Availability::Unavailable(Unavailable {
+            reason: UnavailableReason::ServerUnreachable {
+                endpoint: "http://127.0.0.1:11434".into(),
+            },
+            fix: None,
+        }),
+    );
+    let mut system = llm_entry("system/summarizer");
+    system.display_name = "Apple Intelligence".into();
+    system.caps.languages = LangSet::Only(tags(&["en"]));
+    system.rank = -1;
+    system.built_in = true;
+    rig.more_llm.push(Arc::new(FakeLlmProvider::new(
+        "system",
+        vec![system],
+        Arc::new(FakeLanguageModel::new("summary")),
+    )));
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Summaries, cx);
+    until(cx, "the summary rows", |cx| {
+        has(window, "model-system/summarizer", cx)
+    });
+    assert!(
+        !has(window, "settings-ollama", cx),
+        "Automatic uses the built-in model, so a stopped Ollama does not matter"
+    );
+    assert!(
+        description(window, "model-system/summarizer", cx)
+            .unwrap_or_default()
+            .contains("Ready"),
+        "the built-in row reads Ready"
+    );
+    click(window, &format!("model-{GEMMA}"), cx);
+    until(cx, "the Ollama steps once Gemma is chosen", |cx| {
+        has(window, "settings-ollama", cx)
+    });
 }
 
 struct Onboarding(Entity<AppState>);

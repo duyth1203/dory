@@ -174,12 +174,7 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
     };
     Some(match why {
         Mismatch::LanguageUnsupported => {
-            let set = K::languages(caps);
-            let missing: Vec<String> = K::wanted(settings)
-                .iter()
-                .filter(|tag| !set.supports(tag))
-                .map(languages::name)
-                .collect();
+            let missing = missing_languages::<K>(caps, settings);
             if missing.is_empty() {
                 "Doesn't support this language".into()
             } else {
@@ -192,6 +187,16 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
         Mismatch::NoDiarization => "Can't tell speakers apart".into(),
         Mismatch::InputTooLong => "Long recordings get cut short".into(),
     })
+}
+
+/// The names of the languages the settings ask for that the model cannot read.
+pub fn missing_languages<K: ListKind>(caps: &K::Caps, settings: &Settings) -> Vec<String> {
+    let set = K::languages(caps);
+    K::wanted(settings)
+        .iter()
+        .filter(|tag| !set.supports(tag))
+        .map(languages::name)
+        .collect()
 }
 
 pub fn row<K: ListKind>(row: &ModelRow<K>, settings: &Settings, download: Option<Download>) -> Row {
@@ -324,6 +329,16 @@ fn name_of<K: ListKind>(rows: &[ModelRow<K>], model: &ModelRef) -> String {
             || model.to_string(),
             |r| r.status.entry.display_name.clone(),
         )
+}
+
+/// True when the model the settings' choice resolves to waits on a server that does not answer,
+/// so Settings shows how to start it.
+pub fn waits_on_server<K: ListKind>(rows: &[ModelRow<K>], settings: &Settings) -> bool {
+    matches!(
+        chosen_pick(rows, settings),
+        Resolution::Blocked(Blocker::Unavailable { why, .. })
+            if matches!(why.reason, UnavailableReason::ServerUnreachable { .. })
+    )
 }
 
 /// The line under **Automatic**: which model it uses now, and why not when it can't.
@@ -894,6 +909,18 @@ impl<K: ListKind> ModelList<K> {
             return false;
         };
         self.controls.open = Some(first.status.entry.id.erase());
+        cx.notify();
+        true
+    }
+
+    /// Opens the explainer of the model named `name`. False when the list has none by that name.
+    pub fn open_explainer(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(row) = K::rows(self.models.read(cx))
+            .and_then(|rows| rows.iter().find(|r| r.status.entry.display_name == name))
+        else {
+            return false;
+        };
+        self.controls.open = Some(row.status.entry.id.erase());
         cx.notify();
         true
     }

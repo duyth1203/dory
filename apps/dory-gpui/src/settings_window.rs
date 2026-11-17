@@ -29,7 +29,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use dory_core::domain::{Exposure, LanguagePref, Writes};
-use dory_core::models::{Availability, Llm, Stt, UnavailableReason};
+use dory_core::models::{Llm, Stt};
 use dory_core::ports::capture::InputDevice;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -412,6 +412,26 @@ impl SettingsWindow {
     pub fn open_first_explainer(&mut self, cx: &mut Context<Self>) -> bool {
         self.speech
             .update(cx, |list, cx| list.open_first_explainer(cx))
+    }
+
+    /// Shows the pane that lists the model named `name` and opens its explainer. False until
+    /// the models are listed.
+    pub fn open_explainer(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        if self
+            .speech
+            .update(cx, |list, cx| list.open_explainer(name, cx))
+        {
+            self.select(Pane::Transcription, cx);
+            return true;
+        }
+        if self
+            .summaries
+            .update(cx, |list, cx| list.open_explainer(name, cx))
+        {
+            self.select(Pane::Summaries, cx);
+            return true;
+        }
+        false
     }
 
     /// The row a search result last jumped to, while it is still highlighted.
@@ -1078,15 +1098,10 @@ impl SettingsWindow {
 
     fn summaries(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let models = self.models.read(cx);
-        let unreachable = models.rows::<Llm>().is_some_and(|rows| {
-            rows.iter().any(|r| {
-                matches!(
-                    &r.status.availability,
-                    Availability::Unavailable(u)
-                        if matches!(u.reason, UnavailableReason::ServerUnreachable { .. })
-                )
-            })
-        });
+        let unreachable = match (models.rows::<Llm>(), models.settings()) {
+            (Some(rows), Some(settings)) => models_view::waits_on_server(rows, settings),
+            _ => false,
+        };
         let checking = models.is_checking();
         let mut page = Vec::new();
         if unreachable {

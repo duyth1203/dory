@@ -284,55 +284,129 @@ impl Assistant {
                 Access::search(&text, page.map_or(0, |p| p.hits.len() as u32))
             },
             |page| page.hits.len() as u32,
+            |grant| self.find(grant, search),
+        )
+    }
+
+    /// The newest meetings this assistant may see, a page at a time, for a resource listing.
+    pub fn list(
+        &self,
+        reported: Option<&str>,
+        cursor: Option<SearchCursor>,
+    ) -> Result<SearchPage, Refusal> {
+        self.audited(
+            reported,
+            |_| Access::ResourceList,
+            |page: &SearchPage| page.hits.len() as u32,
             |grant| {
-                let limit = search
-                    .limit
-                    .unwrap_or(DEFAULT_SEARCH_RESULTS)
-                    .clamp(1, MAX_SEARCH_RESULTS);
-                let fields = grant.fields();
-                let rows = self
-                    .store
-                    .assistant_recordings(&AssistantQuery {
-                        text: search.text.clone(),
-                        fields,
-                        since: search.since,
-                        until: search.until,
-                        after: search.cursor.as_ref().map(|c| (c.created_at, c.id.clone())),
-                        limit,
-                    })
-                    .map_err(|e| self.lib(e))?;
-                let needle = search
-                    .text
-                    .as_deref()
-                    .map(|t| t.trim().to_lowercase())
-                    .filter(|t| !t.is_empty());
-                let mut hits = Vec::with_capacity(rows.len());
-                for row in &rows {
-                    let r = &row.recording;
-                    let snippet = match &needle {
-                        Some(n) => self.snippet(r, n, fields)?,
-                        None => None,
-                    };
-                    hits.push(Hit {
-                        id: r.id.clone(),
-                        title: r.title.clone(),
-                        created_at: r.created_at,
-                        duration: r.take.map(|t| t.duration),
-                        has_transcript: row.has_transcript,
-                        summary: row.summary,
-                        snippet,
-                    });
-                }
-                let next = (rows.len() as u32 == limit)
-                    .then(|| rows.last())
-                    .flatten()
-                    .map(|row| SearchCursor {
-                        created_at: row.recording.created_at,
-                        id: row.recording.id.clone(),
-                    });
-                Ok(SearchPage { hits, next })
+                self.find(
+                    grant,
+                    &Search {
+                        cursor: cursor.clone(),
+                        limit: Some(MAX_SEARCH_RESULTS),
+                        ..Search::default()
+                    },
+                )
             },
         )
+    }
+
+    /// The meetings a prompt points the assistant at: those matching `query`, or the one `id`.
+    /// Prompts carry links to summaries, so they need the Summaries level.
+    pub fn prompt_meetings(
+        &self,
+        reported: Option<&str>,
+        prompt: &str,
+        query: Option<&str>,
+        id: Option<&RecordingId>,
+        limit: u32,
+    ) -> Result<Vec<Hit>, Refusal> {
+        self.audited(
+            reported,
+            |_| Access::Prompt {
+                name: prompt.to_owned(),
+            },
+            |hits: &Vec<Hit>| hits.len() as u32,
+            |grant| {
+                if grant.exposure() < Exposure::Summaries {
+                    return Err(Refusal::NotShared {
+                        need: Exposure::Summaries,
+                    });
+                }
+                if let Some(id) = id {
+                    let r = self.visible(grant, id, Exposure::Summaries)?;
+                    let (has_transcript, summary) = self.summary_flag(id)?;
+                    return Ok(vec![Hit {
+                        id: r.id,
+                        title: r.title,
+                        created_at: r.created_at,
+                        duration: r.take.map(|t| t.duration),
+                        has_transcript,
+                        summary,
+                        snippet: None,
+                    }]);
+                }
+                Ok(self
+                    .find(
+                        grant,
+                        &Search {
+                            text: query.map(str::to_owned),
+                            limit: Some(limit),
+                            ..Search::default()
+                        },
+                    )?
+                    .hits)
+            },
+        )
+    }
+
+    fn find(&self, grant: &Grant, search: &Search) -> Result<SearchPage, Refusal> {
+        let limit = search
+            .limit
+            .unwrap_or(DEFAULT_SEARCH_RESULTS)
+            .clamp(1, MAX_SEARCH_RESULTS);
+        let fields = grant.fields();
+        let rows = self
+            .store
+            .assistant_recordings(&AssistantQuery {
+                text: search.text.clone(),
+                fields,
+                since: search.since,
+                until: search.until,
+                after: search.cursor.as_ref().map(|c| (c.created_at, c.id.clone())),
+                limit,
+            })
+            .map_err(|e| self.lib(e))?;
+        let needle = search
+            .text
+            .as_deref()
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty());
+        let mut hits = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let r = &row.recording;
+            let snippet = match &needle {
+                Some(n) => self.snippet(r, n, fields)?,
+                None => None,
+            };
+            hits.push(Hit {
+                id: r.id.clone(),
+                title: r.title.clone(),
+                created_at: r.created_at,
+                duration: r.take.map(|t| t.duration),
+                has_transcript: row.has_transcript,
+                summary: row.summary,
+                snippet,
+            });
+        }
+        let next = (rows.len() as u32 == limit)
+            .then(|| rows.last())
+            .flatten()
+            .map(|row| SearchCursor {
+                created_at: row.recording.created_at,
+                id: row.recording.id.clone(),
+            });
+        Ok(SearchPage { hits, next })
     }
 
     fn snippet(
@@ -442,12 +516,32 @@ impl Assistant {
         )
     }
 
+    /// A whole transcript, for a resource the user attached. Resources have no paging, so the
+    /// client decides whether it fits.
+    pub fn transcript(
+        &self,
+        reported: Option<&str>,
+        id: &RecordingId,
+    ) -> Result<TranscriptPage, Refusal> {
+        self.page_of(reported, id, None, usize::MAX)
+    }
+
     pub fn transcript_page(
         &self,
         reported: Option<&str>,
         id: &RecordingId,
         cursor: Option<TurnCursor>,
         page_chars: Option<usize>,
+    ) -> Result<TranscriptPage, Refusal> {
+        self.page_of(reported, id, cursor, turns::page_chars(page_chars))
+    }
+
+    fn page_of(
+        &self,
+        reported: Option<&str>,
+        id: &RecordingId,
+        cursor: Option<TurnCursor>,
+        budget: usize,
     ) -> Result<TranscriptPage, Refusal> {
         self.audited(
             reported,
@@ -469,7 +563,7 @@ impl Assistant {
                 let names = self.store.speaker_names(id).map_err(|e| self.lib(e))?;
                 let all = turns::turns(&transcript, &names);
                 let from = cursor.map_or(0, |c| c.turn as usize);
-                let (page, next) = turns::page(&all, from, turns::page_chars(page_chars));
+                let (page, next) = turns::page(&all, from, budget);
                 Ok(TranscriptPage {
                     id: r.id,
                     title: r.title,

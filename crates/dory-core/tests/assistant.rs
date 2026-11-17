@@ -389,3 +389,37 @@ fn search_pages_with_its_cursor() {
         .unwrap();
     assert!(third.hits.is_empty() && third.next.is_none());
 }
+
+#[test]
+fn listings_and_prompts_are_audited_and_prompts_need_summaries() {
+    let rig = Rig::new(Exposure::Titles);
+    let a = rig.me();
+    let listed = a.list(Some("desktop"), None).unwrap();
+    assert_eq!(ids(&listed), ["sync", "plan"]);
+    assert_eq!(
+        a.prompt_meetings(None, "prepare_one_on_one", Some("release"), None, 5),
+        Err(Refusal::NotShared {
+            need: Exposure::Summaries
+        })
+    );
+    rig.set_exposure(Exposure::Summaries);
+    let found = a
+        .prompt_meetings(None, "prepare_one_on_one", Some("budget"), None, 5)
+        .unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, rid("plan"));
+    assert_eq!(
+        a.prompt_meetings(None, "draft_follow_up_email", None, Some(&rid("secret")), 5),
+        Err(Refusal::NotFound)
+    );
+    let kinds: Vec<Access> = rig.entries().into_iter().map(|e| e.access).collect();
+    assert_eq!(kinds[0], Access::ResourceList);
+    assert!(
+        kinds[1..]
+            .iter()
+            .all(|k| matches!(k, Access::Prompt { .. }))
+    );
+    let whole = rig.me();
+    rig.set_exposure(Exposure::Transcripts);
+    assert_eq!(whole.transcript(None, &rid("sync")).unwrap().turns.len(), 2);
+}

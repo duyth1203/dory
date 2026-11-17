@@ -180,7 +180,11 @@ pub fn search(page: &SearchPage) -> CallToolResult {
 }
 
 pub fn recording(r: &RecordingView) -> CallToolResult {
-    let value = json!({
+    structured(recording_json(r), vec![link(&r.id, r.title.as_deref())])
+}
+
+pub fn recording_json(r: &RecordingView) -> Value {
+    json!({
         "id": r.id.as_str(),
         "title": r.title.as_deref().map(clean),
         "created": iso(r.created_at),
@@ -188,11 +192,10 @@ pub fn recording(r: &RecordingView) -> CallToolResult {
         "has_transcript": r.has_transcript,
         "summary": summary_state(r.summary),
         "speakers": r.speakers.as_ref().map(|s| s.iter().map(|n| clean(n)).collect::<Vec<_>>()),
-    });
-    structured(value, vec![link(&r.id, r.title.as_deref())])
+    })
 }
 
-pub fn summary(s: &SummaryView) -> CallToolResult {
+pub fn summary_text(s: &SummaryView) -> String {
     let head = format!(
         "summary id={} language={} stale={}",
         s.id,
@@ -201,8 +204,11 @@ pub fn summary(s: &SummaryView) -> CallToolResult {
             .map_or("unknown".to_owned(), ToString::to_string),
         s.stale
     );
-    let mut result =
-        CallToolResult::success(vec![for_assistant(fence(&head, &s.markdown, &nonce()))]);
+    fence(&head, &s.markdown, &nonce())
+}
+
+pub fn summary(s: &SummaryView) -> CallToolResult {
+    let mut result = CallToolResult::success(vec![for_assistant(summary_text(s))]);
     result.structured_content = Some(json!({
         "id": s.id.as_str(),
         "title": s.title.as_deref().map(clean),
@@ -222,7 +228,7 @@ fn turn_line(t: &Turn) -> String {
     )
 }
 
-pub fn transcript(p: &TranscriptPage) -> CallToolResult {
+pub fn transcript_text(p: &TranscriptPage) -> String {
     let end = p.first + p.turns.len() as u32;
     let head = format!(
         "transcript id={} revision={} turns={}-{} of {}",
@@ -235,7 +241,11 @@ pub fn transcript(p: &TranscriptPage) -> CallToolResult {
             "\nMore turns follow. Call get_transcript again with cursor \"{next}\"."
         ));
     }
-    let mut result = CallToolResult::success(vec![for_assistant(text)]);
+    text
+}
+
+pub fn transcript(p: &TranscriptPage) -> CallToolResult {
+    let mut result = CallToolResult::success(vec![for_assistant(transcript_text(p))]);
     result.structured_content = Some(json!({
         "id": p.id.as_str(),
         "revision": p.revision.0,

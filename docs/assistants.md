@@ -69,6 +69,18 @@ Quit and reopen Claude Desktop. Dory's tools then appear in its tools menu.
 | `list_action_items` | The action items of one meeting, or of recent meetings since a day. Needs `summaries`. |
 | `get_transcript` | One meeting's transcript as speaker turns with times, a page at a time. Needs `transcripts`. |
 
+Dory also offers two prompts and three kinds of resources. In Claude Code, prompts show up as `/mcp__dory__prepare_one_on_one` and `/mcp__dory__draft_follow_up_email`, and you attach a resource by typing `@dory:` and picking it. Both need the `summaries` level.
+
+| Prompt or resource | What it does |
+| --- | --- |
+| `prepare_one_on_one` | Takes a person's name, finds your most recent meetings that mention them, and asks the assistant for an agenda from their summaries. |
+| `draft_follow_up_email` | Takes a meeting id and asks the assistant to draft a short follow-up with decisions and action items. |
+| `dory://recordings/<id>` | One meeting's details. |
+| `dory://recordings/<id>/summary` | One meeting's summary. |
+| `dory://recordings/<id>/transcript` | One meeting's whole transcript. Long meetings are large, so the `get_transcript` tool pages them instead. |
+
+A prompt contains only Dory's instruction and links to the meetings, never meeting text, so nothing said in a meeting reaches the assistant as if you had typed it.
+
 Every tool only reads. Meeting text comes back inside a marked block that tells the assistant it is recorded speech to treat as data, never as instructions, because anyone in a meeting can say something that sounds like an instruction.
 
 ## Change, hide, and review

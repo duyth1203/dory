@@ -319,3 +319,135 @@ fn walk(dir: &Path) -> Vec<std::path::PathBuf> {
     }
     out
 }
+
+fn hide(data: &Path, id: &str) {
+    let config = dory::Config::new(data);
+    dory_store::SqliteStore::open(config.db_path())
+        .unwrap()
+        .apply(vec![Change::Assistant(AssistantChange::RecordingHidden {
+            id: RecordingId::parse(id).unwrap(),
+            hidden: true,
+        })])
+        .unwrap();
+}
+
+#[test]
+fn resources_list_templates_and_read_through_the_same_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Transcripts);
+    let mut server = Server::start(dir.path(), Some(&key), false);
+    let templates = server.call("resources/templates/list", json!({}))["result"].clone();
+    let uris: Vec<&str> = templates["resourceTemplates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["uriTemplate"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        uris,
+        [
+            "dory://recordings/{id}",
+            "dory://recordings/{id}/summary",
+            "dory://recordings/{id}/transcript"
+        ]
+    );
+    let listed = server.call("resources/list", json!({}))["result"].clone();
+    assert_eq!(listed["resources"][0]["uri"], "dory://recordings/weekly");
+    assert_eq!(listed["cacheScope"], "private");
+    let transcript = server.call(
+        "resources/read",
+        json!({"uri": "dory://recordings/weekly/transcript"}),
+    )["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(transcript.starts_with("Dory meeting data follows."));
+    assert_eq!(transcript.matches("<<<").count(), 2, "{transcript}");
+    let bad = server.call(
+        "resources/read",
+        json!({"uri": "dory://recordings/weekly/audio"}),
+    );
+    assert!(bad["error"]["code"].is_i64(), "{bad}");
+    server.finish();
+
+    hide(dir.path(), "weekly");
+    let mut server = Server::start(dir.path(), Some(&key), false);
+    let hidden = server.call("resources/read", json!({"uri": "dory://recordings/weekly"}));
+    let missing = server.call(
+        "resources/read",
+        json!({"uri": "dory://recordings/made-up"}),
+    );
+    assert_eq!(hidden["error"]["message"], missing["error"]["message"]);
+    assert_eq!(hidden["error"]["code"], missing["error"]["code"]);
+    let listed = server.call("resources/list", json!({}))["result"].clone();
+    assert_eq!(listed["resources"], json!([]));
+    server.finish();
+}
+
+#[test]
+fn a_titles_client_cannot_read_a_summary_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Titles);
+    let mut server = Server::start(dir.path(), Some(&key), false);
+    let refused = server.call(
+        "resources/read",
+        json!({"uri": "dory://recordings/weekly/summary"}),
+    );
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("summaries level"),
+        "{refused}"
+    );
+    let prompt = server.call(
+        "prompts/get",
+        json!({"name": "draft_follow_up_email", "arguments": {"recording": "weekly"}}),
+    );
+    assert!(
+        prompt["error"].is_object(),
+        "prompts need summaries: {prompt}"
+    );
+    server.finish();
+}
+
+#[test]
+fn prompts_carry_instructions_and_links_never_meeting_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Summaries);
+    let mut server = Server::start(dir.path(), Some(&key), true);
+    let names: Vec<String> = server.call("prompts/list", json!({}))["result"]["prompts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(names, ["draft_follow_up_email", "prepare_one_on_one"]);
+    for (name, arguments) in [
+        ("prepare_one_on_one", json!({"person": "budget"})),
+        ("draft_follow_up_email", json!({"recording": "weekly"})),
+    ] {
+        let got = server.call("prompts/get", json!({"name": name, "arguments": arguments}));
+        let messages = got["result"]["messages"].as_array().unwrap().clone();
+        assert!(messages.len() >= 2, "{name}: {got}");
+        assert_eq!(messages[1]["content"]["type"], "resource_link", "{name}");
+        assert_eq!(
+            messages[1]["content"]["uri"],
+            "dory://recordings/weekly/summary"
+        );
+        let all = got.to_string();
+        assert!(!all.contains("approved"), "no meeting text in {name}");
+        assert!(
+            !all.contains("Ana: send notes"),
+            "no meeting text in {name}"
+        );
+    }
+    let unknown = server.call("prompts/get", json!({"name": "nope", "arguments": {}}));
+    assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+    let missing = server.call(
+        "prompts/get",
+        json!({"name": "prepare_one_on_one", "arguments": {}}),
+    );
+    assert_eq!(missing["error"]["code"], -32602, "{missing}");
+    server.finish();
+}

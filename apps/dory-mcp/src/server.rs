@@ -1,4 +1,4 @@
-//! The MCP surface: five read-only tools over [`Assistant`]. This file maps types and decides
+//! The MCP surface: five read-only tools, resources, and prompts over [`Assistant`]. This file maps types and decides
 //! nothing; what an assistant may read is decided in `dory-core`.
 
 use std::sync::Arc;
@@ -7,10 +7,15 @@ use dory_core::assistant::turns::TurnCursor;
 use dory_core::assistant::{Assistant, ItemScope, Search, SearchCursor};
 use dory_core::domain::{RecordingId, Refusal, Timestamp};
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CacheScope, CallToolResult, Implementation, ListResourceTemplatesResult, ListResourcesResult,
+    PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult,
+    Resource, ResourceContents, ResourceTemplate, ServerCapabilities, ServerConfig,
+};
 use rmcp::service::RequestContext;
 use rmcp::{
-    ErrorData as McpError, RoleServer, ServerHandler, schemars, tool, tool_handler, tool_router,
+    ErrorData as McpError, RoleServer, ServerHandler, prompt_handler, schemars, tool, tool_handler,
+    tool_router,
 };
 use serde::Deserialize;
 
@@ -97,10 +102,71 @@ fn reported(ctx: &RequestContext<RoleServer>) -> Option<String> {
     ctx.client_info().map(|info| info.name)
 }
 
+fn refusal(why: &Refusal, uri: Option<&str>) -> McpError {
+    let data = uri.map(|uri| serde_json::json!({ "uri": uri }));
+    match why {
+        Refusal::NotFound => McpError::resource_not_found(why.to_string(), data),
+        _ => McpError::invalid_request(why.to_string(), data),
+    }
+}
+
+/// What a `dory://` URI names.
+enum Target {
+    Recording(RecordingId),
+    Summary(RecordingId),
+    Transcript(RecordingId),
+}
+
+fn target(uri: &str) -> Option<Target> {
+    let rest = uri.strip_prefix("dory://recordings/")?;
+    let (id, part) = match rest.split_once('/') {
+        Some((id, part)) => (id, Some(part)),
+        None => (rest, None),
+    };
+    let id = RecordingId::parse(id).ok()?;
+    match part {
+        None => Some(Target::Recording(id)),
+        Some("summary") => Some(Target::Summary(id)),
+        Some("transcript") => Some(Target::Transcript(id)),
+        Some(_) => None,
+    }
+}
+
 impl Server {
     pub fn new(assistant: Result<Assistant, String>) -> Server {
         Server {
             assistant: Arc::new(assistant),
+        }
+    }
+
+    fn assistant(&self) -> Result<&Assistant, McpError> {
+        self.assistant
+            .as_ref()
+            .as_ref()
+            .map_err(|why| McpError::invalid_request(why.clone(), None))
+    }
+
+    /// The meetings a prompt links to, or the refusal as a request error.
+    pub fn prompt_meetings(
+        &self,
+        reported: Option<&str>,
+        prompt: &str,
+        query: Option<&str>,
+        id: Option<&RecordingId>,
+    ) -> Result<Vec<dory_core::assistant::Hit>, McpError> {
+        let assistant = self.assistant()?;
+        let found = assistant.prompt_meetings(reported, prompt, query, id, 5);
+        self.exit_if_changed(assistant);
+        found.map_err(|why| refusal(&why, None))
+    }
+
+    fn exit_if_changed(&self, assistant: &Assistant) {
+        if assistant.library_changed() {
+            eprintln!("dory-mcp: the library was updated by a newer Dory, exiting to restart");
+            tokio::spawn(async {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                std::process::exit(0);
+            });
         }
     }
 
@@ -119,13 +185,7 @@ impl Server {
             Ok(value) => render(&value),
             Err(why) => out::refused(&why),
         };
-        if assistant.library_changed() {
-            eprintln!("dory-mcp: the library was updated by a newer Dory, exiting to restart");
-            tokio::spawn(async {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                std::process::exit(0);
-            });
-        }
+        self.exit_if_changed(assistant);
         result
     }
 }
@@ -261,10 +321,120 @@ impl Server {
 }
 
 #[tool_handler]
+#[prompt_handler]
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("dory", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .enable_resources()
+                .build(),
+        )
+        .with_server_info(Implementation::new("dory", env!("CARGO_PKG_VERSION")))
+        .with_instructions(INSTRUCTIONS)
+    }
+
+    async fn list_resources(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let assistant = self.assistant()?;
+        let cursor = match request.and_then(|r| r.cursor).filter(|c| !c.is_empty()) {
+            Some(c) => Some(SearchCursor::parse(&c).ok_or_else(|| bad("cursor", &c))?),
+            None => None,
+        };
+        let who = reported(&ctx);
+        let page = assistant.list(who.as_deref(), cursor);
+        self.exit_if_changed(assistant);
+        let page = page.map_err(|why| refusal(&why, None))?;
+        let resources = page
+            .hits
+            .iter()
+            .map(|hit| {
+                let mut r = Resource::new(out::uri(&hit.id), hit.id.to_string())
+                    .with_mime_type("application/json")
+                    .with_description(out::iso(hit.created_at));
+                if let Some(title) = &hit.title {
+                    r = r.with_title(out::clean(title));
+                }
+                r
+            })
+            .collect();
+        let mut result = ListResourcesResult::with_all_items(resources)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private);
+        result.next_cursor = page.next.map(|c| c.to_string());
+        Ok(result)
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _ctx: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        let templates = vec![
+            ResourceTemplate::new("dory://recordings/{id}", "recording")
+                .with_title("Meeting details")
+                .with_mime_type("application/json"),
+            ResourceTemplate::new("dory://recordings/{id}/summary", "summary")
+                .with_title("Meeting summary")
+                .with_mime_type("text/plain"),
+            ResourceTemplate::new("dory://recordings/{id}/transcript", "transcript")
+                .with_title("Meeting transcript")
+                .with_description(
+                    "The whole transcript as speaker turns. Long meetings are large; get_transcript pages them.",
+                )
+                .with_mime_type("text/plain"),
+        ];
+        Ok(ListResourceTemplatesResult::with_all_items(templates)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, McpError> {
+        let uri = request.uri;
+        let assistant = self.assistant()?;
+        let Some(target) = target(&uri) else {
+            return Err(refusal(&Refusal::NotFound, Some(&uri)));
+        };
+        let who = reported(&ctx);
+        let (text, mime) = match &target {
+            Target::Recording(id) => (
+                assistant
+                    .recording(who.as_deref(), id)
+                    .map(|r| out::recording_json(&r).to_string()),
+                "application/json",
+            ),
+            Target::Summary(id) => (
+                assistant
+                    .summary(who.as_deref(), id)
+                    .map(|s| out::summary_text(&s)),
+                "text/plain",
+            ),
+            Target::Transcript(id) => (
+                assistant
+                    .transcript(who.as_deref(), id)
+                    .map(|t| out::transcript_text(&t)),
+                "text/plain",
+            ),
+        };
+        self.exit_if_changed(assistant);
+        let text = text.map_err(|why| refusal(&why, Some(&uri)))?;
+        let contents = ResourceContents::TextResourceContents {
+            uri,
+            mime_type: Some(mime.to_owned()),
+            text,
+            meta: None,
+        };
+        Ok(ReadResourceResult::new(vec![contents])
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)
+            .into())
     }
 }

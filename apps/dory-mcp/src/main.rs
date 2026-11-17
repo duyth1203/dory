@@ -6,6 +6,7 @@
 //! or not Dory is open. stdout carries only MCP messages; diagnostics go to stderr.
 
 mod out;
+mod prompts;
 mod server;
 
 use std::process::ExitCode;

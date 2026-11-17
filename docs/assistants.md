@@ -85,7 +85,7 @@ Every tool only reads. Meeting text comes back inside a marked block that tells 
 
 ## Let an assistant ask for changes
 
-An assistant can also ask to rename a meeting (`set_title`) or name a speaker (`rename_speaker`). It cannot start or stop a recording. Edits are off for every assistant until you turn them on.
+An assistant can also ask to rename a meeting (`set_title`), name a speaker (`rename_speaker`), or summarize a meeting again with an instruction such as "focus on the budget" (`resummarize`). It cannot start or stop a recording. A new summary runs on your Mac with your summary model, like any other. Edits are off for every assistant until you turn them on.
 
 ```bash
 dory-cli assistants edits "Claude Code" ask
@@ -97,6 +97,7 @@ Each request then shows an alert in Dory's window with the exact change, for exa
 
 - Change an assistant's level with `dory-cli assistants exposure "Claude Code" transcripts`. It applies on the assistant's next request.
 - Remove an assistant with `dory-cli assistants remove "Claude Code"`. Its key stops working on its next request.
+- Bring back the summary a re-summarize replaced with `dory-cli summary restore <id>`. Running it again swaps back. Dory keeps one earlier summary per meeting, and the instruction stays with the meeting for later summaries.
 - Hide a recording from every assistant with `dory-cli private <id> on`, and show it again with `off`. A hidden recording answers exactly like one that does not exist. You still see it in Dory.
 - Turn access off with `dory-cli assistants off`.
 - See every read with `dory-cli assistants activity`, newest first, for the last 30 days, or `--days N`. Each line says which assistant read what and when, never the meeting text. Dory deletes activity older than 30 days each time it opens, and `dory-cli assistants prune` does it on demand.

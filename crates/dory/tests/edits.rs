@@ -302,3 +302,80 @@ fn a_socket_path_too_long_for_macos_is_reported() {
         Err(dory::ControlError::PathTooLong(_))
     ));
 }
+
+#[test]
+fn a_resummarize_shows_the_instruction_and_queues_the_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    seed(&config, Writes::Ask);
+    let dory = dory::open(&config).unwrap();
+    let consent = Scripted::new(&[Some(ConsentAnswer::Allow)]);
+    let h = host(&dory, &config, consent.clone());
+    let resummarize = |instruction: &str| {
+        h.handle(&request(RemoteCommand::Resummarize {
+            id: rid("sync"),
+            instruction: instruction.into(),
+        }))
+    };
+    assert!(matches!(resummarize("   "), Err(Refusal::Library(_))));
+    assert!(matches!(
+        resummarize(&"x".repeat(501)),
+        Err(Refusal::Library(_))
+    ));
+    assert!(
+        consent.asked.lock().unwrap().is_empty(),
+        "refused before asking"
+    );
+    assert_eq!(resummarize("focus on the budget"), Ok(()));
+    let asked = consent.asked.lock().unwrap().clone();
+    assert_eq!(
+        asked[0].message,
+        "Claude wants to summarize \"Weekly sync\" again."
+    );
+    assert!(
+        asked[0]
+            .detail
+            .starts_with("With this instruction: \"focus on the budget\""),
+        "{}",
+        asked[0].detail
+    );
+    let store = SqliteStore::open(config.db_path()).unwrap();
+    use dory_core::ports::StoreRead;
+    assert_eq!(
+        store.summary_instruction(&rid("sync")).unwrap().as_deref(),
+        Some("focus on the budget")
+    );
+    let jobs = dory.library().jobs(&rid("sync")).unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].goal, dory_core::domain::Goal::SUMMARIZE);
+}
+
+#[test]
+fn a_titles_client_cannot_ask_for_a_resummarize() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    seed(&config, Writes::Ask);
+    SqliteStore::open(config.db_path())
+        .unwrap()
+        .apply(vec![Change::Assistant(AssistantChange::ClientChanged(
+            AssistantClient {
+                label: "Claude".into(),
+                exposure: Exposure::Titles,
+                writes: Writes::Ask,
+                added_at: Timestamp(0),
+            },
+        ))])
+        .unwrap();
+    let dory = dory::open(&config).unwrap();
+    let consent = Scripted::new(&[]);
+    let h = host(&dory, &config, consent.clone());
+    assert_eq!(
+        h.handle(&request(RemoteCommand::Resummarize {
+            id: rid("sync"),
+            instruction: "x".into(),
+        })),
+        Err(Refusal::NotShared {
+            need: Exposure::Summaries
+        })
+    );
+}

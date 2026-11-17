@@ -266,3 +266,11 @@ pub fn private(config: &Config, args: &PrivateArgs) -> Result<(), String> {
     );
     Ok(())
 }
+
+/// Swaps the summary with the one it replaced, such as after an assistant's re-summarize.
+pub fn restore_summary(config: &Config, id: &RecordingId) -> Result<(), String> {
+    let dory = open(config, false)?;
+    dory.library().restore_previous_summary(id).map_err(chain)?;
+    println!("{id}: restored the previous summary; run this again to undo it");
+    Ok(())
+}

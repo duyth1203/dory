@@ -238,6 +238,12 @@ impl StoreRead for HookedStore {
     ) -> Result<Vec<RecordingRow>, StoreError> {
         self.inner.assistant_recordings(query)
     }
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        self.inner.previous_summary(id)
+    }
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError> {
+        self.inner.summary_instruction(id)
+    }
 }
 
 impl Store for HookedStore {

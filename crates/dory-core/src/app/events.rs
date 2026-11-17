@@ -123,7 +123,10 @@ pub fn change_events(changes: &[Change]) -> Vec<Event> {
             Change::RecordingDeleted(id) => Some(Event::RecordingDeleted(id.clone())),
             Change::TranscriptReplaced { id, .. } => Some(Event::TranscriptChanged(id.clone())),
             Change::SpeakerNamesReplaced { id, .. } => Some(Event::SpeakerNamesChanged(id.clone())),
-            Change::SummaryReplaced { id, .. } => Some(Event::SummaryChanged(id.clone())),
+            Change::SummaryReplaced { id, .. } | Change::SummaryRestored(id) => {
+                Some(Event::SummaryChanged(id.clone()))
+            }
+            Change::SummaryInstructionSet { id, .. } => Some(Event::RecordingChanged(id.clone())),
             Change::JobEnqueued { id, .. } => Some(Event::JobEnqueued(id.clone())),
             Change::Job { job, .. } => Some(Event::JobChanged(*job)),
             Change::SettingsReplaced(_) => Some(Event::SettingsChanged),

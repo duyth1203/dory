@@ -543,6 +543,14 @@ impl Library<'_> {
         self.edit(id, RecordingEdit::Title(title))
     }
 
+    /// Swaps the current summary with the one it replaced. Doing it again undoes it.
+    pub fn restore_previous_summary(&self, id: &RecordingId) -> Result<(), DoryError> {
+        self.dory
+            .db
+            .apply(vec![Change::SummaryRestored(id.clone())])?;
+        Ok(())
+    }
+
     /// Hides the recording from every assistant, or shows it again.
     pub fn set_hidden(&self, id: &RecordingId, hidden: bool) -> Result<(), DoryError> {
         assistants::set_hidden(self.dory, id, hidden)

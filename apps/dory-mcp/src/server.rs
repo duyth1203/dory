@@ -92,6 +92,14 @@ pub struct RenameArgs {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ResummarizeArgs {
+    /// The meeting's id, from search_recordings.
+    pub id: String,
+    /// What the user wants the summary to focus on, in their words, up to 500 characters.
+    pub instruction: String,
+}
+
 /// Asks clients to confirm with the user before every call, on top of Dory's own question.
 fn requires_user() -> rmcp::model::MetaObject {
     let mut meta = rmcp::model::JsonObject::new();
@@ -398,6 +406,23 @@ impl Server {
             speaker: p.speaker,
             revision: dory_core::domain::Revision(p.revision),
             name: Some(p.name).filter(|n| !n.trim().is_empty()),
+        };
+        Ok(self.change(reported(&ctx), command).await)
+    }
+
+    #[tool(
+        description = "Ask the user to summarize a meeting again with an instruction, such as \"focus on the budget\". Dory shows them the instruction word for word, keeps the current summary so it can be restored, and runs the summary on this Mac. Nothing happens unless they allow it. Poll get_summary for the new summary.",
+        annotations(read_only_hint = false, destructive_hint = true, idempotent_hint = false, open_world_hint = false),
+        meta = requires_user()
+    )]
+    async fn resummarize(
+        &self,
+        Parameters(p): Parameters<ResummarizeArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let command = RemoteCommand::Resummarize {
+            id: id(&p.id)?,
+            instruction: p.instruction,
         };
         Ok(self.change(reported(&ctx), command).await)
     }

@@ -405,14 +405,23 @@ pub enum RemoteCommand {
         revision: super::Revision,
         name: Option<String>,
     },
+    /// Summarizes the meeting again with what the user wants it to focus on. The summary it
+    /// replaces is kept and can be restored.
+    Resummarize {
+        id: RecordingId,
+        instruction: String,
+    },
 }
 
 impl RemoteCommand {
     pub const MAX_TEXT_CHARS: usize = 200;
+    pub const MAX_INSTRUCTION_CHARS: usize = 500;
 
     pub fn id(&self) -> &RecordingId {
         match self {
-            RemoteCommand::SetTitle { id, .. } | RemoteCommand::RenameSpeaker { id, .. } => id,
+            RemoteCommand::SetTitle { id, .. }
+            | RemoteCommand::RenameSpeaker { id, .. }
+            | RemoteCommand::Resummarize { id, .. } => id,
         }
     }
 
@@ -421,6 +430,7 @@ impl RemoteCommand {
         match self {
             RemoteCommand::SetTitle { .. } => "set the title",
             RemoteCommand::RenameSpeaker { .. } => "rename a speaker",
+            RemoteCommand::Resummarize { .. } => "summarize again",
         }
     }
 }

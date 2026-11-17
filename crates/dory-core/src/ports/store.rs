@@ -42,6 +42,10 @@ pub trait StoreRead: Send + Sync {
     /// Newest first, matching only inside the query's fields and never a hidden recording.
     fn assistant_recordings(&self, query: &AssistantQuery)
     -> Result<Vec<RecordingRow>, StoreError>;
+    /// The summary the last replacement pushed aside, kept so the user can restore it.
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
+    /// What the user asked the summary to focus on, if anything.
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError>;
 }
 
 pub trait Store: StoreRead {
@@ -67,9 +71,17 @@ pub enum Change {
         id: RecordingId,
         names: SpeakerNames,
     },
+    /// Keeps the summary it replaces as the one previous summary.
     SummaryReplaced {
         id: RecordingId,
         summary: Summary,
+    },
+    /// Swaps the current and the previous summary, so restoring twice undoes itself.
+    SummaryRestored(RecordingId),
+    /// `None` clears it. Used by every later summary of the recording.
+    SummaryInstructionSet {
+        id: RecordingId,
+        instruction: Option<String>,
     },
     /// The store assigns the job id.
     JobEnqueued {

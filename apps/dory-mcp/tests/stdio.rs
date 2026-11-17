@@ -201,15 +201,20 @@ fn the_tool_list_is_fixed_and_only_two_tools_change_anything() {
             "get_transcript",
             "list_action_items",
             "rename_speaker",
+            "resummarize",
             "search_recordings",
             "set_title"
         ]
     );
     for tool in tools.as_array().unwrap() {
         let a = &tool["annotations"];
-        let writes = matches!(tool["name"].as_str(), Some("set_title" | "rename_speaker"));
+        let writes = matches!(
+            tool["name"].as_str(),
+            Some("set_title" | "rename_speaker" | "resummarize")
+        );
         assert_eq!(a["readOnlyHint"], !writes, "{tool}");
-        assert_eq!(a["destructiveHint"], false, "{tool}");
+        let replaces = tool["name"] == "resummarize";
+        assert_eq!(a["destructiveHint"], replaces, "{tool}");
         assert_eq!(a["openWorldHint"], false, "{tool}");
         assert_eq!(
             tool["_meta"]["anthropic/requiresUserInteraction"].as_bool(),

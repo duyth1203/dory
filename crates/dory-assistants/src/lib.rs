@@ -217,6 +217,11 @@ fn encode_request(r: &RemoteRequest) -> Value {
             v["revision"] = json!(revision.0);
             v["name"] = json!(name);
         }
+        RemoteCommand::Resummarize { id, instruction } => {
+            v["op"] = json!("resummarize");
+            v["id"] = json!(id.as_str());
+            v["instruction"] = json!(instruction);
+        }
     }
     v
 }
@@ -238,6 +243,10 @@ fn decode_request(line: &str) -> Option<RemoteRequest> {
             speaker: text("speaker")?,
             revision: Revision(u32::try_from(v.get("revision")?.as_u64()?).ok()?),
             name: text("name"),
+        },
+        "resummarize" => RemoteCommand::Resummarize {
+            id,
+            instruction: text("instruction")?,
         },
         _ => return None,
     };

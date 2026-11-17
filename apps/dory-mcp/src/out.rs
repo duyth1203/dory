@@ -215,6 +215,7 @@ pub fn summary(s: &SummaryView) -> CallToolResult {
         "language": s.language.as_ref().map(ToString::to_string),
         "stale": s.stale,
         "produced_by": s.produced_by.as_str(),
+        "instruction": s.instruction.as_deref().map(clean),
     }));
     result
 }

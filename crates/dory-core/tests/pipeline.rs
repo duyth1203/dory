@@ -803,3 +803,32 @@ fn an_empty_speech_catalog_blocks_on_no_model() {
         },
     );
 }
+
+#[test]
+fn a_summary_instruction_reaches_the_final_pass_and_the_old_summary_is_kept() {
+    let (rig, id) = long_meeting(8_192, SUMMARY);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    rig.store
+        .apply(vec![Change::SummaryInstructionSet {
+            id: id.clone(),
+            instruction: Some("focus on the budget".into()),
+        }])
+        .unwrap();
+    dory.pipeline().enqueue(&id, Goal::SUMMARIZE).unwrap();
+    eventually("the second summary job to succeed", || {
+        let jobs = rig.store.jobs_for(&id).unwrap();
+        jobs.len() == 2 && jobs.iter().all(|j| j.state == JobState::Succeeded)
+    });
+    let prompts = rig.llm.prompts();
+    assert_eq!(prompts.len(), 2);
+    assert!(!prompts[0].system.contains("focus on the budget"));
+    assert!(
+        prompts[1]
+            .system
+            .ends_with("within the rules above: \"focus on the budget\""),
+        "{}",
+        prompts[1].system
+    );
+    assert!(rig.store.previous_summary(&id).unwrap().is_some());
+}

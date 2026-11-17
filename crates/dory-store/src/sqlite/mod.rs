@@ -44,6 +44,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_v3.sql"),
     include_str!("schema_v4.sql"),
     include_str!("schema_v5.sql"),
+    include_str!("schema_v6.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -663,6 +664,22 @@ impl StoreRead for $t {
         })
     }
 
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        self.read(|conn| load_summary_from(conn, "previous_summaries", id))
+    }
+
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError> {
+        self.read(|conn| {
+            conn.prepare_cached(
+                "SELECT instruction FROM summary_instructions WHERE recording_id = ?1",
+            )
+            .map_err(db)?
+            .query_row([id.as_str()], |row| row.get(0))
+            .optional()
+            .map_err(db)
+        })
+    }
+
     fn assistant_recordings(
         &self,
         query: &AssistantQuery,
@@ -848,11 +865,19 @@ pub(crate) fn load_summary(
     conn: &Connection,
     id: &RecordingId,
 ) -> Result<Option<Summary>, StoreError> {
+    load_summary_from(conn, "summaries", id)
+}
+
+fn load_summary_from(
+    conn: &Connection,
+    table: &'static str,
+    id: &RecordingId,
+) -> Result<Option<Summary>, StoreError> {
     let raw = conn
-        .prepare_cached(
+        .prepare_cached(&format!(
             "SELECT markdown, language, produced_by, transcript_revision
-                 FROM summaries WHERE recording_id = ?1",
-        )
+                 FROM {table} WHERE recording_id = ?1"
+        ))
         .map_err(db)?
         .query_row([id.as_str()], |row| {
             Ok((
@@ -891,6 +916,29 @@ impl Store for SqliteStore {
             Ok(())
         })
     }
+}
+
+fn write_summary(
+    tx: &Connection,
+    table: &'static str,
+    id: &RecordingId,
+    summary: &Summary,
+) -> Result<(), StoreError> {
+    tx.prepare_cached(&format!(
+        "INSERT OR REPLACE INTO {table}
+           (recording_id, markdown, language, produced_by, transcript_revision)
+         VALUES (?1, ?2, ?3, ?4, ?5)"
+    ))
+    .map_err(db)?
+    .execute(params![
+        id.as_str(),
+        summary.markdown,
+        summary.language.as_ref().map(|l| l.to_string()),
+        summary.produced_by.as_str(),
+        i64::from(summary.transcript_revision.0),
+    ])
+    .map_err(db)?;
+    Ok(())
 }
 
 fn key_digest(key: &ClientKey) -> String {
@@ -1114,6 +1162,15 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
         Change::SummaryReplaced { id, summary } => {
             require_recording(tx, id)?;
             tx.prepare_cached(
+                "INSERT OR REPLACE INTO previous_summaries
+                   (recording_id, markdown, language, produced_by, transcript_revision)
+                 SELECT recording_id, markdown, language, produced_by, transcript_revision
+                 FROM summaries WHERE recording_id = ?1",
+            )
+            .map_err(db)?
+            .execute([id.as_str()])
+            .map_err(db)?;
+            tx.prepare_cached(
                 "INSERT OR REPLACE INTO summaries
                    (recording_id, markdown, language, produced_by, transcript_revision)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1212,6 +1269,45 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
         }
         Change::Assistant(change) => {
             apply_assistant(tx, change)?;
+            Ok(None)
+        }
+        Change::SummaryRestored(id) => {
+            require_recording(tx, id)?;
+            let previous = load_summary_from(tx, "previous_summaries", id)?
+                .ok_or_else(|| not_found("previous summary of", id))?;
+            let current = load_summary(tx, id)?;
+            write_summary(tx, "summaries", id, &previous)?;
+            match current {
+                Some(current) => write_summary(tx, "previous_summaries", id, &current)?,
+                None => {
+                    tx.prepare_cached("DELETE FROM previous_summaries WHERE recording_id = ?1")
+                        .map_err(db)?
+                        .execute([id.as_str()])
+                        .map_err(db)?;
+                }
+            }
+            tx.prepare_cached("UPDATE recordings SET summary_lc = ?2 WHERE id = ?1")
+                .map_err(db)?
+                .execute(params![id.as_str(), previous.markdown.to_lowercase()])
+                .map_err(db)?;
+            Ok(None)
+        }
+        Change::SummaryInstructionSet { id, instruction } => {
+            require_recording(tx, id)?;
+            match instruction {
+                Some(text) => tx
+                    .prepare_cached(
+                        "INSERT OR REPLACE INTO summary_instructions (recording_id, instruction)
+                         VALUES (?1, ?2)",
+                    )
+                    .map_err(db)?
+                    .execute(params![id.as_str(), text]),
+                None => tx
+                    .prepare_cached("DELETE FROM summary_instructions WHERE recording_id = ?1")
+                    .map_err(db)?
+                    .execute([id.as_str()]),
+            }
+            .map_err(db)?;
             Ok(None)
         }
         Change::SettingsReplaced(settings) => {

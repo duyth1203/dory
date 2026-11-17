@@ -39,6 +39,7 @@ const USAGE: &str = "usage:
   dory-cli assistants activity [--days N]
   dory-cli assistants prune
   dory-cli private ID on|off
+  dory-cli summary restore ID
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
 The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.
@@ -81,6 +82,12 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| assistants::run(&c, &a))),
             Some("private") => assistants::PrivateArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| assistants::private(&c, &a))),
+            Some("summary") => match rest {
+                [verb, id] if verb == "restore" => dory_core::domain::RecordingId::parse(id)
+                    .map_err(|e| e.to_string())
+                    .and_then(|id| config().and_then(|c| assistants::restore_summary(&c, &id))),
+                _ => Err("summary takes: restore ID".into()),
+            },
             _ => Err(USAGE.to_string()),
         };
     match result {

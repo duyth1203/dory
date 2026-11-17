@@ -118,6 +118,8 @@ pub struct SummaryView {
     /// Made from an older transcript than the one stored now.
     pub stale: bool,
     pub produced_by: ModelRef,
+    /// What the user asked this summary to focus on, if anything.
+    pub instruction: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -556,6 +558,10 @@ impl Assistant {
                     language: summary.language,
                     stale: flag == SummaryFlag::Stale,
                     produced_by: summary.produced_by,
+                    instruction: self
+                        .store
+                        .summary_instruction(id)
+                        .map_err(|e| self.lib(e))?,
                 })
             },
         )

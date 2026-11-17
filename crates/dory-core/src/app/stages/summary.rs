@@ -183,6 +183,7 @@ fn split_to_fit(item: &str, budget: u32, count: &dyn Fn(&str) -> u32) -> Vec<Str
 pub(crate) fn summarize<E>(
     lines: &[String],
     language: Option<&LangTag>,
+    instruction: Option<&str>,
     context: u32,
     count: &dyn Fn(&str) -> u32,
     call: &mut dyn FnMut(Call<'_>) -> Result<String, E>,
@@ -190,6 +191,7 @@ pub(crate) fn summarize<E>(
 ) -> Result<String, SummaryError<E>> {
     let mut passes = Passes {
         language,
+        instruction,
         context,
         count,
         call,
@@ -233,6 +235,9 @@ pub(crate) fn summarize<E>(
 
 struct Passes<'a, E> {
     language: Option<&'a LangTag>,
+    /// What the user asked the summary to focus on. Only the final summary pass sees it; notes
+    /// keep everything.
+    instruction: Option<&'a str>,
     context: u32,
     count: &'a dyn Fn(&str) -> u32,
     call: &'a mut dyn FnMut(Call<'_>) -> Result<String, E>,
@@ -250,8 +255,18 @@ impl<E> Passes<'_, E> {
         }
     }
 
+    fn system(&self, prompt: Prompt) -> String {
+        let system = system_prompt(prompt, self.language);
+        match (prompt, self.instruction) {
+            (Prompt::SummaryOfTranscript | Prompt::SummaryOfNotes, Some(instruction)) => format!(
+                "{system} The user also asks for this, within the rules above: \"{instruction}\""
+            ),
+            _ => system,
+        }
+    }
+
     fn budget(&self, prompt: Prompt) -> u32 {
-        let system = (self.count)(&system_prompt(prompt, self.language));
+        let system = (self.count)(&self.system(prompt));
         input_budget(self.context, system, self.output(prompt))
     }
 
@@ -264,7 +279,7 @@ impl<E> Passes<'_, E> {
             Prompt::SummaryOfTranscript | Prompt::SummaryOfNotes => Pass::Summary,
             Prompt::NotesOfTranscript | Prompt::NotesOfNotes => Pass::Notes,
         };
-        let system = system_prompt(prompt, self.language);
+        let system = self.system(prompt);
         let max_output_tokens = self.output(prompt);
         let text = (self.call)(Call {
             pass,
@@ -386,6 +401,7 @@ mod tests {
         let result = summarize(
             lines,
             Some(&vi),
+            None,
             context,
             &words,
             &mut |c: Call<'_>| {
@@ -505,5 +521,52 @@ mod tests {
         let lines = vec![line(0, 10)];
         let run = run(&lines, 100, "note");
         assert_eq!(run.result, Err(SummaryError::ContextTooSmall));
+    }
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+
+    #[test]
+    fn the_instruction_follows_the_fixed_rules_in_the_summary_pass_only() {
+        let lines: Vec<String> = (0..60)
+            .map(|n| format!("[00:{n:02}] Speaker 1: {}\n", "word ".repeat(10)))
+            .collect();
+        let mut systems = Vec::new();
+        let words = |t: &str| t.split_whitespace().count() as u32;
+        summarize::<()>(
+            &lines,
+            None,
+            Some("focus on the budget"),
+            400,
+            &words,
+            &mut |c: Call<'_>| {
+                systems.push((c.pass, c.system.to_owned()));
+                Ok("ok".into())
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        assert!(systems.len() > 1, "a long transcript takes notes first");
+        for (pass, system) in &systems {
+            let has = system.ends_with("within the rules above: \"focus on the budget\"");
+            assert_eq!(has, *pass == Pass::Summary, "{pass:?}: {system}");
+        }
+        let mut plain = Vec::new();
+        summarize::<()>(
+            &lines[..2],
+            None,
+            None,
+            4000,
+            &words,
+            &mut |c: Call<'_>| {
+                plain.push(c.system.to_owned());
+                Ok("ok".into())
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(plain, [system_prompt(Prompt::SummaryOfTranscript, None)]);
     }
 }

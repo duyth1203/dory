@@ -40,6 +40,8 @@ struct Entry {
     summary: Option<Summary>,
     names: SpeakerNames,
     hidden: bool,
+    previous: Option<Summary>,
+    instruction: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +74,8 @@ impl State {
                         summary: None,
                         names: SpeakerNames::default(),
                         hidden: false,
+                        previous: None,
+                        instruction: None,
                     });
             }
             Change::RecordingEdited { id, edit } => {
@@ -92,7 +96,19 @@ impl State {
             }
             Change::SpeakerNamesReplaced { id, names } => self.entry_mut(&id)?.names = names,
             Change::SummaryReplaced { id, summary } => {
-                self.entry_mut(&id)?.summary = Some(summary);
+                let entry = self.entry_mut(&id)?;
+                entry.previous = entry.summary.replace(summary).or(entry.previous.take());
+            }
+            Change::SummaryRestored(id) => {
+                let entry = self.entry_mut(&id)?;
+                let previous = entry
+                    .previous
+                    .take()
+                    .ok_or_else(|| StoreError::NotFound(format!("previous summary of {id}")))?;
+                entry.previous = entry.summary.replace(previous);
+            }
+            Change::SummaryInstructionSet { id, instruction } => {
+                self.entry_mut(&id)?.instruction = instruction;
             }
             Change::JobEnqueued {
                 id,
@@ -379,6 +395,22 @@ impl StoreRead for MemStore {
 
     fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError> {
         Ok(self.state().recordings.get(id).is_some_and(|e| e.hidden))
+    }
+
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.previous.clone()))
+    }
+
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.instruction.clone()))
     }
 
     fn assistant_recordings(

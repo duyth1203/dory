@@ -26,6 +26,7 @@ struct Approved {
 
 pub struct AssistantHost {
     db: Db,
+    nudge: super::pipeline::Nudge,
     clock: Arc<dyn Clock>,
     consent: Arc<dyn Consent>,
     audit: Arc<dyn AuditSink>,
@@ -44,6 +45,7 @@ impl Dory {
     ) -> AssistantHost {
         AssistantHost {
             db: self.db.clone(),
+            nudge: self.pipeline.nudge.clone(),
             clock: Arc::clone(&self.clock),
             consent,
             audit,
@@ -65,6 +67,20 @@ fn text(s: &str) -> String {
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+/// An instruction for the summary model: one line, no control characters, at most 500
+/// characters, not empty.
+fn instruction_text(s: &str) -> Result<String, Refusal> {
+    let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() || cleaned.chars().count() > RemoteCommand::MAX_INSTRUCTION_CHARS {
+        return Err(Refusal::Library(format!(
+            "an instruction is 1 to {} characters",
+            RemoteCommand::MAX_INSTRUCTION_CHARS
+        )));
+    }
+    Ok(cleaned.to_owned())
 }
 
 fn optional(s: &Option<String>) -> Option<String> {
@@ -143,7 +159,9 @@ impl AssistantHost {
         let hidden = store.hidden_from_assistants(id).map_err(library)?;
         let need = match command {
             RemoteCommand::SetTitle { .. } => Exposure::Titles,
-            RemoteCommand::RenameSpeaker { .. } => Exposure::Summaries,
+            RemoteCommand::RenameSpeaker { .. } | RemoteCommand::Resummarize { .. } => {
+                Exposure::Summaries
+            }
         };
         policy::reveal(grant, hidden, need)?;
         let title = recording
@@ -177,6 +195,26 @@ impl AssistantHost {
                         text(speaker),
                         optional(name).unwrap_or_else(|| "unnamed".to_owned())
                     ),
+                )
+            }
+            RemoteCommand::Resummarize { instruction, .. } => {
+                let instruction = instruction_text(instruction)?;
+                store
+                    .transcript(id)
+                    .map_err(library)?
+                    .ok_or(Refusal::NotFound)?;
+                let keeps = if store.summary(id).map_err(library)?.is_some() {
+                    "\n\nThis replaces the current summary. Dory keeps it, and `dory-cli summary restore` brings it back."
+                } else {
+                    ""
+                };
+                (
+                    format!(
+                        "{} wants to summarize \"{}\" again.",
+                        grant.label(),
+                        text(&title)
+                    ),
+                    format!("With this instruction: \"{instruction}\"{keeps}"),
                 )
             }
         };
@@ -229,6 +267,25 @@ impl AssistantHost {
                     edit: RecordingEdit::Title(optional(&title)),
                 }])
                 .map_err(library),
+            RemoteCommand::Resummarize { id, instruction } => {
+                let instruction = instruction_text(&instruction)?;
+                self.db
+                    .apply(vec![
+                        Change::SummaryInstructionSet {
+                            id: id.clone(),
+                            instruction: Some(instruction),
+                        },
+                        Change::JobEnqueued {
+                            id,
+                            goal: crate::domain::Goal::SUMMARIZE,
+                            priority: crate::domain::Priority::Normal,
+                            at: self.clock.now(),
+                        },
+                    ])
+                    .map_err(library)?;
+                self.nudge.wake();
+                Ok(())
+            }
             RemoteCommand::RenameSpeaker {
                 id,
                 speaker,

@@ -1,17 +1,24 @@
-//! The summary providers the composition root registers, seen through the public facade.
+//! The speech and summary providers the composition root registers, seen through the public
+//! facade.
 #![cfg(target_os = "macos")]
 
 use dory::{Config, PretendApple};
-use dory_core::domain::{Blocker, LangSet};
+use dory_core::app::AppKind;
+use dory_core::domain::{Blocker, LangSet, LangTag, LanguagePref, Ms};
 use dory_core::models::{
-    Availability, Choice, Llm, LlmNeeds, ModelStatus, Resolution, Unavailable, UnavailableReason,
-    resolve,
+    Availability, Choice, DiarizationNeed, LangSupport, Llm, LlmNeeds, ModelKind, ModelStatus,
+    Resolution, Stt, SttNeeds, Unavailable, UnavailableReason, resolve,
 };
 use dory_core::testing::block_on;
 
 /// A library on a throwaway folder, with Ollama unreachable and Apple's state pretended, so no
 /// row depends on what this Mac runs.
 fn summary_rows(apple: PretendApple) -> Vec<ModelStatus<Llm>> {
+    listed(apple)
+}
+
+/// The rows of one kind on a throwaway library.
+fn listed<K: AppKind>(apple: PretendApple) -> Vec<ModelStatus<K>> {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         ollama_url: "http://127.0.0.1:1".into(),
@@ -20,14 +27,14 @@ fn summary_rows(apple: PretendApple) -> Vec<ModelStatus<Llm>> {
     };
     drop(dory::open(&config).expect("creates the library"));
     let reader = dory::open_library(&config).unwrap();
-    block_on(reader.models::<Llm>())
+    block_on(reader.models::<K>())
         .unwrap()
         .into_iter()
         .map(|row| row.status)
         .collect()
 }
 
-fn with(rows: &[ModelStatus<Llm>], ready: &[&str]) -> Vec<ModelStatus<Llm>> {
+fn with<K: ModelKind>(rows: &[ModelStatus<K>], ready: &[&str]) -> Vec<ModelStatus<K>> {
     rows.iter()
         .map(|row| ModelStatus {
             entry: row.entry.clone(),
@@ -119,4 +126,104 @@ fn auto_prefers_a_ready_gemma_and_falls_back_to_apple() {
         auto(&rows),
         Resolution::Blocked(Blocker::Unavailable { model, .. }) if model.as_str() == "ollama/gemma4:e4b"
     ));
+}
+
+/// Every speech row with exactly `ready` installed and the rest still to download, so the pick
+/// does not depend on what this Mac has.
+fn speech_with(rows: &[ModelStatus<Stt>], ready: &[&str]) -> Vec<ModelStatus<Stt>> {
+    rows.iter()
+        .map(|row| ModelStatus {
+            entry: row.entry.clone(),
+            availability: if ready.contains(&row.entry.id.to_string().as_str()) {
+                Availability::Ready
+            } else {
+                Availability::NeedsProvision { bytes: None }
+            },
+        })
+        .collect()
+}
+
+/// What Auto transcribes a meeting in `languages` with.
+fn speech_pick(rows: &[ModelStatus<Stt>], languages: &[&str]) -> Resolution<Stt> {
+    let needs = SttNeeds {
+        language: LanguagePref::Auto,
+        expected: languages
+            .iter()
+            .map(|tag| LangTag::parse(tag).unwrap())
+            .collect(),
+        diarization: DiarizationNeed::NotNeeded,
+        input: Ms(42_600),
+    };
+    resolve(&Choice::Auto, rows, &needs)
+}
+
+fn used(resolution: Resolution<Stt>) -> String {
+    match resolution {
+        Resolution::Use(id) => id.to_string(),
+        other => panic!("resolves to {other:?}"),
+    }
+}
+
+const PARAKEET: &str = "sherpa/parakeet-tdt-0.6b-v3";
+const APPLE_EN: &str = "apple/speech-en";
+
+#[test]
+fn apple_speech_rows_appear_with_the_app_feature() {
+    let rows: Vec<ModelStatus<Stt>> = listed(PretendApple::Off);
+    let english = rows
+        .iter()
+        .find(|row| row.entry.id.to_string() == APPLE_EN)
+        .expect("the app feature registers Apple Speech");
+    assert_eq!(english.entry.display_name, "Apple Speech (English)");
+    let LangSupport::FixedLocale {
+        tags: LangSet::Only(tags),
+    } = &english.entry.caps.languages
+    else {
+        panic!("{:?}", english.entry.caps.languages);
+    };
+    assert!(tags.iter().any(|t| t.as_str() == "en-GB"), "{tags:?}");
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.entry.id.to_string() == "apple/speech-tl"),
+        "macOS has no Tagalog speech"
+    );
+}
+
+#[test]
+fn auto_prefers_a_ready_parakeet_over_apple_speech() {
+    let rows = speech_with(&listed(PretendApple::Off), &[PARAKEET, APPLE_EN]);
+    assert_eq!(used(speech_pick(&rows, &["en"])), PARAKEET);
+}
+
+#[test]
+fn auto_uses_apple_speech_for_one_known_language_when_no_sherpa_model_is_ready() {
+    let rows = speech_with(&listed(PretendApple::Off), &[APPLE_EN]);
+    assert_eq!(used(speech_pick(&rows, &["en"])), APPLE_EN);
+    assert_eq!(used(speech_pick(&rows, &["en-GB"])), APPLE_EN);
+    assert_eq!(used(speech_pick(&rows, &["en-US", "en-GB"])), APPLE_EN);
+}
+
+#[test]
+fn auto_never_uses_apple_speech_for_two_or_unknown_languages() {
+    let listed: Vec<ModelStatus<Stt>> = listed(PretendApple::Off);
+    let every_apple_row: Vec<String> = listed
+        .iter()
+        .map(|row| row.entry.id.to_string())
+        .filter(|id| id.starts_with("apple/"))
+        .collect();
+    let ready: Vec<&str> = every_apple_row.iter().map(String::as_str).collect();
+    let rows = speech_with(&listed, &ready);
+    for languages in [&["en", "tl"][..], &["en", "de"], &["tl"], &["en-PH"], &[]] {
+        match speech_pick(&rows, languages) {
+            Resolution::Use(id) => panic!("{languages:?} picks {id}"),
+            Resolution::Blocked(Blocker::NeedsProvision { model, .. }) => {
+                assert!(
+                    model.as_str().starts_with("sherpa/"),
+                    "{languages:?}: {model}"
+                );
+            }
+            other => panic!("{languages:?} resolves to {other:?}"),
+        }
+    }
 }

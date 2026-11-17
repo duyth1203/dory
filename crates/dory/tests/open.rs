@@ -198,7 +198,16 @@ mod fakes {
             .iter()
             .map(|r| r.status.entry.id.to_string())
             .collect();
-        assert_eq!(stt, ["sherpa/parakeet-tdt-0.6b-v3", "sherpa/whisper-turbo"]);
+        assert_eq!(
+            stt[..2],
+            ["sherpa/parakeet-tdt-0.6b-v3", "sherpa/whisper-turbo"]
+        );
+        if cfg!(target_os = "macos") {
+            assert!(stt.iter().any(|id| id == "apple/speech-en"), "{stt:?}");
+            assert!(stt[2..].iter().all(|id| id.starts_with("apple/speech-")));
+        } else {
+            assert_eq!(stt.len(), 2);
+        }
         let llm: Vec<String> = block_on(dory.models().list::<dory_core::models::Llm>())
             .unwrap()
             .iter()

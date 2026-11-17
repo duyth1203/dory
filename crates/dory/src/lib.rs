@@ -103,7 +103,11 @@ fn providers(config: &Config) -> Providers {
         None => ollama,
     };
     Providers {
-        stt: vec![Arc::new(sherpa)],
+        stt: vec![
+            Arc::new(sherpa),
+            #[cfg(target_os = "macos")]
+            Arc::new(dory_macos::AppleSpeech::load()),
+        ],
         llm: vec![
             Arc::new(ollama),
             #[cfg(target_os = "macos")]

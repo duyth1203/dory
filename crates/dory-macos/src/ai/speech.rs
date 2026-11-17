@@ -6,7 +6,7 @@ use std::ffi::CString;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 
-use dory_core::domain::{Fraction, LangSet, LangTag, LanguagePref, Ms, TimeRange};
+use dory_core::domain::{Fraction, LangSet, LangTag, LanguagePref, Ms, TimeRange, languages};
 use dory_core::models::{
     Availability, DiarizationSupport, LangSupport, ModelAbout, ModelEntry, ModelId, ProviderId,
     Stt, SttCaps, Unavailable, UnavailableReason,
@@ -24,19 +24,19 @@ const RANK: i16 = 20;
 /// Ten-minute windows give long meetings checkpoints to resume from.
 const WINDOW: Ms = Ms(600_000);
 
-/// Names and default regions for the languages macOS 26.5 offers. A language Apple adds later
-/// still gets a row, named by its tag, defaulting to its first locale.
-const LANGUAGES: [(&str, &str, &str); 10] = [
-    ("de", "German", "DE"),
-    ("en", "English", "US"),
-    ("es", "Spanish", "ES"),
-    ("fr", "French", "FR"),
-    ("it", "Italian", "IT"),
-    ("ja", "Japanese", "JP"),
-    ("ko", "Korean", "KR"),
-    ("pt", "Portuguese", "BR"),
-    ("yue", "Cantonese", "CN"),
-    ("zh", "Chinese", "CN"),
+/// The locale each language installs and runs when the meeting names only the language. A
+/// language missing here defaults to its first locale.
+const DEFAULT_REGIONS: [(&str, &str); 10] = [
+    ("de", "DE"),
+    ("en", "US"),
+    ("es", "ES"),
+    ("fr", "FR"),
+    ("it", "IT"),
+    ("ja", "JP"),
+    ("ko", "KR"),
+    ("pt", "BR"),
+    ("yue", "CN"),
+    ("zh", "CN"),
 ];
 
 /// `ModelProvider<Stt>` over Apple's SpeechTranscriber.
@@ -117,15 +117,16 @@ fn rows(locales_csv: &str) -> Vec<Row> {
             locales.sort();
             locales.dedup();
             let language = LangTag::parse(&code).ok()?;
-            let known = LANGUAGES.iter().find(|(c, ..)| *c == code);
-            let default = known
-                .and_then(|(_, _, region)| {
+            let default = DEFAULT_REGIONS
+                .iter()
+                .find(|(c, _)| *c == code)
+                .and_then(|(_, region)| {
                     let wanted = format!("{code}-{region}");
                     locales.iter().find(|l| l.as_str() == wanted)
                 })
                 .or(locales.first())?
                 .clone();
-            let name = known.map_or_else(|| code.clone(), |(_, name, _)| (*name).to_owned());
+            let name = languages::name(&language);
             Some(Row {
                 language,
                 name,
@@ -475,10 +476,18 @@ mod tests {
 
     #[test]
     fn a_language_without_a_known_name_still_gets_a_row() {
-        let rows = rows("nl-NL,nl-BE, bogus!,,");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(display_name(&rows[0]), "Apple Speech (nl)");
-        assert_eq!(rows[0].default, tag("nl-BE"));
+        let rows = rows("nl-NL,nl-BE,ain-JP, bogus!,,");
+        let named: Vec<_> = rows
+            .iter()
+            .map(|r| (display_name(r), r.default.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("Apple Speech (ain)".to_owned(), "ain-JP"),
+                ("Apple Speech (Dutch)".to_owned(), "nl-BE"),
+            ]
+        );
         assert!(super::rows("").is_empty());
     }
 

@@ -44,6 +44,8 @@ pub trait ListKind: AppKind {
     /// "Speech", "Summary".
     const NOUN: &'static str;
     fn languages(caps: &Self::Caps) -> &LangSet;
+    /// True for a model offered once per language, such as Apple Speech (English).
+    fn per_language(caps: &Self::Caps) -> bool;
     /// The languages the settings ask a model of this kind to handle.
     fn wanted(settings: &Settings) -> Vec<LangTag>;
     fn rows(models: &Models) -> Option<&[ModelRow<Self>]>;
@@ -56,6 +58,10 @@ impl ListKind for Stt {
         match &caps.languages {
             LangSupport::Multilingual { tags, .. } | LangSupport::FixedLocale { tags } => tags,
         }
+    }
+
+    fn per_language(caps: &Self::Caps) -> bool {
+        matches!(caps.languages, LangSupport::FixedLocale { .. })
     }
 
     fn wanted(settings: &Settings) -> Vec<LangTag> {
@@ -75,6 +81,10 @@ impl ListKind for Llm {
 
     fn languages(caps: &Self::Caps) -> &LangSet {
         &caps.languages
+    }
+
+    fn per_language(_: &Self::Caps) -> bool {
+        false
     }
 
     fn wanted(settings: &Settings) -> Vec<LangTag> {
@@ -270,6 +280,21 @@ pub fn about<K: ListKind>(entry: &ModelEntry<K>, row: &Row, settings: &Settings)
         disk: row.disk.clone(),
         languages: languages_text(K::languages(&entry.caps), &K::wanted(settings)),
     }
+}
+
+/// A per-language row's family and language, "Apple Speech" and "English" from "Apple Speech
+/// (English)", so the list shows the family once as a heading over its languages.
+pub fn per_language<K: ListKind>(entry: &ModelEntry<K>) -> Option<(&str, &str)> {
+    if !K::per_language(&entry.caps) {
+        return None;
+    }
+    let (family, language) = entry.display_name.split_once(" (")?;
+    Some((family, language.strip_suffix(')')?))
+}
+
+/// A per-language row that cannot take the meeting stays out of the list unless it is chosen.
+pub fn shown<K: ListKind>(row: &ModelRow<K>) -> bool {
+    row.chosen || !(K::per_language(&row.status.entry.caps) && matches!(row.fit, Fit::No(_)))
 }
 
 /// What `Auto` picks with these rows and settings, by the core's own rule.
@@ -896,8 +921,14 @@ impl<K: ListKind> Render for ModelList<K> {
                 Radio::new(format!("choice-auto-{tag}"), "Automatic")
                     .description(auto_line(&rows, &settings)),
             );
-        for model_row in &rows {
+        let mut family = None;
+        for model_row in rows.iter().filter(|row| shown(*row)) {
             let entry = &model_row.status.entry;
+            let grouped = per_language(entry);
+            let heading = grouped
+                .map(|(name, _)| name)
+                .filter(|name| family != Some(*name));
+            family = grouped.map(|(name, _)| name);
             let worded = row(
                 model_row,
                 &settings,
@@ -945,11 +976,16 @@ impl<K: ListKind> Render for ModelList<K> {
                 ));
             choices.push(Choice::Pinned(entry.id.clone()));
             group = group.option(
-                Radio::new(format!("model-{model}"), worded.name.clone())
-                    .description(detail)
-                    .warning(worded.fit.clone())
-                    .enabled(worded.usable || worded.chosen)
-                    .trailing(trailing),
+                Radio::new(
+                    format!("model-{model}"),
+                    grouped
+                        .map_or_else(|| worded.name.clone(), |(_, language)| language.to_owned()),
+                )
+                .heading(heading.map(str::to_owned))
+                .description(detail)
+                .warning(worded.fit.clone())
+                .enabled(worded.usable || worded.chosen)
+                .trailing(trailing),
             );
         }
         if K::OPTIONAL {

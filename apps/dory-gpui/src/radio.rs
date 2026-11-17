@@ -31,6 +31,7 @@ const TRAILING: f32 = 24.;
 pub struct Radio {
     id: SharedString,
     label: SharedString,
+    heading: Option<SharedString>,
     description: Option<SharedString>,
     warning: Option<SharedString>,
     enabled: bool,
@@ -42,11 +43,18 @@ impl Radio {
         Radio {
             id: id.into(),
             label: label.into(),
+            heading: None,
             description: None,
             warning: None,
             enabled: true,
             trailing: None,
         }
+    }
+
+    /// A title over this row and the ones after it, such as "Apple Speech" over its languages.
+    pub fn heading(mut self, text: Option<impl Into<SharedString>>) -> Self {
+        self.heading = text.map(Into::into);
+        self
     }
 
     /// The effect, in one line (UX-20).
@@ -154,6 +162,23 @@ impl RadioGroup {
             .flex()
             .flex_col();
         for (ix, option) in self.options.into_iter().enumerate() {
+            if let Some(heading) = option.heading.clone() {
+                group = group.child(
+                    a11y::node(
+                        format!("heading-{}", option.id),
+                        Role::Heading,
+                        heading.clone(),
+                    )
+                    .border_t_1()
+                    .border_color(theme.divider)
+                    .pl(px(INSET))
+                    .pt(px(11.))
+                    .text_size(theme.text(12.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.text_secondary)
+                    .child(heading),
+                );
+            }
             let on = selected == Some(ix);
             let select = on_select.clone();
             let group_focus = focus.clone();
@@ -179,7 +204,9 @@ impl RadioGroup {
                         }
                     })
                 })
-                .when(ix > 0, |row| row.border_t_1().border_color(theme.divider));
+                .when(ix > 0 && option.heading.is_none(), |row| {
+                    row.border_t_1().border_color(theme.divider)
+                });
             let indicator = circle(on, option.enabled, ring && current == Some(ix), theme);
             group = group.child(layout(
                 row,

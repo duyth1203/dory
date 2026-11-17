@@ -124,3 +124,29 @@ fn increase_contrast_also_turns_the_glass_off_and_keeps_its_borders(cx: &mut Tes
         "Increase Contrast draws the panel border in secondary text"
     );
 }
+
+/// The Settings window carries the same glass as the main window, and follows the same switch.
+#[gpui_kit::test]
+fn the_settings_window_has_the_same_glass(cx: &mut TestAppContext) {
+    let (_, app) = common::open_with(cx, dory_on(sample_store()));
+    let before = cx.update(|cx| cx.windows());
+    cx.update(|cx| dory_gpui::settings_window::open(&app, cx));
+    cx.run_until_parked();
+    let settings = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .expect("the Settings window opened");
+    let (now, theme) = look(settings, cx);
+    assert_eq!(now, glass_look(&theme), "Settings opens blurred");
+
+    set(
+        SystemPrefs {
+            reduce_transparency: true,
+            ..SystemPrefs::default()
+        },
+        cx,
+    );
+    let (now, theme) = look(settings, cx);
+    assert_eq!(now, solid_look(&theme), "Settings turns opaque too");
+}

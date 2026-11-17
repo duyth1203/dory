@@ -79,6 +79,7 @@ fn sync(window: &mut Window, cx: &mut App) {
     let id = window.window_handle().window_id();
     if cx.default_global::<Applied>().0.insert(id, want) != Some(want) {
         window.set_background_appearance(want);
+        eprintln!("glass: window {} {want:?}", id.as_u64());
     }
 }
 

@@ -63,6 +63,18 @@ pub struct SpeakerNames {
 }
 
 impl SpeakerNames {
+    /// What a segment's speaker is called: the user's name for them when it was given for this
+    /// revision, "Me" for the local user on the mic, else "Speaker N".
+    pub fn label(&self, segment: &Segment, revision: Revision) -> String {
+        match self.name_of(segment.speaker, revision) {
+            Some(name) => name.to_owned(),
+            None if segment.speaker == SpeakerId::LOCAL && segment.channel == Channel::Mic => {
+                "Me".to_owned()
+            }
+            None => format!("Speaker {}", segment.speaker.0),
+        }
+    }
+
     pub fn name_of(&self, speaker: SpeakerId, revision: Revision) -> Option<&str> {
         if self.for_revision != revision {
             return None;

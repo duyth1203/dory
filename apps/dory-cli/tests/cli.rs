@@ -199,6 +199,15 @@ fn records_from_the_fake_capture_then_processes_with_fake_engines() {
 #[test]
 fn models_lists_each_kind_and_the_fakes_when_asked() {
     let env = Env::new();
+    let fresh = env.run(&["models"]);
+    assert!(!fresh.status.success(), "a reader never creates a library");
+    assert!(
+        String::from_utf8_lossy(&fresh.stderr).contains("open Dory once to create it"),
+        "{}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    assert!(!env.data().join("dory.sqlite").exists());
+    env.ok(&["languages"]);
     let plain = env.ok(&["models"]);
     for id in [
         "sherpa/parakeet-tdt-0.6b-v3",
@@ -499,4 +508,63 @@ fn a_seal_that_fails_after_the_recording_ends_makes_record_fail() {
     assert!(!ok, "{}\n{stderr}", stdout.join("\n"));
     assert!(stderr.contains("error sealing the take"), "{stderr}");
     assert!(stderr.contains("error(s) while recording"), "{stderr}");
+}
+
+#[test]
+fn assistants_are_added_listed_and_hidden_recordings_marked() {
+    let env = Env::new();
+    let legacy = env.legacy();
+    env.ok(&["import", legacy.to_str().unwrap()]);
+
+    let listed = env.ok(&["assistants", "list"]);
+    assert!(listed.contains("assistant access is off"), "{listed}");
+    let activity = env.ok(&["assistants", "activity"]);
+    assert!(
+        activity.contains("No assistant activity yet."),
+        "{activity}"
+    );
+    let pruned = env.ok(&["assistants", "prune"]);
+    assert!(pruned.contains("deleted 0 day(s)"), "{pruned}");
+    let on = env.ok(&["assistants", "on"]);
+    assert!(on.contains("sent to that assistant's provider"), "{on}");
+
+    let no_level = env.run(&["assistants", "add", "Claude"]);
+    assert!(!no_level.status.success(), "there is no default exposure");
+
+    let added = env.ok(&["assistants", "add", "Claude", "--exposure", "summaries"]);
+    let key = added
+        .split_whitespace()
+        .find(|w| w.starts_with("dk_"))
+        .unwrap_or_else(|| panic!("no key in {added}"));
+    assert_eq!(key.len(), 67);
+    let db = std::fs::read(env.data().join("dory.sqlite")).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&db).contains(key),
+        "only a digest is stored"
+    );
+
+    env.ok(&["assistants", "exposure", "Claude", "transcripts"]);
+    env.ok(&["assistants", "edits", "Claude", "ask"]);
+    let listed = env.ok(&["assistants", "list"]);
+    assert!(listed.contains("assistant access is on"), "{listed}");
+    assert!(
+        listed.contains("Claude  transcripts  edits ask"),
+        "{listed}"
+    );
+    assert!(!listed.contains(key));
+
+    let hidden = env.ok(&["private", DONE, "on"]);
+    assert!(hidden.contains("hidden from assistants"), "{hidden}");
+    assert!(!env.run(&["private", "rec_nope", "on"]).status.success());
+
+    env.ok(&["assistants", "remove", "Claude"]);
+    assert!(
+        env.ok(&["assistants", "list"])
+            .contains("no assistants added")
+    );
+    assert!(
+        !env.run(&["assistants", "remove", "Claude"])
+            .status
+            .success()
+    );
 }

@@ -29,6 +29,12 @@ pub enum StoreError {
     Corrupt(String),
     #[error("storage schema {found} is newer than this build supports ({supported})")]
     SchemaTooNew { found: u32, supported: u32 },
+    #[error("no Dory library at {}, open Dory once to create it", .0.display())]
+    Missing(std::path::PathBuf),
+    #[error("open Dory to update this library (schema {found}, this build reads {supported})")]
+    SchemaTooOld { found: u32, supported: u32 },
+    #[error("the library was updated while open (schema {found}, this build reads {supported})")]
+    SchemaChanged { found: u32, supported: u32 },
 }
 
 impl Classify for StoreError {
@@ -38,7 +44,10 @@ impl Classify for StoreError {
             StoreError::NotFound(_)
             | StoreError::IllegalTransition(_)
             | StoreError::Corrupt(_)
-            | StoreError::SchemaTooNew { .. } => FailureClass::Permanent,
+            | StoreError::SchemaTooNew { .. }
+            | StoreError::Missing(_)
+            | StoreError::SchemaTooOld { .. }
+            | StoreError::SchemaChanged { .. } => FailureClass::Permanent,
         }
     }
 }
@@ -319,4 +328,13 @@ mod tests {
             assert_eq!(err.class(), want, "{err}");
         }
     }
+}
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum AuditError {
+    #[error("the audit log at {} does not exist; open Dory once to create it", .0.display())]
+    Missing(std::path::PathBuf),
+    #[error("cannot write the audit log")]
+    Io(#[source] std::io::Error),
 }

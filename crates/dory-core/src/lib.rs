@@ -3,6 +3,7 @@
 //! See `docs/architecture/hexagonal.md`.
 
 pub mod app;
+pub mod assistant;
 pub mod capture;
 pub mod domain;
 pub mod models;

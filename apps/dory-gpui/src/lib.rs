@@ -38,6 +38,7 @@ pub mod about;
 pub mod actions;
 pub mod app;
 pub mod combobox;
+pub mod consent;
 pub mod detail;
 pub mod estimate;
 pub mod export;

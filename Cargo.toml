@@ -2,11 +2,13 @@
 resolver = "3"
 members = [
     "crates/dory",
+    "crates/dory-assistants",
     "crates/dory-core",
     "crates/dory-engines",
     "crates/dory-store",
     "crates/dory-macos",
     "apps/dory-cli",
+    "apps/dory-mcp",
     "apps/dory-gpui",
 ]
 
@@ -17,6 +19,7 @@ license = "MIT"
 
 [workspace.dependencies]
 dory = { path = "crates/dory" }
+dory-assistants = { path = "crates/dory-assistants" }
 dory-core = { path = "crates/dory-core" }
 dory-engines = { path = "crates/dory-engines" }
 dory-macos = { path = "crates/dory-macos" }

@@ -7,20 +7,38 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
+default = ["app"]
+# The speech and summary engines and the platform adapters, which `open` needs. The `dory-mcp`
+# helper builds without them, so it links no engine and no Swift.
+app = ["dep:dory-engines", "dep:dory-macos"]
 # Registers dory-core's fake speech and summary engines and fake capture, for lanes and demos.
-fake-engines = ["dory-core/testing"]
+fake-engines = ["app", "dory-core/testing"]
 
 [dependencies]
 dory-core.workspace = true
 dory-store.workspace = true
-dory-engines.workspace = true
+dory-assistants.workspace = true
+dory-engines = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
-dory-macos.workspace = true
+dory-macos = { workspace = true, optional = true }
+
+[[test]]
+name = "open"
+required-features = ["app"]
+
+[[test]]
+name = "assistants"
+required-features = ["app"]
+
+[[test]]
+name = "edits"
+required-features = ["app"]
 
 [dev-dependencies]
 tempfile.workspace = true
+crossbeam-channel.workspace = true
 
 [lints]
 workspace = true

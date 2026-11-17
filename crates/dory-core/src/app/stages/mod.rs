@@ -530,9 +530,11 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         });
     };
     publish(Fraction::new(0.0));
+    let instruction = store.summary_instruction(id).map_err(failed)?;
     let text = summary::summarize(
         &lines,
         language.as_ref(),
+        instruction.as_deref(),
         context,
         &|text| llm.count_tokens(text),
         &mut |call| {

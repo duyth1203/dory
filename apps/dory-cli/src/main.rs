@@ -3,6 +3,7 @@
 //! `dory-capture` example of `dory-macos`.
 
 mod args;
+mod assistants;
 mod delete;
 mod library;
 mod play;
@@ -30,6 +31,15 @@ const USAGE: &str = "usage:
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID
   dory-cli models provision stt|llm|diar MODEL_ID
   dory-cli languages [TAG...|--clear]
+  dory-cli assistants on|off|list
+  dory-cli assistants add NAME --exposure titles|summaries|transcripts [--edits never|ask]
+  dory-cli assistants exposure NAME titles|summaries|transcripts
+  dory-cli assistants edits NAME never|ask
+  dory-cli assistants remove NAME
+  dory-cli assistants activity [--days N]
+  dory-cli assistants prune
+  dory-cli private ID on|off
+  dory-cli summary restore ID
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
 The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.
@@ -68,6 +78,16 @@ fn main() -> ExitCode {
             }
             Some("process") => args::ProcessArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::run(&c, &a))),
+            Some("assistants") => assistants::AssistantsArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| assistants::run(&c, &a))),
+            Some("private") => assistants::PrivateArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| assistants::private(&c, &a))),
+            Some("summary") => match rest {
+                [verb, id] if verb == "restore" => dory_core::domain::RecordingId::parse(id)
+                    .map_err(|e| e.to_string())
+                    .and_then(|id| config().and_then(|c| assistants::restore_summary(&c, &id))),
+                _ => Err("summary takes: restore ID".into()),
+            },
             _ => Err(USAGE.to_string()),
         };
     match result {

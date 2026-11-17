@@ -44,6 +44,7 @@ macro_rules! icons {
 
 icons! {
     BatteryMedium => "battery-medium.svg",
+    Bot => "bot.svg",
     Captions => "captions.svg",
     Check => "check.svg",
     ChevronDown => "chevron-down.svg",

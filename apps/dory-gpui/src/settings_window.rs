@@ -15,6 +15,9 @@
 //! - Summaries: the summary models, and the Ollama steps when Ollama does not answer.
 //! - Storage: the data folder, its size, and Show in Finder, then the old app's WebM files and
 //!   **Move original WebM files to Trash** with Undo.
+//! - Assistants: whether assistants such as Claude may read the library, Copy Claude Code
+//!   Command and Copy Claude Desktop Setup, which create the assistant's key and copy its setup,
+//!   the connected assistants, and their latest reads.
 //!
 //! Content has exactly one scroll area (UX-31). The combobox's list is the only inner one, and it
 //! sits in a popover, not in the page.
@@ -25,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use dory_core::domain::LanguagePref;
+use dory_core::domain::{Exposure, LanguagePref, Writes};
 use dory_core::models::{Availability, Llm, Stt, UnavailableReason};
 use dory_core::ports::capture::InputDevice;
 use gpui_kit::component::Sizable as _;
@@ -41,7 +44,7 @@ use gpui_kit::{
 };
 
 use crate::a11y;
-use crate::app::{AppState, Originals};
+use crate::app::{AppState, Assistants, Connected, Originals, Target};
 use crate::combobox::LanguageCombobox;
 use crate::icons::{self, Icon};
 use crate::languages;
@@ -69,15 +72,17 @@ pub enum Pane {
     Transcription,
     Summaries,
     Storage,
+    Assistants,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 5] = [
+    pub const ALL: [Pane; 6] = [
         Pane::General,
         Pane::Recording,
         Pane::Transcription,
         Pane::Summaries,
         Pane::Storage,
+        Pane::Assistants,
     ];
 
     pub fn title(self) -> &'static str {
@@ -87,6 +92,7 @@ impl Pane {
             Pane::Transcription => "Transcription",
             Pane::Summaries => "Summaries",
             Pane::Storage => "Storage",
+            Pane::Assistants => "Assistants",
         }
     }
 
@@ -97,6 +103,7 @@ impl Pane {
             Pane::Transcription => "transcription",
             Pane::Summaries => "summaries",
             Pane::Storage => "storage",
+            Pane::Assistants => "assistants",
         }
     }
 
@@ -116,6 +123,7 @@ impl Pane {
             Pane::Transcription => Icon::Captions,
             Pane::Summaries => Icon::FileText,
             Pane::Storage => Icon::HardDrive,
+            Pane::Assistants => Icon::Bot,
         }
     }
 }
@@ -168,6 +176,18 @@ pub const ENTRIES: &[Entry] = &[
     entry(Pane::Storage, "Data folder", "row-data-folder"),
     entry(Pane::Storage, "Show in Finder", "row-data-folder"),
     entry(Pane::Storage, "Files from the old app", "row-originals"),
+    entry(
+        Pane::Assistants,
+        "Let assistants read",
+        "row-assistants-access",
+    ),
+    entry(Pane::Assistants, "Claude Code", "row-assistants-connect"),
+    entry(Pane::Assistants, "Claude Desktop", "row-assistants-connect"),
+    entry(
+        Pane::Assistants,
+        "Assistant activity",
+        "row-assistants-activity",
+    ),
 ];
 
 /// What the sidebar shows for a search: the panes whose name or settings match, then each
@@ -296,6 +316,10 @@ pub struct SettingsWindow {
     languages: Entity<LanguageCombobox>,
     devices: Option<Result<Vec<InputDevice>, String>>,
     storage: Storage,
+    /// Settings > Assistants: the level and edits chosen for the next Connect. No level is
+    /// preselected, because the choice is the consent.
+    assistant_exposure: Option<Exposure>,
+    assistant_edits: bool,
     copy_focus: Vec<FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
@@ -356,6 +380,8 @@ impl SettingsWindow {
             pane,
             devices: None,
             storage: Storage::Unread,
+            assistant_exposure: None,
+            assistant_edits: false,
             _subscriptions: vec![observe, on_type, width, on_activation],
         }
     }
@@ -1258,6 +1284,315 @@ impl SettingsWindow {
         ))
     }
 
+    /// Settings > Assistants. Connecting gives the assistant its own key at the chosen level and
+    /// copies its setup; the user pastes it into the assistant.
+    fn assistants(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        if matches!(self.app.read(cx).assistants(), Assistants::Unread) {
+            self.app.update(cx, |app, cx| app.read_assistants(cx));
+        }
+        let view = match self.app.read(cx).assistants().clone() {
+            Assistants::Read(view) => view,
+            Assistants::Unread | Assistants::Reading => {
+                return vec![section(
+                    "settings-assistants",
+                    "Access",
+                    theme,
+                    vec![row("setting-assistants", "Reading…", "", None, theme).into_any_element()],
+                )];
+            }
+            Assistants::Failed(error) => {
+                return vec![section(
+                    "settings-assistants",
+                    "Access",
+                    theme,
+                    vec![
+                        row("setting-assistants", "Could not read", error, None, theme)
+                            .into_any_element(),
+                    ],
+                )];
+            }
+        };
+        let app = self.app.clone();
+        let enabled = view.enabled;
+        let focus = self.focus("assistants-enabled", cx);
+        let access = radio::checkbox(
+            Radio::new(
+                "setting-assistants-enabled",
+                "Let assistants read your meetings",
+            )
+            .description(WHAT_LEAVES),
+            enabled,
+            &focus,
+            theme,
+            window,
+            move |_, cx| app.update(cx, |app, cx| app.set_assistants_enabled(!enabled, cx)),
+        );
+        let mut page = vec![section(
+            "settings-assistants",
+            "Access",
+            theme,
+            vec![self.mark("row-assistants-access", access, theme, cx)],
+        )];
+        if !enabled {
+            page.push(footnote(
+                "Turn this on to connect Claude Code or Claude Desktop. Each assistant gets its own key and reads only what you choose.",
+                theme,
+            ));
+            return page;
+        }
+        let connect = self.connect(theme, window, cx);
+        page.push(section(
+            "settings-assistants-connect",
+            "Connect an assistant",
+            theme,
+            vec![self.mark("row-assistants-connect", connect, theme, cx)],
+        ));
+        page.push(footnote(
+            "Copying again for the same assistant gives it a new key, so paste the new setup too.",
+            theme,
+        ));
+        page.push(section(
+            "settings-assistants-list",
+            "Connected",
+            theme,
+            self.connected_rows(&view.clients, theme, window, cx),
+        ));
+        page.push(section(
+            "settings-assistants-activity",
+            "Activity",
+            theme,
+            vec![self.mark(
+                "row-assistants-activity",
+                activity(&view.activity, theme),
+                theme,
+                cx,
+            )],
+        ));
+        page.push(footnote(
+            "What assistants read, newest first, without the meeting text. Dory keeps 30 days.",
+            theme,
+        ));
+        page
+    }
+
+    /// The level, the edits choice, the two Copy buttons, and what the last one copied.
+    fn connect(&mut self, theme: &Theme, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let selected = self
+            .assistant_exposure
+            .and_then(|e| LEVELS.iter().position(|(level, ..)| *level == e));
+        let mut group = RadioGroup::new("assistant-level", "What it may read").selected(selected);
+        for (level, label, effect) in LEVELS {
+            group = group.option(
+                Radio::new(format!("assistant-level-{}", level.as_str()), label)
+                    .description(effect),
+            );
+        }
+        let focus = self.focus("assistant-level", cx);
+        let pick = this.clone();
+        let levels = group.render(&focus, theme, window, move |ix, _, cx| {
+            let _ = pick.update(cx, |s, cx| {
+                s.assistant_exposure = Some(LEVELS[ix].0);
+                cx.notify();
+            });
+        });
+        let edits = self.assistant_edits;
+        let focus = self.focus("assistant-edits", cx);
+        let toggle = this.clone();
+        let edits_box = radio::checkbox(
+            Radio::new("assistant-edits", "May ask for changes").description(
+                "It can ask to rename meetings, name speakers, or summarize again. Nothing changes until you click Allow in Dory.",
+            ),
+            edits,
+            &focus,
+            theme,
+            window,
+            move |_, cx| {
+                let _ = toggle.update(cx, |s, cx| {
+                    s.assistant_edits = !s.assistant_edits;
+                    cx.notify();
+                });
+            },
+        );
+        let exposure = self.assistant_exposure;
+        let writes = if edits { Writes::Ask } else { Writes::Never };
+        let copy = |target: Target, this: &mut Self, cx: &mut Context<Self>| {
+            let focus = this.focus(format!("connect-{}", target.label()), cx);
+            let app = this.app.clone();
+            let text = match target {
+                Target::ClaudeCode => "Copy Claude Code Command",
+                Target::ClaudeDesktop => "Copy Claude Desktop Setup",
+            };
+            let id = match target {
+                Target::ClaudeCode => "connect-claude-code",
+                Target::ClaudeDesktop => "connect-claude-desktop",
+            };
+            button(id, text, text, false, &focus, theme, move |_, cx| {
+                app.update(cx, |app, cx| match exposure {
+                    Some(exposure) => app.connect_assistant(target, exposure, writes, cx),
+                    None => app.not_connected("Choose what it may read first.", cx),
+                })
+            })
+        };
+        let code = copy(Target::ClaudeCode, self, cx);
+        let desktop = copy(Target::ClaudeDesktop, self, cx);
+        let status = self.app.read(cx).connected().cloned().map(|c| match c {
+            Connected::Copied {
+                target,
+                shown,
+                replaced,
+            } => {
+                let mut said = target.next_step().to_owned();
+                if replaced {
+                    said.push_str(&format!(" {}'s old key no longer works.", target.label()));
+                }
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        a11y::node("assistant-connected", Role::Status, said.clone())
+                            .child(note(said, theme)),
+                    )
+                    .child(
+                        div()
+                            .p(px(8.))
+                            .rounded(px(6.))
+                            .bg(theme.control_bg)
+                            .text_size(theme.text(11.))
+                            .font_family("Menlo")
+                            .child(shown),
+                    )
+                    .into_any_element()
+            }
+            Connected::Failed(why) => a11y::node("assistant-connected", Role::Status, why.clone())
+                .text_size(theme.text(12.))
+                .child(icons::beside(
+                    Icon::TriangleAlert,
+                    12.,
+                    theme.attention,
+                    theme.text(12.) * 1.4,
+                    why,
+                ))
+                .into_any_element(),
+        });
+        div()
+            .px(px(14.))
+            .py(px(11.))
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .child(
+                div()
+                    .text_size(theme.text(13.))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child("What it may read"),
+            )
+            .child(levels)
+            .child(edits_box)
+            .child(div().flex().gap(px(8.)).child(code).child(desktop))
+            .children(status)
+            .into_any_element()
+    }
+
+    /// One row per connected assistant: what it may read, whether it may ask for changes, and
+    /// Remove.
+    fn connected_rows(
+        &mut self,
+        clients: &[dory_core::domain::AssistantClient],
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        if clients.is_empty() {
+            return vec![
+                row(
+                    "setting-assistants-none",
+                    "No assistants yet",
+                    "Copy a setup above to connect one.",
+                    None,
+                    theme,
+                )
+                .into_any_element(),
+            ];
+        }
+        clients
+            .iter()
+            .map(|client| {
+                let label = client.label.clone();
+                let level = LEVELS
+                    .iter()
+                    .find(|(e, ..)| *e == client.exposure)
+                    .map_or("", |(_, name, _)| name);
+                let asks = client.writes == Writes::Ask;
+                let focus = self.focus(format!("assistant-edits-{label}"), cx);
+                let app = self.app.clone();
+                let name = label.clone();
+                let edits = radio::checkbox(
+                    Radio::new(format!("assistant-edits-{label}"), "May ask for changes"),
+                    asks,
+                    &focus,
+                    theme,
+                    window,
+                    move |_, cx| {
+                        let writes = if asks { Writes::Never } else { Writes::Ask };
+                        let name = name.clone();
+                        app.update(cx, |app, cx| app.set_assistant_writes(name, writes, cx))
+                    },
+                );
+                let focus = self.focus(format!("assistant-remove-{label}"), cx);
+                let app = self.app.clone();
+                let name = label.clone();
+                let remove = button(
+                    format!("assistant-remove-{label}"),
+                    format!("Remove {label}"),
+                    "Remove",
+                    false,
+                    &focus,
+                    theme,
+                    move |_, cx| {
+                        let name = name.clone();
+                        app.update(cx, |app, cx| app.remove_assistant(name, cx))
+                    },
+                );
+                a11y::node(format!("assistant-{label}"), Role::Group, label.clone())
+                    .px(px(14.))
+                    .py(px(11.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(
+                                        div()
+                                            .text_size(theme.text(13.))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(label.clone()),
+                                    )
+                                    .child(note(format!("Reads {}", level.to_lowercase()), theme)),
+                            )
+                            .child(remove),
+                    )
+                    .child(edits)
+                    .into_any_element()
+            })
+            .collect()
+    }
+
     fn sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let this = cx.entity().downgrade();
         let (panes, hits) = search(&self.query);
@@ -1531,6 +1866,62 @@ fn row_with(
         )
 }
 
+/// What leaves the Mac once an assistant reads, said under the switch.
+const WHAT_LEAVES: &str = "Anything an assistant reads from Dory is sent to that assistant's provider, like anything else you paste into it. Dory itself sends nothing.";
+
+/// The levels Connect offers, with what each lets the assistant read.
+const LEVELS: [(Exposure, &str, &str); 3] = [
+    (
+        Exposure::Titles,
+        "Titles",
+        "Titles, dates, and durations. Search matches titles only.",
+    ),
+    (
+        Exposure::Summaries,
+        "Summaries",
+        "Adds summaries, speaker names, and action items.",
+    ),
+    (
+        Exposure::Transcripts,
+        "Full transcripts",
+        "Adds every word said in the meeting.",
+    ),
+];
+
+/// The latest reads, one line each: when, who, and what.
+fn activity(entries: &[dory_core::domain::AuditEntry], theme: &Theme) -> AnyElement {
+    let lines: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            let when = crate::library::local(e.at, &chrono::Local).format("%b %-d, %H:%M");
+            let who = e.client.clone().unwrap_or_else(|| {
+                e.reported_name
+                    .as_ref()
+                    .map_or("An unknown assistant".to_owned(), |n| {
+                        format!("An unknown assistant ({n})")
+                    })
+            });
+            let refused = match &e.outcome {
+                dory_core::domain::AuditOutcome::Served { .. } => "",
+                dory_core::domain::AuditOutcome::Refused(_) => ", refused",
+            };
+            format!("{when}  {who} {}{refused}", e.access.describe())
+        })
+        .collect();
+    let body = div().px(px(14.)).py(px(11.)).flex().flex_col().gap(px(4.));
+    if lines.is_empty() {
+        return body
+            .child(note("No assistant activity yet.", theme))
+            .into_any_element();
+    }
+    body.children(lines.into_iter().map(|line| {
+        a11y::node(format!("activity-{line}"), Role::Label, line.clone())
+            .text_size(theme.text(12.))
+            .child(line)
+    }))
+    .into_any_element()
+}
+
 fn footnote(text: &'static str, theme: &Theme) -> AnyElement {
     div()
         .mt(px(-12.))
@@ -1550,6 +1941,7 @@ impl Render for SettingsWindow {
             Pane::Transcription => self.transcription(&theme, window, cx),
             Pane::Summaries => self.summaries(&theme, cx),
             Pane::Storage => self.storage(&theme, cx),
+            Pane::Assistants => self.assistants(&theme, window, cx),
         };
         if let Some(place) = self.jump.clone() {
             match place.get() {

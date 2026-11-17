@@ -28,9 +28,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, PoisonError};
 
 use crate::domain::{
-    Job, JobEvent, JobId, JobState, Ms, Priority, Recording, RecordingEdit, RecordingId,
-    RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, Timestamp,
-    Transcript,
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Fields, Job,
+    JobEvent, JobId, JobState, Ms, Priority, Recording, RecordingEdit, RecordingId, RecordingQuery,
+    RecordingRow, Settings, SpeakerNames, Summary, SummaryFlag, Timestamp, Transcript,
 };
 use crate::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
 
@@ -40,6 +40,9 @@ struct Entry {
     transcript: Option<Transcript>,
     summary: Option<Summary>,
     names: SpeakerNames,
+    hidden: bool,
+    previous: Option<Summary>,
+    instruction: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -49,6 +52,9 @@ struct State {
     last_job: u64,
     settings: Settings,
     checkpoints: HashMap<CheckpointKey, BTreeMap<(Ms, Ms), Checkpoint>>,
+    assistants_enabled: bool,
+    /// By label. The fake keeps keys whole; a real store keeps only a digest.
+    assistants: BTreeMap<String, (AssistantClient, ClientKey)>,
 }
 
 impl State {
@@ -68,6 +74,9 @@ impl State {
                         transcript: None,
                         summary: None,
                         names: SpeakerNames::default(),
+                        hidden: false,
+                        previous: None,
+                        instruction: None,
                     });
             }
             Change::RecordingEdited { id, edit } => {
@@ -88,7 +97,19 @@ impl State {
             }
             Change::SpeakerNamesReplaced { id, names } => self.entry_mut(&id)?.names = names,
             Change::SummaryReplaced { id, summary } => {
-                self.entry_mut(&id)?.summary = Some(summary);
+                let entry = self.entry_mut(&id)?;
+                entry.previous = entry.summary.replace(summary).or(entry.previous.take());
+            }
+            Change::SummaryRestored(id) => {
+                let entry = self.entry_mut(&id)?;
+                let previous = entry
+                    .previous
+                    .take()
+                    .ok_or_else(|| StoreError::NotFound(format!("previous summary of {id}")))?;
+                entry.previous = entry.summary.replace(previous);
+            }
+            Change::SummaryInstructionSet { id, instruction } => {
+                self.entry_mut(&id)?.instruction = instruction;
             }
             Change::JobEnqueued {
                 id,
@@ -132,6 +153,39 @@ impl State {
                     .insert(span, checkpoint);
             }
             Change::CheckpointsCleared(id) => self.checkpoints.retain(|key, _| key.recording != id),
+            Change::Assistant(change) => self.apply_assistant(change)?,
+        }
+        Ok(())
+    }
+
+    fn apply_assistant(&mut self, change: AssistantChange) -> Result<(), StoreError> {
+        match change {
+            AssistantChange::Enabled(on) => self.assistants_enabled = on,
+            AssistantChange::ClientAdded { client, key } => {
+                let taken = self.assistants.contains_key(&client.label)
+                    || self.assistants.values().any(|(_, k)| *k == key);
+                if taken {
+                    return Err(StoreError::Corrupt(format!(
+                        "an assistant named {} or with that key exists",
+                        client.label
+                    )));
+                }
+                self.assistants.insert(client.label.clone(), (client, key));
+            }
+            AssistantChange::ClientChanged(client) => {
+                let (current, _) = self
+                    .assistants
+                    .get_mut(&client.label)
+                    .ok_or_else(|| StoreError::NotFound(format!("assistant {}", client.label)))?;
+                current.exposure = client.exposure;
+                current.writes = client.writes;
+            }
+            AssistantChange::ClientRemoved { label } => {
+                self.assistants
+                    .remove(&label)
+                    .ok_or_else(|| StoreError::NotFound(format!("assistant {label}")))?;
+            }
+            AssistantChange::RecordingHidden { id, hidden } => self.entry_mut(&id)?.hidden = hidden,
         }
         Ok(())
     }
@@ -152,6 +206,8 @@ impl MemStore {
                 last_job: 0,
                 settings: Settings::default(),
                 checkpoints: HashMap::new(),
+                assistants_enabled: false,
+                assistants: BTreeMap::new(),
             }),
         }
     }
@@ -169,7 +225,13 @@ impl Default for MemStore {
     }
 }
 
-fn matches_text(entry: &Entry, needle: &str) -> bool {
+const ALL_FIELDS: Fields = Fields {
+    title: true,
+    summary: true,
+    transcript: true,
+};
+
+fn matches_text(entry: &Entry, needle: &str, fields: Fields) -> bool {
     let title = entry.recording.title.as_deref().unwrap_or_default();
     let transcript = entry
         .transcript
@@ -180,7 +242,47 @@ fn matches_text(entry: &Entry, needle: &str) -> bool {
         .summary
         .as_ref()
         .is_some_and(|s| s.markdown.to_lowercase().contains(needle));
-    title.to_lowercase().contains(needle) || transcript || summary
+    (fields.title && title.to_lowercase().contains(needle))
+        || (fields.transcript && transcript)
+        || (fields.summary && summary)
+}
+
+fn needle(text: Option<&str>) -> Option<String> {
+    text.map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+}
+
+/// Newest first, ties by id, then the first `limit`.
+fn rows(state: &State, keep: impl Fn(&Entry) -> bool, limit: Option<u32>) -> Vec<RecordingRow> {
+    let mut entries: Vec<&Entry> = state.recordings.values().filter(|e| keep(e)).collect();
+    entries.sort_by(|a, b| {
+        b.recording
+            .created_at
+            .cmp(&a.recording.created_at)
+            .then_with(|| a.recording.id.cmp(&b.recording.id))
+    });
+    if let Some(limit) = limit {
+        entries.truncate(limit as usize);
+    }
+    entries
+        .into_iter()
+        .map(|e| {
+            let job = state
+                .jobs
+                .values()
+                .rfind(|j| j.recording == e.recording.id)
+                .map(|j| j.state.clone());
+            RecordingRow {
+                recording: e.recording.clone(),
+                job,
+                has_transcript: e.transcript.is_some(),
+                summary: SummaryFlag::derive(
+                    e.summary.as_ref().map(|s| s.transcript_revision),
+                    e.transcript.as_ref().map(|t| t.revision),
+                ),
+            }
+        })
+        .collect()
 }
 
 impl StoreRead for MemStore {
@@ -190,44 +292,16 @@ impl StoreRead for MemStore {
 
     fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
         let state = self.state();
-        let needle = query
-            .text
-            .as_deref()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty());
-        let mut entries: Vec<&Entry> = state
-            .recordings
-            .values()
-            .filter(|e| needle.as_deref().is_none_or(|n| matches_text(e, n)))
-            .collect();
-        entries.sort_by(|a, b| {
-            b.recording
-                .created_at
-                .cmp(&a.recording.created_at)
-                .then_with(|| a.recording.id.cmp(&b.recording.id))
-        });
-        if let Some(limit) = query.limit {
-            entries.truncate(limit as usize);
-        }
-        Ok(entries
-            .into_iter()
-            .map(|e| {
-                let job = state
-                    .jobs
-                    .values()
-                    .rfind(|j| j.recording == e.recording.id)
-                    .map(|j| j.state.clone());
-                RecordingRow {
-                    recording: e.recording.clone(),
-                    job,
-                    has_transcript: e.transcript.is_some(),
-                    summary: SummaryFlag::derive(
-                        e.summary.as_ref().map(|s| s.transcript_revision),
-                        e.transcript.as_ref().map(|t| t.revision),
-                    ),
-                }
-            })
-            .collect())
+        let needle = needle(query.text.as_deref());
+        Ok(rows(
+            &state,
+            |e| {
+                needle
+                    .as_deref()
+                    .is_none_or(|n| matches_text(e, n, ALL_FIELDS))
+            },
+            query.limit,
+        ))
     }
 
     fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError> {
@@ -301,6 +375,70 @@ impl StoreRead for MemStore {
             .get(key)
             .map(|windows| windows.values().cloned().collect())
             .unwrap_or_default())
+    }
+
+    fn assistant_access(&self) -> Result<AssistantAccess, StoreError> {
+        let state = self.state();
+        Ok(AssistantAccess {
+            enabled: state.assistants_enabled,
+            clients: state.assistants.values().map(|(c, _)| c.clone()).collect(),
+        })
+    }
+
+    fn assistant_client(&self, key: &ClientKey) -> Result<Option<AssistantClient>, StoreError> {
+        Ok(self
+            .state()
+            .assistants
+            .values()
+            .find(|(_, k)| k == key)
+            .map(|(c, _)| c.clone()))
+    }
+
+    fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError> {
+        Ok(self.state().recordings.get(id).is_some_and(|e| e.hidden))
+    }
+
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.previous.clone()))
+    }
+
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .state()
+            .recordings
+            .get(id)
+            .and_then(|e| e.instruction.clone()))
+    }
+
+    fn assistant_recordings(
+        &self,
+        query: &AssistantQuery,
+    ) -> Result<Vec<RecordingRow>, StoreError> {
+        let state = self.state();
+        let needle = needle(query.text.as_deref());
+        let newer_than_cursor = |e: &Entry| {
+            query.after.as_ref().is_none_or(|(at, id)| {
+                (e.recording.created_at, std::cmp::Reverse(&e.recording.id))
+                    < (*at, std::cmp::Reverse(id))
+            })
+        };
+        Ok(rows(
+            &state,
+            |e| {
+                !e.hidden
+                    && query.since.is_none_or(|t| e.recording.created_at >= t)
+                    && query.until.is_none_or(|t| e.recording.created_at < t)
+                    && newer_than_cursor(e)
+                    && needle
+                        .as_deref()
+                        .is_none_or(|n| matches_text(e, n, query.fields))
+            },
+            Some(query.limit),
+        ))
     }
 }
 

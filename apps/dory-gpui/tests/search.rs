@@ -418,3 +418,38 @@ fn the_section_headings_and_the_where_words() {
     );
     assert_eq!(said(Section::Conversations, None), None, "not loaded yet");
 }
+
+#[gpui_kit::test]
+fn escape_in_the_field_clears_the_search_and_keeps_focus_there(cx: &mut TestAppContext) {
+    let (window, app) = open(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("search", cx);
+        window.input("design", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.executor().advance_clock(SEARCH_DEBOUNCE);
+    cx.run_until_parked();
+    assert_eq!(
+        labels(&headings(window, cx)),
+        ["Titles", "In conversations"]
+    );
+
+    cx.update_window(window, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.executor().advance_clock(SEARCH_DEBOUNCE);
+    cx.run_until_parked();
+    app.read_with(cx, |app, _| {
+        assert!(app.typed.is_empty() && app.search.is_none())
+    });
+    assert!(headings(window, cx).is_empty());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("search").focused(), Some(true));
+    })
+    .unwrap();
+}

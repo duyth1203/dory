@@ -23,7 +23,7 @@ use std::ops::Range;
 use chrono::Local;
 use dory_core::search::{self, Section};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, HighlightStyle, Hsla,
@@ -91,13 +91,16 @@ impl Sidebar {
             .cursor_pointer()
             .hover(move |button| button.bg(hover))
             .child(Icon::X.view(12., theme.text_secondary))
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.search.update(cx, |search, cx| {
-                    search.set_value("", window, cx);
-                    search.focus(window, cx);
-                });
-                this.app.update(cx, |app, cx| app.set_search("", cx));
-            }))
+            .on_click(cx.listener(|this, _, window, cx| this.clear_search(window, cx)))
+    }
+
+    /// Empties the field, keeps focus in it, and brings the date groups back.
+    fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search.update(cx, |search, cx| {
+            search.set_value("", window, cx);
+            search.focus(window, cx);
+        });
+        self.app.update(cx, |app, cx| app.set_search("", cx));
     }
 
     pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -477,15 +480,24 @@ impl Render for Sidebar {
                             .gap(px(4.))
                             .px(px(4.))
                             .child(
-                                div().flex_1().child(
-                                    Input::new(&self.search)
-                                        .id("search")
-                                        .aria_label("Search recordings")
-                                        .prefix(Icon::Search.view(14., theme.text_secondary))
-                                        .when(searching, |input| {
-                                            input.suffix(self.clear_search_button(&theme, cx))
-                                        }),
-                                ),
+                                div()
+                                    .flex_1()
+                                    .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                                        if this.search.read(cx).value().is_empty() {
+                                            cx.propagate();
+                                        } else {
+                                            this.clear_search(window, cx);
+                                        }
+                                    }))
+                                    .child(
+                                        Input::new(&self.search)
+                                            .id("search")
+                                            .aria_label("Search recordings")
+                                            .prefix(Icon::Search.view(14., theme.text_secondary))
+                                            .when(searching, |input| {
+                                                input.suffix(self.clear_search_button(&theme, cx))
+                                            }),
+                                    ),
                             )
                             .child(self.filter_button(filter)),
                     )

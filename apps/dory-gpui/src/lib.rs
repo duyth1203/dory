@@ -42,6 +42,7 @@ pub mod detail;
 pub mod estimate;
 pub mod export;
 pub mod fixtures;
+pub mod fonts;
 pub mod glass;
 pub mod glyphs;
 pub mod icons;

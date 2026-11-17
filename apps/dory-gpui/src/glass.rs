@@ -6,8 +6,9 @@
 //! the docked player keep their solid fills: GPUI cannot blur one element over another.
 //!
 //! Reduce Transparency or Increase Contrast turns all of it off: the window goes opaque, the
-//! column takes `window_bg`, and the panel solid `sidebar_bg`, as before glass. `system_prefs`
-//! reports Reduce Transparency here; Increase Contrast arrives through the theme.
+//! column takes `window_bg`, and the panel solid `sidebar_bg`, as before glass. So does a theme
+//! whose `glass` flag is off (Book), where Reduce Transparency then changes nothing.
+//! `system_prefs` reports Reduce Transparency here; the rest arrives through the theme.
 
 use std::collections::HashMap;
 
@@ -40,15 +41,18 @@ pub fn reduces_transparency(cx: &App) -> bool {
     cx.try_global::<Transparency>().is_some_and(|t| t.reduce)
 }
 
-fn translucent(high_contrast: bool, cx: &App) -> bool {
-    !high_contrast && !cx.try_global::<Transparency>().is_some_and(|t| t.reduce)
+fn translucent(theme: &Theme, cx: &App) -> bool {
+    theme.flags.glass
+        && !theme.high_contrast
+        && !cx.try_global::<Transparency>().is_some_and(|t| t.reduce)
 }
 
 pub fn window_background(cx: &App) -> WindowBackgroundAppearance {
-    if translucent(
-        cx.try_global::<Theme>().is_some_and(|t| t.high_contrast),
-        cx,
-    ) {
+    let translucent = match cx.try_global::<Theme>() {
+        Some(theme) => translucent(theme, cx),
+        None => !reduces_transparency(cx),
+    };
+    if translucent {
         WindowBackgroundAppearance::Blurred
     } else {
         WindowBackgroundAppearance::Opaque
@@ -56,7 +60,7 @@ pub fn window_background(cx: &App) -> WindowBackgroundAppearance {
 }
 
 pub fn sidebar_column(theme: &Theme, cx: &App) -> Hsla {
-    if translucent(theme.high_contrast, cx) {
+    if translucent(theme, cx) {
         theme.glass_tint
     } else {
         theme.window_bg
@@ -64,7 +68,7 @@ pub fn sidebar_column(theme: &Theme, cx: &App) -> Hsla {
 }
 
 pub fn sidebar_panel(theme: &Theme, cx: &App) -> Hsla {
-    if translucent(theme.high_contrast, cx) {
+    if translucent(theme, cx) {
         theme.sidebar_tint
     } else {
         theme.sidebar_bg

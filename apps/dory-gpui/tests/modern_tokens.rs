@@ -53,24 +53,30 @@ fn listing() -> String {
 }
 
 fn modern(dark: bool, accent: Hsla, display: Display) -> Theme {
-    Theme::new(dark, accent, display)
+    Theme::modern(dark, accent, display)
 }
+
+/// Tokens added since the golden file, which only Book's flags paint.
+const ADDED: [&str; 1] = ["leader"];
 
 #[test]
 fn modern_tokens_match_the_values_from_before_themes() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/modern-tokens.txt");
     let now = listing();
+    let kept: Vec<&str> = now
+        .lines()
+        .filter(|line| !ADDED.iter().any(|t| line.split(' ').rev().nth(1) == Some(t)))
+        .collect();
     if std::env::var_os("DORY_BLESS").is_some() {
-        std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
-        std::fs::write(path, &now).unwrap();
+        std::fs::write(path, kept.join("\n") + "\n").unwrap();
     }
     let before = std::fs::read_to_string(path).expect("golden file");
     let changed: Vec<String> = before
         .lines()
-        .zip(now.lines())
-        .filter(|(b, n)| b != n)
+        .zip(&kept)
+        .filter(|(b, n)| b != *n)
         .map(|(b, n)| format!("was {b}\nnow {n}"))
         .collect();
-    assert_eq!(before.lines().count(), now.lines().count(), "token count changed");
+    assert_eq!(before.lines().count(), kept.len(), "token count changed");
     assert!(changed.is_empty(), "{}", changed.join("\n"));
 }

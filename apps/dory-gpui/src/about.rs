@@ -1,6 +1,7 @@
 //! Dory › About Dory: the app's name and version, and Acknowledgements with the license of every
-//! asset Dory ships that someone else made. Today that is Lucide's icons, whose license (ISC, and
-//! MIT for the icons that came from Feather) asks for its text to travel with them.
+//! asset Dory ships that someone else made: Lucide's icons, whose license (ISC, and MIT for the
+//! icons that came from Feather) asks for its text to travel with them, and the Literata typeface
+//! (SIL Open Font License 1.1), which the Book theme reads in.
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, FontWeight, Global, IntoElement,
@@ -29,11 +30,18 @@ pub struct Credit {
 }
 
 pub fn credits() -> Vec<Credit> {
-    vec![Credit {
-        id: "lucide",
-        name: format!("Lucide icons {}", LUCIDE_VERSION.trim()),
-        license: LUCIDE_LICENSE,
-    }]
+    vec![
+        Credit {
+            id: "lucide",
+            name: format!("Lucide icons {}", LUCIDE_VERSION.trim()),
+            license: LUCIDE_LICENSE,
+        },
+        Credit {
+            id: "literata",
+            name: format!("Literata typeface {}", crate::fonts::LITERATA_VERSION.trim()),
+            license: crate::fonts::LITERATA_LICENSE,
+        },
+    ]
 }
 
 /// The license's paragraphs, with the file's hard line breaks inside each one undone so the text
@@ -197,6 +205,18 @@ mod tests {
         assert!(text.contains("derived from the Feather project"));
         assert!(text.contains("The MIT License (MIT)"));
         assert!(text.contains("Copyright (c) 2013-present Cole Bemis"));
+    }
+
+    #[test]
+    fn the_literata_license_ships_whole_with_its_version() {
+        let literata = credits()
+            .into_iter()
+            .find(|c| c.id == "literata")
+            .expect("Literata is acknowledged");
+        assert_eq!(literata.name, "Literata typeface 3.103");
+        let text = paragraphs(literata.license).join("\n");
+        assert!(text.starts_with("Copyright 2017 The Literata Project Authors"), "{text}");
+        assert!(text.contains("SIL OPEN FONT LICENSE Version 1.1"));
     }
 
     #[test]

@@ -363,6 +363,7 @@ fn the_title_editor_is_as_tall_as_the_title_and_keeps_the_meta_line_clear(cx: &m
         );
     })
     .unwrap();
+}
 
 /// At 200% text in the smallest window, a long recording's `0:00 / 1:34:00` never runs under
 /// the transport buttons beside it.

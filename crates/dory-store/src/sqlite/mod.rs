@@ -39,6 +39,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("schema_v2.sql"),
     include_str!("schema_v3.sql"),
     include_str!("schema_v4.sql"),
+    include_str!("schema_v5.sql"),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -178,7 +179,7 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
 
 const JOB_COLUMNS: &str = "id, recording_id, goal, done, state, stage, blocker, error_class, \
                            error_message, priority, attempts, not_before, created_at, run_fast, \
-                           error_cause";
+                           error_cause, place";
 
 struct RawState {
     state: String,
@@ -200,6 +201,7 @@ struct RawJob {
     not_before: Option<i64>,
     created_at: i64,
     run_fast: bool,
+    place: i64,
 }
 
 fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
@@ -221,6 +223,7 @@ fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
         not_before: row.get(11)?,
         created_at: row.get(12)?,
         run_fast: row.get(13)?,
+        place: row.get(15)?,
     })
 }
 
@@ -269,6 +272,7 @@ fn decode_job(raw: RawJob) -> Result<Job, StoreError> {
             1 => Priority::Front,
             other => return Err(corrupt(format!("unknown priority {other}"))),
         },
+        place: raw.place,
         run_fast: raw.run_fast,
         attempts: u8::try_from(raw.attempts).map_err(|_| corrupt("job attempts out of range"))?,
         not_before: raw.not_before.map(Timestamp),
@@ -540,7 +544,7 @@ impl StoreRead for SqliteStore {
             let mut jobs = load_jobs_where(
                 conn,
                 "WHERE state = 'queued' AND (not_before IS NULL OR not_before <= ?1)
-                 ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1",
+                 ORDER BY priority DESC, place ASC, id ASC LIMIT 1",
                 [now.0],
             )?;
             Ok(jobs.pop())
@@ -927,8 +931,8 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                     tx.prepare_cached(
                         "INSERT INTO jobs (recording_id, goal, done, state, stage, blocker,
                                            error_class, error_message, priority, attempts,
-                                           not_before, created_at)
-                         VALUES (?1, ?2, '', ?3, NULL, NULL, NULL, NULL, ?4, 0, NULL, ?5)",
+                                           not_before, created_at, place)
+                         VALUES (?1, ?2, '', ?3, NULL, NULL, NULL, NULL, ?4, 0, NULL, ?5, ?5)",
                     )
                     .map_err(db)?
                     .execute(params![
@@ -1075,7 +1079,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             "UPDATE jobs SET goal = ?2, done = ?3, state = ?4, stage = ?5, blocker = ?6,
                              error_class = ?7, error_message = ?8, priority = ?9, attempts = ?10,
                              not_before = ?11, created_at = ?12, run_fast = ?13,
-                             error_cause = ?14
+                             error_cause = ?14, place = ?15
              WHERE id = ?1",
         )
         .map_err(db)?
@@ -1094,6 +1098,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             job.created_at.0,
             job.run_fast,
             columns.error_cause,
+            job.place,
         ])
         .map_err(db)?;
     if changed == 0 {

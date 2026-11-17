@@ -24,7 +24,8 @@ pub trait StoreRead: Send + Sync {
     fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError>;
     fn job(&self, id: JobId) -> Result<Option<Job>, StoreError>;
     fn jobs_for(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError>;
-    /// The next Queued job with `not_before <= now`: Front priority first, then oldest.
+    /// The next Queued job with `not_before <= now`: Front priority first, then lowest `place`
+    /// (the enqueue time until the user reorders), then lowest id.
     fn next_runnable_job(&self, now: Timestamp) -> Result<Option<Job>, StoreError>;
     /// The earliest `not_before` among Queued jobs still in the future, so the worker can sleep
     /// exactly that long.

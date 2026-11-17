@@ -392,21 +392,14 @@ pub(crate) fn unblock_all(db: &Db) {
 }
 
 /// What the queue popover lists: the running job, then the queued ones in the order the worker
-/// takes them (Front first, then oldest), then the blocked ones.
+/// takes them (Front first, then lowest place), then the blocked ones.
 pub(crate) fn queue_order(jobs: &mut [Job]) {
     let rank = |state: &JobState| match state {
         JobState::Running { .. } => 0,
         JobState::Queued => 1,
         _ => 2,
     };
-    jobs.sort_by_key(|j| {
-        (
-            rank(&j.state),
-            std::cmp::Reverse(j.priority),
-            j.created_at,
-            j.id,
-        )
-    });
+    jobs.sort_by_key(|j| (rank(&j.state), std::cmp::Reverse(j.priority), j.place, j.id));
 }
 
 /// Every job in a state `wanted` accepts. A list row shows only the newest job of a recording,
@@ -453,6 +446,18 @@ mod tests {
         queue_order(&mut jobs);
         let ids: Vec<u64> = jobs.iter().map(|j| j.id.0).collect();
         assert_eq!(ids, [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn the_queue_follows_the_place_the_user_chose_not_the_enqueue_time() {
+        let mut jobs = vec![
+            job(1, JobState::Queued, Priority::Normal, 10),
+            job(2, JobState::Queued, Priority::Normal, 20),
+        ];
+        jobs[0].place = 50;
+        jobs[1].place = 5;
+        queue_order(&mut jobs);
+        assert_eq!(jobs.iter().map(|j| j.id.0).collect::<Vec<_>>(), [2, 1]);
     }
 
     #[test]

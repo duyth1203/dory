@@ -53,7 +53,7 @@ fn every_contract_case_runs_on_sqlite_by_name() {
 }
 
 /// The schema version this build migrates to.
-const LATEST: u32 = 4;
+const LATEST: u32 = 5;
 
 #[test]
 fn state_survives_closing_and_reopening_the_database() {
@@ -221,4 +221,55 @@ fn a_version_1_database_migrates_to_checkpoints_and_keeps_its_rows() {
     drop(store);
     let reopened = SqliteStore::open(&path).unwrap();
     assert_eq!(reopened.checkpoints(&key).unwrap(), vec![checkpoint]);
+}
+
+#[test]
+fn a_version_4_database_gives_each_job_its_enqueue_time_as_its_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../src/sqlite/schema_v1.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../src/sqlite/schema_v2.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../src/sqlite/schema_v3.sql"))
+            .unwrap();
+        conn.execute_batch(include_str!("../src/sqlite/schema_v4.sql"))
+            .unwrap();
+        conn.execute_batch(
+            "PRAGMA user_version = 4;
+             INSERT INTO recordings (id, created_at, layout) VALUES ('a', 1, 'mic_system');
+             INSERT INTO recordings (id, created_at, layout) VALUES ('b', 1, 'mic_system');
+             INSERT INTO jobs (recording_id, goal, done, state, priority, attempts, created_at)
+                 VALUES ('a', 3, '', 'queued', 0, 0, 900);
+             INSERT INTO jobs (recording_id, goal, done, state, priority, attempts, created_at)
+                 VALUES ('b', 3, '', 'queued', 0, 0, 400);",
+        )
+        .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), LATEST);
+    for (id, created) in [("a", 900), ("b", 400)] {
+        let job = store.jobs_for(&rid(id)).unwrap().remove(0);
+        assert_eq!(
+            (job.place, job.created_at),
+            (created, Timestamp(created)),
+            "{id}"
+        );
+    }
+    let next = store.next_runnable_job(Timestamp(1_000)).unwrap().unwrap();
+    assert_eq!(next.recording, rid("b"), "the older job still runs first");
+    let index: String = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'jobs_runnable'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        index.contains("place"),
+        "the worker index follows place: {index}"
+    );
 }

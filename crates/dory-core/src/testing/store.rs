@@ -18,7 +18,8 @@
 //! - `recordings` lists newest first (ties broken by id). A text query matches, case-insensitively,
 //!   the title, the transcript text, or the summary. The row's job is the most recently enqueued
 //!   one.
-//! - `next_runnable_job` is Front first, then oldest `created_at` (ties by job id).
+//! - `next_runnable_job` is Front first, then lowest `place`, then lowest job id. A job's `place`
+//!   starts as its enqueue time and changes only through `JobEvent::Place`.
 //! - Checkpoints are read per run (recording, model, channel, language), earliest window first. A
 //!   second save of the same run and span replaces the first. Clearing drops every run of one
 //!   recording, and so does deleting the recording. Saving for a missing recording is `NotFound`.
@@ -274,7 +275,7 @@ impl StoreRead for MemStore {
             .jobs
             .values()
             .filter(|j| j.state == JobState::Queued && j.not_before.is_none_or(|t| t <= now))
-            .min_by_key(|j| (std::cmp::Reverse(j.priority), j.created_at, j.id))
+            .min_by_key(|j| (std::cmp::Reverse(j.priority), j.place, j.id))
             .cloned())
     }
 
@@ -372,8 +373,12 @@ mod contract {
         ),
         ("every_job_state_round_trips", job_states_round_trip),
         (
-            "next_runnable_is_front_first_then_oldest",
+            "next_runnable_is_front_first_then_lowest_place",
             runnable_ordering,
+        ),
+        (
+            "a_placed_job_is_picked_in_its_new_spot",
+            runnable_follows_place,
         ),
         ("not_before_defers_a_job_and_sets_the_wakeup", not_before),
         (
@@ -1318,6 +1323,82 @@ mod contract {
                 model.state
             );
         }
+    }
+
+    fn runnable_follows_place(store: &dyn Store) {
+        for id in ["a", "b", "c"] {
+            create(store, id, 1);
+        }
+        enqueue(store, "a", Goal::ALL, Priority::Normal, 10);
+        enqueue(store, "b", Goal::ALL, Priority::Normal, 20);
+        enqueue(store, "c", Goal::ALL, Priority::Normal, 30);
+        let jid = |id: &str| only_job(store, id).id;
+        let next = || {
+            store
+                .next_runnable_job(Timestamp(1_000))
+                .unwrap()
+                .map(|j| j.recording.to_string())
+        };
+        assert_eq!(
+            only_job(store, "b").place,
+            20,
+            "a job starts at its enqueue time"
+        );
+        assert_eq!(next().as_deref(), Some("a"));
+
+        event(store, jid("c"), JobEvent::Place { place: 5 }).unwrap();
+        assert_eq!(only_job(store, "c").place, 5, "the place is stored");
+        assert_eq!(next().as_deref(), Some("c"), "a lower place runs sooner");
+
+        event(store, jid("a"), JobEvent::Promote).unwrap();
+        assert_eq!(next().as_deref(), Some("a"), "Front still beats any place");
+
+        event(store, jid("a"), JobEvent::Place { place: 100 }).unwrap();
+        let a = only_job(store, "a");
+        assert_eq!(
+            (a.place, a.priority),
+            (100, Priority::Normal),
+            "placing a job resets its priority"
+        );
+        assert_eq!(next().as_deref(), Some("c"));
+        event(store, jid("c"), JobEvent::Cancelled).unwrap();
+        assert_eq!(next().as_deref(), Some("b"));
+        event(store, jid("c"), JobEvent::Retake).unwrap();
+        assert_eq!(
+            next().as_deref(),
+            Some("c"),
+            "a cancel and retake keep the place"
+        );
+
+        let batch: Vec<Change> = [("a", 1), ("b", 2), ("c", 3)]
+            .into_iter()
+            .map(|(id, place)| Change::Job {
+                job: jid(id),
+                event: JobEvent::Place { place },
+            })
+            .collect();
+        store.apply(batch).unwrap();
+        assert_eq!(
+            next().as_deref(),
+            Some("a"),
+            "a batch of places applies together"
+        );
+        let failing = vec![
+            Change::Job {
+                job: jid("b"),
+                event: JobEvent::Place { place: 0 },
+            },
+            Change::Job {
+                job: JobId(999),
+                event: JobEvent::Place { place: 0 },
+            },
+        ];
+        assert!(store.apply(failing).is_err());
+        assert_eq!(
+            only_job(store, "b").place,
+            2,
+            "a failed batch changes nothing"
+        );
     }
 
     fn runnable_ordering(store: &dyn Store) {

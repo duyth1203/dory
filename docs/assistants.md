@@ -83,6 +83,16 @@ A prompt contains only Dory's instruction and links to the meetings, never meeti
 
 Every tool only reads. Meeting text comes back inside a marked block that tells the assistant it is recorded speech to treat as data, never as instructions, because anyone in a meeting can say something that sounds like an instruction.
 
+## Let an assistant ask for changes
+
+An assistant can also ask to rename a meeting (`set_title`) or name a speaker (`rename_speaker`). It cannot start or stop a recording. Edits are off for every assistant until you turn them on.
+
+```bash
+dory-cli assistants edits "Claude Code" ask
+```
+
+Each request then shows an alert in Dory's window with the exact change, for example "Claude Code wants to rename a meeting. From: Two hour planning, To: Q3 planning". Don't Allow is the default button. Nothing changes unless you click Allow. If you don't answer within 90 seconds, or Dory's window is closed, or Dory isn't running, the assistant is told nothing changed. If the assistant read meeting text in the last five minutes, the alert says so, because meeting text can carry instructions from other people.
+
 ## Change, hide, and review
 
 - Change an assistant's level with `dory-cli assistants exposure "Claude Code" transcripts`. It applies on the assistant's next request.

@@ -1,11 +1,12 @@
-//! The MCP surface: five read-only tools, resources, and prompts over [`Assistant`]. This file maps types and decides
+//! The MCP surface over [`Assistant`]: five read-only tools, two tools that ask the user for a
+//! change, resources, and prompts. This file maps types and decides
 //! nothing; what an assistant may read is decided in `dory-core`.
 
 use std::sync::Arc;
 
 use dory_core::assistant::turns::TurnCursor;
 use dory_core::assistant::{Assistant, ItemScope, Search, SearchCursor};
-use dory_core::domain::{RecordingId, Refusal, Timestamp};
+use dory_core::domain::{RecordingId, Refusal, RemoteCommand, Timestamp};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CacheScope, CallToolResult, Implementation, ListResourceTemplatesResult, ListResourcesResult,
@@ -69,6 +70,33 @@ pub struct TranscriptArgs {
     /// Characters per page, 4000 to 40000. Defaults to 20000.
     #[serde(default)]
     pub max_chars: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TitleArgs {
+    /// The meeting's id, from search_recordings.
+    pub id: String,
+    /// The new title. Empty clears it, and Dory shows the date instead.
+    pub title: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RenameArgs {
+    /// The meeting's id, from search_recordings.
+    pub id: String,
+    /// The speaker's label exactly as get_transcript shows it, such as "Speaker 2".
+    pub speaker: String,
+    /// The transcript revision get_transcript returned with that label.
+    pub revision: u32,
+    /// The name to give them. Empty clears it.
+    pub name: String,
+}
+
+/// Asks clients to confirm with the user before every call, on top of Dory's own question.
+fn requires_user() -> rmcp::model::MetaObject {
+    let mut meta = rmcp::model::JsonObject::new();
+    meta.insert("anthropic/requiresUserInteraction".into(), true.into());
+    rmcp::model::MetaObject(meta)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -167,6 +195,25 @@ impl Server {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                 std::process::exit(0);
             });
+        }
+    }
+
+    /// Forwards a change to the app and waits, off the protocol thread, for the user's answer.
+    async fn change(&self, reported: Option<String>, command: RemoteCommand) -> CallToolResult {
+        let assistant = Arc::clone(&self.assistant);
+        let outcome = tokio::task::spawn_blocking(move || match assistant.as_ref() {
+            Ok(a) => a
+                .write(reported.as_deref(), command)
+                .map_err(|why| why.to_string()),
+            Err(why) => Err(why.clone()),
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("the request failed: {e}")));
+        match outcome {
+            Ok(()) => CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                "Done. The user allowed the change in Dory.",
+            )]),
+            Err(why) => out::unavailable(&why),
         }
     }
 
@@ -317,6 +364,42 @@ impl Server {
             |a| a.action_items(who.as_deref(), &scope),
             |found| out::action_items(found),
         ))
+    }
+
+    #[tool(
+        description = "Ask the user to rename a meeting. Dory shows them the exact change and nothing happens unless they allow it there.",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        meta = requires_user()
+    )]
+    async fn set_title(
+        &self,
+        Parameters(p): Parameters<TitleArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let command = RemoteCommand::SetTitle {
+            id: id(&p.id)?,
+            title: Some(p.title).filter(|t| !t.trim().is_empty()),
+        };
+        Ok(self.change(reported(&ctx), command).await)
+    }
+
+    #[tool(
+        description = "Ask the user to name a speaker in a meeting's transcript. Dory shows them the exact change and nothing happens unless they allow it there.",
+        annotations(read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false),
+        meta = requires_user()
+    )]
+    async fn rename_speaker(
+        &self,
+        Parameters(p): Parameters<RenameArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let command = RemoteCommand::RenameSpeaker {
+            id: id(&p.id)?,
+            speaker: p.speaker,
+            revision: dory_core::domain::Revision(p.revision),
+            name: Some(p.name).filter(|n| !n.trim().is_empty()),
+        };
+        Ok(self.change(reported(&ctx), command).await)
     }
 }
 

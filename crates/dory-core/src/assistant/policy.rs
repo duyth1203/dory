@@ -105,3 +105,118 @@ mod tests {
         }
     }
 }
+
+/// Whether this assistant may ask for changes at all. Each change still needs the user's yes.
+pub fn may_write(grant: &Grant) -> Result<(), Refusal> {
+    match grant.writes() {
+        Writes::Never => Err(Refusal::WritesOff),
+        Writes::Ask => Ok(()),
+    }
+}
+
+/// How recent a read of meeting text has to be to warn about it on the consent card.
+pub const TAINT_WINDOW_MS: i64 = 5 * 60 * 1000;
+
+/// Seconds since `label` last read meeting text, if that was within [`TAINT_WINDOW_MS`]. Meeting
+/// text can carry instructions from other people, so a change asked for right after reading it
+/// deserves a second look.
+pub fn taint(
+    entries: &[crate::domain::AuditEntry],
+    label: &str,
+    now: crate::domain::Timestamp,
+) -> Option<i64> {
+    use crate::domain::{Access, AuditOutcome};
+    entries
+        .iter()
+        .filter(|e| e.client.as_deref() == Some(label))
+        .filter(|e| matches!(e.outcome, AuditOutcome::Served { .. }))
+        .filter(|e| {
+            matches!(
+                e.access,
+                Access::Search { .. }
+                    | Access::Summary(_)
+                    | Access::Transcript { .. }
+                    | Access::ActionItems { .. }
+            )
+        })
+        .map(|e| now.0 - e.at.0)
+        .filter(|age| (0..TAINT_WINDOW_MS).contains(age))
+        .min()
+        .map(|ms| ms / 1000)
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use crate::domain::{
+        Access, Actor, AssistantClient, AuditEntry, AuditOutcome, RecordingId, Timestamp,
+    };
+
+    fn grant_with(writes: Writes) -> Grant {
+        grant(
+            true,
+            true,
+            Some(AssistantClient {
+                label: "Claude".into(),
+                exposure: Exposure::Titles,
+                writes,
+                added_at: Timestamp(0),
+            }),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn writes_need_ask() {
+        assert_eq!(
+            may_write(&grant_with(Writes::Never)),
+            Err(Refusal::WritesOff)
+        );
+        assert_eq!(may_write(&grant_with(Writes::Ask)), Ok(()));
+    }
+
+    #[test]
+    fn taint_is_a_recent_served_read_of_meeting_text_by_the_same_client() {
+        let id = RecordingId::parse("a").unwrap();
+        let entry = |at: i64, client: &str, access: Access, served: bool| AuditEntry {
+            at: Timestamp(at),
+            actor: Actor::Helper,
+            client: Some(client.into()),
+            reported_name: None,
+            access,
+            outcome: if served {
+                AuditOutcome::Served { items: 1 }
+            } else {
+                AuditOutcome::Refused(Refusal::NotFound)
+            },
+        };
+        let now = Timestamp(1_000_000);
+        let log = vec![
+            entry(
+                990_000,
+                "Claude",
+                Access::Transcript {
+                    id: id.clone(),
+                    turns: (0, 3),
+                },
+                true,
+            ),
+            entry(999_000, "Other", Access::Summary(id.clone()), true),
+            entry(999_500, "Claude", Access::Summary(id.clone()), false),
+            entry(999_800, "Claude", Access::Recording(id.clone()), true),
+        ];
+        assert_eq!(taint(&log, "Claude", now), Some(10));
+        assert_eq!(
+            taint(&log[1..], "Claude", now),
+            None,
+            "refused and metadata reads do not count"
+        );
+        let old = vec![entry(
+            1_000_000 - TAINT_WINDOW_MS,
+            "Claude",
+            Access::Summary(id),
+            true,
+        )];
+        assert_eq!(taint(&old, "Claude", now), None);
+    }
+}

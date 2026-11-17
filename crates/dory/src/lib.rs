@@ -17,6 +17,7 @@ mod platform;
 use std::path::Path;
 use std::sync::Arc;
 
+use dory_assistants::{ControlServer, SocketRemote};
 #[cfg(feature = "app")]
 use dory_core::app::{Options, Ports, ReadPorts};
 use dory_core::assistant::Assistant;
@@ -39,6 +40,7 @@ pub use config::{
     Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
     legacy_data_dir, machine_override,
 };
+pub use dory_assistants::ControlError;
 pub use dory_core::app::{Dory, LibraryReader};
 pub use dory_store::{ImportReport, Skipped};
 #[cfg(feature = "fake-engines")]
@@ -218,7 +220,42 @@ pub fn open_assistant(config: &Config, key: Option<ClientKey>) -> Result<Assista
         Actor::Helper,
         clock.now(),
     ));
-    Ok(Assistant::new(store, audit, clock, key))
+    Ok(Assistant::new(store, audit, clock, key)
+        .with_remote(Arc::new(SocketRemote::new(&config.data_dir))))
+}
+
+/// Serves assistants' change requests for as long as the returned value lives. Each request is
+/// checked and put to the user through `consent` before anything changes. Only the process that
+/// opened `dory` with [`open`] calls this.
+pub fn serve_assistants(
+    config: &Config,
+    dory: &dory_core::app::Dory,
+    consent: Arc<dyn dory_core::ports::Consent>,
+) -> Result<AssistantServer, ControlError> {
+    let clock = SystemClock::new();
+    let host = dory.assistant_host(
+        consent,
+        Arc::new(JsonlAudit::writer(
+            config.audit_dir(),
+            Actor::App,
+            clock.now(),
+        )),
+        audit_reader(config),
+    );
+    let server = ControlServer::serve(
+        &config.data_dir,
+        Arc::new(move |request| host.handle(&request)),
+    )?;
+    Ok(AssistantServer(server))
+}
+
+/// Keeps the control socket served; dropping it removes the socket.
+pub struct AssistantServer(ControlServer);
+
+impl AssistantServer {
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
 }
 
 /// A new key for an assistant, from the system's random source. Show it once and keep it nowhere:

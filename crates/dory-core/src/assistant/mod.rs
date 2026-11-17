@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::domain::{
     Access, Actor, AssistantQuery, AuditEntry, AuditOutcome, ChannelLayout, ClientKey, Exposure,
-    LangTag, LanguagePref, Ms, Recording, RecordingId, Refusal, Revision, Sections, SummaryFlag,
-    Timestamp, list_items, sections,
+    LangTag, LanguagePref, Ms, Recording, RecordingId, Refusal, RemoteCommand, RemoteOutcome,
+    RemoteRequest, Revision, Sections, SummaryFlag, Timestamp, list_items, sections,
 };
 use crate::models::ModelRef;
-use crate::ports::{AuditSink, Clock, StoreError, StoreRead};
+use crate::ports::{AuditSink, Clock, Remote, StoreError, StoreRead};
 use policy::Grant;
 use turns::{Turn, TurnCursor};
 
@@ -156,6 +156,7 @@ pub struct Assistant {
     clock: Arc<dyn Clock>,
     key: Option<ClientKey>,
     library_changed: AtomicBool,
+    remote: Option<Arc<dyn Remote>>,
 }
 
 fn library(e: StoreError) -> Refusal {
@@ -175,7 +176,51 @@ impl Assistant {
             clock,
             key,
             library_changed: AtomicBool::new(false),
+            remote: None,
         }
+    }
+
+    /// Carries change requests to the running app. Without one, every change is refused as if
+    /// Dory were not open.
+    pub fn with_remote(mut self, remote: Arc<dyn Remote>) -> Assistant {
+        self.remote = Some(remote);
+        self
+    }
+
+    /// Asks the app to make a change. The app decides and asks the user; this only forwards the
+    /// request and logs it.
+    pub fn write(&self, reported: Option<&str>, command: RemoteCommand) -> RemoteOutcome {
+        let client = self
+            .key
+            .as_ref()
+            .and_then(|key| self.store.assistant_client(key).ok().flatten())
+            .map(|c| c.label);
+        let entry = |outcome: &RemoteOutcome| AuditEntry {
+            at: self.clock.now(),
+            actor: Actor::Helper,
+            client: client.clone(),
+            reported_name: reported.map(str::to_owned),
+            access: Access::Write {
+                what: command.what().to_owned(),
+                id: Some(command.id().clone()),
+            },
+            outcome: match outcome {
+                Ok(()) => AuditOutcome::Served { items: 1 },
+                Err(why) => AuditOutcome::Refused(why.clone()),
+            },
+        };
+        let outcome = match &self.remote {
+            Some(remote) => remote.send(&RemoteRequest {
+                key: self.key.clone(),
+                reported_name: reported.map(str::to_owned),
+                command: command.clone(),
+            }),
+            None => Err(Refusal::AppNotRunning),
+        };
+        if let Err(e) = self.audit.append(&entry(&outcome)) {
+            eprintln!("assistant: could not log a change request: {e}");
+        }
+        outcome
     }
 
     /// True once a read found the library's schema changed under it, which happens when Dory was

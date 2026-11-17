@@ -181,7 +181,7 @@ fn both_protocol_eras_answer_the_same() {
 }
 
 #[test]
-fn the_tool_list_is_fixed_and_read_only() {
+fn the_tool_list_is_fixed_and_only_two_tools_change_anything() {
     let dir = tempfile::tempdir().unwrap();
     let key = seed(dir.path(), Exposure::Titles);
     let mut server = Server::start(dir.path(), Some(&key), false);
@@ -200,16 +200,45 @@ fn the_tool_list_is_fixed_and_read_only() {
             "get_summary",
             "get_transcript",
             "list_action_items",
-            "search_recordings"
+            "rename_speaker",
+            "search_recordings",
+            "set_title"
         ]
     );
     for tool in tools.as_array().unwrap() {
         let a = &tool["annotations"];
-        assert_eq!(a["readOnlyHint"], true, "{tool}");
+        let writes = matches!(tool["name"].as_str(), Some("set_title" | "rename_speaker"));
+        assert_eq!(a["readOnlyHint"], !writes, "{tool}");
         assert_eq!(a["destructiveHint"], false, "{tool}");
         assert_eq!(a["openWorldHint"], false, "{tool}");
+        assert_eq!(
+            tool["_meta"]["anthropic/requiresUserInteraction"].as_bool(),
+            writes.then_some(true),
+            "{tool}"
+        );
     }
     server.finish();
+}
+
+#[test]
+fn a_change_without_the_app_running_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Transcripts);
+    let mut server = Server::start(dir.path(), Some(&key), false);
+    let refused = server.tool("set_title", json!({"id": "weekly", "title": "New"}));
+    assert_eq!(refused["isError"], true);
+    assert!(
+        text_of(&refused).starts_with("Dory isn't open."),
+        "{refused}"
+    );
+    server.finish();
+    let title = dory::open_library(&dory::Config::new(dir.path()))
+        .unwrap()
+        .recording(&RecordingId::parse("weekly").unwrap())
+        .unwrap()
+        .unwrap()
+        .title;
+    assert_eq!(title.as_deref(), Some("Weekly sync"));
 }
 
 #[test]

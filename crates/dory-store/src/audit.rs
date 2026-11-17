@@ -236,6 +236,9 @@ fn encode(entry: &AuditEntry) -> Value {
                 Refusal::WritesOff => ("writes_off", None),
                 Refusal::StaleRevision => ("stale_revision", None),
                 Refusal::AppNotRunning => ("app_not_running", None),
+                Refusal::Declined => ("declined", None),
+                Refusal::Unanswered => ("unanswered", None),
+                Refusal::NoWindow => ("no_window", None),
                 Refusal::Library(_) => ("library", None),
             };
             json!({"kind": "refused", "why": kind, "need": need})
@@ -309,6 +312,9 @@ fn decode(v: &Value) -> Option<AuditEntry> {
             "writes_off" => Refusal::WritesOff,
             "stale_revision" => Refusal::StaleRevision,
             "app_not_running" => Refusal::AppNotRunning,
+            "declined" => Refusal::Declined,
+            "unanswered" => Refusal::Unanswered,
+            "no_window" => Refusal::NoWindow,
             "library" => Refusal::Library(String::new()),
             _ => return None,
         }),

@@ -177,6 +177,12 @@ pub enum Refusal {
     WritesOff,
     StaleRevision,
     AppNotRunning,
+    /// The user said no in Dory.
+    Declined,
+    /// Nobody answered in Dory before the request timed out.
+    Unanswered,
+    /// Dory's window is closed, so nobody saw the request.
+    NoWindow,
     Library(String),
 }
 
@@ -206,6 +212,13 @@ impl fmt::Display for Refusal {
             }
             Refusal::AppNotRunning => f.write_str(
                 "Dory isn't open. Open Dory to let the assistant make changes. Nothing was changed.",
+            ),
+            Refusal::Declined => f.write_str("The user declined this change in Dory. Nothing was changed."),
+            Refusal::Unanswered => f.write_str(
+                "Nobody answered in Dory, so nothing was changed. Ask the user to approve it in Dory, then try again.",
+            ),
+            Refusal::NoWindow => f.write_str(
+                "Dory's window is closed, so nobody saw the request. Ask the user to open Dory's window, then try again. Nothing was changed.",
             ),
             Refusal::Library(why) => write!(f, "Dory could not read its library: {why}"),
         }
@@ -374,4 +387,67 @@ mod audit_tests {
         assert!(!keep_audit_day(Timestamp(70 * day), now), "30 days ago");
         assert!(!keep_audit_day(Timestamp(69 * day), now));
     }
+}
+
+/// A change an assistant asks for. There is no variant that starts or stops a recording:
+/// recording other people is an act the user does with their own hand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteCommand {
+    SetTitle {
+        id: RecordingId,
+        /// `None` clears the title, so Dory shows the date.
+        title: Option<String>,
+    },
+    /// Names the speaker currently labelled `speaker` in the transcript at `revision`.
+    RenameSpeaker {
+        id: RecordingId,
+        speaker: String,
+        revision: super::Revision,
+        name: Option<String>,
+    },
+}
+
+impl RemoteCommand {
+    pub const MAX_TEXT_CHARS: usize = 200;
+
+    pub fn id(&self) -> &RecordingId {
+        match self {
+            RemoteCommand::SetTitle { id, .. } | RemoteCommand::RenameSpeaker { id, .. } => id,
+        }
+    }
+
+    /// What the change does, in a few words, for the audit log.
+    pub fn what(&self) -> &'static str {
+        match self {
+            RemoteCommand::SetTitle { .. } => "set the title",
+            RemoteCommand::RenameSpeaker { .. } => "rename a speaker",
+        }
+    }
+}
+
+/// A change request as it reaches the app: who asks, under which key, for what.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteRequest {
+    pub key: Option<ClientKey>,
+    pub reported_name: Option<String>,
+    pub command: RemoteCommand,
+}
+
+/// `Ok` once the change is applied.
+pub type RemoteOutcome = Result<(), Refusal>;
+
+/// What the user is asked in Dory, written by the core from the command itself, so the card
+/// shows what will happen rather than what the assistant says will happen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsentQuestion {
+    pub message: String,
+    pub detail: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConsentAnswer {
+    Allow,
+    Deny,
+    /// No window to ask in.
+    NoWindow,
 }

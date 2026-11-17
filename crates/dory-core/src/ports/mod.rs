@@ -10,6 +10,7 @@ mod llm;
 mod machine;
 mod playback;
 mod provider;
+mod remote;
 mod speech;
 mod store;
 mod takes;
@@ -27,6 +28,7 @@ pub use playback::{
     channel_gains, mix_down,
 };
 pub use provider::{ModelProvider, ProvisionSink};
+pub use remote::{Consent, Remote};
 pub use speech::{RawSegment, SegmentSink, TranscribeOutcome, TranscribeRequest, Transcriber};
 pub use store::{Change, Checkpoint, CheckpointKey, Store, StoreRead};
 pub use takes::LegacyFile;

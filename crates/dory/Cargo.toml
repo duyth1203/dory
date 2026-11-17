@@ -17,6 +17,7 @@ fake-engines = ["app", "dory-core/testing"]
 [dependencies]
 dory-core.workspace = true
 dory-store.workspace = true
+dory-assistants.workspace = true
 dory-engines = { workspace = true, optional = true }
 thiserror.workspace = true
 
@@ -31,8 +32,13 @@ required-features = ["app"]
 name = "assistants"
 required-features = ["app"]
 
+[[test]]
+name = "edits"
+required-features = ["app"]
+
 [dev-dependencies]
 tempfile.workspace = true
+crossbeam-channel.workspace = true
 
 [lints]
 workspace = true

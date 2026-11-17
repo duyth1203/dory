@@ -13,6 +13,7 @@
 //! [`LibraryReader`] is the read side alone: no actors, no recovery, and no writes, so it can run
 //! beside a process that is recording into the same data folder.
 
+mod assistant_host;
 mod assistants;
 mod events;
 mod models;
@@ -30,6 +31,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+pub use assistant_host::{
+    AssistantHost, CONSENT_WAIT, ChannelConsent, ConsentRequest, consent_channel,
+};
 pub use assistants::Assistants;
 pub use events::{Event, Subscription, change_events};
 pub use models::{AppKind, ModelRow};

@@ -1718,12 +1718,24 @@ dependencies = [
 name = "dory"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
+ "dory-assistants",
  "dory-core",
  "dory-engines",
  "dory-macos",
  "dory-store",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "dory-assistants"
+version = "0.1.0"
+dependencies = [
+ "dory-core",
+ "libc",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

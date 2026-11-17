@@ -220,8 +220,12 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
             ready(&view);
         }
         View::Queue => {
-            queue_popover::open(app, window, cx);
-            ready(&view);
+            // Deferred: a dialog needs the window's root view, which the caller is still building.
+            let app = app.clone();
+            window.defer(cx, move |window, cx| {
+                queue_popover::open(&app, window, cx);
+                ready(&view);
+            });
         }
         View::Settings {
             pane,

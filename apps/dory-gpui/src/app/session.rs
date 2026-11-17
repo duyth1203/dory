@@ -460,10 +460,16 @@ fn read_detail(
     };
     let transcript = library.transcript(id)?;
     let names = library.speaker_names(id)?;
+    let grouped = std::time::Instant::now();
     let turns = transcript
         .as_ref()
         .map(|t| turns(t, &names))
         .unwrap_or_default();
+    eprintln!(
+        "turns ms={:.3} turns={}",
+        grouped.elapsed().as_secs_f64() * 1000.0,
+        turns.len()
+    );
     let translation = match &transcript {
         Some(transcript) => library
             .translation(id)?

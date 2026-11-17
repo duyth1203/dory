@@ -249,7 +249,27 @@ fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
         .find(|w| !before.contains(w))
         .expect("the Settings window opened");
     settings_panes(views, window, "", cx);
-    // The meeting-languages popover, open over Transcription, then closed with Escape.
+    languages_open(views, window, "", cx);
+    // The shortest window Settings allows. `Window::resize` only moves the test window's bounds;
+    // the simulated resize also lays the view out at the new size.
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(
+            gpui_kit::px(settings_window::WIDTH),
+            gpui_kit::px(settings_window::MIN_HEIGHT),
+        ),
+    );
+    settings_panes(views, window, ", 560 tall", cx);
+    languages_open(views, window, ", 560 tall", cx);
+}
+
+/// The meeting-languages popover, open over Transcription, then closed with Escape.
+fn languages_open(
+    views: &mut Vec<View>,
+    window: AnyWindowHandle,
+    at: &str,
+    cx: &mut TestAppContext,
+) {
     click(window, &settings_window::Pane::Transcription.id(), cx);
     click(window, "add-language", cx);
     let popover = |cx: &mut TestAppContext| {
@@ -260,19 +280,14 @@ fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
         .unwrap()
     };
     until(cx, "the languages popover opens", popover);
-    views.push(frame("settings Transcription, languages open", window, cx));
+    views.push(frame(
+        format!("settings Transcription, languages open{at}"),
+        window,
+        cx,
+    ));
     cx.update_window(window, |_, window, cx| window.press("escape", cx))
         .unwrap();
     until(cx, "the languages popover closes", |cx| !popover(cx));
-    // The shortest window Settings allows.
-    cx.update_window(window, |_, window, _| {
-        window.resize(gpui_kit::size(
-            gpui_kit::px(settings_window::WIDTH),
-            gpui_kit::px(settings_window::MIN_HEIGHT),
-        ))
-    })
-    .unwrap();
-    settings_panes(views, window, ", 560 tall", cx);
 }
 
 /// About Dory with its Acknowledgements, over the theme the last window set up.

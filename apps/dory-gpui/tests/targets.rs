@@ -148,7 +148,8 @@ fn overlays_fit(scale: f32, cx: &mut TestAppContext) {
     for view in every_view(scale, cx) {
         for element in &view.elements {
             let name = id(element.path());
-            if !name.starts_with("about-panel-") || !element.visible() {
+            let popover = name.starts_with("about-panel-") || name == "meeting-languages-popover";
+            if !popover || !element.visible() {
                 continue;
             }
             overlays += 1;

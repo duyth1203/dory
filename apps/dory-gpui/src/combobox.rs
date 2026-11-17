@@ -34,6 +34,8 @@ pub const HINT: &str = "Return adds or removes · Esc closes · Delete removes t
 /// The list shows this many rows, then scrolls.
 pub const VISIBLE_ROWS: f32 = 8.;
 const ROW: f32 = 28.;
+/// The popover's clearance from the window's edges.
+const MARGIN: f32 = 8.;
 
 pub struct LanguageCombobox {
     models: Entity<Models>,
@@ -257,7 +259,14 @@ impl LanguageCombobox {
             .child(remove)
     }
 
-    fn popover(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    /// `room` is the window's height. The popover never grows past it: the list gives up rows
+    /// first, so the search field and the hint stay in view.
+    fn popover(
+        &mut self,
+        theme: &Theme,
+        room: Pixels,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
         let query = self.query(cx);
         let matches = languages::search(&query);
         let chosen: Vec<LangTag> = self
@@ -372,6 +381,7 @@ impl LanguageCombobox {
             }
         }))
         .w(self.width.get())
+        .max_h(room - px(2. * MARGIN))
         .p(px(6.))
         .flex()
         .flex_col()
@@ -404,7 +414,9 @@ impl LanguageCombobox {
         )
         .child(
             a11y::nested_scroll_tracked("language-options-scroll", &self.scroll, list)
-                .max_h(theme.text(ROW) * VISIBLE_ROWS),
+                .max_h(theme.text(ROW) * VISIBLE_ROWS)
+                .min_h_0()
+                .flex_shrink(1.),
         )
         .children(empty)
         .child(
@@ -416,7 +428,7 @@ impl LanguageCombobox {
         deferred(
             anchored()
                 .offset(gpui_kit::point(px(0.), px(6.)))
-                .snap_to_window_with_margin(px(8.))
+                .snap_to_window_with_margin(px(MARGIN))
                 .child(popover),
         )
         .with_priority(2)
@@ -531,7 +543,10 @@ impl Render for LanguageCombobox {
                 .absolute()
                 .size_full(),
             )
-            .children(self.open.then(|| self.popover(&theme, cx)));
+            .children(
+                self.open
+                    .then(|| self.popover(&theme, window.viewport_size().height, cx)),
+            );
         let status = self.said.clone().map(|said| {
             a11y::node("meeting-languages-status", Role::Status, said)
                 .absolute()

@@ -54,6 +54,16 @@ fn unavailable(reason: UnavailableReason) -> Availability {
 
 /// Gemma through a stopped Ollama, and a built-in model for English and German that is Ready.
 fn open(meeting: &[&str], cx: &mut TestAppContext) -> (Rig, AnyWindowHandle) {
+    open_reading(meeting, &["en", "de"], cx)
+}
+
+/// As `open`, with a built-in model that names `languages`, none when its languages were never
+/// read.
+fn open_reading(
+    meeting: &[&str],
+    languages: &[&str],
+    cx: &mut TestAppContext,
+) -> (Rig, AnyWindowHandle) {
     let store = sample_store();
     let mut settings: Settings = store.settings().unwrap();
     settings.meeting_languages = tags(meeting);
@@ -67,7 +77,7 @@ fn open(meeting: &[&str], cx: &mut TestAppContext) -> (Rig, AnyWindowHandle) {
     gemma.rank = 1;
     let mut system = llm_entry(SYSTEM);
     system.display_name = "Apple Intelligence".into();
-    system.caps.languages = LangSet::Only(tags(&["en", "de"]));
+    system.caps.languages = LangSet::Only(tags(languages));
     system.rank = -1;
     system.built_in = true;
     let model = Arc::new(FakeLanguageModel::new("summary"));
@@ -304,5 +314,40 @@ fn an_unsupported_language_is_named_over_the_ollama_flow(cx: &mut TestAppContext
     assert_eq!(
         note.as_deref(),
         Some("Apple Intelligence doesn't support Tagalog.")
+    );
+}
+
+#[gpui_kit::test]
+fn a_language_apple_lacks_beats_turning_it_on(cx: &mut TestAppContext) {
+    let (rig, main) = open(&["en", "tl"], cx);
+    rig.system(unavailable(UnavailableReason::TurnedOff {
+        detail: "Apple Intelligence is turned off".into(),
+        settings_url: SETTINGS_URL.into(),
+    }));
+    open_sheet(main, cx);
+    until(cx, "step 1", |cx| has(main, "set-up-get-ollama", cx));
+    assert!(
+        !has(main, "set-up-open-settings", cx),
+        "turning on Apple Intelligence would not summarize Tagalog"
+    );
+    let note = set_up_summaries::unsupported_note(system_offer(cx).as_ref());
+    assert_eq!(
+        note.as_deref(),
+        Some("Apple Intelligence doesn't support Tagalog.")
+    );
+}
+
+#[gpui_kit::test]
+fn apple_off_with_languages_unread_still_offers_turning_it_on(cx: &mut TestAppContext) {
+    let (rig, main) = open_reading(&["en"], &[], cx);
+    rig.system(unavailable(UnavailableReason::TurnedOff {
+        detail: "Apple Intelligence is turned off".into(),
+        settings_url: SETTINGS_URL.into(),
+    }));
+    open_sheet(main, cx);
+    until(cx, "Turn on", |cx| has(main, "set-up-open-settings", cx));
+    assert_eq!(
+        label(main, "set-up-system", cx).as_deref(),
+        Some("Step 1, Turn on Apple Intelligence")
     );
 }

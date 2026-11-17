@@ -106,6 +106,9 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
   - The VoiceOver sentence of a row adds where it matched after the usual one: "Title match", "In transcript, we agreed the roadmap slips to Q3", "In summary, ...", or "Speaker name, ...".
   - When results settle, Dory posts one announcement: "12 results", "1 result", "No results", or "Showing results for roadmap, 3 results". Typing that has not settled says nothing, and neither does clearing the field.
   - When nothing matches, the list says `No recordings match "<text>".` The clear button and Escape in the field empty it, bring the date groups back, and keep the selection.
+  - Opening a result jumps to its first match. A match in the transcript opens the Transcript tab, scrolls the first matching turn into view, and puts the keyboard cursor on it. With several words, that is the turn that holds all of them, the turn the row's snippet quotes. A match only in the summary opens the Summary tab, and a match only in the title opens the default tab. Every match in the title, the turns, and the summary is marked: in the title and the turns it is semibold on the `search_match` fill, as in the sidebar, and a marked turn says "Search match" to VoiceOver. The summary's text view paints a fill only, so a summary mark has no weight. A hit found only through a speaker's name has no match to show and opens as it does without a search.
+  - While a search has matches in the open recording, the tab row shows "2 of 9 matches" with **Previous** and **Next** buttons. **Edit > Find > Find Next** (Command-G) and **Find Previous** (Shift-Command-G) move through the matches in reading order, the title, then the turns, then the summary, and wrap at the ends. A match in the other tab switches the tab. When the match is in a turn, focus moves to the transcript, so Return plays from that turn's start. Both items are off when there is no match to step through.
+  - Each step posts one announcement, "Match 2 of 9, Sam, 12 minutes 30 seconds", "Match 4 of 9, in the summary", or "Match 1 of 9, in the title". Opening a result says nothing about matches. Typing a new search while a recording is open marks and jumps to the new first match. Clearing the search removes the marks and the counter and leaves the tab and the scroll position where they were.
 
 ## Platform conventions on macOS
 
@@ -125,6 +128,7 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
 | Play or pause playback | Space (when no text field has focus) |
 | Skip back or forward 5 seconds | Left Arrow, Right Arrow in the player |
 | Find | Command-F |
+| Find next or previous match | Command-G, Shift-Command-G |
 | Show Summary or Transcript | Command-1, Command-2 |
 | Copy summary | Command-Shift-C |
 | Export | Command-E |

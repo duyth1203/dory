@@ -66,4 +66,4 @@ Add a `Dialog::accessibility_label(label)` builder to the component `Dialog` tha
 
 ## Dory's workaround
 
-None in the dialog node itself. Each dialog's first child is a labelled group or list ("Processing Queue", "Set up summaries"), so VoiceOver reads a name one step in.
+Dory no longer opens Kit dialogs. Set Up Summaries opens on Dory's own host in `apps/dory-gpui/src/surface.rs`, built on GPUI Base's unstyled `Dialog`, which takes `accessibility_label`. The host names the dialog by its title, and `tests/a11y_tree.rs` now fails on any unnamed dialog. The Processing Queue is a window, not a dialog (`docs/design/floating-surfaces.md`, the operator's decisions). The Kit fix above is still worth filing for other Kit users.

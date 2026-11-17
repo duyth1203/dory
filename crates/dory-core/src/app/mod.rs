@@ -883,6 +883,32 @@ impl Pipeline<'_> {
         self.event(job, JobEvent::Promote)
     }
 
+    /// Moves a queued job to index `to` among the queued jobs, as [`Pipeline::queue`] lists them
+    /// (the running job is not counted, and `to` past the end means the last place). Every job
+    /// that changes place commits in one apply, so a reader never sees half a reorder. A job
+    /// that is not queued (running, blocked, finished, or unknown) is left alone and this
+    /// returns `Ok`, so a move that races the worker is not an error.
+    pub fn move_job(&self, job: JobId, to: usize) -> Result<(), DoryError> {
+        let queued: Vec<Job> = self
+            .queue()?
+            .into_iter()
+            .filter(|j| j.state == JobState::Queued)
+            .collect();
+        let changes: Vec<Change> = pipeline::placed(&queued, job, to)
+            .into_iter()
+            .map(|(job, place)| Change::Job {
+                job,
+                event: JobEvent::Place { place },
+            })
+            .collect();
+        if changes.is_empty() {
+            return Ok(());
+        }
+        self.dory.db.apply(changes)?;
+        self.dory.pipeline.nudge.wake();
+        Ok(())
+    }
+
     /// Use Fast This Time (UX-30): runs this one job fast from its next speech window, whatever
     /// the setting and the Mac's conditions, without changing the setting.
     pub fn run_fast(&self, job: JobId) -> Result<(), DoryError> {

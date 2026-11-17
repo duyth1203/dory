@@ -1912,3 +1912,181 @@ fn a_row_left_saying_webm_over_a_copied_take_is_corrected_on_the_next_run() {
     assert_eq!(dory.library().trash_originals().unwrap().count(), 0);
     assert_eq!(container_of(&dory, &id), TakeContainer::Flac);
 }
+
+const FAR_FUTURE: Timestamp = Timestamp(i64::MAX / 2);
+
+/// Three queued jobs, enqueued in the order `a`, `b`, `c`, that the worker leaves alone: each
+/// has started once and been put back with a retry far in the future.
+fn held_queue(rig: &Rig) -> (Dory, [JobId; 3]) {
+    let mut changes = Vec::new();
+    let ids = ["a", "b", "c"].map(|name| rig.seed(name));
+    for (n, id) in ids.iter().enumerate() {
+        changes.push(Change::JobEnqueued {
+            id: id.clone(),
+            goal: Goal::ALL,
+            priority: Priority::Normal,
+            at: Timestamp(10 + n as i64),
+        });
+    }
+    rig.store.apply(changes).unwrap();
+    let jobs = ids.map(|id| rig.store.jobs_for(&id).unwrap()[0].id);
+    let hold = jobs.iter().flat_map(|&job| {
+        [
+            Change::Job {
+                job,
+                event: JobEvent::Started {
+                    stage: Stage::Transcribe,
+                },
+            },
+            Change::Job {
+                job,
+                event: JobEvent::Retry {
+                    not_before: FAR_FUTURE,
+                },
+            },
+        ]
+    });
+    rig.store.apply(hold.collect()).unwrap();
+    (rig.open(), jobs)
+}
+
+fn queued_ids(dory: &Dory) -> Vec<u64> {
+    dory.pipeline()
+        .queue()
+        .unwrap()
+        .iter()
+        .map(|j| j.id.0)
+        .collect()
+}
+
+fn ids(order: &[JobId]) -> Vec<u64> {
+    order.iter().map(|j| j.0).collect()
+}
+
+#[test]
+fn a_queued_job_can_be_moved_to_any_place_and_to_the_top_twice_in_a_row() {
+    let rig = Rig::new();
+    let (dory, [a, b, c]) = held_queue(&rig);
+    assert_eq!(queued_ids(&dory), ids(&[a, b, c]));
+
+    dory.pipeline().move_job(c, 0).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[c, a, b]), "to the top");
+
+    dory.pipeline().move_job(a, 0).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[a, c, b]), "to the top again");
+
+    dory.pipeline().move_job(c, 2).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[a, b, c]), "down");
+
+    dory.pipeline().move_job(a, 1).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[b, a, c]), "to the middle");
+
+    dory.pipeline().move_job(b, 99).unwrap();
+    assert_eq!(
+        queued_ids(&dory),
+        ids(&[a, c, b]),
+        "past the end clamps to the last place"
+    );
+}
+
+#[test]
+fn the_worker_takes_the_jobs_in_the_order_the_user_set() {
+    let rig = Rig::new();
+    let (dory, [a, _b, c]) = held_queue(&rig);
+    dory.pipeline().move_job(c, 0).unwrap();
+    dory.pipeline().move_job(a, 1).unwrap();
+    let next = rig.store.next_runnable_job(FAR_FUTURE).unwrap().unwrap();
+    assert_eq!(next.id, c);
+    dory.pipeline().cancel(c).unwrap();
+    let next = rig.store.next_runnable_job(FAR_FUTURE).unwrap().unwrap();
+    assert_eq!(next.id, a);
+}
+
+#[test]
+fn a_move_is_one_commit_so_a_reader_never_sees_half_a_reorder() {
+    let rig = Rig::new();
+    let (dory, [_a, _b, c]) = held_queue(&rig);
+    let applies = Arc::new(Mutex::new(Vec::new()));
+    let seen = applies.clone();
+    rig.hooked_store
+        .after(move |changes| seen.lock().unwrap().push(changes.to_vec()));
+    dory.pipeline().move_job(c, 0).unwrap();
+    let applies = applies.lock().unwrap();
+    let places: Vec<_> = applies
+        .iter()
+        .filter(|changes| {
+            changes.iter().any(|c| {
+                matches!(
+                    c,
+                    Change::Job {
+                        event: JobEvent::Place { .. },
+                        ..
+                    }
+                )
+            })
+        })
+        .collect();
+    assert_eq!(places.len(), 1, "one apply carries every Place");
+    assert_eq!(places[0].len(), 3, "all three jobs changed place");
+}
+
+#[test]
+fn a_move_over_a_front_job_takes_its_place_and_the_front_job_follows() {
+    let rig = Rig::new();
+    let (dory, [a, b, c]) = held_queue(&rig);
+    dory.pipeline().promote(b).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[b, a, c]));
+    dory.pipeline().move_job(c, 0).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[c, b, a]));
+    assert_eq!(
+        dory.pipeline().job(b).unwrap().unwrap().priority,
+        Priority::Normal
+    );
+}
+
+#[test]
+fn cancelling_then_retrying_a_job_puts_it_back_where_it_was() {
+    let rig = Rig::new();
+    let (dory, [a, b, c]) = held_queue(&rig);
+    // A retried job is runnable at once. The worker stops before it commits any start, so the
+    // jobs stay queued while the test reads the order.
+    let gate = Gate::new();
+    let at_start = gate.clone();
+    rig.hooked_store.before(move |changes| {
+        if starts(changes) {
+            at_start.pass();
+        }
+        Ok(())
+    });
+
+    dory.pipeline().cancel(b).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[a, c]));
+    dory.pipeline().retry(b).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[a, b, c]), "undo of a cancel");
+
+    dory.pipeline().move_job(c, 0).unwrap();
+    dory.pipeline().cancel(c).unwrap();
+    dory.pipeline().retry(c).unwrap();
+    assert_eq!(
+        queued_ids(&dory),
+        ids(&[c, a, b]),
+        "an undo keeps a place the user chose"
+    );
+
+    rig.hooked_store.before(|_| Ok(()));
+    gate.open();
+}
+
+#[test]
+fn moving_a_job_that_is_not_queued_does_nothing() {
+    let rig = Rig::new();
+    let (dory, [a, b, c]) = held_queue(&rig);
+    dory.pipeline().cancel(a).unwrap();
+    dory.pipeline().move_job(a, 0).unwrap();
+    dory.pipeline().move_job(JobId(999), 0).unwrap();
+    assert_eq!(queued_ids(&dory), ids(&[b, c]));
+    assert_eq!(
+        dory.pipeline().job(a).unwrap().unwrap().state,
+        JobState::Cancelled
+    );
+}

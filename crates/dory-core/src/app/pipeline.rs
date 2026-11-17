@@ -15,7 +15,7 @@ use super::pace::{self, Budget, Pacer};
 use super::recorder::RecorderWatch;
 use super::stages::{self, StageCx, StageError};
 use crate::domain::{
-    FailureClass, Job, JobEvent, JobId, JobState, MAX_ATTEMPTS, Processing, RecordingId,
+    FailureClass, Job, JobEvent, JobId, JobState, MAX_ATTEMPTS, Priority, Processing, RecordingId,
     RecordingQuery, Stage, Timestamp,
 };
 use crate::ports::{CancelToken, Change, Clock, Machine, Store, StoreError, Takes};
@@ -402,6 +402,38 @@ pub(crate) fn queue_order(jobs: &mut [Job]) {
     jobs.sort_by_key(|j| (rank(&j.state), std::cmp::Reverse(j.priority), j.place, j.id));
 }
 
+/// The place each queued job takes so `job` ends at index `to` (clamped to the end) of the
+/// queue. `queued` is the Queued jobs in queue order. The existing places are handed out in
+/// ascending order down the new order, so the set of places stays the same and a job enqueued
+/// later (place = now) still lands at the back. Jobs whose place and priority already fit are
+/// left out. A Front job is always included, because the `Place` event is what demotes it and
+/// the new order must hold on `place` alone. Empty when `job` is not queued or is already there.
+pub(crate) fn placed(queued: &[Job], job: JobId, to: usize) -> Vec<(JobId, i64)> {
+    let Some(from) = queued.iter().position(|j| j.id == job) else {
+        return Vec::new();
+    };
+    let to = to.min(queued.len() - 1);
+    if from == to {
+        return Vec::new();
+    }
+    let mut order: Vec<&Job> = queued.iter().collect();
+    let moved = order.remove(from);
+    order.insert(to, moved);
+    let mut spots: Vec<i64> = queued.iter().map(|j| j.place).collect();
+    spots.sort_unstable();
+    let mut last: Option<i64> = None;
+    let mut out = Vec::new();
+    for (j, spot) in order.into_iter().zip(spots) {
+        // Equal places fall back to the job id, which could put the moved job back where it was.
+        let spot = last.map_or(spot, |last| spot.max(last.saturating_add(1)));
+        last = Some(spot);
+        if spot != j.place || j.priority == Priority::Front {
+            out.push((j.id, spot));
+        }
+    }
+    out
+}
+
 /// Every job in a state `wanted` accepts. A list row shows only the newest job of a recording,
 /// so this reads each recording's jobs.
 pub(crate) fn jobs_where(
@@ -448,16 +480,88 @@ mod tests {
         assert_eq!(ids, [4, 3, 2, 1]);
     }
 
+    fn queued(jobs: &[(u64, Priority, i64)]) -> Vec<Job> {
+        jobs.iter()
+            .map(|&(id, priority, place)| {
+                let mut j = job(id, JobState::Queued, priority, 0);
+                j.place = place;
+                j
+            })
+            .collect()
+    }
+
+    fn moves(queued: &[Job], id: u64, to: usize) -> Vec<(u64, i64)> {
+        placed(queued, JobId(id), to)
+            .into_iter()
+            .map(|(job, place)| (job.0, place))
+            .collect()
+    }
+
+    const N: Priority = Priority::Normal;
+    const F: Priority = Priority::Front;
+
     #[test]
     fn the_queue_follows_the_place_the_user_chose_not_the_enqueue_time() {
         let mut jobs = vec![
-            job(1, JobState::Queued, Priority::Normal, 10),
-            job(2, JobState::Queued, Priority::Normal, 20),
+            job(1, JobState::Queued, N, 10),
+            job(2, JobState::Queued, N, 20),
         ];
         jobs[0].place = 50;
         jobs[1].place = 5;
         queue_order(&mut jobs);
         assert_eq!(jobs.iter().map(|j| j.id.0).collect::<Vec<_>>(), [2, 1]);
+    }
+
+    #[test]
+    fn moving_to_the_top_hands_the_first_place_to_the_moved_job() {
+        let q = queued(&[(1, N, 10), (2, N, 20), (3, N, 30)]);
+        assert_eq!(moves(&q, 3, 0), [(3, 10), (1, 20), (2, 30)]);
+    }
+
+    #[test]
+    fn moving_up_or_down_one_swaps_only_the_two_neighbours() {
+        let q = queued(&[(1, N, 10), (2, N, 20), (3, N, 30)]);
+        assert_eq!(moves(&q, 3, 1), [(3, 20), (2, 30)], "up one");
+        assert_eq!(moves(&q, 1, 1), [(2, 10), (1, 20)], "down one");
+    }
+
+    #[test]
+    fn moving_past_the_end_clamps_to_the_last_spot() {
+        let q = queued(&[(1, N, 10), (2, N, 20), (3, N, 30)]);
+        let to_end = [(2, 10), (3, 20), (1, 30)];
+        assert_eq!(moves(&q, 1, 2), to_end);
+        assert_eq!(moves(&q, 1, 99), to_end);
+    }
+
+    #[test]
+    fn a_front_job_is_demoted_so_the_new_order_holds_on_place_alone() {
+        let q = queued(&[(1, F, 50), (2, N, 10), (3, N, 20)]);
+        assert_eq!(
+            moves(&q, 3, 0),
+            [(3, 10), (1, 20), (2, 50)],
+            "above the Front job"
+        );
+        let q = queued(&[(1, F, 10), (2, N, 20), (3, N, 30)]);
+        assert_eq!(
+            moves(&q, 3, 1),
+            [(1, 10), (3, 20), (2, 30)],
+            "the Front job keeps its place but is still sent, to reset its priority"
+        );
+    }
+
+    #[test]
+    fn equal_places_are_pulled_apart_so_the_id_tie_break_cannot_undo_the_move() {
+        let q = queued(&[(1, N, 10), (2, N, 10), (3, N, 10)]);
+        assert_eq!(moves(&q, 3, 0), [(1, 11), (2, 12)]);
+    }
+
+    #[test]
+    fn nothing_moves_for_a_job_that_is_not_queued_or_already_there() {
+        let q = queued(&[(1, N, 10), (2, N, 20), (3, N, 30)]);
+        assert_eq!(moves(&q, 9, 0), [], "not queued");
+        assert_eq!(moves(&q, 2, 1), [], "already at the index");
+        assert_eq!(moves(&q, 3, 99), [], "already last");
+        assert_eq!(moves(&[], 1, 0), [], "empty queue");
     }
 
     #[test]

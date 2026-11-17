@@ -28,8 +28,8 @@ use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
-    ScrollHandle, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
-    UnderlineStyle, Window, div, prelude::FluentBuilder as _, px, relative,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Window,
+    div, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
@@ -37,6 +37,7 @@ use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessi
 use crate::app::AppState;
 use crate::icons::Icon;
 use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
+use crate::marks::marked;
 use crate::menus;
 use crate::prefs;
 use crate::theme::Theme;
@@ -357,42 +358,6 @@ struct Block<'a> {
     label: String,
     section: Option<Section>,
     rows: Vec<&'a dory_core::domain::RecordingRow>,
-}
-
-/// `text` with each of `marks` (bytes of `text`) semibold in `weight` on the `search_match` fill.
-/// On the accent-filled row there is no fill to read against, so a mark is underlined.
-fn marked(
-    text: String,
-    marks: &[Range<usize>],
-    weight: FontWeight,
-    on_accent_fill: bool,
-    theme: &Theme,
-) -> AnyElement {
-    if marks.is_empty() {
-        return text.into_any_element();
-    }
-    let style = if on_accent_fill {
-        HighlightStyle {
-            color: Some(theme.on_accent),
-            font_weight: Some(weight),
-            underline: Some(UnderlineStyle {
-                thickness: px(1.),
-                color: Some(theme.on_accent),
-                wavy: false,
-            }),
-            ..HighlightStyle::default()
-        }
-    } else {
-        HighlightStyle {
-            color: Some(theme.text),
-            font_weight: Some(weight),
-            background_color: Some(theme.search_match),
-            ..HighlightStyle::default()
-        }
-    };
-    StyledText::new(text)
-        .with_highlights(marks.iter().map(|mark| (mark.clone(), style)))
-        .into_any_element()
 }
 
 /// "Showing results for roadmap", above the sections of a search that was corrected.

@@ -48,6 +48,7 @@ pub mod icons;
 pub mod in_progress;
 pub mod languages;
 pub mod library;
+pub mod marks;
 pub mod menus;
 pub mod models_view;
 pub mod motion;

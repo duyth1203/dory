@@ -354,14 +354,17 @@ final class RangeReader: @unchecked Sendable {
       try file.read(into: input, frameCount: count)
       guard input.frameLength > 0 else { return nil }
       remaining -= AVAudioFramePosition(input.frameLength)
-      return AnalyzerInput(buffer: try convert(input))
+      let last = remaining <= 0 || input.frameLength < count
+      return AnalyzerInput(buffer: try convert(input, last: last))
     } catch {
       failure = error
       return nil
     }
   }
 
-  private func convert(_ input: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+  /// On the `last` chunk the converter is told the stream ended, so it flushes the frames its
+  /// resampler still holds instead of dropping the window's tail.
+  private func convert(_ input: AVAudioPCMBuffer, last: Bool) throws -> AVAudioPCMBuffer {
     guard let converter else { return input }
     let ratio = format.sampleRate / input.format.sampleRate
     let capacity = AVAudioFrameCount(min((Double(input.frameLength) * ratio).rounded(.up), 1e8)) + 1024
@@ -372,7 +375,7 @@ final class RangeReader: @unchecked Sendable {
     var problem: NSError?
     let status = converter.convert(to: output, error: &problem) { _, inputStatus in
       if fed {
-        inputStatus.pointee = .noDataNow
+        inputStatus.pointee = last ? .endOfStream : .noDataNow
         return nil
       }
       fed = true

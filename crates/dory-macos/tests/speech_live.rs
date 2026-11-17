@@ -125,14 +125,18 @@ fn the_weekly_sync_transcribes() {
 
     let segments = &sink.segments;
     let sample = &segments[segments.len() / 2];
+    let tail = segments.last().expect("a segment");
     eprintln!(
         "rows={} load_ms={load_ms} availability_ms={availability_ms} open_ms={open_ms} \
-         transcribe_ms={transcribe_ms} segments={} sample=[{}..{}] {:?}",
+         transcribe_ms={transcribe_ms} segments={} sample=[{}..{}] {:?} last=[{}..{}] {:?}",
         catalog.len(),
         segments.len(),
         sample.range.start().0,
         sample.range.end().0,
-        sample.text
+        sample.text,
+        tail.range.start().0,
+        tail.range.end().0,
+        tail.text
     );
     assert!(
         (14..=18).contains(&segments.len()),

@@ -901,6 +901,20 @@ impl FakeTranscriber {
         self
     }
 
+    /// Labels each channel's segments so far with `languages` in turn, as a model that hears a
+    /// meeting switch languages would.
+    pub fn speaking(mut self, languages: &[LangTag]) -> Self {
+        if languages.is_empty() {
+            return self;
+        }
+        for segments in self.segments.values_mut() {
+            for (segment, language) in segments.iter_mut().zip(languages.iter().cycle()) {
+                segment.language = Some(language.clone());
+            }
+        }
+        self
+    }
+
     /// While held, `transcribe` waits until it is cancelled.
     pub fn hold(&self, hold: bool) {
         self.hold_from(if hold { 0 } else { usize::MAX });
@@ -981,6 +995,20 @@ impl Transcriber for FakeTranscriber {
 pub struct FakeLanguageModel {
     reply: String,
     prompts: Mutex<Vec<Completion>>,
+    /// The first this many calls fail this way.
+    refusal: Option<(Refusal, usize)>,
+}
+
+/// How a fake summary model turns a call away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// `UnsupportedLanguage` with this tag, after streaming the first word of its reply, the way
+    /// a model that gets partway into a meeting would.
+    Language(&'static str),
+    /// `InputRejected`, after streaming the first word of its reply.
+    Input,
+    /// `Busy`, at once.
+    Busy,
 }
 
 /// One completion asked for.
@@ -996,7 +1024,14 @@ impl FakeLanguageModel {
         Self {
             reply: reply.to_owned(),
             prompts: Mutex::new(Vec::new()),
+            refusal: None,
         }
+    }
+
+    /// Fails the first `calls` completions with `refusal`. Every call is kept in `prompts`.
+    pub fn refusing(mut self, refusal: Refusal, calls: usize) -> Self {
+        self.refusal = Some((refusal, calls));
+        self
     }
 
     pub fn prompts(&self) -> Vec<Completion> {
@@ -1018,11 +1053,31 @@ impl LanguageModel for FakeLanguageModel {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
-        lock(&self.prompts).push(Completion {
-            system: req.system.to_owned(),
-            user: req.user.to_owned(),
-            max_output_tokens: req.max_output_tokens,
-        });
+        let call = {
+            let mut prompts = lock(&self.prompts);
+            prompts.push(Completion {
+                system: req.system.to_owned(),
+                user: req.user.to_owned(),
+                max_output_tokens: req.max_output_tokens,
+            });
+            prompts.len()
+        };
+        if let Some((refusal, calls)) = self.refusal
+            && call <= calls
+        {
+            let first = self.reply.split_inclusive(' ').next().unwrap_or_default();
+            return Err(match refusal {
+                Refusal::Busy => EngineError::Busy("the fake model is busy".into()),
+                Refusal::Language(tag) => {
+                    sink.text(first);
+                    EngineError::UnsupportedLanguage(LangTag::parse(tag).expect("a valid tag"))
+                }
+                Refusal::Input => {
+                    sink.text(first);
+                    EngineError::InputRejected("the fake model refused".into())
+                }
+            });
+        }
         for piece in self.reply.split_inclusive(' ') {
             sink.text(piece);
         }

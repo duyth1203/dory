@@ -6,27 +6,107 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use dory_core::capture::FrameSink;
-use dory_core::domain::Channel;
-use dory_core::models::{DiarizationSupport, Llm, Stt};
+use dory_core::domain::{Channel, LangSet, LangTag};
+use dory_core::models::{DiarizationSupport, LangSupport, Llm, Stt};
 use dory_core::ports::ModelProvider;
 use dory_core::ports::capture::{
     Access, CaptureBackend, CaptureCaps, CaptureError, CaptureHandle, CaptureSpec, InputDevice,
     Source,
 };
 use dory_core::testing::{
-    FakeLanguageModel, FakeLlmProvider, FakeSttProvider, FakeTranscriber, llm_entry, stt_entry,
+    FakeLanguageModel, FakeLlmProvider, FakeSttProvider, FakeTranscriber, Refusal, llm_entry,
+    stt_entry,
 };
+use thiserror::Error;
 
-use crate::Providers;
+use crate::{DATA_DIR_VAR, Providers};
 
 pub const FAKE_STT: &str = "fake/stt";
 pub const FAKE_LLM: &str = "fake/llm";
+/// A summary model that reads only English, with a small window.
+pub const FAKE_EN_ONLY_LLM: &str = "fake/en-only-llm";
+/// A speech model that needs its one locale, English, chosen up front.
+pub const FAKE_EN_LOCALE_STT: &str = "fake/en-locale-stt";
+
+/// `reject-language` or `busy:<n>`: how `fake/en-only-llm` fails. Setting it also ranks that model
+/// first, so `Auto` tries it before `fake/llm`.
+pub const FAKE_LLM_VAR: &str = "DORY_FAKE_LLM";
+/// Comma-separated tags the fake transcriber labels its segments with in turn, such as `en,tl`.
+pub const FAKE_STT_LANGS_VAR: &str = "DORY_FAKE_STT_LANGS";
+/// `limited` keeps only the two limited rows in the fake catalogs.
+pub const FAKE_ROWS_VAR: &str = "DORY_FAKE_ROWS";
 
 const SUMMARY: &str = "## Fake summary\n- The fake engines wrote this.";
+const EN_ONLY_SUMMARY: &str = "## English-only summary\n- The English-only fake model wrote this.";
 const CHUNK: Duration = Duration::from_millis(100);
 const TONE_AMPLITUDE: f32 = 0.25;
 
-pub(crate) fn providers() -> Providers {
+/// What the `DORY_FAKE_*` variables ask of the fake engines. The default changes nothing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Knobs {
+    /// How `fake/en-only-llm` refuses, and for how many calls.
+    llm: Option<(Refusal, usize)>,
+    stt_languages: Vec<LangTag>,
+    limited: bool,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KnobError {
+    #[error("{0} changes the fake engines, so it needs {DATA_DIR_VAR} set to a throwaway folder")]
+    NeedsDataDir(&'static str),
+    #[error("{FAKE_LLM_VAR} takes reject-language or busy:<n>, not {0:?}")]
+    Llm(String),
+    #[error("{FAKE_STT_LANGS_VAR} takes comma-separated language tags, not {0:?}")]
+    Languages(String),
+    #[error("{FAKE_ROWS_VAR} takes limited, not {0:?}")]
+    Rows(String),
+}
+
+/// Reads the knobs from the environment. Like `DORY_MACHINE`, they never reach the default
+/// library.
+pub(crate) fn knobs_from_env() -> Result<Knobs, KnobError> {
+    let data_dir_set = std::env::var_os(DATA_DIR_VAR).is_some_and(|d| !d.is_empty());
+    knobs(|name| std::env::var(name).ok(), data_dir_set)
+}
+
+pub(crate) fn knobs(
+    var: impl Fn(&str) -> Option<String>,
+    data_dir_set: bool,
+) -> Result<Knobs, KnobError> {
+    let mut knobs = Knobs::default();
+    for name in [FAKE_LLM_VAR, FAKE_STT_LANGS_VAR, FAKE_ROWS_VAR] {
+        let Some(value) = var(name) else { continue };
+        if !data_dir_set {
+            return Err(KnobError::NeedsDataDir(name));
+        }
+        let value = value.trim();
+        match name {
+            FAKE_LLM_VAR => {
+                knobs.llm = Some(match value.split_once(':') {
+                    None if value == "reject-language" => (Refusal::Language("und"), usize::MAX),
+                    Some(("busy", n)) => (
+                        Refusal::Busy,
+                        n.parse().map_err(|_| KnobError::Llm(value.into()))?,
+                    ),
+                    _ => return Err(KnobError::Llm(value.into())),
+                });
+            }
+            FAKE_STT_LANGS_VAR => {
+                knobs.stt_languages = value
+                    .split(',')
+                    .map(|t| LangTag::parse(t.trim()))
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| KnobError::Languages(value.into()))?;
+            }
+            _ if value == "limited" => knobs.limited = true,
+            _ => return Err(KnobError::Rows(value.into())),
+        }
+    }
+    Ok(knobs)
+}
+
+pub(crate) fn providers(knobs: &Knobs) -> Providers {
     let mic = [
         (0, 900, 0, "Hello from the fake microphone."),
         (2_000, 2_800, 0, "Wrapping up."),
@@ -41,21 +121,44 @@ pub(crate) fn providers() -> Providers {
             .with_segments(Channel::Mic, &mic)
             .with_segments(Channel::System, &system)
             .with_segments(Channel::Mixed, &mixed)
-            .detecting("en"),
+            .detecting("en")
+            .speaking(&knobs.stt_languages),
     );
-    let stt: Arc<dyn ModelProvider<Stt>> = Arc::new(FakeSttProvider::new(
-        "fake",
-        vec![stt_entry(FAKE_STT, DiarizationSupport::Native)],
-        transcriber,
-    ));
+    let english = || LangSet::Only(vec![LangTag::parse("en").expect("a valid tag")]);
+    let mut en_locale = stt_entry(FAKE_EN_LOCALE_STT, DiarizationSupport::None);
+    en_locale.caps.languages = LangSupport::FixedLocale { tags: english() };
+    en_locale.rank = -1;
+    let mut en_only = llm_entry(FAKE_EN_ONLY_LLM);
+    en_only.caps.context_tokens = 4096;
+    en_only.caps.languages = english();
+    // The limited rows rank below the full ones, and `fake/en-only-llm` rises only when a knob asks,
+    // so `Auto` picks what it picked before.
+    en_only.rank = if knobs.llm.is_some() { 1 } else { -1 };
+    let mut stt_entries = vec![stt_entry(FAKE_STT, DiarizationSupport::Native), en_locale];
+    let mut llm_entries = vec![llm_entry(FAKE_LLM)];
+    if knobs.limited {
+        stt_entries.remove(0);
+        llm_entries.clear();
+    }
+    let stt: Arc<dyn ModelProvider<Stt>> =
+        Arc::new(FakeSttProvider::new("fake", stt_entries, transcriber));
     let llm: Arc<dyn ModelProvider<Llm>> = Arc::new(FakeLlmProvider::new(
         "fake",
-        vec![llm_entry(FAKE_LLM)],
+        llm_entries,
         Arc::new(FakeLanguageModel::new(SUMMARY)),
+    ));
+    let en_only_model = match knobs.llm {
+        Some((refusal, calls)) => FakeLanguageModel::new(EN_ONLY_SUMMARY).refusing(refusal, calls),
+        None => FakeLanguageModel::new(EN_ONLY_SUMMARY),
+    };
+    let en_only: Arc<dyn ModelProvider<Llm>> = Arc::new(FakeLlmProvider::new(
+        "fake",
+        vec![en_only],
+        Arc::new(en_only_model),
     ));
     Providers {
         stt: vec![stt],
-        llm: vec![llm],
+        llm: vec![llm, en_only],
     }
 }
 
@@ -136,5 +239,126 @@ impl CaptureHandle for ToneHandle {
     fn stop(self: Box<Self>) {
         let _ = self.stop.send(());
         let _ = self.thread.join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use dory_core::domain::LanguagePref;
+    use dory_core::models::{
+        Availability, Choice, DiarizationNeed, LlmNeeds, ModelKind, ModelStatus, Resolution,
+        SttNeeds, resolve,
+    };
+
+    use super::*;
+
+    fn vars(pairs: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs = pairs.to_vec();
+        move |name| {
+            pairs
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    fn tag(s: &str) -> LangTag {
+        LangTag::parse(s).unwrap()
+    }
+
+    #[test]
+    fn fake_knobs_need_a_data_folder_and_name_their_values() {
+        assert_eq!(knobs(vars(&[]), false), Ok(Knobs::default()));
+        assert_eq!(
+            knobs(
+                vars(&[
+                    (FAKE_LLM_VAR, "busy:2"),
+                    (FAKE_STT_LANGS_VAR, "en, tl"),
+                    (FAKE_ROWS_VAR, "limited"),
+                ]),
+                true
+            ),
+            Ok(Knobs {
+                llm: Some((Refusal::Busy, 2)),
+                stt_languages: vec![tag("en"), tag("tl")],
+                limited: true,
+            })
+        );
+        assert_eq!(
+            knobs(vars(&[(FAKE_LLM_VAR, "reject-language")]), true)
+                .unwrap()
+                .llm,
+            Some((Refusal::Language("und"), usize::MAX))
+        );
+        assert_eq!(
+            knobs(vars(&[(FAKE_ROWS_VAR, "limited")]), false),
+            Err(KnobError::NeedsDataDir(FAKE_ROWS_VAR))
+        );
+        for (name, value) in [
+            (FAKE_LLM_VAR, "busy:many"),
+            (FAKE_LLM_VAR, "slow"),
+            (FAKE_STT_LANGS_VAR, "en,!"),
+            (FAKE_ROWS_VAR, "all"),
+        ] {
+            assert!(
+                knobs(vars(&[(name, value)]), true).is_err(),
+                "{name}={value}"
+            );
+        }
+    }
+
+    fn statuses<K: ModelKind>(providers: &[Arc<dyn ModelProvider<K>>]) -> Vec<ModelStatus<K>> {
+        providers
+            .iter()
+            .flat_map(|p| p.catalog())
+            .map(|entry| ModelStatus {
+                entry,
+                availability: Availability::Ready,
+            })
+            .collect()
+    }
+
+    fn auto_picks(knobs: &Knobs, meeting: &[&str]) -> (String, String) {
+        let providers = providers(knobs);
+        let meeting: Vec<LangTag> = meeting.iter().map(|t| tag(t)).collect();
+        let stt_needs = SttNeeds {
+            language: LanguagePref::Auto,
+            expected: meeting.clone(),
+            diarization: DiarizationNeed::Required,
+            input: dory_core::domain::Ms(1_000),
+        };
+        let llm_needs = LlmNeeds::new(None, &LanguagePref::Auto, &meeting, &[]);
+        let stt = match resolve(&Choice::Auto, &statuses(&providers.stt), &stt_needs) {
+            Resolution::Use(id) => id.to_string(),
+            other => format!("{other:?}"),
+        };
+        let llm = match resolve(&Choice::Auto, &statuses(&providers.llm), &llm_needs) {
+            Resolution::Use(id) => id.to_string(),
+            other => format!("{other:?}"),
+        };
+        (stt, llm)
+    }
+
+    #[test]
+    fn the_limited_rows_change_auto_only_when_a_knob_asks() {
+        let pick = |stt: &str, llm: &str| (stt.to_owned(), llm.to_owned());
+        assert_eq!(
+            auto_picks(&Knobs::default(), &["en"]),
+            pick(FAKE_STT, FAKE_LLM)
+        );
+        assert_eq!(auto_picks(&Knobs::default(), &[]), pick(FAKE_STT, FAKE_LLM));
+        let ranked = Knobs {
+            llm: Some((Refusal::Language("und"), usize::MAX)),
+            ..Knobs::default()
+        };
+        assert_eq!(auto_picks(&ranked, &["en"]).1, FAKE_EN_ONLY_LLM);
+        let limited = Knobs {
+            limited: true,
+            ..Knobs::default()
+        };
+        assert_eq!(
+            auto_picks(&limited, &["en"]),
+            pick(FAKE_EN_LOCALE_STT, FAKE_EN_ONLY_LLM)
+        );
     }
 }

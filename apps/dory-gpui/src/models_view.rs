@@ -78,10 +78,7 @@ impl ListKind for Llm {
     }
 
     fn wanted(settings: &Settings) -> Vec<LangTag> {
-        match &settings.language {
-            LanguagePref::Pinned(tag) => vec![tag.clone()],
-            LanguagePref::Auto => Vec::new(),
-        }
+        Llm::listing_needs(settings).all
     }
 
     fn rows(models: &Models) -> Option<&[ModelRow<Self>]> {
@@ -152,7 +149,9 @@ pub fn unavailable_text(why: &Unavailable) -> String {
     match &why.reason {
         UnavailableReason::UnsupportedPlatform => "Not supported on this Mac".into(),
         UnavailableReason::OsTooOld { required } => format!("Needs {required}"),
-        UnavailableReason::NotEligible { detail } => detail.clone(),
+        UnavailableReason::NotEligible { detail } | UnavailableReason::Preparing { detail } => {
+            detail.clone()
+        }
         UnavailableReason::ServerUnreachable { endpoint } => format!("Can't reach {endpoint}"),
     }
 }

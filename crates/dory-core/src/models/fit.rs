@@ -133,9 +133,10 @@ impl ModelKind for Stt {
     type Needs = SttNeeds;
 
     fn fit(caps: &SttCaps, needs: &SttNeeds) -> Fit {
+        // A fixed-locale model runs on `Auto` only in a meeting of one language, pinned for it.
         let (can_auto, tags) = match &caps.languages {
             LangSupport::Multilingual { auto_detect, tags } => (*auto_detect, tags),
-            LangSupport::FixedLocale { tags } => (false, tags),
+            LangSupport::FixedLocale { tags } => (one_language(&needs.expected).is_some(), tags),
         };
         match &needs.language {
             LanguagePref::Auto if !can_auto => return Fit::No(Mismatch::AutoLanguageUnsupported),
@@ -159,6 +160,30 @@ impl ModelKind for Stt {
     }
 }
 
+/// The language a speech model runs in. A fixed-locale model on `Auto` runs in the meeting's one
+/// language, which is how it fits `Auto` at all. Every other model runs in `needs.language`.
+pub fn run_language(caps: &SttCaps, needs: &SttNeeds) -> LanguagePref {
+    match (&caps.languages, &needs.language) {
+        (LangSupport::FixedLocale { .. }, LanguagePref::Auto) => {
+            one_language(&needs.expected).map_or(LanguagePref::Auto, LanguagePref::Pinned)
+        }
+        _ => needs.language.clone(),
+    }
+}
+
+/// The one language every expected tag shares: the tag itself when they are all the same, else
+/// the bare primary language. `None` when the list is empty or names two languages.
+fn one_language(expected: &[LangTag]) -> Option<LangTag> {
+    let first = expected.first()?;
+    if expected.iter().all(|tag| tag == first) {
+        return Some(first.clone());
+    }
+    if expected.iter().all(|tag| tag.primary() == first.primary()) {
+        return LangTag::parse(first.primary()).ok();
+    }
+    None
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlmCaps {
     /// Token window. Summarization sizes its chunks from this.
@@ -168,8 +193,34 @@ pub struct LlmCaps {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlmNeeds {
-    /// The meeting's main language, when known.
-    pub language: Option<LangTag>,
+    /// The meeting's main language, when known. The prompt asks for the summary in it.
+    pub main: Option<LangTag>,
+    /// Every language the meeting may use, each once. A model must read all of them. Empty means
+    /// nothing is known, and every model fits.
+    pub all: Vec<LangTag>,
+}
+
+impl LlmNeeds {
+    /// `all` is `main`, the recording's pinned language, the meeting languages from Settings, and
+    /// the languages the transcript detected, in that order, each once.
+    pub fn new(
+        main: Option<LangTag>,
+        pinned: &LanguagePref,
+        meeting: &[LangTag],
+        detected: &[LangTag],
+    ) -> Self {
+        let pinned = match pinned {
+            LanguagePref::Pinned(tag) => Some(tag),
+            LanguagePref::Auto => None,
+        };
+        let mut all: Vec<LangTag> = Vec::new();
+        for tag in main.iter().chain(pinned).chain(meeting).chain(detected) {
+            if !all.contains(tag) {
+                all.push(tag.clone());
+            }
+        }
+        Self { main, all }
+    }
 }
 
 impl ModelKind for Llm {
@@ -179,10 +230,14 @@ impl ModelKind for Llm {
     type Caps = LlmCaps;
     type Needs = LlmNeeds;
 
+    /// Unknown languages fit on purpose: with no meeting languages set and nothing detected,
+    /// every model may try, and a model that refuses the meeting at run time is fallen back from
+    /// on `Auto`.
     fn fit(caps: &LlmCaps, needs: &LlmNeeds) -> Fit {
-        match &needs.language {
-            Some(lang) if !caps.languages.supports(lang) => Fit::No(Mismatch::LanguageUnsupported),
-            _ => Fit::Yes,
+        if needs.all.iter().all(|lang| caps.languages.supports(lang)) {
+            Fit::Yes
+        } else {
+            Fit::No(Mismatch::LanguageUnsupported)
         }
     }
 }
@@ -394,34 +449,137 @@ mod tests {
         }
     }
 
-    #[test]
-    fn llm_fit_table() {
-        let caps = |languages| LlmCaps {
+    fn llm_caps(languages: LangSet) -> LlmCaps {
+        LlmCaps {
             context_tokens: 4096,
             languages,
-        };
-        let cases = [
-            (caps(LangSet::Any), Some(tag("vi")), Fit::Yes),
-            (caps(only(&["en"])), Some(tag("en")), Fit::Yes),
-            (
-                caps(only(&["en"])),
-                Some(tag("vi")),
-                Fit::No(Mismatch::LanguageUnsupported),
-            ),
-            (caps(only(&["en"])), None, Fit::Yes),
-        ];
-        for (caps, language, want) in cases {
+        }
+    }
+
+    fn llm_needs(all: &[&str]) -> LlmNeeds {
+        LlmNeeds {
+            main: all.first().map(|t| tag(t)),
+            all: all.iter().map(|t| tag(t)).collect(),
+        }
+    }
+
+    #[test]
+    fn an_llm_must_read_every_known_language() {
+        let english = llm_caps(only(&["en"]));
+        assert_eq!(Llm::fit(&english, &llm_needs(&["en"])), Fit::Yes);
+        assert_eq!(Llm::fit(&english, &llm_needs(&["en-US"])), Fit::Yes);
+        assert_eq!(
+            Llm::fit(&english, &llm_needs(&["en", "tl"])),
+            Fit::No(Mismatch::LanguageUnsupported),
+            "a Taglish meeting rules out an English-only model even when English comes first"
+        );
+        assert_eq!(
+            Llm::fit(&english, &llm_needs(&["vi"])),
+            Fit::No(Mismatch::LanguageUnsupported)
+        );
+        assert_eq!(
+            Llm::fit(&llm_caps(LangSet::Any), &llm_needs(&["en", "tl", "vi"])),
+            Fit::Yes,
+            "a model for any language fits every meeting"
+        );
+    }
+
+    #[test]
+    fn unknown_languages_fit() {
+        assert_eq!(
+            Llm::fit(&llm_caps(only(&["en"])), &llm_needs(&[])),
+            Fit::Yes
+        );
+    }
+
+    #[test]
+    fn llm_needs_gather_every_language_once() {
+        let needs = LlmNeeds::new(
+            Some(tag("en")),
+            &pinned("fr"),
+            &[tag("en"), tag("tl")],
+            &[tag("en"), tag("vi")],
+        );
+        assert_eq!(needs.main, Some(tag("en")));
+        assert_eq!(needs.all, vec![tag("en"), tag("fr"), tag("tl"), tag("vi")]);
+        assert_eq!(
+            LlmNeeds::new(None, &LanguagePref::Auto, &[], &[]).all,
+            Vec::<LangTag>::new()
+        );
+    }
+
+    fn fixed_english() -> SttCaps {
+        caps(
+            LangSupport::FixedLocale {
+                tags: only(&["en-US", "en-GB"]),
+            },
+            DiarizationSupport::None,
+            None,
+        )
+    }
+
+    fn expecting(expected: &[&str]) -> SttNeeds {
+        SttNeeds {
+            expected: expected.iter().map(|t| tag(t)).collect(),
+            ..needs(LanguagePref::Auto, DiarizationNeed::NotNeeded, 1)
+        }
+    }
+
+    #[test]
+    fn a_fixed_locale_row_fits_auto_for_one_language() {
+        let fit = |expected: &[&str]| Stt::fit(&fixed_english(), &expecting(expected));
+        assert_eq!(fit(&["en"]), Fit::Yes);
+        assert_eq!(fit(&["en-GB"]), Fit::Yes);
+        assert_eq!(
+            fit(&["en-US", "en-GB"]),
+            Fit::Yes,
+            "two regions of one language"
+        );
+        assert_eq!(
+            fit(&["fr"]),
+            Fit::No(Mismatch::LanguageUnsupported),
+            "one language the row does not cover"
+        );
+        assert_eq!(
+            fit(&[]),
+            Fit::No(Mismatch::AutoLanguageUnsupported),
+            "no meeting languages set"
+        );
+    }
+
+    #[test]
+    fn a_fixed_locale_row_never_fits_two_languages() {
+        let any_locale = caps(
+            LangSupport::FixedLocale { tags: LangSet::Any },
+            DiarizationSupport::None,
+            None,
+        );
+        for caps in [fixed_english(), any_locale] {
             assert_eq!(
-                Llm::fit(
-                    &caps,
-                    &LlmNeeds {
-                        language: language.clone()
-                    }
-                ),
-                want,
-                "{caps:?} {language:?}"
+                Stt::fit(&caps, &expecting(&["en", "tl"])),
+                Fit::No(Mismatch::AutoLanguageUnsupported),
+                "{caps:?}"
             );
         }
+    }
+
+    #[test]
+    fn run_language_pins_the_one_language() {
+        let run = |expected: &[&str]| run_language(&fixed_english(), &expecting(expected));
+        assert_eq!(run(&["en"]), pinned("en"));
+        assert_eq!(run(&["en-GB"]), pinned("en-GB"));
+        assert_eq!(run(&["en-US", "en-GB"]), pinned("en"));
+        let detecting = caps(whisper(), DiarizationSupport::None, None);
+        assert_eq!(
+            run_language(&detecting, &expecting(&["en"])),
+            LanguagePref::Auto,
+            "a model that detects the language runs on Auto"
+        );
+        let pinned_french = SttNeeds {
+            expected: vec![tag("en")],
+            ..needs(pinned("fr"), DiarizationNeed::NotNeeded, 1)
+        };
+        assert_eq!(run_language(&fixed_english(), &pinned_french), pinned("fr"));
     }
 
     #[test]

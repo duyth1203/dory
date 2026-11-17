@@ -173,14 +173,19 @@ mod fakes {
     fn fake_engines_are_registered_in_both_catalogs() {
         let dir = tempfile::tempdir().unwrap();
         let dory = dory::open_with_fake_engines(&Config::new(dir.path())).unwrap();
-        let rows = block_on(dory.models().list::<Stt>()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status.entry.id.to_string(), dory::FAKE_STT);
-        assert!(
-            block_on(dory.models().list::<dory_core::models::Llm>())
-                .unwrap()
-                .len()
-                == 1
+        let stt = block_on(dory.models().list::<Stt>()).unwrap();
+        let llm = block_on(dory.models().list::<dory_core::models::Llm>()).unwrap();
+        assert_eq!(
+            stt.iter()
+                .map(|r| r.status.entry.id.to_string())
+                .collect::<Vec<_>>(),
+            [dory::FAKE_STT, "fake/en-locale-stt"]
+        );
+        assert_eq!(
+            llm.iter()
+                .map(|r| r.status.entry.id.to_string())
+                .collect::<Vec<_>>(),
+            [dory::FAKE_LLM, "fake/en-only-llm"]
         );
     }
 

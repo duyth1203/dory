@@ -7,17 +7,19 @@ use std::time::Duration;
 
 use dory_core::app::{Dory, Event, Options, Ports};
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, FailureCause, Goal, JobEvent, JobState, LanguagePref, Ms,
-    Recording, RecordingId, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
+    Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobEvent, JobState, LangSet,
+    LangTag, LanguagePref, Ms, Recording, RecordingId, Segment, Settings, SpeakerId, Stage,
+    TimeRange, Timestamp,
 };
 use dory_core::models::{
-    Availability, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId, Stt,
+    Availability, Choice, DiarizationSupport, KindTag, LangSupport, Llm, Mismatch, ModelEntry,
+    ModelId, Stt, Unavailable, UnavailableReason,
 };
 use dory_core::ports::{Change, CheckpointKey, Store, StoreRead, Takes};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
     FakeCapture, FakeDiarProvider, FakeDiarizer, FakeLanguageModel, FakeLlmProvider,
-    FakeSttProvider, FakeTranscriber, ManualClock, MemTakes, TranscribeCall, diar_entry,
+    FakeSttProvider, FakeTranscriber, ManualClock, MemTakes, Refusal, TranscribeCall, diar_entry,
     eventually, llm_entry, stt_entry,
 };
 
@@ -47,6 +49,8 @@ struct Rig {
     llm: Arc<FakeLanguageModel>,
     stt: Arc<FakeSttProvider>,
     llm_provider: Arc<FakeLlmProvider>,
+    /// Summary providers after the first, each with its own engine.
+    more_llm: Vec<Arc<FakeLlmProvider>>,
     diarizer: Option<(Arc<FakeDiarizer>, Arc<FakeDiarProvider>)>,
 }
 
@@ -71,8 +75,16 @@ impl Rig {
             llm_provider: Arc::new(FakeLlmProvider::new("fake", vec![llm], model.clone())),
             transcriber,
             llm: model,
+            more_llm: Vec::new(),
             diarizer: None,
         }
+    }
+
+    /// Registers another summary model with its own engine.
+    fn with_summary_model(mut self, entry: ModelEntry<Llm>, model: Arc<FakeLanguageModel>) -> Rig {
+        self.more_llm
+            .push(Arc::new(FakeLlmProvider::new("fake", vec![entry], model)));
+        self
     }
 
     fn with_diarizer(mut self, diarizer: FakeDiarizer) -> Rig {
@@ -94,7 +106,10 @@ impl Rig {
             capture: Arc::new(FakeCapture::new()),
             clock: self.clock.clone(),
             stt: vec![self.stt.clone()],
-            llm: vec![self.llm_provider.clone()],
+            llm: std::iter::once(&self.llm_provider)
+                .chain(&self.more_llm)
+                .map(|provider| provider.clone() as _)
+                .collect(),
             diar: self
                 .diarizer
                 .iter()
@@ -107,6 +122,7 @@ impl Rig {
         let options = Options {
             clock_poll: Duration::from_millis(2),
             event_capacity: 100_000,
+            retry_base_ms: 0,
             ..Options::default()
         };
         Dory::open(ports, options).expect("opens")
@@ -831,4 +847,347 @@ fn a_summary_instruction_reaches_the_final_pass_and_the_old_summary_is_kept() {
         prompts[1].system
     );
     assert!(rig.store.previous_summary(&id).unwrap().is_some());
+}
+
+const FIRST_REPLY: &str = "First model words that must not survive.";
+
+fn tag(s: &str) -> LangTag {
+    LangTag::parse(s).unwrap()
+}
+
+/// A summary model ranked above `fake/llm`, so `Auto` tries it first.
+fn preferred(id: &str, languages: LangSet) -> ModelEntry<Llm> {
+    let mut entry = llm_entry(id);
+    entry.caps.languages = languages;
+    entry.rank = 10;
+    entry
+}
+
+/// One English line on the mic, and a first summary model that refuses as asked.
+fn refused_meeting(
+    refusal: Refusal,
+    calls: usize,
+    choice: Choice<Llm>,
+) -> (Rig, RecordingId, Arc<FakeLanguageModel>) {
+    let first = Arc::new(FakeLanguageModel::new(FIRST_REPLY).refusing(refusal, calls));
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mic, &[(0, 1_000, 0, "hello")])
+            .detecting("en"),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    )
+    .with_summary_model(preferred("fake/first", LangSet::Any), first.clone());
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            llm: choice,
+            ..Settings::default()
+        })])
+        .unwrap();
+    let id = rig.seed("refused", ChannelLayout::MicOnly, 10);
+    (rig, id, first)
+}
+
+#[test]
+fn auto_summary_falls_back_when_the_engine_rejects_the_language() {
+    for refusal in [Refusal::Language("und"), Refusal::Input] {
+        let (rig, id, first) = refused_meeting(refusal, usize::MAX, Choice::Auto);
+        let dory = rig.open();
+        process(&dory, &id, Goal::ALL);
+        let summary = dory.library().summary(&id).unwrap().unwrap();
+        assert_eq!(summary.produced_by.as_str(), LLM, "{refusal:?}");
+        assert_eq!(summary.markdown, SUMMARY, "{refusal:?}");
+        assert_eq!(first.prompts().len(), 1, "the first model was tried once");
+        assert_eq!(rig.llm.prompts().len(), 1, "the fallback summarized once");
+    }
+}
+
+#[test]
+fn the_draft_resets_on_fallback() {
+    let (rig, id, _) = refused_meeting(Refusal::Language("und"), usize::MAX, Choice::Auto);
+    let dory = rig.open();
+    let events = dory.events();
+    process(&dory, &id, Goal::ALL);
+
+    let seen = drain(&events);
+    let resets: Vec<usize> = seen
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, Event::DraftReset { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(resets.len(), 1, "one reset for one fallback");
+    let drafted = |events: &[Event]| -> String {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                Event::DraftSummary { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        drafted(&seen[..resets[0]]),
+        "First ",
+        "the first model streamed before it refused"
+    );
+    assert_eq!(drafted(&seen[resets[0]..]), SUMMARY);
+    let stored = dory.library().summary(&id).unwrap().unwrap().markdown;
+    assert!(!stored.contains("First"), "{stored}");
+}
+
+#[test]
+fn a_pinned_summary_does_not_fall_back() {
+    let first: ModelId<Llm> = "fake/first".parse().unwrap();
+    let (rig, id, _) = refused_meeting(
+        Refusal::Language("und"),
+        usize::MAX,
+        Choice::Pinned(first.clone()),
+    );
+    let dory = rig.open();
+    let events = dory.events();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Summarize,
+            blocker: Blocker::Incompatible {
+                model: first.erase(),
+                why: Mismatch::LanguageUnsupported,
+            },
+        },
+    );
+    assert_eq!(rig.llm.prompts(), vec![], "fake/llm was never asked");
+    assert!(
+        !drain(&events)
+            .iter()
+            .any(|e| matches!(e, Event::DraftReset { .. }))
+    );
+    assert_eq!(dory.library().summary(&id).unwrap(), None);
+
+    let (rig, id, _) = refused_meeting(Refusal::Input, usize::MAX, Choice::Pinned(first));
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the pinned summary to fail", || {
+        matches!(job_state(&dory, &id), Some(JobState::Failed { .. }))
+    });
+    assert_eq!(rig.llm.prompts(), vec![]);
+}
+
+#[test]
+fn a_summary_no_model_can_read_blocks_and_names_the_language() {
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(
+                Channel::Mic,
+                &[(0, 900, 0, "hello"), (1_000, 1_900, 0, "kumusta")],
+            )
+            .speaking(&[tag("en"), tag("tl")]),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        preferred("fake/llm", LangSet::Only(vec![tag("en")])),
+    );
+    let id = rig.seed("taglish", ChannelLayout::MicOnly, 10);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Summarize,
+            blocker: Blocker::Incompatible {
+                model: dory_core::models::ModelRef::parse(LLM).unwrap(),
+                why: Mismatch::LanguageUnsupported,
+            },
+        },
+    );
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(transcript.detected_languages, vec![tag("en"), tag("tl")]);
+    assert_eq!(
+        rig.llm.prompts(),
+        vec![],
+        "an English-only model never sees Tagalog"
+    );
+}
+
+#[test]
+fn busy_is_retried_then_fails_after_max_attempts() {
+    let (rig, id, first) = refused_meeting(Refusal::Busy, 2, Choice::Auto);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    let summary = dory.library().summary(&id).unwrap().unwrap();
+    assert_eq!(
+        summary.produced_by.as_str(),
+        "fake/first",
+        "busy never falls back"
+    );
+    assert_eq!(
+        first.prompts().len(),
+        3,
+        "two busy answers, then the summary"
+    );
+
+    let (rig, id, first) = refused_meeting(Refusal::Busy, 5, Choice::Auto);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the busy summary to fail", || {
+        matches!(job_state(&dory, &id), Some(JobState::Failed { .. }))
+    });
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    let JobState::Failed { stage, error } = &job.state else {
+        unreachable!()
+    };
+    assert_eq!(*stage, Stage::Summarize);
+    assert_eq!(error.class, FailureClass::Transient, "{error:?}");
+    assert!(error.message.contains("busy"), "{}", error.message);
+    assert_eq!(job.attempts, dory_core::domain::MAX_ATTEMPTS);
+    assert_eq!(
+        first.prompts().len(),
+        usize::from(dory_core::domain::MAX_ATTEMPTS),
+        "each attempt reruns the whole summary"
+    );
+    assert_eq!(rig.llm.prompts(), vec![], "busy never falls back");
+}
+
+#[test]
+fn preparing_unblocks_on_check_again() {
+    let rig = Rig::new(
+        FakeTranscriber::new().with_segments(Channel::Mic, &[(0, 1_000, 0, "hello")]),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    );
+    let model: ModelId<Llm> = LLM.parse().unwrap();
+    let preparing = Unavailable {
+        reason: UnavailableReason::Preparing {
+            detail: "the system is getting the model ready".into(),
+        },
+        fix: None,
+    };
+    rig.llm_provider
+        .set_availability(&model, Availability::Unavailable(preparing.clone()));
+    let id = rig.seed("preparing", ChannelLayout::MicOnly, 10);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Summarize,
+            blocker: Blocker::Unavailable {
+                model: model.erase(),
+                why: preparing,
+            },
+        },
+    );
+    rig.llm_provider
+        .set_availability(&model, Availability::Ready);
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    dory.pipeline().unblock(job.id).unwrap();
+    wait_for(&dory, &id, JobState::Succeeded);
+    assert_eq!(
+        dory.library().summary(&id).unwrap().unwrap().produced_by,
+        model.erase()
+    );
+}
+
+#[test]
+fn a_fixed_locale_model_runs_in_the_one_meeting_language() {
+    let mut english = stt("fake/english", DiarizationSupport::None, WINDOW);
+    english.caps.languages = LangSupport::FixedLocale {
+        tags: LangSet::Only(vec![tag("en-US")]),
+    };
+    let (rig, id) = four_windows(vec![english]);
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            meeting_languages: vec![tag("en")],
+            ..Settings::default()
+        })])
+        .unwrap();
+    crash_during_the_third_window(&rig, &id);
+    let pinned = LanguagePref::Pinned(tag("en"));
+    assert!(
+        rig.transcriber.calls().iter().all(|c| c.language == pinned),
+        "{:?}",
+        rig.transcriber.calls()
+    );
+    let key = CheckpointKey {
+        language: pinned,
+        ..rig.key(&id, "fake/english", Channel::Mic)
+    };
+    assert_eq!(
+        rig.store.checkpoints(&key).unwrap().len(),
+        2,
+        "the checkpoint key names the language the model ran in"
+    );
+}
+
+#[test]
+fn a_fallback_that_cannot_run_now_reports_the_refusal() {
+    let llm_model: ModelId<Llm> = LLM.parse().unwrap();
+    for (refusal, want_failed) in [(Refusal::Language("und"), false), (Refusal::Input, true)] {
+        let (rig, id, _) = refused_meeting(refusal, usize::MAX, Choice::Auto);
+        rig.llm_provider
+            .set_availability(&llm_model, Availability::NeedsProvision { bytes: Some(7) });
+        let dory = rig.open();
+        dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+        eventually("the summary to stop", || {
+            matches!(
+                job_state(&dory, &id),
+                Some(JobState::Blocked { .. } | JobState::Failed { .. })
+            )
+        });
+        match job_state(&dory, &id).unwrap() {
+            JobState::Failed { stage, error } if want_failed => {
+                assert_eq!(stage, Stage::Summarize);
+                assert_eq!(error.class, FailureClass::Permanent, "{error:?}");
+            }
+            JobState::Blocked { stage, blocker } if !want_failed => assert_eq!(
+                (stage, blocker),
+                (
+                    Stage::Summarize,
+                    Blocker::Incompatible {
+                        model: dory_core::models::ModelRef::parse("fake/first").unwrap(),
+                        why: Mismatch::LanguageUnsupported,
+                    }
+                ),
+                "never a download prompt for a model that did not see the meeting"
+            ),
+            other => panic!("{refusal:?}: {other:?}"),
+        }
+        assert_eq!(rig.llm.prompts(), vec![]);
+    }
+}
+
+#[test]
+fn a_refused_language_rules_out_the_next_model_that_cannot_read_it() {
+    let first =
+        Arc::new(FakeLanguageModel::new(FIRST_REPLY).refusing(Refusal::Language("tl"), usize::MAX));
+    let english = Arc::new(FakeLanguageModel::new("English only."));
+    let mut english_entry = preferred("fake/english", LangSet::Only(vec![tag("en")]));
+    english_entry.rank = 5;
+    let rig = Rig::new(
+        FakeTranscriber::new().with_segments(Channel::Mic, &[(0, 1_000, 0, "kumusta")]),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    )
+    .with_summary_model(preferred("fake/first", LangSet::Any), first.clone())
+    .with_summary_model(english_entry, english.clone());
+    let id = rig.seed("undetected-tagalog", ChannelLayout::MicOnly, 10);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    assert_eq!(first.prompts().len(), 1);
+    assert_eq!(
+        english.prompts(),
+        vec![],
+        "the English-only model never got the meeting"
+    );
+    assert_eq!(
+        dory.library()
+            .summary(&id)
+            .unwrap()
+            .unwrap()
+            .produced_by
+            .as_str(),
+        LLM
+    );
 }

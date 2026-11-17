@@ -17,7 +17,7 @@ use crate::domain::InvalidInput;
 pub use catalog::{Catalog, CatalogError};
 pub use fit::{
     Diar, DiarCaps, DiarNeeds, DiarizationNeed, DiarizationSupport, Fit, KindTag, LangSupport, Llm,
-    LlmCaps, LlmNeeds, Mismatch, ModelKind, Stt, SttCaps, SttNeeds,
+    LlmCaps, LlmNeeds, Mismatch, ModelKind, Stt, SttCaps, SttNeeds, run_language,
 };
 pub use resolve::{Choice, ModelStatus, Resolution, resolve};
 
@@ -216,6 +216,11 @@ pub enum UnavailableReason {
     },
     ServerUnreachable {
         endpoint: String,
+    },
+    /// The operating system is still getting the model ready. Jobs blocked on it are tried again
+    /// by the same triggers that free a job blocked on a stopped server.
+    Preparing {
+        detail: String,
     },
 }
 

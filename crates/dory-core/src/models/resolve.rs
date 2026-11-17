@@ -62,10 +62,12 @@ pub enum Resolution<K: ModelKind> {
 /// A Ready model that fits with a limitation beats a better model that needs a download, because
 /// `Auto` never downloads and a blocked job helps nobody.
 ///
-/// An optional kind (summary, speakers) on `Auto` skips when no model fits or the catalog is
-/// empty, so a missing diarizer leaves remote speakers as one "Remote" speaker instead of
-/// blocking the job. A model that fits but needs a download or is unavailable still blocks, since
-/// the user can act on it. `Pinned` never skips: the user asked for that model.
+/// An optional kind (summary, speakers) on `Auto` skips when the catalog is empty, so a missing
+/// diarizer leaves remote speakers as one "Remote" speaker instead of blocking the job. When
+/// every model rules itself out, it blocks on the best of them, so a meeting no summary model
+/// can read says why instead of quietly getting no summary. A model that fits but needs a
+/// download or is unavailable also blocks, since the user can act on it. `Pinned` never skips:
+/// the user asked for that model.
 pub fn resolve<K: ModelKind>(
     choice: &Choice<K>,
     statuses: &[ModelStatus<K>],
@@ -92,12 +94,12 @@ pub fn resolve<K: ModelKind>(
                 .min_by_key(|(s, fit)| preference(s, *fit));
             match best {
                 Some((status, _)) => settle(status),
-                None if K::OPTIONAL => Resolution::Skip,
                 None => match ranked.min_by_key(|(s, fit)| preference(s, *fit)) {
                     Some((status, Fit::No(why))) => Resolution::Blocked(Blocker::Incompatible {
                         model: status.entry.id.erase(),
                         why,
                     }),
+                    _ if K::OPTIONAL => Resolution::Skip,
                     _ => Resolution::Blocked(no_model(K::TAG)),
                 },
             }
@@ -432,7 +434,14 @@ mod tests {
     fn off_skips_optional_kinds_and_blocks_required_ones() {
         use crate::models::{Llm, LlmNeeds};
         assert_eq!(
-            resolve::<Llm>(&Choice::Off, &[], &LlmNeeds { language: None }),
+            resolve::<Llm>(
+                &Choice::Off,
+                &[],
+                &LlmNeeds {
+                    main: None,
+                    all: Vec::new()
+                }
+            ),
             Resolution::Skip
         );
         assert_eq!(
@@ -442,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_on_an_optional_kind_skips_when_nothing_fits() {
+    fn auto_on_an_optional_kind_skips_only_with_an_empty_catalog() {
         use crate::models::{Diar, DiarCaps, DiarNeeds, Llm, LlmCaps, LlmNeeds};
 
         fn llm(name: &str, languages: LangSet, availability: Availability) -> ModelStatus<Llm> {
@@ -463,7 +472,8 @@ mod tests {
             }
         }
         let vi = LlmNeeds {
-            language: Some(tag("vi")),
+            main: Some(tag("vi")),
+            all: vec![tag("vi")],
         };
         let en_only = || LangSet::Only(vec![tag("en")]);
 
@@ -476,10 +486,13 @@ mod tests {
         let cases: Vec<Case> = vec![
             ("empty catalog", Choice::Auto, vec![], Resolution::Skip),
             (
-                "every model rules itself out",
+                "every model rules itself out, so the job says why",
                 Choice::Auto,
                 vec![llm("a/en", en_only(), Availability::Ready)],
-                Resolution::Skip,
+                Resolution::Blocked(Blocker::Incompatible {
+                    model: mref("a/en"),
+                    why: Mismatch::LanguageUnsupported,
+                }),
             ),
             (
                 "a ready fit is used",
@@ -561,6 +574,55 @@ mod tests {
         assert_eq!(
             run(Choice::Auto, &[], LanguagePref::Auto),
             Resolution::Blocked(Blocker::NoModel { kind: KindTag::Stt })
+        );
+    }
+
+    #[test]
+    fn auto_prefers_a_ready_fallback_over_an_unreachable_server() {
+        use crate::models::{Llm, LlmCaps, LlmNeeds};
+        let row = |name: &str, languages, recommended, availability| ModelStatus::<Llm> {
+            entry: ModelEntry {
+                id: name.parse().unwrap(),
+                display_name: name.into(),
+                about: Default::default(),
+                caps: LlmCaps {
+                    context_tokens: 4096,
+                    languages,
+                },
+                recommended,
+                rank: 0,
+                disk_bytes: None,
+            },
+            availability,
+        };
+        let gemma = row("ollama/gemma", LangSet::Any, true, gone());
+        let apple = row(
+            "apple/foundation-model",
+            LangSet::Only(vec![tag("en"), tag("fr")]),
+            false,
+            Availability::Ready,
+        );
+        let needs = |all: &[&str]| LlmNeeds {
+            main: None,
+            all: all.iter().map(|t| tag(t)).collect(),
+        };
+        let statuses = [gemma, apple];
+        assert_eq!(
+            resolve(&Choice::Auto, &statuses, &needs(&["en"])),
+            Resolution::Use("apple/foundation-model".parse().unwrap()),
+            "a ready model that reads the meeting beats a recommended one that cannot run"
+        );
+        assert_eq!(
+            resolve(&Choice::Auto, &statuses, &needs(&[])),
+            Resolution::Use("apple/foundation-model".parse().unwrap()),
+            "unknown languages fit, so the ready model still runs"
+        );
+        assert!(
+            matches!(
+                resolve(&Choice::Auto, &statuses, &needs(&["en", "tl"])),
+                Resolution::Blocked(Blocker::Unavailable { model, .. }) if model == mref("ollama/gemma")
+            ),
+            "a meeting the ready model cannot read waits for the one that can"
         );
     }
 

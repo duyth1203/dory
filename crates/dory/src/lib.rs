@@ -72,6 +72,9 @@ pub enum OpenError {
     Catalog(#[from] CatalogError),
     #[error(transparent)]
     Core(#[from] dory_core::app::OpenError),
+    #[cfg(feature = "fake-engines")]
+    #[error(transparent)]
+    FakeKnob(#[from] fake::KnobError),
 }
 
 #[derive(Debug, Error)]
@@ -279,7 +282,7 @@ pub fn open_library(config: &Config) -> Result<LibraryReader, OpenError> {
 /// Like [`open_library`], with dory-core's fake speech and summary engines registered.
 #[cfg(feature = "fake-engines")]
 pub fn open_library_with_fake_engines(config: &Config) -> Result<LibraryReader, OpenError> {
-    open_library_with(config, fake::providers())
+    open_library_with(config, fake::providers(&fake::knobs_from_env()?))
 }
 
 /// Like [`open`], with dory-core's fake speech and summary engines registered.
@@ -289,7 +292,7 @@ pub fn open_with_fake_engines(config: &Config) -> Result<Dory, OpenError> {
         config,
         platform::capture(),
         Options::default(),
-        fake::providers(),
+        fake::providers(&fake::knobs_from_env()?),
     )
 }
 

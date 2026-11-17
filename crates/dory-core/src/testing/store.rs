@@ -1935,6 +1935,15 @@ mod contract {
                     fix: Some("Start \"ollama\"".into()),
                 },
             },
+            Blocker::Unavailable {
+                model: model(),
+                why: Unavailable {
+                    reason: UnavailableReason::Preparing {
+                        detail: "Apple is getting the model ready".into(),
+                    },
+                    fix: None,
+                },
+            },
             Blocker::Incompatible {
                 model: model(),
                 why: Mismatch::AutoLanguageUnsupported,

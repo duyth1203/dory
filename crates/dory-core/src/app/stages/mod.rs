@@ -17,8 +17,8 @@ use crate::domain::{
     Transcript,
 };
 use crate::models::{
-    Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
-    ModelId, ModelKind, ModelRef, Resolution, Stt, SttNeeds,
+    Choice, Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
+    ModelId, ModelKind, ModelRef, Resolution, Stt, SttNeeds, run_language,
 };
 use crate::ports::{
     CancelToken, Change, Checkpoint, CheckpointKey, Classify, Clip, CompletionRequest, EngineError,
@@ -177,8 +177,12 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         },
         input: take.duration,
     };
-    let stt_id = settle(cx.models.get::<Stt>().resolve(&cx.settings.stt, &needs))?
-        .ok_or(StageError::Blocked(Blocker::NoModel { kind: KindTag::Stt }))?;
+    let stt_id = settle(
+        cx.models
+            .get::<Stt>()
+            .resolve(&cx.settings.stt, &needs, &[]),
+    )?
+    .ok_or(StageError::Blocked(Blocker::NoModel { kind: KindTag::Stt }))?;
     let caps = cx
         .models
         .get::<Stt>()
@@ -186,11 +190,12 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .map(|e| e.caps.clone())
         .ok_or_else(|| permanent("the speech model left the catalog"))?;
     let native = caps.diarization == DiarizationSupport::Native;
+    let language = run_language(&caps, &needs);
     let diar_id = if any_diarized && !native {
         settle(
             cx.models
                 .get::<Diar>()
-                .resolve(&cx.settings.diar, &DiarNeeds),
+                .resolve(&cx.settings.diar, &DiarNeeds, &[]),
         )?
     } else {
         None
@@ -221,7 +226,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
             recording: id.clone(),
             model: model.clone(),
             channel: clip_plan.channel,
-            language: recording.language.clone(),
+            language: language.clone(),
         };
         runs.push(ClipRun {
             plan: clip_plan,
@@ -239,7 +244,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         cancel: cx.cancel,
         stt: stt.as_ref(),
         model: &model,
-        language: &recording.language,
+        language: &language,
         hint: recording.title.as_deref(),
     };
     let total = runs
@@ -291,7 +296,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         segments.extend(place(raw, run.plan, turns.as_deref()));
     }
     if languages.is_empty()
-        && let LanguagePref::Pinned(tag) = &recording.language
+        && let LanguagePref::Pinned(tag) = &language
     {
         languages.push(tag.clone());
     }
@@ -487,7 +492,7 @@ impl SegmentSink for Drafts<'_, '_> {
     }
 }
 
-fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
+fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let id = &cx.job.recording;
     let store = cx.db.store.as_ref();
     let transcript = store
@@ -498,25 +503,102 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     if transcript.segments.iter().all(|s| s.text.trim().is_empty()) {
         return Ok(Vec::new());
     }
-    let language = transcript.main_language().cloned();
-    let needs = LlmNeeds {
-        language: language.clone(),
-    };
-    let Some(llm_id) = settle(cx.models.get::<Llm>().resolve(&cx.settings.llm, &needs))? else {
-        return Ok(Vec::new());
-    };
-    let context = cx
-        .models
-        .get::<Llm>()
-        .entry(&llm_id)
-        .map(|e| e.caps.context_tokens)
-        .ok_or_else(|| permanent("the summary model left the catalog"))?;
+    let recording = store
+        .recording(id)
+        .map_err(failed)?
+        .ok_or_else(|| permanent("the recording was deleted"))?;
+    let mut needs = LlmNeeds::new(
+        transcript.main_language().cloned(),
+        &recording.language,
+        &cx.settings.meeting_languages,
+        &transcript.detected_languages,
+    );
     let names = store.speaker_names(id).map_err(failed)?;
     let lines = summary::transcript_lines(&transcript, &names);
+    let instruction = store.summary_instruction(id).map_err(failed)?;
+    // Models that refused this meeting. `Auto` resolves again without them and starts over from
+    // the transcript, so notes from two models never mix.
+    let mut refused: Vec<ModelId<Llm>> = Vec::new();
+    let mut last_refusal = None;
+    loop {
+        let resolution = cx
+            .models
+            .get::<Llm>()
+            .resolve(&cx.settings.llm, &needs, &refused);
+        let llm_id = match (resolution, last_refusal) {
+            (Resolution::Use(id), _) => id,
+            (Resolution::Blocked(blocker), None) => return Err(StageError::Blocked(blocker)),
+            (Resolution::Skip, None) => return Ok(Vec::new()),
+            // Fall back only to a model that can run now. Otherwise the refusal is the answer, not
+            // a blocker on a model that never saw the meeting.
+            (_, Some((model, error))) => return Err(engine_failed(model)(error)),
+        };
+        let context = cx
+            .models
+            .get::<Llm>()
+            .entry(&llm_id)
+            .map(|e| e.caps.context_tokens)
+            .ok_or_else(|| permanent("the summary model left the catalog"))?;
+        let language = needs.main.as_ref();
+        match summarize_with(
+            &mut cx,
+            &llm_id,
+            &lines,
+            language,
+            instruction.as_deref(),
+            context,
+        ) {
+            Ok(text) => {
+                return Ok(vec![Change::SummaryReplaced {
+                    id: id.clone(),
+                    summary: Summary {
+                        markdown: text.trim().to_owned(),
+                        language: needs.main.clone(),
+                        produced_by: llm_id.erase(),
+                        transcript_revision: transcript.revision,
+                    },
+                }]);
+            }
+            Err(SummaryError::Engine(
+                error @ (EngineError::UnsupportedLanguage(_) | EngineError::InputRejected(_)),
+            )) if cx.settings.llm == Choice::Auto => {
+                cx.db.publish(Event::DraftReset { job: cx.job.id });
+                // A refusal that names the language rules out every other model that cannot read it.
+                if let EngineError::UnsupportedLanguage(tag) = &error
+                    && tag.as_str() != UNDETERMINED
+                    && !needs.all.contains(tag)
+                {
+                    needs.all.push(tag.clone());
+                }
+                last_refusal = Some((llm_id.erase(), error));
+                refused.push(llm_id);
+            }
+            Err(SummaryError::Engine(error)) => return Err(engine_failed(llm_id.erase())(error)),
+            Err(SummaryError::ContextTooSmall) => {
+                return Err(permanent(
+                    "the summary model's context window is too small for its instructions",
+                ));
+            }
+        }
+    }
+}
+
+/// The BCP 47 tag for a language an engine could not name.
+const UNDETERMINED: &str = "und";
+
+/// One whole summary from the transcript with one model.
+fn summarize_with(
+    cx: &mut StageCx<'_>,
+    llm_id: &ModelId<Llm>,
+    lines: &[String],
+    language: Option<&LangTag>,
+    instruction: Option<&str>,
+    context: u32,
+) -> Result<String, SummaryError<EngineError>> {
     let llm = cx
         .engines
-        .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)
-        .map_err(engine_failed(llm_id.erase()))?;
+        .get::<Llm>(cx.models, llm_id, cx.cancel, cx.now_mono)
+        .map_err(SummaryError::Engine)?;
     let mut drafts = SummaryDrafts {
         db: cx.db,
         job: cx.job,
@@ -530,11 +612,10 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         });
     };
     publish(Fraction::new(0.0));
-    let instruction = store.summary_instruction(id).map_err(failed)?;
-    let text = summary::summarize(
-        &lines,
-        language.as_ref(),
-        instruction.as_deref(),
+    summary::summarize(
+        lines,
+        language,
+        instruction,
         context,
         &|text| llm.count_tokens(text),
         &mut |call| {
@@ -551,21 +632,6 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         },
         &mut publish,
     )
-    .map_err(|error| match error {
-        SummaryError::Engine(error) => engine_failed(llm_id.erase())(error),
-        SummaryError::ContextTooSmall => {
-            permanent("the summary model's context window is too small for its instructions")
-        }
-    })?;
-    Ok(vec![Change::SummaryReplaced {
-        id: id.clone(),
-        summary: Summary {
-            markdown: text.trim().to_owned(),
-            language,
-            produced_by: llm_id.erase(),
-            transcript_revision: transcript.revision,
-        },
-    }])
 }
 
 struct SummaryDrafts<'a> {

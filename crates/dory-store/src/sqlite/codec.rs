@@ -309,6 +309,7 @@ fn reason_to_json(reason: &UnavailableReason) -> Value {
         UnavailableReason::ServerUnreachable { endpoint } => {
             json!({ "k": "server_unreachable", "endpoint": endpoint })
         }
+        UnavailableReason::Preparing { detail } => json!({ "k": "preparing", "detail": detail }),
     }
 }
 
@@ -329,6 +330,9 @@ fn reason_from_json(v: &Value) -> Result<UnavailableReason, StoreError> {
         },
         "server_unreachable" => UnavailableReason::ServerUnreachable {
             endpoint: text(v, "endpoint")?.to_owned(),
+        },
+        "preparing" => UnavailableReason::Preparing {
+            detail: text(v, "detail")?.to_owned(),
         },
         other => return Err(corrupt(format!("unknown unavailable reason {other:?}"))),
     })
@@ -447,4 +451,25 @@ pub(crate) fn raw_segments_from_db(s: &str) -> Result<Vec<RawSegment>, StoreErro
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparing_round_trips() {
+        let blocker = Blocker::Unavailable {
+            model: ModelRef::parse("apple/foundation-model").unwrap(),
+            why: Unavailable {
+                reason: UnavailableReason::Preparing {
+                    detail: "Apple is getting the model ready".into(),
+                },
+                fix: None,
+            },
+        };
+        let stored = blocker_to_db(&blocker);
+        assert!(stored.contains("\"preparing\""), "{stored}");
+        assert_eq!(blocker_from_db(&stored).unwrap(), blocker);
+    }
 }

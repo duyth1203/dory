@@ -551,6 +551,30 @@ mod tests {
     }
 
     #[test]
+    fn a_4096_context_summarizes_a_two_hour_transcript() {
+        // A line every 10 seconds for two hours, 25 words each, the pace of a busy meeting.
+        let lines: Vec<String> = (0..720).map(|n| line(n, 25)).collect();
+        let context = 4096;
+        let note = vec!["note"; notes_output(context) as usize].join(" ");
+        let run = run(&lines, context, &note);
+        assert_eq!(run.result, Ok("the summary".to_owned()));
+        assert_every_call_fits(&run, context);
+        let reads = |n: usize| {
+            let first_word = format!("w{n}.0 ");
+            run.calls
+                .iter()
+                .filter(|(pass, _, user, _)| *pass == Pass::Notes && user.contains(&first_word))
+                .count()
+        };
+        assert!(
+            (0..lines.len()).all(|n| reads(n) == 1),
+            "every line is read by exactly one notes pass"
+        );
+        assert_eq!(run.calls.last().map(|c| c.0), Some(Pass::Summary));
+        assert_progress_climbs_to_done(&run);
+    }
+
+    #[test]
     fn a_context_with_no_room_for_input_is_refused() {
         let lines = vec![line(0, 10)];
         let run = run(&lines, 100, "note");

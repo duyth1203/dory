@@ -1181,7 +1181,7 @@ mod contract {
         for text in ["ΔΡΟΜΟΣ", "δρομοσ", "δρόμος", "δρομοϲ", "δρομ"] {
             assert_eq!(found(store, text), ["greek"], "{text}");
             let marks = search::highlights(&Query::parse(text).unwrap(), "Ο δρόμος");
-            assert_eq!(marks, [3..15], "{text} marks the word");
+            assert_eq!(marks, vec![3..15], "{text} marks the word");
         }
         for text in ["🅐 budget", "budget", "bud"] {
             assert_eq!(found(store, text), ["squared"], "{text}");

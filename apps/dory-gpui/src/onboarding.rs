@@ -417,6 +417,7 @@ impl Onboarding {
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
                         .text_size(theme.text(13.))
                         .text_color(theme.text_secondary)
                         .child("Summaries are optional and need Ollama."),

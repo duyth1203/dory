@@ -1,0 +1,46 @@
+-- contentless index (content='', contentless_delete=1) --
+contentless build (backfill all)                               median  2334.55 ms  min  2334.55  max  2334.55
+contentless size: 61.3 MB
+cl ids+bm25 'budget*'                                          median     0.29 ms  min     0.26  max     0.75
+    hits 376
+cl ids+bm25 'muller*'                                          median     0.32 ms  min     0.32  max     0.47
+    hits 500
+cl ids+bm25 'roadmap* budget*'                                 median     0.26 ms  min     0.26  max     0.32
+    hits 204
+cl ids+bm25 'a*'                                               median    30.95 ms  min    30.80  max    31.20
+    hits 500
+cl ids+bm25 'a'                                                median     0.01 ms  min     0.01  max     0.04
+    hits 0
+cl ids+bm25 '{title}: budget*'                                 median     0.03 ms  min     0.03  max     0.06
+    hits 0
+cl ids+bm25 '{transcript summary speakers}: budget*'           median     0.28 ms  min     0.27  max     0.32
+    hits 376
+cl ids+bm25 '"stubbornly muller"'                              median     0.07 ms  min     0.07  max     0.13
+    hits 1
+cl replace one 2h transcript (delete+insert)                   median     4.33 ms  min     3.19  max    10.22
+    muller* hits after 7 replaces: 500 (500 expected)
+
+-- fuzzy with OSA distance over vocabulary --
+read fts5vocab row terms (contentless)                         median    64.14 ms  min    64.02  max    64.46
+    distinct terms: 40445
+prefix probe: does any term start with 'roadmpa'               median     0.03 ms  min     0.03  max     0.09
+OSA <= 1 over vocab 'roadmpa'                                  median     3.77 ms  min     3.73  max     3.83
+    near: ["roadmap"]
+OSA <= 1 over vocab 'budgte'                                   median     2.51 ms  min     2.48  max     2.54
+    near: ["budget"]
+OSA <= 1 over vocab 'mueller'                                  median     3.77 ms  min     3.72  max     3.85
+    near: ["muller"]
+OSA <= 1 over vocab 'ångstrom'                                 median     4.95 ms  min     4.82  max     5.03
+    near: ["angstrom"]
+OSA <= 2 over vocab 'recieveing'                               median    10.20 ms  min    10.14  max    10.29
+    near: []
+OSA <= 1 over vocab 'stubornly'                                median     5.75 ms  min     5.64  max     5.84
+    near: ["stubbornly"]
+OSA <= 2 over vocab 'antinatoinal'                             median     6.61 ms  min     6.57  max     6.78
+    near: ["antinational"]
+
+-- core snippet and jump target from stored segments --
+15 visible rows: load segments + first match, rare term 'muller' median     4.69 ms  min     4.64  max     4.80
+15 visible rows: load segments + first match, common prefix 'a' median     2.64 ms  min     2.63  max     2.70
+15 visible rows: load segments + first match, absent 'zzzz'    median    37.76 ms  min    37.53  max    37.91
+    segments per recording: 1200

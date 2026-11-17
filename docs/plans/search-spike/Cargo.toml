@@ -1,0 +1,11 @@
+[package]
+name = "search-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+unicode-normalization = "0.1"

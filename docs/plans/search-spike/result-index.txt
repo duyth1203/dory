@@ -1,0 +1,97 @@
+corpus: 500 recordings x 18000 words, transcript text 88.1 MB, generated in 1.2s
+db with raw + _lc columns: 180.0 MB
+
+-- current: instr over _lc concat --
+instr 'budget'                                             median    41.51 ms  min    41.33  max    42.76
+instr 'zzzz-no-hit'                                        median    68.33 ms  min    68.13  max    73.54
+instr 'müller'                                             median    26.61 ms  min    24.88  max    27.80
+
+-- fts: tokenize='unicode61 remove_diacritics 2', prefix='2 3' --
+fts build (backfill all)                                   median  2504.89 ms  min  2504.89  max  2504.89
+fts size incl. its content copy: 151.4 MB
+fts inverted index alone: 61.1 MB
+fts ids+bm25 'budget*'                                     median     0.26 ms  min     0.25  max     0.70
+    hits 376
+fts ids+bm25 'müller*'                                     median     0.32 ms  min     0.31  max     0.49
+    hits 500
+fts ids+bm25 'muller*'                                     median     0.31 ms  min     0.30  max     0.35
+    hits 500
+fts ids+bm25 'roadmap* budget*'                            median     0.27 ms  min     0.26  max     0.33
+    hits 204
+fts ids+bm25 '"roadmap budget"'                            median     0.04 ms  min     0.04  max     0.05
+    hits 0
+fts ids+bm25 'a*'                                          median    31.27 ms  min    30.89  max    32.20
+    hits 500
+fts ids+bm25 'ro*'                                         median     0.37 ms  min     0.36  max     0.47
+    hits 500
+fts ids+bm25 'zzzz*'                                       median     0.03 ms  min     0.03  max     0.05
+    hits 0
+fts ids+bm25 '{title}: budget*'                            median     0.03 ms  min     0.03  max     0.06
+    hits 0
+fts ids+bm25+snippet ALL hits 'budget*'                    median   205.27 ms  min   204.68  max   207.17
+fts ids+bm25+snippet top 40 'budget*'                      median    52.84 ms  min    52.71  max    52.96
+fts ids+bm25+snippet ALL hits 'a*'                         median  3072.97 ms  min  2970.46  max  3095.90
+fts ids+bm25+snippet top 40 'a*'                           median   927.70 ms  min   904.03  max   947.65
+    snippet sample: …winkered myelozoan defiable stubbornly [Müller] slanderer organoscopy unpollutedly antinational adventive…
+fts replace one 2h transcript (delete+insert)              median     8.25 ms  min     6.65  max    14.08
+
+-- fts_noprefix: tokenize='unicode61 remove_diacritics 2' --
+fts_noprefix build (backfill all)                          median  1637.82 ms  min  1637.82  max  1637.82
+fts_noprefix size incl. its content copy: 120.6 MB
+fts_noprefix inverted index alone: 30.3 MB
+fts_noprefix ids+bm25 'budget*'                            median     0.54 ms  min     0.26  max     1.64
+    hits 376
+fts_noprefix ids+bm25 'müller*'                            median     0.31 ms  min     0.31  max     0.50
+    hits 500
+fts_noprefix ids+bm25 'muller*'                            median     0.31 ms  min     0.31  max     0.32
+    hits 500
+fts_noprefix ids+bm25 'roadmap* budget*'                   median     0.29 ms  min     0.27  max     0.33
+    hits 204
+fts_noprefix ids+bm25 '"roadmap budget"'                   median     0.04 ms  min     0.04  max     0.06
+    hits 0
+fts_noprefix ids+bm25 'a*'                                 median    76.95 ms  min    75.62  max    98.42
+    hits 500
+fts_noprefix ids+bm25 'ro*'                                median     2.43 ms  min     2.41  max     2.91
+    hits 500
+fts_noprefix ids+bm25 'zzzz*'                              median     0.03 ms  min     0.02  max     0.05
+    hits 0
+fts_noprefix ids+bm25 '{title}: budget*'                   median     0.03 ms  min     0.03  max     0.06
+    hits 0
+fts_noprefix ids+bm25+snippet ALL hits 'budget*'           median   208.17 ms  min   204.53  max   208.39
+fts_noprefix ids+bm25+snippet top 40 'budget*'             median    55.62 ms  min    51.88  max    56.72
+fts_noprefix ids+bm25+snippet ALL hits 'a*'                median  3110.43 ms  min  3011.88  max  3311.14
+fts_noprefix ids+bm25+snippet top 40 'a*'                  median  1051.16 ms  min   949.07  max  1236.84
+    snippet sample: …winkered myelozoan defiable stubbornly [Müller] slanderer organoscopy unpollutedly antinational adventive…
+fts_noprefix replace one 2h transcript (delete+insert)     median    12.52 ms  min     4.38  max    20.15
+
+-- fuzzy over the vocabulary --
+read fts5vocab row terms                                   median    94.47 ms  min    90.75  max    96.02
+    distinct terms: 40445
+edit distance <= 1 over vocab 'roadmpa'                    median     1.26 ms  min     1.25  max     1.33
+    near: []
+edit distance <= 1 over vocab 'budgte'                     median     0.89 ms  min     0.87  max     0.90
+    near: []
+edit distance <= 1 over vocab 'mueller'                    median     1.22 ms  min     1.22  max     1.27
+    near: ["muller"]
+edit distance <= 1 over vocab 'ångstrom'                   median     1.56 ms  min     1.54  max     1.62
+    near: ["angstrom"]
+edit distance <= 2 over vocab 'recieveing'                 median     3.05 ms  min     3.03  max     3.11
+    near: []
+
+-- trigram alternative --
+trigram build                                              median  6542.86 ms  min  6542.86  max  6542.86
+trigram size: 275.9 MB
+trigram 'budget'                                           median     0.18 ms  min     0.17  max     0.44
+    hits 429
+trigram 'muller'                                           median     0.95 ms  min     0.91  max     1.15
+    hits 500
+trigram 'oadma'                                            median     0.18 ms  min     0.17  max     0.28
+    hits 385
+
+-- in-core matcher alternative --
+load all raw text from store                               median    40.02 ms  min    32.69  max    41.17
+core tokenize+fold+match 'budget' over all text            median   639.09 ms  min   625.53  max   649.02
+core tokenize+fold one 2h transcript, find matches         median     2.36 ms  min     2.35  max     2.52
+    matches in one transcript: 1
+
+final db size with fts (raw+_lc+fts): 331.6 MB

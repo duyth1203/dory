@@ -12,6 +12,9 @@ use super::AppState;
 /// How many activity lines Settings shows.
 pub const ACTIVITY_LINES: usize = 12;
 
+/// How long Copy Setup shows its check mark after a copy.
+pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// What Settings > Assistants shows, read off the main thread.
 #[derive(Clone, Debug, Default)]
 pub enum Assistants {
@@ -30,18 +33,31 @@ pub struct AssistantsView {
     pub activity: Vec<AuditEntry>,
 }
 
-/// An assistant app Dory can write the setup for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// An assistant app Dory can write the setup for. Each is connected as one assistant, named
+/// after the app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Target {
+    #[default]
     ClaudeCode,
     ClaudeDesktop,
+    Cursor,
+    Codex,
 }
 
 impl Target {
+    pub const ALL: [Target; 4] = [
+        Target::ClaudeCode,
+        Target::ClaudeDesktop,
+        Target::Cursor,
+        Target::Codex,
+    ];
+
     pub fn label(self) -> &'static str {
         match self {
             Target::ClaudeCode => "Claude Code",
             Target::ClaudeDesktop => "Claude Desktop",
+            Target::Cursor => "Cursor",
+            Target::Codex => "Codex",
         }
     }
 
@@ -53,6 +69,12 @@ impl Target {
             }
             Target::ClaudeDesktop => {
                 "Copied. In Claude Desktop, open Settings > Developer > Edit Config, add the \"dory\" entry under \"mcpServers\", then quit and reopen Claude."
+            }
+            Target::Cursor => {
+                "Copied. Add the \"dory\" entry under \"mcpServers\" in ~/.cursor/mcp.json, keeping any servers already there, then restart Cursor."
+            }
+            Target::Codex => {
+                "Copied. Add it to ~/.codex/config.toml, then start a new Codex session."
             }
         }
     }
@@ -108,18 +130,49 @@ pub fn setup_text(target: Target, helper: &Path, key: &str, data_dir: Option<&Pa
                 shell_quote(&helper)
             )
         }
-        Target::ClaudeDesktop => {
+        Target::ClaudeDesktop | Target::Cursor => {
             let mut env = serde_json::Map::new();
             env.insert("DORY_MCP_KEY".into(), key.into());
             if let Some(dir) = data_dir {
                 env.insert("DORY_DATA_DIR".into(), dir.display().to_string().into());
             }
-            let entry = serde_json::json!({
-                "mcpServers": { "dory": { "command": helper, "env": env } }
-            });
+            let mut server = serde_json::json!({ "command": helper, "env": env });
+            if target == Target::Cursor {
+                server["type"] = "stdio".into();
+            }
+            let entry = serde_json::json!({ "mcpServers": { "dory": server } });
             serde_json::to_string_pretty(&entry).unwrap_or_default()
         }
+        Target::Codex => {
+            let mut env = format!("DORY_MCP_KEY = {}", toml_string(key));
+            if let Some(dir) = data_dir {
+                env.push_str(&format!(
+                    ", DORY_DATA_DIR = {}",
+                    toml_string(&dir.display().to_string())
+                ));
+            }
+            format!(
+                "[mcp_servers.dory]\ncommand = {}\nenv = {{ {env} }}\n",
+                toml_string(&helper)
+            )
+        }
     }
+}
+
+/// `s` as a TOML basic string.
+fn toml_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// `text` with the key cut to its first characters, for showing on screen.
@@ -141,6 +194,28 @@ impl AppState {
 
     pub fn connected(&self) -> Option<&Connected> {
         self.connected.as_ref()
+    }
+
+    /// Whether Copy Setup copied within the last [`COPIED_FOR`].
+    pub fn just_copied(&self) -> bool {
+        self.copied
+    }
+
+    /// Shows the check mark, and clears it [`COPIED_FOR`] later unless another copy came first.
+    fn flash_copied(&mut self, cx: &mut Context<Self>) {
+        self.copied = true;
+        self.copy_flash += 1;
+        let flash = self.copy_flash;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = this.update(cx, |state, cx| {
+                if state.copy_flash == flash {
+                    state.copied = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     /// Where Connect says the helper is. Found beside the app at launch; tests point it at a
@@ -280,6 +355,7 @@ impl AppState {
                             setup_text(target, &helper, key.as_str(), custom_data_dir().as_deref());
                         cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
                         crate::a11y::announce(target.next_step());
+                        state.flash_copied(cx);
                         Connected::Copied {
                             target,
                             shown: shorten_key(&text, key.as_str()),
@@ -333,6 +409,26 @@ mod tests {
         assert_eq!(dory["command"], helper.display().to_string());
         assert_eq!(dory["env"]["DORY_MCP_KEY"], KEY);
         assert!(dory["env"].get("DORY_DATA_DIR").is_none());
+    }
+
+    #[test]
+    fn cursor_gets_a_stdio_entry_and_codex_a_config_table() {
+        let helper = Path::new("/Applications/Dory.app/Contents/MacOS/dory-mcp");
+        let cursor: serde_json::Value =
+            serde_json::from_str(&setup_text(Target::Cursor, helper, KEY, None)).unwrap();
+        assert_eq!(cursor["mcpServers"]["dory"]["type"], "stdio");
+        assert_eq!(cursor["mcpServers"]["dory"]["env"]["DORY_MCP_KEY"], KEY);
+        let desktop: serde_json::Value =
+            serde_json::from_str(&setup_text(Target::ClaudeDesktop, helper, KEY, None)).unwrap();
+        assert!(desktop["mcpServers"]["dory"].get("type").is_none());
+
+        let codex = setup_text(Target::Codex, helper, KEY, Some(Path::new("/tmp/a \"b\"")));
+        assert_eq!(
+            codex,
+            format!(
+                "[mcp_servers.dory]\ncommand = \"/Applications/Dory.app/Contents/MacOS/dory-mcp\"\nenv = {{ DORY_MCP_KEY = \"{KEY}\", DORY_DATA_DIR = \"/tmp/a \\\"b\\\"\" }}\n"
+            )
+        );
     }
 
     #[test]

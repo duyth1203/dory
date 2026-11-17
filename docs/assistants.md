@@ -1,6 +1,6 @@
 # Let an assistant read your meetings
 
-Dory can let an AI assistant such as Claude Desktop or Claude Code search and read your recorded meetings. The assistant runs `dory-mcp`, a small helper inside Dory.app, which speaks the Model Context Protocol (MCP) over stdio. The helper only reads. It works whether or not Dory is open, and it never changes your library.
+Dory can let an AI assistant such as Claude Code, Claude Desktop, Cursor, or Codex search and read your recorded meetings. The assistant runs `dory-mcp`, a small helper inside Dory.app, which speaks the Model Context Protocol (MCP) over stdio. The helper only reads. It works whether or not Dory is open, and it never changes your library.
 
 Access is off until you turn it on. Each assistant you add gets its own key and its own level. You can hide any recording from every assistant.
 
@@ -22,7 +22,7 @@ Open Dory's Settings (Command-Comma) and choose **Assistants**.
    | Full transcripts | Adds every word said. Search also matches what was said. |
 
 3. Check **May ask for changes** if it may ask to rename meetings, name speakers, or summarize again. Each change still waits for your click.
-4. Click **Copy Claude Code Command** or **Copy Claude Desktop Setup**. Dory gives that assistant its own key and copies its setup with the key and the helper's path already in it. Then paste it as below.
+4. Pick the app under **Assistant app** (Claude Code, Claude Desktop, Cursor, or Codex) and click **Copy Setup**. Dory gives that app its own key and copies its setup with the key and the helper's path already in it. Then paste it as below for that app.
 
 Copying again for the same assistant gives it a new key, and the old one stops working, so paste the new setup too. **Connected** lists each assistant with its level, its **May ask for changes** switch, and **Remove**. **Activity** shows the latest reads.
 
@@ -56,6 +56,32 @@ Open Claude Desktop's settings, go to Developer, and choose Edit Config. That op
 ```
 
 Quit and reopen Claude Desktop. Dory's tools then appear in its tools menu.
+
+## Connect Cursor
+
+Add the copied `dory` entry under `mcpServers` in `~/.cursor/mcp.json`, keeping any servers already there, then restart Cursor. It looks like this.
+
+```json
+{
+  "mcpServers": {
+    "dory": {
+      "type": "stdio",
+      "command": "/Applications/Dory.app/Contents/MacOS/dory-mcp",
+      "env": { "DORY_MCP_KEY": "<key>" }
+    }
+  }
+}
+```
+
+## Connect Codex
+
+Add the copied table to `~/.codex/config.toml`, then start a new Codex session. It looks like this.
+
+```toml
+[mcp_servers.dory]
+command = "/Applications/Dory.app/Contents/MacOS/dory-mcp"
+env = { DORY_MCP_KEY = "<key>" }
+```
 
 ## What an assistant can do
 

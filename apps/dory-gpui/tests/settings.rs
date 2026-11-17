@@ -1384,7 +1384,7 @@ fn the_assistants_pane_connects_claude_code_and_manages_it(cx: &mut TestAppConte
         checked(window, "setting-assistants-enabled", cx) == Some(false)
     });
     assert!(
-        !has(window, "connect-claude-code", cx),
+        !has(window, "connect-copy", cx),
         "nothing to connect while off"
     );
     click(window, "setting-assistants-enabled", cx);
@@ -1392,17 +1392,17 @@ fn the_assistants_pane_connects_claude_code_and_manages_it(cx: &mut TestAppConte
         rig.store.assistant_access().unwrap().enabled
     });
     until(cx, "the connect buttons", |cx| {
-        has(window, "connect-claude-code", cx)
+        has(window, "connect-copy", cx)
     });
 
-    click(window, "connect-claude-code", cx);
+    click(window, "connect-copy", cx);
     until(cx, "the missing level to be named", |cx| {
         status(window, cx) == "Choose what it may read first."
     });
     assert!(rig.store.assistant_access().unwrap().clients.is_empty());
 
     click(window, "assistant-level-summaries", cx);
-    click(window, "connect-claude-code", cx);
+    click(window, "connect-copy", cx);
     until(cx, "the command to be copied", |cx| {
         status(window, cx).starts_with("Copied.")
     });
@@ -1430,7 +1430,7 @@ fn the_assistants_pane_connects_claude_code_and_manages_it(cx: &mut TestAppConte
     );
     assert!(has(window, "assistant-Claude Code", cx));
 
-    click(window, "connect-claude-code", cx);
+    click(window, "connect-copy", cx);
     until(cx, "the key to be replaced", |cx| {
         status(window, cx).contains("old key no longer works")
     });
@@ -1463,12 +1463,77 @@ fn connect_says_so_when_no_helper_ships_with_the_app(cx: &mut TestAppContext) {
         .unwrap();
     let window = open_settings(&app, main, settings_window::Pane::Assistants, cx);
     until(cx, "the connect buttons", |cx| {
-        has(window, "connect-claude-desktop", cx)
+        has(window, "connect-copy", cx)
     });
     click(window, "assistant-level-titles", cx);
-    click(window, "connect-claude-desktop", cx);
+    click(window, "connect-copy", cx);
     until(cx, "the missing helper to be named", |cx| {
         status(window, cx).contains("no dory-mcp helper")
     });
     assert!(rig.store.assistant_access().unwrap().clients.is_empty());
+}
+
+#[gpui_kit::test]
+fn the_assistant_app_menu_picks_codex_and_copies_its_config(cx: &mut TestAppContext) {
+    use dory_gpui::app::Target;
+    use dory_gpui::settings_window::ChooseAssistantApp;
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let helper = rig.dir.join("dory-mcp");
+    std::fs::write(&helper, b"").unwrap();
+    app.update(cx, |app, _| app.set_assistant_helper(Some(helper.clone())));
+    rig.store
+        .apply(vec![Change::Assistant(
+            dory_core::domain::AssistantChange::Enabled(true),
+        )])
+        .unwrap();
+    let window = open_settings(&app, main, settings_window::Pane::Assistants, cx);
+    until(cx, "the app menu", |cx| {
+        label(window, "assistant-app", cx).as_deref() == Some("Assistant app, Claude Code")
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(ChooseAssistantApp {
+                target: Target::Codex,
+            }),
+            cx,
+        )
+    })
+    .unwrap();
+    until(cx, "Codex to be chosen", |cx| {
+        label(window, "assistant-app", cx).as_deref() == Some("Assistant app, Codex")
+    });
+    click(window, "assistant-level-transcripts", cx);
+    assert!(
+        has(window, "copy-icon-copy", cx),
+        "a copy icon before copying"
+    );
+    click(window, "connect-copy", cx);
+    until(cx, "the Codex config to be copied", |cx| {
+        status(window, cx).contains("~/.codex/config.toml")
+    });
+    until(cx, "the check mark", |cx| {
+        has(window, "copy-icon-check", cx)
+    });
+    assert_eq!(
+        label(window, "connect-copy", cx).as_deref(),
+        Some("Copied the setup for Codex")
+    );
+    cx.executor()
+        .advance_clock(dory_gpui::app::COPIED_FOR + Duration::from_millis(50));
+    until(cx, "the copy icon to come back", |cx| {
+        has(window, "copy-icon-copy", cx) && !has(window, "copy-icon-check", cx)
+    });
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(
+        copied.starts_with("[mcp_servers.dory]\ncommand = \""),
+        "{copied}"
+    );
+    assert!(copied.contains("env = { DORY_MCP_KEY = \"dk_"), "{copied}");
+    let clients = rig.store.assistant_access().unwrap().clients;
+    assert_eq!(clients.len(), 1);
+    assert_eq!(clients[0].label, "Codex");
 }

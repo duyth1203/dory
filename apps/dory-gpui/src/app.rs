@@ -31,8 +31,8 @@ pub use player::PlayerHandle;
 pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 
 pub use self::assistants::{
-    ACTIVITY_LINES, Assistants, AssistantsView, Connected, Target, helper_path, setup_text,
-    shorten_key,
+    ACTIVITY_LINES, Assistants, AssistantsView, COPIED_FOR, Connected, Target, helper_path,
+    setup_text, shorten_key,
 };
 use self::core::Core;
 pub use self::models::{Originals, count};
@@ -166,6 +166,10 @@ pub struct AppState {
     connected: Option<Connected>,
     /// `dory-mcp`, which Connect points assistants at.
     assistant_helper: Option<std::path::PathBuf>,
+    /// Copy Setup just copied: its icon shows a check until this clears.
+    copied: bool,
+    /// Counts copies, so only the latest one's timer clears `copied`.
+    copy_flash: u64,
     epoch: Instant,
     _pump: Task<()>,
 }
@@ -255,6 +259,8 @@ impl AppState {
             assistants: Assistants::Unread,
             connected: None,
             assistant_helper: helper_path(),
+            copied: false,
+            copy_flash: 0,
             epoch: Instant::now(),
             _pump: pump,
         };

@@ -15,9 +15,9 @@
 //! - Summaries: the summary models, and the Ollama steps when Ollama does not answer.
 //! - Storage: the data folder, its size, and Show in Finder, then the old app's WebM files and
 //!   **Move original WebM files to Trash** with Undo.
-//! - Assistants: whether assistants such as Claude may read the library, Copy Claude Code
-//!   Command and Copy Claude Desktop Setup, which create the assistant's key and copy its setup,
-//!   the connected assistants, and their latest reads.
+//! - Assistants: whether assistants may read the library; an Assistant app popup (Claude Code,
+//!   Claude Desktop, Cursor, Codex) and Copy Setup, which creates that app's key and copies its
+//!   setup; the connected assistants; and their latest reads.
 //!
 //! Content has exactly one scroll area (UX-31). The combobox's list is the only inner one, and it
 //! sits in a popover, not in the page.
@@ -183,6 +183,8 @@ pub const ENTRIES: &[Entry] = &[
     ),
     entry(Pane::Assistants, "Claude Code", "row-assistants-connect"),
     entry(Pane::Assistants, "Claude Desktop", "row-assistants-connect"),
+    entry(Pane::Assistants, "Cursor", "row-assistants-connect"),
+    entry(Pane::Assistants, "Codex", "row-assistants-connect"),
     entry(
         Pane::Assistants,
         "Assistant activity",
@@ -208,6 +210,13 @@ pub fn search(query: &str) -> (Vec<Pane>, Vec<Entry>) {
 
 pub const ADD_MODEL_FILE_REASON: &str =
     "No speech engine in Dory can load a model file yet, so models come from the list above.";
+
+/// Settings > Assistants > the app to copy the setup for.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct ChooseAssistantApp {
+    pub target: Target,
+}
 
 /// Language > a choice from the popup.
 #[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
@@ -320,6 +329,7 @@ pub struct SettingsWindow {
     /// preselected, because the choice is the consent.
     assistant_exposure: Option<Exposure>,
     assistant_edits: bool,
+    assistant_target: Target,
     copy_focus: Vec<FocusHandle>,
     _subscriptions: Vec<Subscription>,
 }
@@ -382,6 +392,7 @@ impl SettingsWindow {
             storage: Storage::Unread,
             assistant_exposure: None,
             assistant_edits: false,
+            assistant_target: Target::default(),
             _subscriptions: vec![observe, on_type, width, on_activation],
         }
     }
@@ -1340,7 +1351,7 @@ impl SettingsWindow {
         )];
         if !enabled {
             page.push(footnote(
-                "Turn this on to connect Claude Code or Claude Desktop. Each assistant gets its own key and reads only what you choose.",
+                "Turn this on to connect Claude Code, Claude Desktop, Cursor, or Codex. Each assistant gets its own key and reads only what you choose.",
                 theme,
             ));
             return page;
@@ -1421,26 +1432,62 @@ impl SettingsWindow {
         );
         let exposure = self.assistant_exposure;
         let writes = if edits { Writes::Ask } else { Writes::Never };
-        let copy = |target: Target, this: &mut Self, cx: &mut Context<Self>| {
-            let focus = this.focus(format!("connect-{}", target.label()), cx);
-            let app = this.app.clone();
-            let text = match target {
-                Target::ClaudeCode => "Copy Claude Code Command",
-                Target::ClaudeDesktop => "Copy Claude Desktop Setup",
-            };
-            let id = match target {
-                Target::ClaudeCode => "connect-claude-code",
-                Target::ClaudeDesktop => "connect-claude-desktop",
-            };
-            button(id, text, text, false, &focus, theme, move |_, cx| {
+        let target = self.assistant_target;
+        let root = self.root.clone();
+        let picker = Button::new("assistant-app")
+            .outline()
+            .label(target.label())
+            .accessibility_label(format!("Assistant app, {}", target.label()))
+            .child(Icon::ChevronsUpDown.view(12., theme.text_secondary))
+            .dropdown_menu(move |menu, _, _| {
+                Target::ALL
+                    .into_iter()
+                    .fold(menu.action_context(root.clone()), |menu, option| {
+                        menu.menu_with_check(
+                            option.label(),
+                            option == target,
+                            Box::new(ChooseAssistantApp { target: option }),
+                        )
+                    })
+            });
+        let focus = self.focus("connect-copy", cx);
+        let app = self.app.clone();
+        let copied = self.app.read(cx).just_copied();
+        let (icon, color) = if copied {
+            (Icon::Check, theme.accent)
+        } else {
+            (Icon::Copy, theme.text_secondary)
+        };
+        let copy = button(
+            "connect-copy",
+            if copied {
+                format!("Copied the setup for {}", target.label())
+            } else {
+                format!("Copy setup for {}", target.label())
+            },
+            "",
+            false,
+            &focus,
+            theme,
+            move |_, cx| {
                 app.update(cx, |app, cx| match exposure {
                     Some(exposure) => app.connect_assistant(target, exposure, writes, cx),
                     None => app.not_connected("Choose what it may read first.", cx),
                 })
-            })
-        };
-        let code = copy(Target::ClaudeCode, self, cx);
-        let desktop = copy(Target::ClaudeDesktop, self, cx);
+            },
+        )
+        .gap(px(6.))
+        .child(
+            div()
+                .id(if copied {
+                    "copy-icon-check"
+                } else {
+                    "copy-icon-copy"
+                })
+                .test_support()
+                .child(icon.view(13., color)),
+        )
+        .child(if copied { "Copied" } else { "Copy Setup" });
         let status = self.app.read(cx).connected().cloned().map(|c| match c {
             Connected::Copied {
                 target,
@@ -1495,7 +1542,20 @@ impl SettingsWindow {
             )
             .child(levels)
             .child(edits_box)
-            .child(div().flex().gap(px(8.)).child(code).child(desktop))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .text_size(theme.text(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Assistant app"),
+                    )
+                    .child(picker)
+                    .child(copy),
+            )
             .children(status)
             .into_any_element()
     }
@@ -1960,6 +2020,10 @@ impl Render for SettingsWindow {
         let sidebar = self.sidebar(&theme, cx);
         div()
             .track_focus(&self.root)
+            .on_action(cx.listener(|this, action: &ChooseAssistantApp, _, cx| {
+                this.assistant_target = action.target;
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, action: &ChooseLanguage, _, cx| {
                 let language = action.language.clone();
                 this.models.update(cx, |m, cx| {

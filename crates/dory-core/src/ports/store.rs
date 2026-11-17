@@ -8,9 +8,10 @@
 
 use super::{RawSegment, StoreError};
 use crate::domain::{
-    Channel, Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
-    RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange,
-    Timestamp, Transcript,
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Goal,
+    Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit, RecordingId,
+    RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange, Timestamp,
+    Transcript,
 };
 use crate::models::ModelRef;
 
@@ -32,6 +33,15 @@ pub trait StoreRead: Send + Sync {
     fn settings(&self) -> Result<Settings, StoreError>;
     /// The finished windows of one transcription run, earliest first.
     fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError>;
+    /// Whether assistants may read, and the assistants the user added.
+    fn assistant_access(&self) -> Result<AssistantAccess, StoreError>;
+    /// The assistant that holds `key`, if any.
+    fn assistant_client(&self, key: &ClientKey) -> Result<Option<AssistantClient>, StoreError>;
+    /// Whether the user hid this recording from every assistant. False for an unknown id.
+    fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError>;
+    /// Newest first, matching only inside the query's fields and never a hidden recording.
+    fn assistant_recordings(&self, query: &AssistantQuery)
+    -> Result<Vec<RecordingRow>, StoreError>;
 }
 
 pub trait Store: StoreRead {
@@ -81,6 +91,7 @@ pub enum Change {
     /// Every checkpoint of the recording, whatever run made it. Committed with the transcript
     /// they built.
     CheckpointsCleared(RecordingId),
+    Assistant(AssistantChange),
 }
 
 /// The transcription run a checkpoint belongs to. A rerun reuses a checkpoint only when every

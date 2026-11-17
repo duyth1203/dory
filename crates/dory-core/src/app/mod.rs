@@ -13,6 +13,7 @@
 //! [`LibraryReader`] is the read side alone: no actors, no recovery, and no writes, so it can run
 //! beside a process that is recording into the same data folder.
 
+mod assistants;
 mod events;
 mod models;
 mod pace;
@@ -29,6 +30,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+pub use assistants::Assistants;
 pub use events::{Event, Subscription, change_events};
 pub use models::{AppKind, ModelRow};
 pub use pace::{Budget, HOLD_MS, LIGHT_THREADS, LightReason, Pacer, light_condition};
@@ -40,9 +42,9 @@ use pipeline::{Nudge, PipelineHandle};
 use recorder::{Msg, RecorderHandle, commit_sealed};
 
 use crate::domain::{
-    Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority, Processing,
-    Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerId,
-    SpeakerNames, Summary, TakeContainer, Transcript, Waveform,
+    AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority,
+    Processing, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings,
+    SpeakerId, SpeakerNames, Summary, TakeContainer, Transcript, Waveform,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -159,6 +161,8 @@ pub enum DoryError {
     Saving(RecordingId),
     #[error(transparent)]
     RecorderGone(#[from] RecorderGone),
+    #[error("an assistant named {0} already exists")]
+    AssistantExists(String),
 }
 
 /// A recording in the system trash, with everything [`Library::restore`] needs to bring it back.
@@ -348,6 +352,11 @@ impl Dory {
         Models { dory: self }
     }
 
+    /// Which assistants may read the library, and how much.
+    pub fn assistants(&self) -> Assistants<'_> {
+        Assistants { dory: self }
+    }
+
     pub fn settings(&self) -> Result<Settings, StoreError> {
         self.db.store.settings()
     }
@@ -528,6 +537,11 @@ impl Library<'_> {
 
     pub fn set_title(&self, id: &RecordingId, title: Option<String>) -> Result<(), DoryError> {
         self.edit(id, RecordingEdit::Title(title))
+    }
+
+    /// Hides the recording from every assistant, or shows it again.
+    pub fn set_hidden(&self, id: &RecordingId, hidden: bool) -> Result<(), DoryError> {
+        assistants::set_hidden(self.dory, id, hidden)
     }
 
     pub fn set_language(&self, id: &RecordingId, language: LanguagePref) -> Result<(), DoryError> {
@@ -1016,6 +1030,11 @@ impl LibraryReader {
 
     pub fn jobs(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError> {
         self.store.jobs_for(id)
+    }
+
+    /// Whether assistants may read, and the assistants the user added.
+    pub fn assistant_access(&self) -> Result<AssistantAccess, StoreError> {
+        self.store.assistant_access()
     }
 
     /// Every model of kind `K`, probed now, with how it fits the default settings.

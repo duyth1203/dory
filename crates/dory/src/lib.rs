@@ -164,6 +164,15 @@ pub fn open(config: &Config) -> Result<Dory, OpenError> {
     )
 }
 
+/// A new key for an assistant, from the system's random source. Show it once and keep it nowhere:
+/// the store keeps only its digest.
+pub fn new_client_key() -> std::io::Result<dory_core::domain::ClientKey> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(dory_core::domain::ClientKey::from_bytes(bytes))
+}
+
 /// Opens the library under `config.data_dir` for reading only. It takes no lock, repairs nothing,
 /// and never writes: it creates no file, sets no journal mode, and never migrates, so it works
 /// while another process records into the same folder and cannot change that process's schema.

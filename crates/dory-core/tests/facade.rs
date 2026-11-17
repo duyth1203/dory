@@ -12,10 +12,11 @@ use dory_core::app::{
 };
 use dory_core::capture::FrameSink;
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms,
-    Priority, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Revision,
-    Segment, Settings, SpeakerId, SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange,
-    Timestamp, Transcript, Waveform,
+    AssistantAccess, AssistantClient, AssistantQuery, Blocker, Channel, ChannelLayout, ClientKey,
+    Goal, Job, JobEvent, JobId, JobState, LangTag, Levels, Ms, Priority, Recording, RecordingEdit,
+    RecordingId, RecordingQuery, RecordingRow, Revision, Segment, Settings, SpeakerId,
+    SpeakerNames, Stage, Summary, TakeContainer, TakeInfo, TimeRange, Timestamp, Transcript,
+    Waveform,
 };
 use dory_core::models::{
     Availability, CatalogError, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId,
@@ -221,6 +222,21 @@ impl StoreRead for HookedStore {
     }
     fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError> {
         self.inner.checkpoints(key)
+    }
+    fn assistant_access(&self) -> Result<AssistantAccess, StoreError> {
+        self.inner.assistant_access()
+    }
+    fn assistant_client(&self, key: &ClientKey) -> Result<Option<AssistantClient>, StoreError> {
+        self.inner.assistant_client(key)
+    }
+    fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError> {
+        self.inner.hidden_from_assistants(id)
+    }
+    fn assistant_recordings(
+        &self,
+        query: &AssistantQuery,
+    ) -> Result<Vec<RecordingRow>, StoreError> {
+        self.inner.assistant_recordings(query)
     }
 }
 

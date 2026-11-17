@@ -1,3 +1,4 @@
+mod assistant;
 mod error;
 mod ids;
 mod job;
@@ -9,6 +10,10 @@ mod time;
 mod transcript;
 mod waveform;
 
+pub use assistant::{
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
+    Refusal, Writes,
+};
 pub use error::{FailureCause, FailureClass, InvalidInput};
 pub use ids::{JobId, RecordingId, Revision};
 pub use job::{

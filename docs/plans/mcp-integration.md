@@ -155,23 +155,21 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Files.**
 
-- [ ] Create `crates/dory-core/src/domain/assistant.rs` and `crates/dory-core/src/assistant/policy.rs`.
-- [ ] Edit `crates/dory-core/src/domain/recording.rs`, `crates/dory-core/src/domain/mod.rs`, `crates/dory-core/src/ports/store.rs`, `crates/dory-core/src/app/mod.rs`, and `crates/dory-core/src/lib.rs`.
-- [ ] Create `crates/dory-store/src/sqlite/schema_v5.sql`.
-- [ ] Edit `crates/dory-store/src/sqlite/mod.rs`, `crates/dory-store/src/sqlite/reader.rs`, and `crates/dory-store/src/sqlite/codec.rs`.
-- [ ] Create `crates/dory/src/entropy.rs`. Edit `crates/dory/src/lib.rs` and `crates/dory/Cargo.toml`.
-- [ ] Create `apps/dory-cli/src/assistants.rs`. Edit `apps/dory-cli/src/main.rs` and `apps/dory-cli/src/args.rs`.
+- [x] Create `crates/dory-core/src/domain/assistant.rs`, `crates/dory-core/src/assistant/mod.rs`, `crates/dory-core/src/assistant/policy.rs`, and `crates/dory-core/src/app/assistants.rs`.
+- [x] Edit `crates/dory-core/src/domain/mod.rs`, `crates/dory-core/src/ports/store.rs`, `crates/dory-core/src/app/mod.rs`, `crates/dory-core/src/app/events.rs`, `crates/dory-core/src/testing/store.rs`, `crates/dory-core/tests/facade.rs`, and `crates/dory-core/src/lib.rs`.
+- [x] Create `crates/dory-store/src/sqlite/schema_v5.sql` and `crates/dory-store/tests/audience.rs`. Edit `crates/dory-store/src/sqlite/mod.rs` and the `LATEST` constants in its tests.
+- [x] Edit `crates/dory/src/lib.rs`. Create `crates/dory/tests/assistants.rs`.
+- [x] Create `apps/dory-cli/src/assistants.rs`. Edit `apps/dory-cli/src/main.rs` and `apps/dory-cli/tests/cli.rs`.
 
-**Build.**
+**Build.** Built on `feat/assistant-access`. Four choices differ from the first draft of this plan, each logged in `decisions.tsv`. `Recording` and `RecordingQuery` are untouched, because they appear in 62 and 8 literals across files other sessions edit and the search plan may replace the query. A client is named by its unique label instead of a separate id. The key is hex. Keys come from `/dev/urandom` through `dory::new_client_key`, with no `Entropy` port.
 
-- [ ] Add `Recording.private: bool` and `RecordingEdit::Private(bool)`. Schema v5 adds `recordings.private INTEGER NOT NULL DEFAULT 0`.
-- [ ] Add the domain types in `domain/assistant.rs`. `Exposure { Titles, Summaries, Transcripts }` is ordered, and `Exposure::fields()` returns a `Fields` mask of title, summary, and transcript. `Writes { Never, Ask }`. `ClientId`. `ClientKey` with a redacted `Debug`. `AssistantClient { id, label, exposure, writes, added_at }`. `AssistantAccess { enabled, clients }`. `Refusal { ServerOff, UnknownKey, NotFound, NotShared { need }, WritesOff, StaleRevision, AppNotRunning, Library }`.
-- [ ] Store access outside `Settings`, through `Change::Assistant(AssistantChange)` with `Enabled(bool)`, `ClientAdded { client, key_digest }`, `ClientChanged`, and `ClientRemoved`. Schema v5 adds `assistant_access(enabled)` and `assistant_clients(id, label, key_digest UNIQUE, exposure, writes, added_at)`. The store keeps only the SHA-256 of a key, computed with the existing `dory-store` SHA-256 module.
-- [ ] Add `StoreRead::assistant_access()` and `StoreRead::assistant_client(&ClientKey)` to both `SqliteStore` and `SqliteReader`.
-- [ ] Extend `RecordingQuery` with `audience: Audience { Owner, Assistant(Fields) }`, `since`, `until`, and a keyset `before: Option<(Timestamp, RecordingId)>`. For `Assistant`, the store matches only inside the masked columns and adds `private = 0` in SQL, so `LIMIT` counts only visible rows.
-- [ ] Add pure `policy::grant(access, key, client) -> Result<Grant, Refusal>`, `policy::reveal(grant, recording, need) -> Result<(), Refusal>`, and `policy::audience(grant) -> Audience`. A private recording gives `NotFound`, the same answer as a missing one. Only `policy::grant` builds a `Grant`.
-- [ ] Add the facade `dory.assistants()` with `set_enabled`, `add(label, exposure, writes) -> (AssistantClient, ClientKey)`, `change`, `remove`, `list`, and `dory.library().set_private(id, bool)`. The key is `dk_` plus 32 random bytes in base64url from a new `Entropy` port. `dory::SystemEntropy` implements it on `getrandom`, beside `SystemClock`, and tests use a fixed seed.
-- [ ] Add `dory-cli assistants on|off|list`, `dory-cli assistants add LABEL --exposure titles|summaries|transcripts [--writes ask]`, `dory-cli assistants remove ID`, and `dory-cli private ID on|off`. They take the lock. `add` prints the key once.
+- [x] Add the domain types in `domain/assistant.rs`. `Exposure { Titles, Summaries, Transcripts }` is ordered, and `Exposure::fields()` returns a `Fields` mask. `Writes { Never, Ask }`. `ClientKey`, `dk_` plus 64 lowercase hex digits, with a redacted `Debug`. `AssistantClient { label, exposure, writes, added_at }`. `AssistantAccess { enabled, clients }`. `AssistantQuery { text, fields, since, until, after, limit }`. `Refusal`, whose `Display` is the sentence a tool returns.
+- [x] Store access outside `Settings`, through `Change::Assistant(AssistantChange)` with `Enabled`, `ClientAdded { client, key }`, `ClientChanged`, `ClientRemoved { label }`, and `RecordingHidden { id, hidden }`. Schema v5 adds `recordings.hidden`, `assistant_access(enabled)`, and `assistant_clients(label, key_digest UNIQUE, exposure, writes, added_at)`. The store keeps only the SHA-256 of a key.
+- [x] Add `StoreRead::assistant_access`, `assistant_client(&ClientKey)`, `hidden_from_assistants(&RecordingId)`, and `assistant_recordings(&AssistantQuery)` to `SqliteStore`, `SqliteReader`, and `MemStore`. The assistant search matches only inside the masked columns and adds `hidden = 0` in SQL, so `LIMIT` counts only visible rows. It shares one row query, `rows_where`, with the owner's search.
+- [x] Announce access changes as `Event::SettingsChanged` and a hidden flag as `Event::RecordingChanged`, so the `Event` enum the app matches does not grow.
+- [x] Add pure `policy::grant(enabled, key_given, client) -> Result<Grant, Refusal>` and `policy::reveal(grant, hidden, need) -> Result<(), Refusal>`. A hidden recording gives `NotFound`, the same answer as a missing one. Only `policy::grant` builds a `Grant`, which carries `fields()`.
+- [x] Add the facade `dory.assistants()` with `access`, `set_enabled`, `add(label, exposure, writes, key)`, `set_exposure`, `set_writes`, and `remove`, plus `dory.library().set_hidden(id, bool)` and `LibraryReader::assistant_access`. A duplicate label is `DoryError::AssistantExists`.
+- [x] Add `dory-cli assistants on|off|list`, `assistants add NAME --exposure titles|summaries|transcripts [--edits never|ask]` with no default exposure, `assistants exposure NAME LEVEL`, `assistants edits NAME never|ask`, `assistants remove NAME`, and `dory-cli private ID on|off`. Changes take the lock and `list` only reads. `on` prints what leaves the Mac first. `add` prints the key once.
 
 **You see.**
 

@@ -8,7 +8,7 @@ use async_channel::{Receiver, Sender, TrySendError};
 
 use super::pace::Budget;
 use super::recorder::RecorderStatus;
-use crate::domain::{Fraction, JobId, Ms, RecordingId, Segment, Stage};
+use crate::domain::{AssistantChange, Fraction, JobId, Ms, RecordingId, Segment, Stage};
 use crate::models::{KindTag, ModelRef};
 use crate::ports::capture::CaptureIssue;
 use crate::ports::{Change, Store, StoreError};
@@ -128,6 +128,10 @@ pub fn change_events(changes: &[Change]) -> Vec<Event> {
             Change::Job { job, .. } => Some(Event::JobChanged(*job)),
             Change::SettingsReplaced(_) => Some(Event::SettingsChanged),
             Change::CheckpointSaved { .. } | Change::CheckpointsCleared(_) => None,
+            Change::Assistant(AssistantChange::RecordingHidden { id, .. }) => {
+                Some(Event::RecordingChanged(id.clone()))
+            }
+            Change::Assistant(_) => Some(Event::SettingsChanged),
         })
         .collect()
 }

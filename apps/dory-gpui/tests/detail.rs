@@ -333,3 +333,34 @@ fn scrolling_docks_the_player_and_pins_the_tab_row(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// Kit's input frame fixes its height and line height for 13 pt text, so the 30 pt title once
+/// lost its tops and descenders in edit mode and covered the meta line.
+#[gpui_kit::test]
+fn the_title_editor_is_as_tall_as_the_title_and_keeps_the_meta_line_clear(cx: &mut TestAppContext) {
+    let (window, app) = open_states(cx);
+    select(&app, "Design review", cx);
+    let shown = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("title").bounds()
+        })
+        .unwrap();
+    cx.update_window(window, |_, window, cx| {
+        window.click("title", cx);
+        window.render_frame(cx);
+        let editor = window.find("title-editor").bounds();
+        let meta = window.find("detail-meta").bounds();
+        assert!(
+            editor.size.height >= shown.size.height,
+            "the editor ({:?}) is shorter than the title it replaces ({:?})",
+            editor.size.height,
+            shown.size.height
+        );
+        assert!(
+            meta.top() >= editor.bottom(),
+            "the meta line ({meta:?}) sits under the editor ({editor:?})"
+        );
+    })
+    .unwrap();
+}

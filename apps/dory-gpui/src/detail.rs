@@ -363,11 +363,15 @@ impl DetailPane {
                     }
                 }))
                 .child(
+                    // Kit's frame fixes its height and line height for body text; the
+                    // title's own line height and an auto height keep 30 pt text whole.
                     Input::new(&edit.field)
                         .aria_label("Title")
                         .appearance(false)
                         .text_size(theme.text(30.))
-                        .font_weight(FontWeight::BOLD),
+                        .font_weight(FontWeight::BOLD)
+                        .line_height(relative(1.2))
+                        .h_auto(),
                 )
                 .into_any_element();
         }

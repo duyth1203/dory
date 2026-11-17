@@ -5,7 +5,15 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 profile="${1:-debug}"
 target="${CARGO_TARGET_DIR:-target}"
-if [ "$profile" = release ]; then cargo build --release -p dory-gpui -p dory-mcp; else cargo build -p dory-gpui -p dory-mcp; fi
+scripts/require-swift.sh
+# Two invocations, so cargo does not unify the app's features into dory-mcp, which links no Swift.
+if [ "$profile" = release ]; then
+  cargo build --release -p dory-gpui
+  cargo build --release -p dory-mcp
+else
+  cargo build -p dory-gpui
+  cargo build -p dory-mcp
+fi
 app="$target/$profile/DoryDev.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS"

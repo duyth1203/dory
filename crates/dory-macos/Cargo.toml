@@ -6,9 +6,10 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-# Builds swift/DoryAI.swift and the `ai` module over it. Off by default: Rust links for macOS 11
-# unless MACOSX_DEPLOYMENT_TARGET says otherwise, and below 12 the Swift concurrency runtime links
-# as `@rpath/libswift_Concurrency.dylib`, which a binary without `-rpath /usr/lib/swift` cannot load.
+# Builds swift/DoryAI.swift and the `ai` module over it. `dory`'s `app` feature turns it on. A
+# binary that links it must target macOS 12 or later, which the workspace's `.cargo/config.toml`
+# does with MACOSX_DEPLOYMENT_TARGET 26.0: below 12 the Swift concurrency runtime links as
+# `@rpath/libswift_Concurrency.dylib`.
 apple-intelligence = []
 
 [dependencies]

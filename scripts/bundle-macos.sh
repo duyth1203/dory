@@ -3,9 +3,10 @@
 #
 #   scripts/bundle-macos.sh [OUT_DIR]
 #
-# OUT_DIR defaults to $CARGO_TARGET_DIR/bundle, or target/bundle. sherpa-onnx links statically,
-# so the bundle holds two executables and no dylibs: the app, and `dory-mcp`, the helper an
-# assistant launches from `Contents/MacOS/dory-mcp` to read the library.
+# OUT_DIR defaults to $CARGO_TARGET_DIR/bundle, or target/bundle. sherpa-onnx and the Apple
+# Intelligence bridge link statically, so the bundle holds two executables and no dylibs: the app,
+# and `dory-mcp`, the helper an assistant launches from `Contents/MacOS/dory-mcp` to read the
+# library. The build needs Xcode's swiftc and the macOS 26.4 SDK or later.
 #
 # Signing: DORY_SIGNING_IDENTITY (for example "Developer ID Application: Name (TEAMID)") signs
 # with that identity and the hardened runtime. Unset, the repo's local git config
@@ -23,6 +24,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+scripts/require-swift.sh
 command -v cargo-packager >/dev/null || {
   echo "cargo-packager is missing. Run: cargo install cargo-packager --locked" >&2
   exit 1
@@ -44,7 +46,9 @@ if [ "$identity" != "-" ] && [ -z "${APPLE_ID:-}${APPLE_API_KEY:-}" ]; then
   echo "bundle: no notarization credentials in the environment, skipping notarization" >&2
 fi
 
-cargo build --release -p dory-gpui -p dory-mcp
+# Two invocations, so cargo does not unify the app's features into dory-mcp, which links no Swift.
+cargo build --release -p dory-gpui
+cargo build --release -p dory-mcp
 
 mkdir -p "$out"
 rm -rf "$out/Dory.app"

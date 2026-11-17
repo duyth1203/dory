@@ -105,7 +105,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 - [ ] Add `dory_store::SqliteReader`, which implements `StoreRead` and not `Store`. Its `open(path)` opens one connection with `SQLITE_OPEN_READ_ONLY`, sets `busy_timeout`, never creates the file or its folder, never sets `journal_mode`, and never migrates.
 - [ ] Refuse a mismatched schema. A missing file or `user_version` 0 gives `StoreError::Missing`, an older one `SchemaTooOld { found, supported }`, and a newer one the existing `SchemaTooNew`. Every read transaction re-reads `user_version`, and a change while open gives `SchemaChanged`.
-- [ ] Test a WAL database after a clean app quit, with no `-wal` or `-shm` file. If the read-only open fails there, open without the read-only flag and set `PRAGMA query_only = ON` instead. `SqliteReader` still has no write method either way. Log which one shipped.
+- [x] Test a WAL database after a clean app quit, with no `-wal` or `-shm` file. Evidence is `a_wal_library_without_shm_opens` on `fix/strict-library-reader`. The read-only open works, and SQLite creates the `-wal` and `-shm` sidecars, which is how WAL readers coordinate. The database file's bytes never change. In a folder the user cannot write, the open fails with `SQLITE_READONLY_DIRECTORY`, which the real data folder never is.
 - [ ] Move `dory::open_library` onto `SqliteReader`. It no longer calls `storage()` or creates the data folder. `open_library_with_fake_engines` follows.
 - [ ] Give each new error a sentence the CLI prints, for example "No Dory library at <path>. Open Dory once to create it." and "Open Dory to update this library."
 
@@ -128,10 +128,10 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Lane 4. Set the copy's `user_version` one above the build's with `sqlite3`, then run `dory-cli list`. Save `newer.txt`. Pass when it prints the update sentence and the file's SHA-256 is unchanged.
 - [ ] Lane 5. Start `dory-cli record --fake-capture 30` on a copy and run `dory-cli list` every second while it records. Save `list-while-recording.txt`. Pass when every list succeeds and the recording appears after it stops.
 - [ ] Lane 6. Run the GPUI app on a copy with `cargo run --release -p dory-gpui`, then run `dory-cli list` from a terminal. Save `list-while-app.png` of Dory's window and `list-while-app.txt`. Pass when both show the same titles.
-- [ ] Lane 7. Quit the app cleanly so SQLite removes `-wal` and `-shm`, confirm with `ls`, then run `dory-cli list`. Save `no-shm.txt`. Pass when the list succeeds and no `-wal` or `-shm` file was created by the reader if the read-only path shipped.
-- [ ] Lane 8. Make the copy's folder read-only with `chmod -R a-w`, run `dory-cli list`, then restore permissions. Save `readonly-folder.txt`. Pass when the list succeeds.
+- [ ] Lane 7. Quit the app cleanly so SQLite removes `-wal` and `-shm`, confirm with `ls`, then run `dory-cli list`. Save `no-shm.txt`. Pass when the list succeeds and `dory.sqlite` has the same SHA-256 before and after.
+- [ ] Lane 8. Run `dory-cli models` on a folder with no library, then `dory-cli languages`, then `dory-cli models` again. Save `models-fresh.txt`. Pass when the first run refuses with "open Dory once to create it" and creates nothing, and the last run lists the models.
 - [ ] Lane 9. Run `dory-cli models` on a migrated copy at trunk and head. Save `models.txt`. Pass when both list the same models with the same status.
-- [ ] Lane 10. Run `fs_usage -w -f filesys` filtered to the copy's path while `dory-cli list` runs. Save `fs-usage.txt`. Pass when no write, create, or rename touches `dory.sqlite` or the folder.
+- [ ] Lane 10. Run `fs_usage -w -f filesys` filtered to the copy's path while `dory-cli list` runs. Save `fs-usage.txt`. Pass when no write touches `dory.sqlite` itself. Only SQLite's `-wal` and `-shm` sidecars may be created or written.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 

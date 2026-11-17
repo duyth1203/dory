@@ -20,7 +20,7 @@ use dory_core::models::{CatalogError, Llm, Stt};
 use dory_core::ports::capture::CaptureBackend;
 use dory_core::ports::{ModelProvider, StoreError};
 use dory_engines::{Ollama, Sherpa};
-use dory_store::{FsTakes, SqliteStore};
+use dory_store::{FsTakes, SqliteReader, SqliteStore};
 use thiserror::Error;
 
 pub use clock::SystemClock;
@@ -142,7 +142,7 @@ fn open_with(
 }
 
 fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryReader, OpenError> {
-    let Storage { store, .. } = storage(config)?;
+    let store = Arc::new(SqliteReader::open(config.db_path())?);
     Ok(LibraryReader::open(ReadPorts {
         store,
         stt: providers.stt,
@@ -164,8 +164,10 @@ pub fn open(config: &Config) -> Result<Dory, OpenError> {
     )
 }
 
-/// Opens the library under `config.data_dir` for reading only. It takes no lock and repairs
-/// nothing, so it works while another process records into the same folder.
+/// Opens the library under `config.data_dir` for reading only. It takes no lock, repairs nothing,
+/// and never writes: it creates no file, sets no journal mode, and never migrates, so it works
+/// while another process records into the same folder and cannot change that process's schema.
+/// A library that does not exist yet, or was written by another build, is refused.
 pub fn open_library(config: &Config) -> Result<LibraryReader, OpenError> {
     open_library_with(config, providers(config))
 }

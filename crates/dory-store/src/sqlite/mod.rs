@@ -7,6 +7,9 @@
 //! `PRAGMA user_version` and grown by appending to [`MIGRATIONS`].
 
 pub(crate) mod codec;
+mod reader;
+
+pub use reader::SqliteReader;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -399,7 +402,11 @@ fn decode_recording(raw: RawRecording) -> Result<Recording, StoreError> {
 
 // ---- reads --------------------------------------------------------------------------------
 
-impl StoreRead for SqliteStore {
+/// One implementation of every read, shared by the store and the read-only reader. Each type
+/// supplies `read`, which runs a closure in one read transaction.
+macro_rules! store_reads {
+    ($t:ty) => {
+impl StoreRead for $t {
     fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
         self.read(|conn| {
             let raw = conn
@@ -651,6 +658,11 @@ impl StoreRead for SqliteStore {
         })
     }
 }
+    };
+}
+
+store_reads!(SqliteStore);
+store_reads!(reader::SqliteReader);
 
 pub(crate) fn load_transcript(
     conn: &Connection,

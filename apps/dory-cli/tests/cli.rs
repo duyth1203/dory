@@ -199,6 +199,15 @@ fn records_from_the_fake_capture_then_processes_with_fake_engines() {
 #[test]
 fn models_lists_each_kind_and_the_fakes_when_asked() {
     let env = Env::new();
+    let fresh = env.run(&["models"]);
+    assert!(!fresh.status.success(), "a reader never creates a library");
+    assert!(
+        String::from_utf8_lossy(&fresh.stderr).contains("open Dory once to create it"),
+        "{}",
+        String::from_utf8_lossy(&fresh.stderr)
+    );
+    assert!(!env.data().join("dory.sqlite").exists());
+    env.ok(&["languages"]);
     let plain = env.ok(&["models"]);
     for id in [
         "sherpa/parakeet-tdt-0.6b-v3",

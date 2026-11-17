@@ -68,6 +68,14 @@ pub struct Theme {
     pub toast_text_secondary: Hsla,
     pub menu_bg: Hsla,
     pub menu_border: Hsla,
+    /// A Settings group's fill (settings brief section 1).
+    pub group_bg: Hsla,
+    pub group_border: Hsla,
+    /// The off radio's ring. The brief's `#A9ADB6` and `#5A5B63`, moved until they reach 3 to 1
+    /// on every fill a radio sits on (WCAG 1.4.11).
+    pub radio_border: Hsla,
+    /// A meeting-language chip, `avatar_bg`.
+    pub chip_bg: Hsla,
     /// View > Bigger and Smaller (A11Y-7), 0.85 to 2.0. Every text size goes through
     /// [`Theme::text`].
     pub text_scale: f32,
@@ -173,6 +181,9 @@ struct Base {
     toast_bg: u32,
     menu_bg: u32,
     menu_border: u32,
+    group_bg: u32,
+    group_border: u32,
+    radio_border: u32,
     playing_alpha: f32,
 }
 
@@ -198,6 +209,9 @@ const LIGHT: Base = Base {
     toast_bg: 0x2C2D31,
     menu_bg: 0xFFFFFF,
     menu_border: 0xD5D8DE,
+    group_bg: 0xF7F8FA,
+    group_border: 0xE3E6EB,
+    radio_border: 0xA9ADB6,
     playing_alpha: 0.07,
 };
 
@@ -223,6 +237,9 @@ const DARK: Base = Base {
     toast_bg: 0x3A3B41,
     menu_bg: 0x2C2D33,
     menu_border: 0x45464D,
+    group_bg: 0x212226,
+    group_border: 0x34353B,
+    radio_border: 0x5A5B63,
     playing_alpha: 0.12,
 };
 
@@ -253,6 +270,7 @@ impl Theme {
         let control_bg = c(base.control_bg);
         let field_bg = c(base.field_bg);
         let selection_inactive = c(base.selection_inactive);
+        let group_bg = c(base.group_bg);
         let on_accent = c(0xFFFFFF);
         let text_secondary = if high {
             c(if dark {
@@ -273,6 +291,7 @@ impl Theme {
             field_bg,
             selection_inactive,
             playing_bg,
+            group_bg,
         ];
         let accent = with_contrast(system_accent, on_accent);
         let record_red = c(base.record_red);
@@ -342,6 +361,14 @@ impl Theme {
             toast_text_secondary: blend(toast_text, toast_bg, 0.7),
             menu_bg: c(base.menu_bg),
             menu_border: border(base.menu_border),
+            group_bg,
+            group_border: border(base.group_border),
+            radio_border: with_contrast_all(
+                c(base.radio_border),
+                &[control_bg, group_bg, window_bg],
+                MIN_NON_TEXT_CONTRAST,
+            ),
+            chip_bg: c(base.avatar_bg),
             text_scale: clamp_text_scale(display.text_scale),
         }
     }
@@ -425,6 +452,7 @@ impl Theme {
             ("selection_inactive", self.selection_inactive),
             ("playing_bg", self.playing_bg),
             ("menu_bg", self.menu_bg),
+            ("group_bg", self.group_bg),
         ];
         let mut pairs = Vec::new();
         for (fg_name, fg) in [
@@ -443,8 +471,20 @@ impl Theme {
             ("sidebar_bg", self.sidebar_bg),
             ("card_bg", self.card_bg),
             ("control_bg", self.control_bg),
+            ("group_bg", self.group_bg),
         ] {
             pairs.push(graphic(&format!("focus ring on {bg_name}"), self.ring, bg));
+        }
+        for (bg_name, bg) in [
+            ("control_bg", self.control_bg),
+            ("group_bg", self.group_bg),
+            ("window_bg", self.window_bg),
+        ] {
+            pairs.push(graphic(
+                &format!("radio_border on {bg_name}"),
+                self.radio_border,
+                bg,
+            ));
         }
         pairs.extend([
             text("on_accent on accent", self.on_accent, self.accent),
@@ -462,6 +502,7 @@ impl Theme {
                 self.toast_bg,
             ),
             text("text on avatar_bg", self.text, self.avatar_bg),
+            text("text on chip_bg", self.text, self.chip_bg),
             graphic("wave_rest on card_bg", self.wave_rest, self.card_bg),
             graphic("accent wave on card_bg", self.accent, self.card_bg),
             graphic("wave_done on card_bg", self.wave_done, self.card_bg),
@@ -486,6 +527,7 @@ impl Theme {
                 ("sidebar_bg", self.sidebar_bg),
                 ("card_bg", self.card_bg),
                 ("control_bg", self.control_bg),
+                ("group_bg", self.group_bg),
             ] {
                 pairs.push(graphic(
                     &format!("border on {bg_name}"),

@@ -206,6 +206,19 @@ pub fn import_legacy(config: &Config, old_data_dir: &Path) -> Result<ImportRepor
     Ok(dory_store::import_legacy(&store, &takes, old_data_dir)?)
 }
 
+/// Hands the store under `config.data_dir` to `write`, holding the data folder's lock, so
+/// `dory-cli seed` writes synthetic recordings through `Store::apply` like every other write.
+#[cfg(feature = "fake-engines")]
+pub fn with_store<T>(
+    config: &Config,
+    write: impl FnOnce(&dyn dory_core::ports::Store) -> T,
+) -> Result<T, OpenError> {
+    create_data_dir(config)?;
+    let _lock = lock::DataLock::acquire(&config.data_dir)?;
+    let Storage { store, .. } = storage(config)?;
+    Ok(write(&*store))
+}
+
 /// Removes the audio devices the old app left behind and puts the system default devices
 /// back, once. Reads the old app's restore files from its data folder and writes only a marker
 /// under `config.data_dir`. A no-op off macOS and when `HOME` is unset. It is also skipped when

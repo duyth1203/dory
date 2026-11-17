@@ -1021,7 +1021,16 @@ impl LibraryReader {
     }
 
     pub fn list(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
-        self.store.recordings(query)
+        let started = std::time::Instant::now();
+        let rows = self.store.recordings(query)?;
+        if query.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+            eprintln!(
+                "search ms={:.2} hits={}",
+                started.elapsed().as_secs_f64() * 1000.0,
+                rows.len()
+            );
+        }
+        Ok(rows)
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {

@@ -57,6 +57,53 @@ impl ListArgs {
     }
 }
 
+/// `seed --recordings N --words N [--seed N]` writes synthetic recordings for search lanes.
+#[derive(Debug, PartialEq)]
+pub struct SeedArgs {
+    pub recordings: u32,
+    pub words: u32,
+    pub seed: u64,
+}
+
+impl SeedArgs {
+    /// Below this the planted words would share recordings.
+    pub const MIN_RECORDINGS: u32 = 20;
+
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut recordings = None;
+        let mut words = None;
+        let mut seed = 1;
+        let mut it = args.iter();
+        while let Some(flag) = it.next() {
+            let value = it.next().ok_or_else(|| format!("{flag} needs a number"))?;
+            let number = |v: &str| v.parse::<u64>().map_err(|e| format!("{flag}: {e}"));
+            match flag.as_str() {
+                "--recordings" => recordings = Some(number(value)?),
+                "--words" => words = Some(number(value)?),
+                "--seed" => seed = number(value)?,
+                other => return Err(format!("unknown flag {other}")),
+            }
+        }
+        let recordings = recordings.ok_or("seed needs --recordings N")?;
+        let words = words.ok_or("seed needs --words N")?;
+        if recordings < u64::from(Self::MIN_RECORDINGS) || recordings > u64::from(u16::MAX) {
+            return Err(format!(
+                "--recordings takes {} to {}",
+                Self::MIN_RECORDINGS,
+                u16::MAX
+            ));
+        }
+        if !(30..=1_000_000).contains(&words) {
+            return Err("--words takes 30 to 1000000".into());
+        }
+        Ok(Self {
+            recordings: recordings as u32,
+            words: words as u32,
+            seed,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct ShowArgs {
     pub id: RecordingId,
@@ -370,6 +417,25 @@ mod tests {
                 .search,
             Some("weekly sync".into())
         );
+        assert_eq!(
+            SeedArgs::parse(&words("--recordings 500 --words 18000")).unwrap(),
+            SeedArgs {
+                recordings: 500,
+                words: 18_000,
+                seed: 1
+            }
+        );
+        assert_eq!(
+            SeedArgs::parse(&words("--seed 7 --words 40 --recordings 20"))
+                .unwrap()
+                .seed,
+            7
+        );
+        assert!(SeedArgs::parse(&words("--recordings 500")).is_err());
+        assert!(SeedArgs::parse(&words("--recordings 19 --words 100")).is_err());
+        assert!(SeedArgs::parse(&words("--recordings 50 --words 10")).is_err());
+        assert!(SeedArgs::parse(&words("--recordings 50 --words")).is_err());
+        assert!(SeedArgs::parse(&words("--recordings x --words 100")).is_err());
         assert!(ShowArgs::parse(&words("rec_1")).is_ok());
         assert!(ShowArgs::parse(&words("../etc")).is_err());
         assert!(ShowArgs::parse(&[]).is_err());

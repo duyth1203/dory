@@ -8,6 +8,7 @@ mod library;
 mod play;
 mod process;
 mod record;
+mod seed;
 mod settings;
 mod view;
 mod wait;
@@ -21,6 +22,7 @@ const USAGE: &str = "usage:
   dory-cli import OLD_DATA_DIR
   dory-cli add AUDIO_FILE [--title TEXT]
   dory-cli list [--search TEXT]
+  dory-cli seed --recordings N --words N [--seed N]
   dory-cli show ID
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
@@ -32,7 +34,7 @@ const USAGE: &str = "usage:
   dory-cli languages [TAG...|--clear]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
-The --fake-* flags write fake audio or fake transcripts, so they need $DORY_DATA_DIR set.
+The --fake-* flags and seed write fake audio or fake recordings, so they need $DORY_DATA_DIR set.
 $DORY_MACHINE=battery,low-power,thermal=serious pretends the Mac's conditions, also only with
 $DORY_DATA_DIR set.";
 
@@ -45,6 +47,9 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| library::import(&c, &a))),
             Some("list") => args::ListArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| library::list(&c, &a))),
+            Some("seed") => {
+                args::SeedArgs::parse(rest).and_then(|a| config().and_then(|c| seed::run(&c, &a)))
+            }
             Some("show") => args::ShowArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| library::show(&c, &a))),
             Some("delete") => args::DeleteArgs::parse(rest)
@@ -83,8 +88,8 @@ fn config() -> Result<Config, String> {
     Config::from_env().map_err(|e| e.to_string())
 }
 
-/// Fake audio and fake transcripts never go into the default library: a `--fake-*` flag needs the
-/// data folder named explicitly.
+/// Fake audio and fake transcripts never go into the default library: a `--fake-*` flag or `seed`
+/// needs the data folder named explicitly.
 fn allow_fakes(flag: &str) -> Result<(), String> {
     match std::env::var_os(DATA_DIR_VAR) {
         Some(dir) if !dir.is_empty() => Ok(()),

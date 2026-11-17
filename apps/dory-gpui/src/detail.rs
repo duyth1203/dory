@@ -197,6 +197,8 @@ pub struct DetailPane {
     arrivals: Vec<Instant>,
     /// Set when this recording's stop is saved; the finish card takes focus once it shows.
     focus_finish: bool,
+    /// When the selection made this pane, until its loaded content first paints.
+    opened: Option<Instant>,
 }
 
 impl DetailPane {
@@ -235,6 +237,7 @@ impl DetailPane {
             always: false,
             arrivals: Vec::new(),
             focus_finish: false,
+            opened: Some(Instant::now()),
         }
     }
 
@@ -832,6 +835,12 @@ impl Render for DetailPane {
                 }
             }
         };
+        if let Some(opened) = self.opened.take() {
+            window.on_next_frame(move |_, _| {
+                let ms = opened.elapsed().as_secs_f64() * 1000.0;
+                eprintln!("match-revealed ms={ms:.1}");
+            });
+        }
         let (tab, phase, lines) = {
             let app = self.app.read(cx);
             let id = &detail.recording.id;

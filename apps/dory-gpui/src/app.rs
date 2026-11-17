@@ -39,6 +39,21 @@ pub use crate::processing::{Download, ModelInfo};
 use crate::processing::{Phase, Run};
 use crate::record_control::Live;
 
+fn millis(since: Instant) -> f64 {
+    since.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Logs once the main window has painted. A next-frame callback runs before its frame draws, so
+/// the second one runs after the frame that shows the change.
+fn log_after_paint(cx: &mut gpui_kit::App, line: impl FnOnce() -> String + 'static) {
+    let Some(window) = crate::main_window(cx) else {
+        return;
+    };
+    let _ = window.update(cx, |_, window, _| {
+        window.on_next_frame(|window, _| window.on_next_frame(move |_, _| eprintln!("{}", line())));
+    });
+}
+
 /// How long typing pauses before the search runs.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
 
@@ -113,6 +128,8 @@ pub struct AppState {
     reselect: Option<RecordingId>,
     rows_generation: u64,
     search_generation: u64,
+    /// When the debounce fired for the search whose rows have not painted yet.
+    settling: Option<Instant>,
     /// The recorded time and level, in their own entity so the 10 Hz meter repaints only the
     /// views that show it.
     live: Entity<Live>,
@@ -219,6 +236,7 @@ impl AppState {
             reselect: None,
             rows_generation: 0,
             search_generation: 0,
+            settling: None,
             live: cx.new(|_| Live::default()),
             last_recorded: dory_core::domain::Ms(0),
             grace_left: 0,
@@ -343,6 +361,7 @@ impl AppState {
             cx.background_executor().timer(SEARCH_DEBOUNCE).await;
             let _ = this.update(cx, |state, cx| {
                 if state.search_generation == generation {
+                    state.settling = Some(Instant::now());
                     state.reload(cx);
                 }
             });
@@ -498,6 +517,11 @@ impl AppState {
                         state.track_finished(&queued_before);
                         state.error = None;
                         state.on_rows(&before, cx);
+                        if let Some(started) = state.settling.take() {
+                            log_after_paint(cx, move || {
+                                format!("search-settled ms={:.1}", millis(started))
+                            });
+                        }
                     }
                     Err(error) => state.error = Some(error.to_string().into()),
                 }

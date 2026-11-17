@@ -1,0 +1,11 @@
+pure_tl0.wav	tl:30
+pure_tl1.wav	tl:32
+pure_tl2.wav	tl:43
+pure_tl3.wav	tl:24
+pure_en0.wav	en:58
+pure_en1.wav	en:50
+mix_tl3_en0.wav	tl:24 en:29
+mix_en2_tl3.wav	en:27 tl:24
+mix_tl1_en3.wav	tl:32 en:23
+mix_en1_tl3.wav	en:22 tl:24
+mix_en_tl3_en.wav	en:14 tl:24 en:10

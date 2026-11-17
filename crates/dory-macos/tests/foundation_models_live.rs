@@ -33,17 +33,16 @@ fn a_short_summary_round_trips() {
     let started = Instant::now();
     let info = foundation_models::info();
     let info_ms = started.elapsed().as_millis();
-    let Availability::Available {
-        context_size,
-        languages,
-    } = info
-    else {
-        panic!("Apple Intelligence is not available here: {info:?}");
-    };
-    assert!(context_size >= 4096, "context {context_size}");
+    assert_eq!(
+        info.availability,
+        Availability::Available,
+        "Apple Intelligence is not available here: {info:?}"
+    );
+    assert!(info.context_size >= 4096, "context {}", info.context_size);
     assert!(
-        languages.iter().any(|l| l == "en"),
-        "languages {languages:?}"
+        info.languages.iter().any(|l| l == "en"),
+        "languages {:?}",
+        info.languages
     );
 
     let mut streamed = String::new();
@@ -62,9 +61,10 @@ fn a_short_summary_round_trips() {
     .expect("completion");
     let complete_ms = started.elapsed().as_millis();
     eprintln!(
-        "info_ms={info_ms} context={context_size} languages={} complete_ms={complete_ms} \
+        "info_ms={info_ms} context={} languages={} complete_ms={complete_ms} \
          chars={} text={text:?}",
-        languages.len(),
+        info.context_size,
+        info.languages.len(),
         text.len()
     );
     assert!(!text.trim().is_empty());

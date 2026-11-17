@@ -47,10 +47,12 @@ fn with<K: ModelKind>(rows: &[ModelStatus<K>], ready: &[&str]) -> Vec<ModelStatu
         .collect()
 }
 
+/// An English meeting.
 fn auto(rows: &[ModelStatus<Llm>]) -> Resolution<Llm> {
+    let en = LangTag::parse("en").unwrap();
     let needs = LlmNeeds {
-        main: None,
-        all: Vec::new(),
+        main: Some(en.clone()),
+        all: vec![en],
     };
     resolve(&Choice::Auto, rows, &needs)
 }
@@ -75,7 +77,11 @@ fn apple_rows_appear_only_with_the_app_feature() {
             fix: Some("Turn it on in System Settings, Apple Intelligence & Siri".into()),
         })
     );
-    assert_eq!(apple.entry.caps.languages, LangSet::Any);
+    assert_eq!(
+        apple.entry.caps.languages,
+        LangSet::Only(Vec::new()),
+        "with no languages read, the row claims none"
+    );
 }
 
 #[test]
@@ -109,7 +115,20 @@ fn every_pretended_state_reaches_the_row() {
 
 #[test]
 fn auto_prefers_a_ready_gemma_and_falls_back_to_apple() {
-    let rows = summary_rows(PretendApple::Off);
+    let unread = summary_rows(PretendApple::Off);
+    assert!(
+        !matches!(
+            auto(&with(&unread, &["apple/foundation-model"])),
+            Resolution::Use(_)
+        ),
+        "Apple turned on after launch, with no languages read, takes no meeting"
+    );
+    let mut rows = unread;
+    for row in &mut rows {
+        if row.entry.id.to_string() == "apple/foundation-model" {
+            row.entry.caps.languages = LangSet::Only(vec![LangTag::parse("en").unwrap()]);
+        }
+    }
     let pick = |ready: &[&str]| match auto(&with(&rows, ready)) {
         Resolution::Use(id) => id.to_string(),
         other => panic!("{ready:?} resolves to {other:?}"),

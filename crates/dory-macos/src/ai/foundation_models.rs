@@ -17,12 +17,21 @@ use super::ffi;
 
 /// What `SystemLanguageModel.default` reports on this Mac.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Info {
+    pub availability: Availability,
+    /// Apple's context window in tokens, or 0 when it reported none.
+    pub context_size: u32,
+    /// BCP 47 tags such as `en`, `en-GB`, and `zh-Hant`, read whatever the availability. The
+    /// SDK puts no availability condition on `supportedLanguages`, but a Mac that cannot run the
+    /// model may report none.
+    pub languages: Vec<String>,
+}
+
+/// Whether `SystemLanguageModel.default` can generate on this Mac.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Availability {
-    /// Ready to generate. `languages` are BCP 47 tags such as `en`, `en-GB`, and `zh-Hant`.
-    Available {
-        context_size: u32,
-        languages: Vec<String>,
-    },
+    /// Ready to generate.
+    Available,
     /// Apple Intelligence is turned off in System Settings.
     NotEnabled,
     /// This Mac cannot run Apple Intelligence.
@@ -72,9 +81,9 @@ impl std::error::Error for Failure {}
 
 /// Reads Apple's availability, context window, and languages. Takes about 80 ms, so keep it off a
 /// UI thread.
-pub fn info() -> Availability {
+pub fn info() -> Info {
     let raw = ffi::fm_info();
-    availability(raw.state, raw.context_size, &raw.languages_csv)
+    info_of(raw.state, raw.context_size, &raw.languages_csv)
 }
 
 /// Generates a reply in a fresh session and returns its full text. Each new piece of text goes to
@@ -136,8 +145,10 @@ pub struct FoundationModels {
 
 impl FoundationModels {
     /// Reads Apple's context window and languages once, here (13 ms on the M3 Pro, 80 ms in the
-    /// spike), so `catalog` does no IO. `availability` probes on every call, so a model Apple
-    /// finishes preparing later turns Ready without a restart.
+    /// spike), so `catalog` does no IO. The registry keeps the catalog for the session, so caps
+    /// read while Apple named no language stay empty until Dory restarts. `availability` probes
+    /// on every call, so a model Apple finishes preparing later turns Ready, or asks for that
+    /// restart when its languages were never read.
     pub fn from_this_mac() -> Self {
         Self {
             caps: caps(&info()),
@@ -145,12 +156,22 @@ impl FoundationModels {
         }
     }
 
-    /// Reports `state` from every probe and never calls Apple's availability, for lanes.
+    /// Reports `state` from every probe and never calls Apple's availability, for lanes. Its
+    /// languages are never read, as on a Mac where Apple names none.
     pub fn pretending(state: Availability) -> Self {
         Self {
-            caps: caps(&state),
+            caps: caps(&Info {
+                availability: state,
+                context_size: 0,
+                languages: Vec::new(),
+            }),
             pretend: Some(state),
         }
+    }
+
+    /// True when Apple named no language as the row was built, so it claims none.
+    fn languages_unread(&self) -> bool {
+        self.caps.languages == LangSet::Only(Vec::new())
     }
 }
 
@@ -162,39 +183,38 @@ fn provider_id() -> ProviderId {
     ProviderId::parse("apple").expect("a valid provider id")
 }
 
-/// What the row can read. A Mac that cannot run the model reports nothing reliable, so the row
-/// claims Apple's window and every language: it never runs, and a narrower claim would blame the
-/// meeting's language for what is the Mac's state.
-fn caps(state: &Availability) -> LlmCaps {
-    match state {
-        Availability::Available {
-            context_size,
-            languages,
-        } => {
-            let tags: Vec<LangTag> = languages
+/// What the row can read: Apple's languages, never `LangSet::Any`. Apple drops what it cannot
+/// read without refusing, so with no language named the row claims none and fits no meeting.
+fn caps(info: &Info) -> LlmCaps {
+    LlmCaps {
+        context_tokens: match info.context_size {
+            0 => APPLE_CONTEXT,
+            size => size,
+        },
+        languages: LangSet::Only(
+            info.languages
                 .iter()
                 .filter_map(|tag| LangTag::parse(tag).ok())
-                .collect();
-            LlmCaps {
-                context_tokens: *context_size,
-                languages: if tags.is_empty() {
-                    LangSet::Any
-                } else {
-                    LangSet::Only(tags)
-                },
-            }
-        }
-        _ => LlmCaps {
-            context_tokens: APPLE_CONTEXT,
-            languages: LangSet::Any,
-        },
+                .collect(),
+        ),
     }
+}
+
+/// Apple turned Ready after the row was built with no languages, so it claims none until Dory
+/// reads them again.
+fn restart() -> models::Availability {
+    models::Availability::Unavailable(Unavailable {
+        reason: UnavailableReason::Preparing {
+            detail: "Restart Dory to finish setting up Apple Intelligence".into(),
+        },
+        fix: None,
+    })
 }
 
 /// Appendix E of `docs/plans/platform-ai.md`, with the sentences the user reads.
 fn availability_of(state: &Availability) -> models::Availability {
     let (reason, fix) = match state {
-        Availability::Available { .. } => return models::Availability::Ready,
+        Availability::Available => return models::Availability::Ready,
         Availability::OsTooOld => (
             UnavailableReason::OsTooOld {
                 required: "macOS 26.4".into(),
@@ -311,9 +331,10 @@ impl ModelProvider<Llm> for FoundationModels {
                 fix: None,
             });
         }
-        match &self.pretend {
-            Some(state) => availability_of(state),
-            None => availability_of(&info()),
+        let state = self.pretend.unwrap_or_else(|| info().availability);
+        match availability_of(&state) {
+            models::Availability::Ready if self.languages_unread() => restart(),
+            other => other,
         }
     }
 
@@ -374,21 +395,23 @@ impl LanguageModel for FoundationModel {
     }
 }
 
-fn availability(state: i32, context_size: u32, languages_csv: &str) -> Availability {
-    match state {
-        ffi::FM_AVAILABLE => Availability::Available {
-            context_size,
-            languages: languages_csv
-                .split(',')
-                .filter(|tag| !tag.is_empty())
-                .map(str::to_owned)
-                .collect(),
-        },
+fn info_of(state: i32, context_size: u32, languages_csv: &str) -> Info {
+    let availability = match state {
+        ffi::FM_AVAILABLE => Availability::Available,
         ffi::FM_NOT_ENABLED => Availability::NotEnabled,
         ffi::FM_NOT_ELIGIBLE => Availability::NotEligible,
         ffi::FM_NOT_READY => Availability::NotReady,
         ffi::FM_OS_TOO_OLD => Availability::OsTooOld,
         _ => Availability::Unknown,
+    };
+    Info {
+        availability,
+        context_size,
+        languages: languages_csv
+            .split(',')
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_owned)
+            .collect(),
     }
 }
 
@@ -414,6 +437,7 @@ fn failure_kind(code: i32) -> Option<FailureKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dory_core::models::{Fit, LlmNeeds, ModelKind as _};
 
     #[test]
     fn the_estimate_never_undercounts() {
@@ -437,39 +461,45 @@ mod tests {
         assert_eq!(count_tokens(&"日本語".repeat(9)), 30);
     }
 
+    /// A provider that pretends `state` with caps read from `languages`.
+    fn read(state: Availability, languages: &[&str]) -> FoundationModels {
+        FoundationModels {
+            caps: caps(&Info {
+                availability: state,
+                context_size: 4096,
+                languages: languages.iter().map(|&tag| tag.to_owned()).collect(),
+            }),
+            pretend: Some(state),
+        }
+    }
+
     #[test]
-    fn availability_reads_every_apple_state() {
+    fn info_reads_every_apple_state() {
         assert_eq!(
-            availability(ffi::FM_AVAILABLE, 4096, "de,en,en-GB"),
-            Availability::Available {
+            info_of(ffi::FM_AVAILABLE, 4096, "de,en,en-GB"),
+            Info {
+                availability: Availability::Available,
                 context_size: 4096,
                 languages: vec!["de".into(), "en".into(), "en-GB".into()],
             }
         );
         assert_eq!(
-            availability(ffi::FM_AVAILABLE, 4096, ""),
-            Availability::Available {
+            info_of(ffi::FM_NOT_ENABLED, 4096, "de,en"),
+            Info {
+                availability: Availability::NotEnabled,
                 context_size: 4096,
-                languages: vec![],
-            }
+                languages: vec!["de".into(), "en".into()],
+            },
+            "languages Apple names while off are kept"
         );
-        assert_eq!(
-            availability(ffi::FM_NOT_ENABLED, 0, ""),
-            Availability::NotEnabled
-        );
-        assert_eq!(
-            availability(ffi::FM_NOT_ELIGIBLE, 0, ""),
-            Availability::NotEligible
-        );
-        assert_eq!(
-            availability(ffi::FM_NOT_READY, 0, ""),
-            Availability::NotReady
-        );
-        assert_eq!(
-            availability(ffi::FM_OS_TOO_OLD, 4096, ""),
-            Availability::OsTooOld
-        );
-        assert_eq!(availability(9, 0, ""), Availability::Unknown);
+        let state = |code| info_of(code, 0, "").availability;
+        assert_eq!(state(ffi::FM_AVAILABLE), Availability::Available);
+        assert_eq!(state(ffi::FM_NOT_ENABLED), Availability::NotEnabled);
+        assert_eq!(state(ffi::FM_NOT_ELIGIBLE), Availability::NotEligible);
+        assert_eq!(state(ffi::FM_NOT_READY), Availability::NotReady);
+        assert_eq!(state(ffi::FM_OS_TOO_OLD), Availability::OsTooOld);
+        assert_eq!(state(9), Availability::Unknown);
+        assert!(info_of(ffi::FM_AVAILABLE, 4096, "").languages.is_empty());
     }
 
     #[test]
@@ -516,13 +546,7 @@ mod tests {
             detail: detail.into(),
         };
         let cases = [
-            (
-                Availability::Available {
-                    context_size: 4096,
-                    languages: vec!["en".into()],
-                },
-                models::Availability::Ready,
-            ),
+            (Availability::Available, models::Availability::Ready),
             (
                 Availability::OsTooOld,
                 unavailable(
@@ -564,9 +588,68 @@ mod tests {
             ),
         ];
         for (state, want) in cases {
-            let provider = FoundationModels::pretending(state.clone());
+            let provider = read(state, &["en"]);
             assert_eq!(provider.availability(&model_id()), want, "{state:?}");
         }
+    }
+
+    #[test]
+    fn a_row_built_with_no_languages_fits_no_meeting() {
+        let needs = |langs: &[&str]| LlmNeeds {
+            main: None,
+            all: langs.iter().map(|t| LangTag::parse(t).unwrap()).collect(),
+        };
+        for state in [
+            Availability::Available,
+            Availability::NotEnabled,
+            Availability::NotReady,
+            Availability::Unknown,
+        ] {
+            for provider in [FoundationModels::pretending(state), read(state, &[])] {
+                let [row] = provider.catalog().try_into().expect("one row");
+                assert_eq!(row.caps.languages, LangSet::Only(Vec::new()), "{state:?}");
+                assert_eq!(row.caps.context_tokens, 4096, "{state:?}");
+                for langs in [&["en"][..], &["tl"], &["en", "tl"], &[]] {
+                    assert!(
+                        matches!(Llm::fit(&row.caps, &needs(langs)), Fit::No(_)),
+                        "{state:?} fits {langs:?} with no languages read"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn apple_turning_ready_after_launch_asks_for_a_restart() {
+        let restart = models::Availability::Unavailable(Unavailable {
+            reason: UnavailableReason::Preparing {
+                detail: "Restart Dory to finish setting up Apple Intelligence".into(),
+            },
+            fix: None,
+        });
+        assert_eq!(
+            FoundationModels::pretending(Availability::Available).availability(&model_id()),
+            restart
+        );
+        assert_eq!(
+            read(Availability::Available, &[]).availability(&model_id()),
+            restart
+        );
+        assert_eq!(
+            read(Availability::Available, &["en"]).availability(&model_id()),
+            models::Availability::Ready,
+            "languages read at launch need no restart"
+        );
+        assert!(
+            matches!(
+                FoundationModels::pretending(Availability::NotEnabled).availability(&model_id()),
+                models::Availability::Unavailable(Unavailable {
+                    reason: UnavailableReason::TurnedOff { .. },
+                    ..
+                })
+            ),
+            "turned off still asks to turn it on"
+        );
     }
 
     fn variant(error: &EngineError) -> String {
@@ -628,10 +711,7 @@ mod tests {
 
     #[test]
     fn the_row_reads_its_caps_from_apple() {
-        let ready = FoundationModels::pretending(Availability::Available {
-            context_size: 4096,
-            languages: vec!["de".into(), "en".into(), "zh-Hans".into(), "!".into()],
-        });
+        let ready = read(Availability::Available, &["de", "en", "zh-Hans", "!"]);
         let [row] = ready.catalog().try_into().expect("one row");
         assert_eq!(row.id.to_string(), "apple/foundation-model");
         assert_eq!(row.display_name, "Apple Intelligence");
@@ -651,11 +731,15 @@ mod tests {
         );
         assert!(!row.caps.languages.supports(&LangTag::parse("tl").unwrap()));
 
-        let [off] = FoundationModels::pretending(Availability::NotEnabled)
+        let [off] = read(Availability::NotEnabled, &["de", "en"])
             .catalog()
             .try_into()
             .expect("one row");
-        assert_eq!(off.caps.languages, LangSet::Any);
+        assert_eq!(
+            off.caps.languages,
+            LangSet::Only(tags(&["de", "en"])),
+            "languages Apple names while off make the row's caps"
+        );
     }
 
     #[test]

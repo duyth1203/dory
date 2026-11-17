@@ -13,7 +13,7 @@ The program runs `pstack/skills/poteto-mode/playbooks/autopilot-stack.md`. The r
 
 Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-Requirement ids such as `UX-1` and `A11Y-4` point into `docs/plans/ux-redesign.md`. Appendix B records the designs that lost and Appendix E lists the open questions for the operator.
+Requirement ids such as `UX-1` and `A11Y-4` point into `docs/plans/ux-redesign.md`. Appendix B records the designs that lost and Appendix E records the operator's answers to the open questions.
 
 A lane marked **Operator lane** needs a person at the Mac, because it runs with VoiceOver on or changes System Settings. The root prepares the exact steps and the evidence to capture, and the operator runs it. Every other lane is agent-runnable.
 
@@ -24,7 +24,7 @@ pstack is a Claude Code plugin, not part of this repo. Paths that start with `ps
 ### Arm the program
 
 - [ ] State the protocol and this plan to the operator, then stop. Start execution only on the operator's explicit go.
-- [ ] Get the operator's answers to the open questions in Appendix E, or their go on the defaults written there. Log each answer in `docs/plans/decisions.tsv`.
+- [x] Get the operator's answers to the open questions in Appendix E. The operator answered on 2026-11-17, and each answer has a row in `docs/plans/decisions.tsv`.
 - [ ] Read these from trunk at program start. Re-read them at every tick.
   - [ ] `git show origin/main:docs/plans/search.md`
   - [ ] `git show origin/main:docs/plans/ux-redesign.md`
@@ -97,11 +97,11 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Name the data shapes first, in `dory_core::search`.
   - [ ] `pub fn tokens(text: &str) -> impl Iterator<Item = Token>`. A `Token` is `{ folded: String, span: Range<usize> }`, with `span` in bytes of the original text. A token is a run of alphanumeric characters. Each Han, Hiragana, and Katakana character is a token of its own, because those scripts have no spaces. A run that holds such characters becomes a phrase when it is typed in a query.
   - [ ] `fold` lowercases, applies NFKD, drops combining marks, and maps the letters that NFKD leaves alone with one table. The table maps `ß` to `ss`, `ø` to `o`, `ł` to `l`, `æ` to `ae`, `œ` to `oe`, `đ` to `d`, and `þ` to `th`. "muller" then finds "Müller", "strasse" finds "Straße", and "orsted" finds "Ørsted". This rule has one definition, and every store and view calls it.
-  - [ ] `Scope { All, Titles }` and `Query`, which is opaque outside the core. `Query::parse(text: &str, scope: Scope) -> Option<Query>` returns `None` for blank text. A query is a list of clauses joined by AND. `Clause::Word { alts: Vec<String>, prefix: bool }` matches the start of any word and is what an unquoted word becomes. `Clause::Phrase(Vec<String>)` matches whole words in order and is what a quoted run becomes. Typed text that splits into several tokens, such as "e-mail", "don't", or "Q3.5", becomes a phrase. An unbalanced quote runs to the end of the text.
-  - [ ] `Query::clauses(&self) -> &[Clause]` and `Query::scope(&self) -> Scope` are the only read access, for store adapters.
+  - [ ] `Query`, which is opaque outside the core. `Query::parse(text: &str) -> Option<Query>` returns `None` for blank text. A query is a list of clauses joined by AND. `Clause::Word { alts: Vec<String>, prefix: bool }` matches the start of any word and is what an unquoted word becomes. `Clause::Phrase(Vec<String>)` matches whole words in order and is what a quoted run becomes. Typed text that splits into several tokens, such as "e-mail", "don't", or "Q3.5", becomes a phrase. An unbalanced quote runs to the end of the text.
+  - [ ] `Query::clauses(&self) -> &[Clause]` is the only read access, for store adapters. Search always covers the title, speaker names, summary, and transcript. There is no title-only scope.
   - [ ] `pub fn highlights(query: &Query, text: &str) -> Vec<Range<usize>>`, `pub fn locate(query: &Query, items: &[&str]) -> Option<Located>`, and `pub fn snippet(query: &Query, text: &str, width: usize) -> Option<Snippet>`. `Located` is `{ item: usize, spans: Vec<Range<usize>> }`. `Snippet` is `{ text: String, marks: Vec<Range<usize>> }`, a window of about `width` characters that starts a few words before the first match and has an ellipsis at each cut. When one item holds every clause, `locate` picks the first such item. Otherwise it picks the first item that holds any clause.
 - [ ] Change the port. `RecordingQuery` loses `text` and keeps `limit`. Add `fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError>` to `StoreRead`. `Found` is `{ row: RecordingRow, in_title: bool }`, where `in_title` is true when the title alone matches every clause. The store returns hits newest first. It does not rank.
-- [ ] Add `Library::search(&self, text: &str, scope: Scope) -> Result<SearchResults, StoreError>` to the facade. `SearchResults` is `{ query: Query, hits: Vec<Found> }`. S2 adds corrections and S3 adds sections. Delete `SearchQuery` from `apps/dory-gpui/src/library.rs`. The app calls `Library::search` when the field has text and `Library::list` when it is empty, and keeps the 150 ms `SEARCH_DEBOUNCE` and the generation guard in `AppState::set_search`. The sidebar keeps its date groups in S1.
+- [ ] Add `Library::search(&self, text: &str) -> Result<SearchResults, StoreError>` to the facade. `SearchResults` is `{ query: Query, hits: Vec<Found> }`. S2 adds corrections and S3 adds sections. Delete `SearchQuery` from `apps/dory-gpui/src/library.rs`. The app calls `Library::search` when the field has text and `Library::list` when it is empty, and keeps the 150 ms `SEARCH_DEBOUNCE` and the generation guard in `AppState::set_search`. The sidebar keeps its date groups in S1.
 - [ ] `MemStore` implements `search` with `tokens` and `highlights` over its entries. It is the reference implementation in the contract suite.
 - [ ] Write `schema_v5.sql` and the index in `crates/dory-store/src/sqlite/search.rs`.
   - [ ] `CREATE TABLE search_keys (key INTEGER PRIMARY KEY, recording_id TEXT NOT NULL UNIQUE REFERENCES recordings (id) ON DELETE CASCADE)`. The FTS rowid is `search_keys.key`. `recordings` has a TEXT primary key, so VACUUM may renumber its implicit rowid.
@@ -110,9 +110,9 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
   - [ ] Drop `title_lc`, `transcript_lc`, and `summary_lc` from `recordings`.
 - [ ] Let `MIGRATIONS` hold a Rust step next to SQL. v5 runs its SQL, then calls `reindex` for every recording inside the same immediate transaction. A crash before commit leaves v4, and the next open runs v5 again.
 - [ ] Write one function, `reindex(tx, id)`, that deletes the recording's FTS row and inserts it again. It reads the title, the speaker names for the current transcript revision, the summary Markdown, and the segment texts in `idx` order, then bumps `search_meta.generation`. Call it from `apply_change`, not from `apply`, because the legacy importer calls `apply_change` directly (`crates/dory-store/src/legacy.rs`). The arms that call it are `RecordingCreated`, which inserts the key first, `RecordingEdited { Title }`, `TranscriptReplaced`, `SpeakerNamesReplaced`, and `SummaryReplaced`. `RecordingDeleted` deletes the FTS row before the recording row. Job, settings, and checkpoint arms never touch the index.
-- [ ] Compile a `Query` to one FTS5 `MATCH` string in the adapter. Double-quote every token, so a word such as "or" or "near" never becomes FTS syntax. A word becomes `("tok"*)`, a phrase becomes `"tok1 tok2"`, and clauses join with `AND`. `Scope::Titles` wraps the whole expression in `{title} : (...)`. Run a second `{title} :` query to set `in_title`. Join the rows with the same SQL that `recordings` uses, ordered by `created_at DESC, id ASC`.
+- [ ] Compile a `Query` to one FTS5 `MATCH` string in the adapter. Double-quote every token, so a word such as "or" or "near" never becomes FTS syntax. A word becomes `("tok"*)`, a phrase becomes `"tok1 tok2"`, and clauses join with `AND`. Run a second `{title} :` query to set `in_title`. Join the rows with the same SQL that `recordings` uses, ordered by `created_at DESC, id ASC`.
 - [ ] Move the `search ms=<n> hits=<n>` log line to `Library::search`. Log `search-backfill ms=<n> recordings=<n>` when v5 or a `tokens_version` rebuild finishes.
-- [ ] Add `dory-cli search <text> [--titles]`, which prints each hit's id, title, date, and whether it matched in the title, then `search ms=<n>`. Delete `list --search`. The first commit adds `dory-cli seed --recordings <n> --words <n> [--seed <n>]`, which writes synthetic recordings with titles, transcripts, summaries, and speaker names through `Store::apply`. Its word list is `/usr/share/dict/words` with Zipf frequencies plus the planted words in **Appendix A**. `seed` is refused unless `DORY_DATA_DIR` is set, like the `--fake-*` flags.
+- [ ] Add `dory-cli search <text>`, which prints each hit's id, title, date, and whether it matched in the title, then `search ms=<n>`. Delete `list --search`. The first commit adds `dory-cli seed --recordings <n> --words <n> [--seed <n>]`, which writes synthetic recordings with titles, transcripts, summaries, and speaker names through `Store::apply`. Its word list is `/usr/share/dict/words` with Zipf frequencies plus the planted words in **Appendix A**. `seed` is refused unless `DORY_DATA_DIR` is set, like the `--fake-*` flags.
 
 **You see.**
 
@@ -125,7 +125,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] `crates/dory-core/src/search/tokens.rs` tests a table of inputs and their tokens and spans, with apostrophes, digits, hyphens, emoji, `Müller`, `Straße`, `Ørsted`, the `ﬁ` ligature, and a Japanese run. Run `cargo test -p dory-core search::tokens`.
 - [ ] `crates/dory-core/src/search/query.rs` tests a table of typed text and its clauses, with blank text, quotes, an unbalanced quote, "e-mail", and a mixed Japanese and English query. Run `cargo test -p dory-core search::query`.
 - [ ] `crates/dory-core/src/search/matcher.rs` tests `highlights`, `locate`, and `snippet`, including a phrase split across two turns, which falls back to the first item with any clause. Run `cargo test -p dory-core search::matcher`.
-- [ ] The store contract suite in `crates/dory-core/src/testing/store.rs` gains `search_words_any_order_and_prefix`, `search_folds_accents_both_ways`, `search_phrase_needs_order`, `search_titles_scope`, `search_follows_rename_retranscribe_names_and_summary`, `search_forgets_deleted_and_finds_restored`, and `search_quotes_fts_keywords`. Rewrite `list_order_limit_and_filter` without `text`. Run `cargo test -p dory-store --test store_contract` and `cargo test -p dory-core --all-features`.
+- [ ] The store contract suite in `crates/dory-core/src/testing/store.rs` gains `search_words_any_order_and_prefix`, `search_folds_accents_both_ways`, `search_phrase_needs_order`, `search_sets_in_title`, `search_follows_rename_retranscribe_names_and_summary`, `search_forgets_deleted_and_finds_restored`, and `search_quotes_fts_keywords`. Rewrite `list_order_limit_and_filter` without `text`. Run `cargo test -p dory-store --test store_contract` and `cargo test -p dory-core --all-features`.
 - [ ] `crates/dory-store/tests/store_contract.rs` gains `v5_migrates_a_v4_file`, which builds a v4 file with the v1 to v4 SQL, writes three recordings, opens it at head, and checks `user_version` is 5, the `_lc` columns are gone, and search finds each recording. It also gains `tokens_version_bump_reindexes`. Run `cargo test -p dory-store`.
 - [ ] `crates/dory-store/tests/legacy.rs` gains a case that imports a legacy folder and searches a word from its transcript. Run `cargo test -p dory-store --test legacy`.
 
@@ -230,39 +230,39 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Build.**
 
-- [ ] Name the data shapes first. `Section { Titles, Conversations }`. `SearchResults` gains `sections() -> [(Section, &[Found]); 2]`, built by one pure function, `search::sections(hits)`. A hit with `in_title` goes to Titles. Every other hit goes to Conversations. Each section is newest first, unless the operator picks relevance in Appendix E. `AppState` holds `search: Option<SearchResults>`, `scope: Scope`, and `snippets: HashMap<RecordingId, Snippet>`.
+- [ ] Name the data shapes first. `Section { Titles, Conversations }`. `SearchResults` gains `sections() -> [(Section, &[Found]); 2]`, built by one pure function, `search::sections(hits)`. A hit with `in_title` goes to Titles. Every other hit goes to Conversations. Each section is newest first. `AppState` holds `search: Option<SearchResults>` and `snippets: HashMap<RecordingId, Snippet>`.
 - [ ] Add `Library::snippets(&self, query: &Query, ids: &[RecordingId]) -> Result<Vec<Option<Snippet>>, StoreError>`. For each id it reads the transcript and speaker names, builds the turns, and calls `search::locate` and `search::snippet` on them. It falls back to the summary Markdown when no turn matches. `reload` asks for the first 30 Conversations hits in the same `core.run` call as the search, so the first screen paints once. A second call fills the rest in the background under the same generation.
 - [ ] While the field has text, the sidebar replaces its date groups with two section headings, "Titles" and "In conversations", each a heading for the VoiceOver rotor. An empty section has no heading.
-- [ ] Draw a scope control under the search field while the field has text. It is two segments, **All** and **Titles**, with **All** selected at launch. Tab reaches it from the field, Left and Right Arrow switch segments, and VoiceOver reads it as "Search in, All, 1 of 2". Add **Edit > Find > Search Titles Only** with Option-Command-F, which toggles the same state (UX-21). The scope is not saved across launches.
+- [ ] Search always covers all text. There is no scope control, no filter-menu group, and no **Search Titles Only** menu item. The Titles section already answers "which recording is called this", so a title-only mode adds a control without a new answer (operator, 2026-11-17).
 - [ ] A Conversations row gains a third line, the snippet, in 12 pt `text_secondary`. Matched words use `text`, semibold weight, and a new `search_match` fill token, so color never carries the match alone (A11Y-8). At text scale 1.25 or below the snippet is one line with an ellipsis. Above 1.25 it wraps to two lines, like the title. The row grows to fit, from 52 pt to about 68 pt at 100%. A title hit marks the matched words in its title the same way and has no third line.
 - [ ] Each row's VoiceOver label adds where it matched to today's sentence, for example "Design review, 10:30, 48 minutes, Done. In transcript, we agreed the roadmap slips to Q3." A summary snippet says "In summary". A title hit adds "Title match".
 - [ ] When results settle, post one polite announcement through `a11y::announce`, such as "12 results", "No results", or "Showing results for roadmap, 3 results". Typing that has not settled announces nothing.
-- [ ] When S2 corrected the query, show one line above the sections, "Showing results for **roadmap**". When nothing matches, the list says "No recordings match "<text>"." In Titles scope it adds a **Search All Text** button that switches the scope to **All**.
+- [ ] When S2 corrected the query, show one line above the sections, "Showing results for **roadmap**". When nothing matches, the list says "No recordings match "<text>"."
 - [ ] The status filter (All, Processing, Needs attention, Done) applies on top of the search, as it does today.
 
 **You see.**
 
 - [ ] Typing "budget" shows "Titles" with the recordings titled with "budget", then "In conversations" with snippets in which "budget" is marked.
-- [ ] Switching to **Titles** leaves only the Titles section, and Option-Command-F switches it back.
+- [ ] Typing a word found only in transcripts shows only "In conversations", with no empty "Titles" heading.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] `crates/dory-core/src/search/mod.rs` tests `sections` with title hits, conversation hits, and an empty side. Run `cargo test -p dory-core search`.
 - [ ] `crates/dory-core/tests/facade.rs` gains `snippets_come_from_turns_then_summary`. Run `cargo test -p dory-core --all-features --test facade`.
-- [ ] `apps/dory-gpui/tests/search.rs` uses `TestAppContext` and the `gpui_kit::test` accessibility snapshots to check the section headings, the scope control's role and value, a row label with "In transcript", the announcement text, the correction line, and the empty state's button. Run `cargo test -p dory-gpui --test search`.
+- [ ] `apps/dory-gpui/tests/search.rs` uses `TestAppContext` and the `gpui_kit::test` accessibility snapshots to check the section headings, a row label with "In transcript", the announcement text, the correction line, and the empty state's text. Run `cargo test -p dory-gpui --test search`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
 - [ ] Lane 1. Regression lane against trunk. Search "budget" on trunk and at head on copies of one seeded folder. Save `sections-trunk.png` and `sections-head.png`. Trunk has no sections, so record its date-grouped list and gate head. Pass when head shows "Titles" above "In conversations", and the two sections hold the same set of recordings as the trunk list plus the head-only word-order matches.
 - [ ] Lane 2. Search "roadmap". Save `snippet.png`. Pass when each Conversations row shows a snippet in which "roadmap" is marked by weight and fill, and the row is not clipped.
-- [ ] Lane 3. Tab from the field to the scope control and press Right Arrow. Save `scope.png`. Pass when only the Titles section remains and `app_ax_find` reports the control's value as "Titles".
-- [ ] Lane 4. Press Option-Command-F twice. Save `scope-menu.png`. Pass when the scope switches to **Titles** and back, and the **Edit > Find** menu shows the item with its check state.
+- [ ] Lane 3. Search "atlas", which the seed plants only in titles. Save `titles-only.png`. Pass when only the Titles section shows, its rows mark "atlas" in the title, and no empty "In conversations" heading is drawn.
+- [ ] Lane 4. Search "kilimanjaro", which the seed plants in one transcript. Save `transcript-only.png`. Pass when only "In conversations" shows, with one row whose snippet marks the word.
 - [ ] Lane 5. Search "roadmpa". Save `correction.png`. Pass when "Showing results for roadmap" sits above the sections.
-- [ ] Lane 6. In Titles scope, search a word that appears only in transcripts, then click **Search All Text**. Save `empty-titles.png`. Pass when the empty state shows the button and, after the click, the Conversations rows appear.
+- [ ] Lane 6. Search "zzqx", which matches nothing and is too short to correct. Save `empty.png`. Pass when the list says `No recordings match "zzqx".` and `app_ax_find` finds no section heading.
 - [ ] Lane 7. Set View > Bigger to 200% and search "roadmap". Save `scale-200.png`. Pass when every snippet wraps to two lines at most and no row text is clipped.
 - [ ] Lane 8. Operator lane. With VoiceOver on, search "roadmap" and move through the results with VO-Right. Save `vo-rows.png` with `screencapture -x`. Pass when VoiceOver speaks the result count once, then each heading, then each row with "In transcript" and its snippet.
 - [ ] Lane 9. Set the status filter to **Needs attention**, then search "budget". Save `filter-and-search.png`. Pass when only recordings that both need attention and match are listed.
-- [ ] Lane 10. Clear the search with the clear button and with Escape. Save `cleared.png`. Pass when the date groups return, the scope control hides, and the selection is kept.
+- [ ] Lane 10. Clear the search with the clear button and with Escape. Save `cleared.png`. Pass when the date groups return and the selection is kept.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -274,7 +274,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 **Review gate.** The operator reviews before merge.
 
 - [ ] Copy lane 1, 2, 3, and 7 screenshots into `docs/design/review/s3-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of typing a query, switching scope, and reading the snippets. Save it as `docs/design/review/s3-review.mp4`.
+- [ ] Record a 30 to 60 second video of typing a query, a corrected typo, and reading the snippets. Save it as `docs/design/review/s3-review.mp4`.
 - [ ] Post the screenshots and the video in chat. Stop at merge-ready. Wait for the operator's click.
 
 **Merge.**
@@ -390,21 +390,21 @@ The planted words that `dory-cli seed` writes are "kilimanjaro" in one transcrip
 ## Appendix B. Alternatives rejected
 
 - **The core scans all text for each query.** It keeps the store simple but took 640 ms per query on the spike corpus and needs every transcript in memory.
-- **A trigram FTS5 index.** It finds substrings, so "map" would find "roadmap", but it was 4.5 times the size of the word index, took 6.5 s to build, and cannot rank by words. Appendix E asks the operator whether the lost infix matching is worth it.
+- **A trigram FTS5 index.** It finds substrings, so "map" would find "roadmap", but it was 4.5 times the size of the word index, took 6.5 s to build, and cannot rank by words. The operator accepted losing infix matches.
 - **FTS5 `snippet()` and `highlight()`.** They need a contentful table that copies all text again, and they cost up to 928 ms. They would also mark words by SQLite's tokenizer, not the core's.
 - **A separate `SearchIndex` port, fed by store events.** It would commit apart from the stage output, so a crash between the two commits would leave the index wrong and need repair code. Inside the store, the index row commits in the same transaction as the text it indexes.
 - **Letting SQLite's `unicode61` tokenizer fold accents.** It does not fold `ß`, `ø`, or `ł`, and the core would need a copy of its rules to mark words. A custom FTS5 tokenizer that calls the core needs unsafe FFI in `dory-store`. Storing the core's tokens gets the same result with no FFI.
 - **Correcting every long word, even when the exact search finds results.** It finds more, but a correctly spelt word would pull in near words, and results would change in ways the user did not ask for. S2 corrects only when nothing matches.
 - **Prefix only on the last word typed.** It keeps "a" cheap but makes "bud rev" miss what "budget review" finds. Every word matches word starts, and "a" still meets its budget.
-- **A `title:` search token.** Nobody discovers it, and VoiceOver users get no hint that it exists. The scope control does the same job in plain sight.
-- **A "Search in" group in the filter menu only.** Both design runners picked it, because it costs no space. The visible control won because the operator asked for two modes the user can see. Appendix E lets the operator pick the menu instead.
-- **Ranking conversation matches by bm25.** It puts a meeting about a topic above a passing mention, but the order stops matching the dates the user remembers. Newest first is the default, and Appendix E asks the operator.
+- **A `title:` search token.** Nobody discovers it, and VoiceOver users get no hint that it exists.
+- **A title-only scope, as a visible All and Titles control or a "Search in" group in the filter menu.** The operator chose one search over all text. The Titles section already lists title hits first, so a second mode adds a control and a state without a new answer.
+- **Ranking conversation matches by bm25.** It puts a meeting about a topic above a passing mention, but the order stops matching the dates the user remembers. The operator chose newest first.
 
 ## Appendix C. Risks
 
 - **A long backfill on the first launch after S1 (S1).** v5 indexes every recording in the migration transaction. The spike's worst case is 2.3 s for 500 recordings at the 2-hour cap. The owner logs the time and adds a chunked background backfill only if the perf lane fails.
 - **A tokenizer change silently stales the index (S1, later).** A contentless index cannot be read back to check it. `tokens_version` forces a full rebuild, and `tokens_version_bump_reindexes` tests it. Every change to `tokens` or `fold` must bump the constant, and the S1 owner adds a test that fails when the token table changes without a bump.
-- **Word-start matching loses infix matches (S1).** "map" no longer finds "roadmap", and a German compound such as "Projektbudget" is not found by "budget". Trunk finds both. The owner records this in the S1 PR body, and Appendix E asks the operator.
+- **Word-start matching loses infix matches (S1).** "map" no longer finds "roadmap", and a German compound such as "Projektbudget" is not found by "budget". Trunk finds both. The operator accepted this, and the owner records it in the S1 PR body.
 - **Scripts without spaces other than Chinese and Japanese (S1).** Thai and Lao still index as long runs and match only by prefix. The meeting languages do not include them today.
 - **The facade rule "every persisted change goes through `Store::apply`" (S1).** The migration backfill and the `tokens_version` rebuild write the index outside `apply`. Both are adapter-internal, like a schema migration, and every domain change still reindexes inside `apply_change` in the same transaction. The S1 owner states this in `docs/architecture/hexagonal.md`.
 - **Cold vocabulary on a zero-result search (S2).** The first corrected search after a write may take up to 100 ms. Only zero-result searches pay it.
@@ -421,10 +421,10 @@ The planted words that `dory-cli seed` writes are "kilimanjaro" in one transcrip
 - `docs/plans/decisions.tsv` is the decision trail per pstack `show-me-your-work/SKILL.md`.
 - Run pstack `how/SKILL.md` over `crates/dory-store/src/sqlite/` before S1. Run pstack `interrogate/SKILL.md` on S1 before review, because it changes the schema and the port.
 
-## Appendix E. Open questions for the operator
+## Appendix E. Operator answers
 
-Each question has a default. The program runs with the default unless the operator answers otherwise before S1 starts.
+The operator answered these on 2026-11-17, before S1 starts.
 
-1. Inside "In conversations", should results be newest first or most relevant first? The default is newest first. Relevance uses bm25 with the summary weighted above the transcript, and costs S3 one more column in `Found`.
-2. Word-start matching means "map" no longer finds "roadmap", and "budget" no longer finds "Projektbudget". Trunk finds both. Is that acceptable, or should a later PR add a trigram index for infix matches? The default is to accept it. On the spike corpus, the trigram index was 276 MB against 61 MB for the word index.
-3. Should the All and Titles control be visible under the search field while searching, or live only in the search field's filter menu? The default is the visible control, plus the menu item in **Edit > Find**.
+1. Inside "In conversations", should results be newest first or most relevant first? **Newest first.** `Found` carries no bm25 column.
+2. Word-start matching means "map" no longer finds "roadmap", and "budget" no longer finds "Projektbudget". Trunk finds both. Is that acceptable, or should a later PR add a trigram index for infix matches? **Accepted.** No trigram index. On the spike corpus it was 276 MB against 61 MB for the word index.
+3. Should the All and Titles control be visible under the search field, or live only in the filter menu? **Neither.** Search always covers all text, with no scope control and no **Search Titles Only** menu item. The Titles and In conversations sections stay.

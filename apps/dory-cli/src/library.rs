@@ -98,6 +98,14 @@ pub fn show(config: &Config, args: &ShowArgs) -> Result<(), String> {
         .map_err(crate::chain)?
         .ok_or_else(|| format!("no recording {}", args.id))?;
 
+    if args.languages {
+        let transcript = lib.transcript(&args.id).map_err(crate::chain)?;
+        for tag in transcript.iter().flat_map(|t| &t.detected_languages) {
+            println!("{tag}");
+        }
+        return Ok(());
+    }
+
     println!("{}", recording.title.as_deref().unwrap_or("(untitled)"));
     println!("id        {}", recording.id);
     println!("created   {} UTC", view::utc(recording.created_at));

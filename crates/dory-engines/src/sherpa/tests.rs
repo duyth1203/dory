@@ -15,7 +15,7 @@ use sherpa_onnx::OfflineRecognizerResult;
 
 use super::Sherpa;
 use super::catalog::{self, Archive, Layout, Model};
-use super::engine::{Built, Recipe, engine_code, recognizer_config, segments};
+use super::engine::{Built, Recipe, detected_language, engine_code, recognizer_config, segments};
 use super::fetch::hex;
 
 const ROOT: &str = "tiny-int8";
@@ -446,7 +446,6 @@ fn each_layout_configures_the_files_its_archive_holds() {
 fn pinned_languages_map_to_each_engines_code() {
     let models = catalog::models();
     let by_name = |name: &str| models.iter().find(|m| m.name == name).unwrap();
-    let tag = |s: &str| LangTag::parse(s).unwrap();
     let cases = [
         ("whisper-turbo", "tl", Some("tl")),
         ("whisper-turbo", "fil", Some("tl")),
@@ -469,7 +468,20 @@ fn result(tokens: &[(&str, f32, f32)]) -> OfflineRecognizerResult {
         tokens: tokens.iter().map(|t| t.0.to_owned()).collect(),
         timestamps: Some(tokens.iter().map(|t| t.1).collect()),
         durations: Some(tokens.iter().map(|t| t.2).collect()),
+        ..no_language()
     }
+}
+
+fn tag(s: &str) -> LangTag {
+    LangTag::parse(s).unwrap()
+}
+
+fn no_language() -> OfflineRecognizerResult {
+    parsed(r#"{"text": "", "tokens": []}"#)
+}
+
+fn parsed(json: &str) -> OfflineRecognizerResult {
+    serde_json::from_str(json).expect("a recognizer result")
 }
 
 fn ms_segments(result: &OfflineRecognizerResult, clip: u64) -> Vec<(u64, u64, String)> {
@@ -512,6 +524,7 @@ fn without_token_times_the_window_is_one_segment() {
         tokens: vec![],
         timestamps: None,
         durations: None,
+        ..no_language()
     };
     assert_eq!(
         ms_segments(&r, 30_000),
@@ -522,6 +535,7 @@ fn without_token_times_the_window_is_one_segment() {
         tokens: vec![],
         timestamps: None,
         durations: None,
+        ..no_language()
     };
     assert!(ms_segments(&silent, 30_000).is_empty());
 }
@@ -533,6 +547,58 @@ fn segment_times_never_pass_the_clip_end() {
         ms_segments(&r, 10_000),
         [(9_900, 10_000, "tail".to_owned())]
     );
+}
+
+/// What sherpa-onnx's `AsJsonString` returns for a Whisper window on automatic language.
+const WHISPER_JSON: &str = r#"{"lang": "tl", "emotion": "", "event": "", "text": " Kumusta ka? Mabuti naman.", "timestamps": [], "durations": [], "tokens": [" Kum", "usta", " ka", "?"], "words": []}"#;
+
+#[test]
+fn whisper_result_lang_becomes_the_detected_language() {
+    let result = parsed(WHISPER_JSON);
+    assert_eq!(result.lang, "tl");
+    assert_eq!(
+        detected_language(Layout::WhisperTurbo, &result),
+        Some(tag("tl"))
+    );
+    let english = parsed(r#"{"lang": "en", "text": "Hello.", "tokens": []}"#);
+    assert_eq!(
+        detected_language(Layout::WhisperTurbo, &english),
+        Some(tag("en"))
+    );
+}
+
+#[test]
+fn an_empty_lang_is_none() {
+    let empty = parsed(r#"{"lang": "", "text": "Hello.", "tokens": []}"#);
+    let missing = parsed(r#"{"text": "Hello.", "tokens": []}"#);
+    let garbage = parsed(r#"{"lang": "<|nospeech|>", "text": "", "tokens": []}"#);
+    for result in [empty, missing, garbage] {
+        assert_eq!(detected_language(Layout::WhisperTurbo, &result), None);
+    }
+}
+
+#[test]
+fn parakeet_reports_no_language_even_when_the_result_carries_one() {
+    let result = parsed(WHISPER_JSON);
+    assert_eq!(detected_language(Layout::Parakeet, &result), None);
+}
+
+#[test]
+fn a_result_without_sentence_times_parses_with_empty_ones() {
+    let result = parsed(r#"{"text": "Hello.", "tokens": []}"#);
+    assert!(result.segment_timestamps.is_empty());
+    assert!(result.segment_durations.is_empty());
+    assert!(result.segment_texts.is_empty());
+}
+
+#[test]
+fn sentence_times_parse_when_the_recognizer_reports_them() {
+    let result = parsed(
+        r#"{"lang": "en", "text": "One. Two.", "tokens": [], "segment_timestamps": [0.0, 2.5], "segment_durations": [2.4, 1.0], "segment_texts": ["One.", "Two."]}"#,
+    );
+    assert_eq!(result.segment_timestamps, [0.0, 2.5]);
+    assert_eq!(result.segment_durations, [2.4, 1.0]);
+    assert_eq!(result.segment_texts, ["One.", "Two."]);
 }
 
 #[test]

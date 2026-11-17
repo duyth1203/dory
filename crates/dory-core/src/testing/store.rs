@@ -1951,6 +1951,10 @@ mod contract {
                 model: model(),
                 why: Mismatch::InputTooLong,
             },
+            Blocker::Incompatible {
+                model: model(),
+                why: Mismatch::NothingRecognized,
+            },
             Blocker::NoModel { kind: KindTag::Stt },
             Blocker::NoModel { kind: KindTag::Llm },
             Blocker::NoModel {

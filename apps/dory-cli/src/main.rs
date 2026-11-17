@@ -25,7 +25,7 @@ const USAGE: &str = "usage:
   dory-cli list
   dory-cli search TEXT
   dory-cli seed --recordings N --words N [--seed N]
-  dory-cli show ID
+  dory-cli show ID [--languages]
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]

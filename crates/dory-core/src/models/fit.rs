@@ -79,6 +79,10 @@ pub enum Mismatch {
     NoDiarization,
     #[error("input is longer than the model accepts")]
     InputTooLong,
+    /// A run sent the model real speech and it recognized no word, as Parakeet does on a language
+    /// it was not trained on. Only a finished run can tell, so no fit rule returns it.
+    #[error("heard speech but recognized no words")]
+    NothingRecognized,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

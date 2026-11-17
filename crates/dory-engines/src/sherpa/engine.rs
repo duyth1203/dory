@@ -179,7 +179,21 @@ impl Transcriber for SherpaEngine {
             });
         }
         sink.progress(Fraction::new(1.0));
-        Ok(TranscribeOutcome::default())
+        Ok(TranscribeOutcome {
+            detected_language: detected_language(self.model.layout, &result),
+        })
+    }
+}
+
+/// The language the model heard in the window. Whisper reports one for every window. Parakeet
+/// reports none, and an empty or unparseable code is none too.
+pub(super) fn detected_language(
+    layout: Layout,
+    result: &OfflineRecognizerResult,
+) -> Option<LangTag> {
+    match layout {
+        Layout::WhisperTurbo => LangTag::parse(result.lang.trim()).ok(),
+        Layout::Parakeet => None,
     }
 }
 

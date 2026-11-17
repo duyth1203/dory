@@ -11,7 +11,7 @@ use dory_core::domain::{
     Blocker, FailureCause, FailureClass, Fraction, JobState, Ms, Processing, RecordingId,
     RecordingRow, Stage, SummaryFlag,
 };
-use dory_core::models::{KindTag, ModelRef, UnavailableReason};
+use dory_core::models::{KindTag, Mismatch, ModelRef, UnavailableReason};
 use dory_core::ports::Pace;
 
 use crate::estimate::Left;
@@ -122,6 +122,8 @@ pub enum Problem {
     DiskFull,
     Crashed,
     AudioUnreadable,
+    /// The model was sent speech and recognized no word of it.
+    NothingRecognized,
     /// Anything else the transcribe stage reports, in the core's words.
     Transcription {
         text: String,
@@ -137,6 +139,7 @@ pub enum Problem {
 pub enum Fix {
     Download(ModelRef),
     ChooseSpeechModel,
+    AddMeetingLanguages,
     SetUpSummaries,
     FreeUpSpace,
     TryAgain,
@@ -550,6 +553,10 @@ impl Problem {
                         }
                     }
                     Blocker::NoModel { .. } => Problem::NoSpeechModel,
+                    Blocker::Incompatible {
+                        why: Mismatch::NothingRecognized,
+                        ..
+                    } => Problem::NothingRecognized,
                     other => Problem::Transcription {
                         text: blocked_text(other),
                         started: false,
@@ -594,6 +601,7 @@ impl Problem {
                 "Transcription didn't finish"
             }
             Problem::AudioUnreadable => "Can't read the audio",
+            Problem::NothingRecognized => "No words recognized",
             Problem::SummaryModelMissing | Problem::Summary(_) => "No summary yet",
         }
     }
@@ -613,6 +621,12 @@ impl Problem {
             }
             Problem::Crashed => "Transcription stopped partway. Your recording is saved.".into(),
             Problem::AudioUnreadable => "This recording's audio can't be read.".into(),
+            Problem::NothingRecognized => {
+                format!(
+                    "Your recording is saved. {}",
+                    crate::models_view::NOTHING_RECOGNIZED
+                )
+            }
             Problem::Transcription { text, .. } => format!("Your recording is saved, but {text}"),
             Problem::SummaryModelMissing => {
                 "The transcript is ready, but summaries aren't set up.".into()
@@ -647,6 +661,7 @@ impl Problem {
             Problem::DiskFull => "Needs space",
             Problem::Crashed => "Stopped",
             Problem::AudioUnreadable => "Can't read audio",
+            Problem::NothingRecognized => "Needs attention",
             Problem::Transcription { started: false, .. } => "Didn't start",
             Problem::Transcription { .. } => "Needs attention",
             Problem::SummaryModelMissing | Problem::Summary(_) => "Waiting",
@@ -663,6 +678,7 @@ impl Problem {
             Problem::SummaryModelMissing => Fix::SetUpSummaries,
             Problem::DiskFull => Fix::FreeUpSpace,
             Problem::AudioUnreadable => Fix::ShowInFinder,
+            Problem::NothingRecognized => Fix::AddMeetingLanguages,
             Problem::Crashed | Problem::Transcription { .. } | Problem::Summary(_) => Fix::TryAgain,
         })
     }
@@ -684,6 +700,7 @@ impl Problem {
                 }
             }
             Fix::ChooseSpeechModel => plain("Choose a Speech Model…"),
+            Fix::AddMeetingLanguages => plain("Add Meeting Languages…"),
             Fix::SetUpSummaries => plain("Set Up Summaries"),
             Fix::FreeUpSpace => plain("Free Up Space…"),
             Fix::TryAgain => plain("Try Again"),
@@ -1464,6 +1481,33 @@ mod tests {
         };
         assert_eq!(problem, Problem::NoSpeechModel);
         assert_eq!(problem.fix(), Some(Fix::ChooseSpeechModel));
+    }
+
+    #[test]
+    fn speech_with_no_words_asks_to_add_the_meeting_languages() {
+        let case = weekly().job(JobState::Blocked {
+            stage: Stage::Transcribe,
+            blocker: Blocker::Incompatible {
+                model: parakeet(),
+                why: Mismatch::NothingRecognized,
+            },
+        });
+        let Phase::Failed(problem) = case.phase() else {
+            unreachable!()
+        };
+        assert_eq!(problem, Problem::NothingRecognized);
+        assert_eq!(
+            problem.text(),
+            "Your recording is saved. Heard speech but recognized no words. Add the meeting's languages in Settings, then transcribe again."
+        );
+        assert_eq!(problem.fix(), Some(Fix::AddMeetingLanguages));
+        assert_eq!(
+            problem.button(),
+            Some((
+                "Add Meeting Languages…".into(),
+                "Add Meeting Languages…".into()
+            ))
+        );
     }
 
     #[test]

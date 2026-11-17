@@ -255,7 +255,9 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         budget,
     };
     let mut segments = Vec::new();
-    let mut languages = Vec::new();
+    let mut heard = Vec::new();
+    let mut speech = Ms(0);
+    let mut words = 0;
     for run in &runs {
         let mut raw = Vec::new();
         for span in &run.windows {
@@ -272,12 +274,13 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
                 }
             };
             progress.finished(span.len());
-            languages.extend(
-                checkpoint
-                    .segments
-                    .iter()
-                    .filter_map(|s| s.language.clone().or(checkpoint.detected_language.clone())),
-            );
+            speech = Ms(speech.0 + windows::speech_time(&run.whole.activity, *span).0);
+            words += checkpoint
+                .segments
+                .iter()
+                .map(|s| s.text.split_whitespace().count())
+                .sum::<usize>();
+            heard.extend(heard_languages(&checkpoint));
             raw.extend(checkpoint.segments);
         }
         let turns = match (&diarizer, run.plan.speakers) {
@@ -290,10 +293,16 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         };
         segments.extend(place(raw, run.plan, turns.as_deref()));
     }
-    if languages.is_empty()
+    if heard_nothing(speech, words) {
+        return Err(StageError::Blocked(Blocker::Incompatible {
+            model,
+            why: Mismatch::NothingRecognized,
+        }));
+    }
+    if heard.is_empty()
         && let LanguagePref::Pinned(tag) = &recording.language
     {
-        languages.push(tag.clone());
+        heard.push((tag.clone(), speech));
     }
 
     let revision = store
@@ -307,7 +316,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
             transcript: Transcript {
                 revision: Revision(revision.0 + 1),
                 segments: merge::merge(segments),
-                detected_languages: rank_languages(languages),
+                detected_languages: rank_languages(heard),
                 produced_by: model,
             },
         },
@@ -423,17 +432,42 @@ fn dominant_speaker(turns: &[Turn], range: TimeRange) -> Option<u16> {
         .map(|(_, speaker)| speaker)
 }
 
-/// Most used first, ties in order of first appearance.
-fn rank_languages(tags: Vec<LangTag>) -> Vec<LangTag> {
-    let mut counts: Vec<(LangTag, usize)> = Vec::new();
-    for tag in tags {
-        match counts.iter_mut().find(|(t, _)| *t == tag) {
-            Some((_, n)) => *n += 1,
-            None => counts.push((tag, 1)),
+/// Speech in the windows a run sent that makes an empty transcript a mismatch, not a silent take.
+const HEARD_NOTHING_SPEECH: Ms = Ms(10_000);
+
+/// Whether a model was sent real speech and recognized no word of it.
+fn heard_nothing(speech: Ms, words: usize) -> bool {
+    speech >= HEARD_NOTHING_SPEECH && words == 0
+}
+
+/// The language a window was heard in, with the time it covers. An engine that reports a language
+/// per window counts its whole window, once it produced a word. An engine that tags segments
+/// counts each by its own length.
+fn heard_languages(checkpoint: &Checkpoint) -> Vec<(LangTag, Ms)> {
+    if checkpoint.segments.iter().any(|s| s.language.is_some()) {
+        return checkpoint
+            .segments
+            .iter()
+            .filter_map(|s| Some((s.language.clone()?, s.range.len())))
+            .collect();
+    }
+    match &checkpoint.detected_language {
+        Some(tag) if !checkpoint.segments.is_empty() => vec![(tag.clone(), checkpoint.span.len())],
+        _ => Vec::new(),
+    }
+}
+
+/// Most heard first, by time, ties in order of first appearance.
+fn rank_languages(heard: Vec<(LangTag, Ms)>) -> Vec<LangTag> {
+    let mut totals: Vec<(LangTag, u64)> = Vec::new();
+    for (tag, time) in heard {
+        match totals.iter_mut().find(|(t, _)| *t == tag) {
+            Some((_, total)) => *total += time.0,
+            None => totals.push((tag, time.0)),
         }
     }
-    counts.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    counts.into_iter().map(|(t, _)| t).collect()
+    totals.sort_by_key(|(_, total)| std::cmp::Reverse(*total));
+    totals.into_iter().map(|(tag, _)| tag).collect()
 }
 
 /// Transcription progress as the share of planned speech done, over every clip of the job.
@@ -704,12 +738,103 @@ mod tests {
         assert_eq!(speakers, vec![1, 2]);
     }
 
+    fn t(tag: &str) -> LangTag {
+        LangTag::parse(tag).unwrap()
+    }
+
     #[test]
-    fn languages_rank_by_use_then_first_appearance() {
-        let t = |s: &str| LangTag::parse(s).unwrap();
+    fn languages_rank_by_time_then_first_appearance() {
+        let heard = |tag: &str, secs: u64| (t(tag), Ms(secs * 1_000));
         assert_eq!(
-            rank_languages(vec![t("en"), t("vi"), t("vi"), t("fr"), t("en"), t("vi")]),
+            rank_languages(vec![
+                heard("en", 3),
+                heard("vi", 5),
+                heard("vi", 4),
+                heard("fr", 3),
+                heard("en", 3)
+            ]),
             vec![t("vi"), t("en"), t("fr")]
         );
+    }
+
+    #[test]
+    fn a_long_window_outranks_several_short_ones() {
+        let heard = vec![
+            (t("en"), Ms(3_000)),
+            (t("tl"), Ms(30_000)),
+            (t("en"), Ms(3_000)),
+            (t("en"), Ms(3_000)),
+        ];
+        assert_eq!(rank_languages(heard), vec![t("tl"), t("en")]);
+    }
+
+    #[test]
+    fn a_heard_language_outside_the_meeting_languages_is_kept() {
+        assert_eq!(
+            rank_languages(vec![(t("en"), Ms(4_000)), (t("es"), Ms(2_000))]),
+            vec![t("en"), t("es")]
+        );
+    }
+
+    fn checkpoint(span: TimeRange, texts: &[&str], detected: Option<&str>) -> Checkpoint {
+        Checkpoint {
+            span,
+            segments: texts.iter().map(|text| raw_text(span, text)).collect(),
+            detected_language: detected.map(t),
+        }
+    }
+
+    fn raw_text(span: TimeRange, text: &str) -> RawSegment {
+        RawSegment {
+            range: span,
+            text: text.into(),
+            speaker: None,
+            language: None,
+        }
+    }
+
+    #[test]
+    fn a_window_counts_its_whole_length_for_the_language_it_was_heard_in() {
+        let window = checkpoint(r(0, 30_000), &["one", "two"], Some("tl"));
+        assert_eq!(heard_languages(&window), vec![(t("tl"), Ms(30_000))]);
+    }
+
+    #[test]
+    fn a_window_with_no_words_hears_no_language() {
+        assert_eq!(
+            heard_languages(&checkpoint(r(0, 30_000), &[], Some("en"))),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn segments_tagged_by_the_engine_count_by_their_own_length() {
+        let mut window = checkpoint(r(0, 30_000), &["a", "b"], None);
+        window.segments[0].range = r(0, 4_000);
+        window.segments[0].language = Some(t("en"));
+        window.segments[1].range = r(4_000, 10_000);
+        window.segments[1].language = Some(t("vi"));
+        assert_eq!(
+            heard_languages(&window),
+            vec![(t("en"), Ms(4_000)), (t("vi"), Ms(6_000))]
+        );
+    }
+
+    #[test]
+    fn heard_nothing_needs_ten_seconds_of_speech_and_no_words() {
+        for (speech, words, want) in [
+            (9_999, 0, false),
+            (10_000, 0, true),
+            (30_000, 0, true),
+            (10_000, 1, false),
+            (0, 0, false),
+            (30_000, 12, false),
+        ] {
+            assert_eq!(
+                heard_nothing(Ms(speech), words),
+                want,
+                "{speech} ms, {words} words"
+            );
+        }
     }
 }

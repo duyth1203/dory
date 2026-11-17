@@ -11,7 +11,7 @@ use dory_core::domain::{
     Recording, RecordingId, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
 };
 use dory_core::models::{
-    Availability, Choice, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId, Stt,
+    Availability, Choice, DiarizationSupport, KindTag, Llm, Mismatch, ModelEntry, ModelId, Stt,
 };
 use dory_core::ports::{Change, CheckpointKey, Store, StoreRead, Takes};
 use dory_core::testing::store::MemStore;
@@ -258,6 +258,130 @@ fn windows_are_cut_at_silence_and_only_speech_is_sent() {
     assert_climbs_to_done(&progress(&seen, Stage::Transcribe));
 }
 
+/// Three windows of speech on a mic-only take, one line each, lasting `lengths` seconds.
+fn windows_heard(lengths: [u64; 3], languages: [&str; 3]) -> (Rig, RecordingId) {
+    let starts = [0, 40_000, 80_000];
+    let lines: Vec<(u64, u64, u16, &str)> = starts
+        .iter()
+        .zip(lengths)
+        .map(|(start, secs)| (*start, start + secs * 1_000, 0, "line"))
+        .collect();
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mic, &lines)
+            .detecting_each(&languages),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    );
+    let id = rig.seed("heard", ChannelLayout::MicOnly, 100);
+    let spans: Vec<(u64, u64)> = lines.iter().map(|l| (l.0, l.1)).collect();
+    rig.takes.set_activity(&id, Channel::Mic, &spans);
+    (rig, id)
+}
+
+fn tags(tags: &[&str]) -> Vec<dory_core::domain::LangTag> {
+    tags.iter()
+        .map(|t| dory_core::domain::LangTag::parse(t).unwrap())
+        .collect()
+}
+
+#[test]
+fn auto_transcript_records_the_heard_languages() {
+    let (rig, id) = windows_heard([20, 20, 20], ["tl", "en", "tl"]);
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(transcript.detected_languages, tags(&["tl", "en"]));
+}
+
+#[test]
+fn the_language_heard_longest_ranks_first_not_the_one_heard_in_most_windows() {
+    let (rig, id) = windows_heard([5, 5, 25], ["en", "en", "tl"]);
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(
+        transcript.detected_languages,
+        tags(&["tl", "en"]),
+        "25 s of tl outweighs two 5 s windows of en"
+    );
+}
+
+#[test]
+fn a_heard_language_outside_the_meeting_languages_is_kept() {
+    let (rig, id) = windows_heard([20, 5, 5], ["tl", "es", "tl"]);
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(transcript.detected_languages, tags(&["tl", "es"]));
+}
+
+fn nothing_recognized() -> Blocker {
+    Blocker::Incompatible {
+        model: STT.parse::<ModelId<Stt>>().unwrap().erase(),
+        why: Mismatch::NothingRecognized,
+    }
+}
+
+#[test]
+fn speech_with_no_words_blocks_instead_of_saving_empty() {
+    let rig = Rig::new(
+        FakeTranscriber::new(),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    );
+    let id = rig.seed("heard-nothing", ChannelLayout::MicOnly, 30);
+    rig.takes.set_activity(&id, Channel::Mic, &[(0, 30_000)]);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Transcribe,
+            blocker: nothing_recognized(),
+        },
+    );
+    assert_eq!(rig.transcriber.calls().len(), 1);
+    assert_eq!(
+        dory.library().transcript(&id).unwrap(),
+        None,
+        "no empty transcript is saved"
+    );
+    assert!(rig.llm.prompts().is_empty());
+}
+
+#[test]
+fn under_ten_seconds_of_speech_with_no_words_is_still_a_quiet_take() {
+    let rig = Rig::new(
+        FakeTranscriber::new(),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    );
+    let id = rig.seed("breath", ChannelLayout::MicOnly, 30);
+    rig.takes.set_activity(&id, Channel::Mic, &[(0, 9_000)]);
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert!(transcript.segments.is_empty());
+}
+
+#[test]
+fn words_on_the_other_channel_keep_a_silent_channel_from_blocking() {
+    let rig = Rig::new(
+        FakeTranscriber::new().with_segments(Channel::System, &[(1_000, 4_000, 0, "hello there")]),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    );
+    let id = rig.seed("one-sided", ChannelLayout::MicSystem, 30);
+    rig.takes.set_activity(&id, Channel::Mic, &[(0, 20_000)]);
+    rig.takes.set_activity(&id, Channel::System, &[(0, 20_000)]);
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(texts(&transcript.segments), ["hello there"]);
+}
+
 #[test]
 fn a_silent_channel_costs_no_engine_call() {
     let rig = Rig::new(
@@ -285,7 +409,7 @@ fn a_silent_channel_costs_no_engine_call() {
 #[test]
 fn a_clip_with_unmeasured_activity_is_all_speech() {
     let rig = Rig::new(
-        FakeTranscriber::new(),
+        FakeTranscriber::new().with_segments(Channel::Mic, &[(1_000, 2_000, 0, "hello")]),
         vec![stt(STT, DiarizationSupport::None, WINDOW)],
         llm(8_192),
     );
@@ -304,7 +428,7 @@ fn a_clip_with_unmeasured_activity_is_all_speech() {
 #[test]
 fn native_diarization_sends_the_whole_diarized_clip_in_one_call() {
     let rig = Rig::new(
-        FakeTranscriber::new(),
+        FakeTranscriber::new().with_segments(Channel::Mic, &[(1_000, 2_000, 0, "hello")]),
         vec![stt(STT, DiarizationSupport::Native, WINDOW)],
         llm(8_192),
     );

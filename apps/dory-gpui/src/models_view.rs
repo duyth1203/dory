@@ -157,6 +157,9 @@ pub fn unavailable_text(why: &Unavailable) -> String {
     }
 }
 
+/// Said when a run sent speech and the model recognized no word of it.
+pub const NOTHING_RECOGNIZED: &str = "Heard speech but recognized no words. Add the meeting's languages in Settings, then transcribe again.";
+
 /// The core decides the fit. This names it, and for a language mismatch names the languages.
 pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> Option<String> {
     let why = match fit {
@@ -180,6 +183,7 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
         Mismatch::AutoLanguageUnsupported => "Needs a language chosen, can't detect one".into(),
         Mismatch::NoDiarization => "Can't tell speakers apart".into(),
         Mismatch::InputTooLong => "Long recordings get cut short".into(),
+        Mismatch::NothingRecognized => NOTHING_RECOGNIZED.into(),
     })
 }
 

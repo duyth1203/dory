@@ -848,6 +848,8 @@ impl Machine for FakeMachine {
 pub struct FakeTranscriber {
     segments: HashMap<Channel, Vec<RawSegment>>,
     detected: Option<LangTag>,
+    /// The language call `i` reports, which wins over `detected`.
+    detected_per_call: Vec<LangTag>,
     /// Calls from this index on wait until they are cancelled.
     hold_from: AtomicUsize,
     running: AtomicBool,
@@ -859,6 +861,7 @@ impl Default for FakeTranscriber {
         Self {
             segments: HashMap::new(),
             detected: None,
+            detected_per_call: Vec::new(),
             hold_from: AtomicUsize::new(usize::MAX),
             running: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
@@ -898,6 +901,15 @@ impl FakeTranscriber {
 
     pub fn detecting(mut self, language: &str) -> Self {
         self.detected = Some(LangTag::parse(language).expect("a valid language tag"));
+        self
+    }
+
+    /// Call `i` reports the `i`th language, the way a multilingual engine hears each window.
+    pub fn detecting_each(mut self, languages: &[&str]) -> Self {
+        self.detected_per_call = languages
+            .iter()
+            .map(|l| LangTag::parse(l).expect("a valid language tag"))
+            .collect();
         self
     }
 
@@ -968,7 +980,11 @@ impl Transcriber for FakeTranscriber {
                 sink.progress(Fraction::new((i + 1) as f32 / total));
             }
             Ok(TranscribeOutcome {
-                detected_language: self.detected.clone(),
+                detected_language: self
+                    .detected_per_call
+                    .get(index)
+                    .or(self.detected.as_ref())
+                    .cloned(),
             })
         };
         self.running.store(false, Ordering::SeqCst);

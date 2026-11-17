@@ -6,7 +6,7 @@ use dory_core::domain::{
     Blocker, ChannelLayout, Job, JobState, Ms, Segment, SpeakerId, SpeakerNames, Stage, Timestamp,
     Transcript,
 };
-use dory_core::models::{Availability, Fit, UnavailableReason};
+use dory_core::models::{Availability, Fit, Mismatch, UnavailableReason};
 
 /// `2025-11-15 03:12:04`, UTC.
 pub fn utc(at: Timestamp) -> String {
@@ -112,6 +112,14 @@ pub fn blocker(blocker: &Blocker) -> (String, String) {
             why.fix
                 .clone()
                 .unwrap_or_else(|| "pick another model, then run process again".into()),
+        ),
+        Blocker::Incompatible {
+            model,
+            why: Mismatch::NothingRecognized,
+        } => (
+            format!("{model} heard speech but recognized no words"),
+            "add the meeting's languages with dory-cli languages TAG..., then run process again"
+                .into(),
         ),
         Blocker::Incompatible { model, why } => (
             format!("{model} {why}"),

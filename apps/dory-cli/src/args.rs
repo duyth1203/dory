@@ -115,16 +115,26 @@ impl SeedArgs {
     }
 }
 
+/// `show ID [--languages]`. With `--languages` it prints only the languages heard, most heard
+/// first.
 #[derive(Debug, PartialEq)]
 pub struct ShowArgs {
     pub id: RecordingId,
+    pub languages: bool,
 }
 
 impl ShowArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
         match args {
-            [id] => Ok(Self { id: parse_id(id)? }),
-            _ => Err("show takes one argument: the recording id".into()),
+            [id] if id != "--languages" => Ok(Self {
+                id: parse_id(id)?,
+                languages: false,
+            }),
+            [id, flag] | [flag, id] if flag == "--languages" && id != "--languages" => Ok(Self {
+                id: parse_id(id)?,
+                languages: true,
+            }),
+            _ => Err("show takes the recording id and an optional --languages".into()),
         }
     }
 }
@@ -454,6 +464,14 @@ mod tests {
         assert!(ShowArgs::parse(&words("rec_1")).is_ok());
         assert!(ShowArgs::parse(&words("../etc")).is_err());
         assert!(ShowArgs::parse(&[]).is_err());
+        assert!(!ShowArgs::parse(&words("rec_1")).unwrap().languages);
+        for form in ["rec_1 --languages", "--languages rec_1"] {
+            let show = ShowArgs::parse(&words(form)).unwrap();
+            assert_eq!(show.id, RecordingId::parse("rec_1").unwrap(), "{form}");
+            assert!(show.languages, "{form}");
+        }
+        assert!(ShowArgs::parse(&words("--languages")).is_err());
+        assert!(ShowArgs::parse(&words("rec_1 --lang")).is_err());
         assert!(DeleteArgs::parse(&words("rec_1")).is_ok());
         assert!(DeleteArgs::parse(&words("rec_1 rec_2")).is_err());
         let p = ProcessArgs::parse(&words("--fake-engines rec_1")).unwrap();

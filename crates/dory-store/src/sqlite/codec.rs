@@ -284,6 +284,7 @@ fn mismatch_to_db(why: Mismatch) -> &'static str {
         Mismatch::LanguageUnsupported => "language_unsupported",
         Mismatch::NoDiarization => "no_diarization",
         Mismatch::InputTooLong => "input_too_long",
+        Mismatch::NothingRecognized => "nothing_recognized",
     }
 }
 
@@ -293,6 +294,7 @@ fn mismatch_from_db(s: &str) -> Result<Mismatch, StoreError> {
         "language_unsupported" => Mismatch::LanguageUnsupported,
         "no_diarization" => Mismatch::NoDiarization,
         "input_too_long" => Mismatch::InputTooLong,
+        "nothing_recognized" => Mismatch::NothingRecognized,
         other => return Err(corrupt(format!("unknown mismatch {other:?}"))),
     })
 }

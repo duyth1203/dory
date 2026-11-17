@@ -49,6 +49,14 @@ pub(crate) fn plan_windows(duration: Ms, activity: &Activity, cap: Option<Ms>) -
     windows
 }
 
+/// How much of `window` is speech. An unmeasured clip counts as speech throughout.
+pub(crate) fn speech_time(activity: &Activity, window: TimeRange) -> Ms {
+    match activity {
+        Activity::Unmeasured => window.len(),
+        Activity::Speech(spans) => Ms(spans.iter().map(|s| s.overlap(&window).0).sum()),
+    }
+}
+
 fn equal_pieces(span: TimeRange, cap: Ms) -> impl Iterator<Item = TimeRange> {
     let (start, len) = (span.start().0, span.len().0);
     let pieces = len.div_ceil(cap.0);
@@ -170,5 +178,13 @@ mod tests {
             plan_windows(Ms(10_000), &speech(&[(2_000, 3_000)]), Some(Ms(0))),
             vec![r(0, 10_000)]
         );
+    }
+
+    #[test]
+    fn speech_time_counts_only_the_speech_inside_the_window() {
+        let activity = speech(&[(1_000, 5_000), (8_000, 12_000), (40_000, 50_000)]);
+        assert_eq!(speech_time(&activity, r(0, 10_000)), Ms(6_000));
+        assert_eq!(speech_time(&activity, r(20_000, 30_000)), Ms(0));
+        assert_eq!(speech_time(&Activity::Unmeasured, r(0, 10_000)), Ms(10_000));
     }
 }

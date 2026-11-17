@@ -289,23 +289,23 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Files.**
 
-- [ ] Edit `crates/dory-core/src/domain/transcript.rs` and `crates/dory-core/src/app/stages/mod.rs`.
-- [ ] Edit `crates/dory-core/src/assistant/turns.rs` and `apps/dory-mcp` wire types, so `get_transcript` returns each turn's language.
-- [ ] Edit `apps/dory-gpui/src/app/session.rs`, `apps/dory-gpui/src/transcript_view.rs`, `apps/dory-gpui/src/export.rs`, and `apps/dory-gpui/src/a11y.rs`.
-- [ ] Edit `apps/dory-gpui/tests/` with a new `turn_languages.rs`, and `crates/dory-core/tests/pipeline.rs`.
-- [ ] Edit `docs/plans/ux-redesign.md` UX-26 and A11Y-10.
+- [x] Edit `crates/dory-core/src/domain/transcript.rs` and `crates/dory-core/src/app/stages/mod.rs`.
+- [x] Edit `crates/dory-core/src/assistant/turns.rs` and `apps/dory-mcp` wire types, so `get_transcript` returns each turn's language.
+- [x] Edit `apps/dory-gpui/src/app/session.rs`, `apps/dory-gpui/src/transcript_view.rs`, `apps/dory-gpui/src/export.rs`, and `apps/dory-gpui/src/a11y.rs`.
+- [x] Edit `apps/dory-gpui/tests/` with a new `turn_languages.rs`, and `crates/dory-core/tests/pipeline.rs`.
+- [x] Edit `docs/plans/ux-redesign.md` UX-26 and A11Y-10.
 
 **Build.**
 
-- [ ] Name the data shapes first. A segment's language is output-language's `Segment.language: Option<LangTag>`, set by the transcribe stage to the language heard for the window or recovered stretch the segment came from, after B3's `settle_language`. It is the segment's main language, the one its grammar follows. There is no "mixed" value and no list of languages per segment. Appendix B says why.
-- [ ] `Transcript::language_shares(&self) -> Vec<(LangTag, Fraction)>` sums each language's timed speech over the segments, most first. `detected_languages` is now derived from it at write time, and `main_language()` stays its first entry.
-- [ ] `Transcript::is_bilingual(&self) -> bool` is true when two or more languages each hold at least `BILINGUAL_SHARE` of timed speech. `BILINGUAL_SHARE` is 10%, the Appendix G default. A meeting with one English greeting in an hour of Tagalog is not bilingual and gets no tags.
-- [ ] `session::turns` starts a new turn when the speaker or the segment language changes. `Turn` gains `language: Option<LangTag>` and `tag: Option<SharedString>`. `tag` is the language's name when the transcript is bilingual and the turn's language is not the main language, and `None` otherwise.
-- [ ] The transcript view draws the tag after the speaker name, as a small text label in `text_secondary`, never as color alone (A11Y-8). The turn's accessible label becomes "Sam, 12 minutes 30 seconds, English, then the text" when it has a tag, and is unchanged when it does not (A11Y-10).
-- [ ] Set the turn text node's language to the segment's tag through accesskit's `Node::set_language`, so VoiceOver switches to a Tagalog or English voice for the turn. If `gpui-kit` 0.9.1 does not expose it, the owner adds the smallest setter in `apps/dory-gpui/src/a11y.rs` or logs a decision row that it stays a follow-up. Appendix C records the risk.
-- [ ] Markdown and plain-text export write the tag after the speaker name, "Sam (English):", for the same turns the view tags. SRT is unchanged.
-- [ ] `assistant::turns` groups turns the same way, and `get_transcript` gains `language` per turn.
-- [ ] With an output language set, each turn's tag still names the spoken language, in both the Original and the Translated view. A Taglish segment whose main language is Tagalog is translated whole when the target is English and kept whole when the target is Tagalog. No part of a sentence is translated alone. A pipeline test pins both cases against output-language's `needs_translation`.
+- [x] Name the data shapes first. A segment's language is output-language's `Segment.language: Option<LangTag>`, set by the transcribe stage to the language heard for the window or recovered stretch the segment came from, after B3's `settle_language`. It is the segment's main language, the one its grammar follows. There is no "mixed" value and no list of languages per segment. Appendix B says why.
+- [x] `Transcript::language_shares(&self) -> Vec<(LangTag, Fraction)>` sums each language's timed speech over the segments, most first. `detected_languages` is now derived from it at write time, and `main_language()` stays its first entry.
+- [x] `Transcript::is_bilingual(&self) -> bool` is true when two or more languages each hold at least `BILINGUAL_SHARE` of timed speech. `BILINGUAL_SHARE` is 10%, the Appendix G default. A meeting with one English greeting in an hour of Tagalog is not bilingual and gets no tags.
+- [x] `session::turns` starts a new turn when the speaker or the segment language changes. `Turn` gains `language: Option<LangTag>` and `tag: Option<SharedString>`. `tag` is the language's name when the transcript is bilingual and the turn's language is not the main language, and `None` otherwise.
+- [x] The transcript view draws the tag after the speaker name, as a small text label in `text_secondary`, never as color alone (A11Y-8). The turn's accessible label becomes "Sam, 12 minutes 30 seconds, English, then the text" when it has a tag, and is unchanged when it does not (A11Y-10).
+- [x] Set the turn text node's language to the segment's tag through accesskit's `Node::set_language`, so VoiceOver switches to a Tagalog or English voice for the turn. If `gpui-kit` 0.9.1 does not expose it, the owner adds the smallest setter in `apps/dory-gpui/src/a11y.rs` or logs a decision row that it stays a follow-up. Appendix C records the risk. Result: `gpui-kit` 0.9.1 builds each node from a private struct and no app code can reach the node, so the decision log records that it stays a follow-up.
+- [x] Markdown and plain-text export write the tag after the speaker name, "Sam (English):", for the same turns the view tags. SRT is unchanged.
+- [x] `assistant::turns` groups turns the same way, and `get_transcript` gains `language` per turn.
+- [x] With an output language set, each turn's tag still names the spoken language, in both the Original and the Translated view. A Taglish segment whose main language is Tagalog is translated whole when the target is English and kept whole when the target is Tagalog. No part of a sentence is translated alone. A pipeline test pins both cases against output-language's `needs_translation`.
 
 **You see.**
 
@@ -314,10 +314,10 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-core/src/domain/transcript.rs` tests `language_shares` and `is_bilingual` at 9%, 10%, and 50%, with untimed segments ignored. Run `cargo test -p dory-core transcript`.
-- [ ] `apps/dory-gpui/src/app/session.rs` tests that a language change splits a turn of one speaker, and that tags appear only on non-main turns of a bilingual transcript. Run `cargo test -p dory-gpui session`.
-- [ ] `apps/dory-gpui/tests/turn_languages.rs` checks the accessible label of a tagged and an untagged turn, and the export text. Run `cargo test -p dory-gpui --test turn_languages`.
-- [ ] `crates/dory-core/tests/pipeline.rs` gains `taglish_segment_is_translated_whole_or_not_at_all`. Run `cargo test -p dory-core --test pipeline`.
+- [x] `crates/dory-core/src/domain/transcript.rs` tests `language_shares` and `is_bilingual` at 9%, 10%, and 50%, with untimed segments ignored. Run `cargo test -p dory-core transcript`.
+- [x] `apps/dory-gpui/src/app/session.rs` tests that a language change splits a turn of one speaker, and that tags appear only on non-main turns of a bilingual transcript. Run `cargo test -p dory-gpui session`.
+- [x] `apps/dory-gpui/tests/turn_languages.rs` checks the accessible label of a tagged and an untagged turn, and the export text. Run `cargo test -p dory-gpui --test turn_languages`.
+- [x] `crates/dory-core/tests/pipeline.rs` gains `taglish_segment_is_translated_whole_or_not_at_all`. Run `cargo test -p dory-core --test pipeline`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 

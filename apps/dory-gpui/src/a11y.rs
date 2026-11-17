@@ -59,15 +59,6 @@ pub fn typing(window: &Window, cx: &App) -> bool {
     })
 }
 
-/// The old rule, which never lets a scroll out of the inner area. Only the meeting languages list
-/// in `models_view` still calls it, and it goes when that list does: use [`nested_scroll`].
-pub fn contain_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> Stateful<Div> {
-    div()
-        .id(ElementId::Name(id.into()))
-        .on_scroll(|_, _, cx| cx.stop_propagation())
-        .child(child)
-}
-
 /// UX-31: a scroll area inside the page that passes leftover scrolling to the page. The returned
 /// div is the scroll area itself, and `child` is its content: give the div its height or
 /// `max_h`, and do not make `child` scroll on its own.
@@ -77,14 +68,29 @@ pub fn contain_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> S
 /// while it can move that way and leaves it to the page at its edge. A trackpad gesture stays
 /// with the area it began in until the next gesture begins, momentum included, as in AppKit.
 pub fn nested_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> Stateful<Div> {
-    let key: SharedString = id.into();
+    nested(id.into(), None, child.into_any_element())
+}
+
+/// [`nested_scroll`] driven by the caller's `handle`, for a caller that scrolls the area itself,
+/// such as a list that keeps its highlighted row in view. A `track_scroll` on the returned div
+/// would track the outer wrapper, which never scrolls.
+pub fn nested_scroll_tracked(
+    id: impl Into<SharedString>,
+    handle: &ScrollHandle,
+    child: impl IntoElement,
+) -> Stateful<Div> {
+    nested(id.into(), Some(handle.clone()), child.into_any_element())
+}
+
+fn nested(key: SharedString, handle: Option<ScrollHandle>, content: AnyElement) -> Stateful<Div> {
     div()
         .id(ElementId::Name(key.clone()))
         .flex()
         .flex_col()
         .child(NestedArea {
             key,
-            content: child.into_any_element(),
+            handle,
+            content,
         })
 }
 
@@ -192,6 +198,7 @@ impl Global for Latches {}
 /// [`nested_scroll`]'s area, which keeps its scroll handle across frames.
 struct NestedArea {
     key: SharedString,
+    handle: Option<ScrollHandle>,
     content: AnyElement,
 }
 
@@ -205,10 +212,13 @@ impl IntoElement for NestedArea {
 
 impl RenderOnce for NestedArea {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let handle = window
-            .use_keyed_state("nested-scroll-handle", cx, |_, _| ScrollHandle::new())
-            .read(cx)
-            .clone();
+        let handle = match self.handle {
+            Some(handle) => handle,
+            None => window
+                .use_keyed_state("nested-scroll-handle", cx, |_, _| ScrollHandle::new())
+                .read(cx)
+                .clone(),
+        };
         let area = div()
             .id("nested-scroll-area")
             .flex_auto()

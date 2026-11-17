@@ -9,7 +9,7 @@ scripts/bundle-macos.sh
 ```
 
 ```bash
-mkdir -p /tmp/dory-checks && rm -rf /tmp/dory-check-data && cp -cR ~/Library/Caches/dory-dev/live-data /tmp/dory-check-data && rm -f /tmp/dory-check-data/.lock
+mkdir -p /tmp/dory-checks && rm -rf /tmp/dory-check-data && cp -cR "$HOME/Library/Application Support/dory-dev/live-data" /tmp/dory-check-data && rm -f /tmp/dory-check-data/.lock
 ```
 
 Launch through `open`, so macOS attributes the permission prompts to Dory and not to Terminal. `DORY_DATA_DIR` keeps your real data folder untouched and makes the old-audio-device cleanup skip itself.

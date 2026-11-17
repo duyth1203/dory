@@ -405,8 +405,7 @@ impl LanguageCombobox {
                 ),
         )
         .child(
-            a11y::nested_scroll("language-options-scroll", list)
-                .track_scroll(&self.scroll)
+            a11y::nested_scroll_tracked("language-options-scroll", &self.scroll, list)
                 .max_h(theme.text(ROW) * VISIBLE_ROWS),
         )
         .children(empty)

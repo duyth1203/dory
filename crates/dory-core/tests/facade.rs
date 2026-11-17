@@ -839,7 +839,10 @@ fn a_device_that_will_not_start_leaves_no_recording_behind() {
             .iter()
             .any(|e| matches!(e, Event::RecordingDeleted(_)))
     });
-    assert_eq!(dory.recorder().status(), RecorderStatus::Idle);
+    // The discard commits before the recorder's own status settles, so wait for both.
+    eventually("the recorder to be idle", || {
+        dory.recorder().status() == RecorderStatus::Idle
+    });
     assert!(
         dory.library()
             .list(&RecordingQuery::default())

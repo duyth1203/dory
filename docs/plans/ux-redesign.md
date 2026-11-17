@@ -43,7 +43,7 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
 ## Recording
 
 - **UX-7. One action to record.** The toolbar record button, the menu item **File > New Recording** (Command-Shift-R), and a menu-bar extra all start recording at once. The app captures the microphone and system audio through Core Audio process taps, through the platform audio adapter described in `docs/architecture/hexagonal.md`. Recording never changes the user's default input or output device.
-- **UX-8. Recording state.** While recording, the toolbar control turns into a red elapsed-time pill with a live level meter and **Pause** and **Stop** buttons. A new row appears at the top of the sidebar with a "Recording" label. The menu-bar extra shows a red dot and the elapsed time.
+- **UX-8. Recording state.** While recording, the toolbar control turns into a red elapsed-time pill with a live level meter and **Pause** and **Stop** buttons. A new row appears at the top of the sidebar with a "Recording" label. The menu-bar extra shows a red dot and the elapsed time. The menu-bar item starts and stops recording without opening the window, and its menu lists what is in progress: the recording, the running job, the waiting count, and downloads. Closing the window keeps Dory running in the menu bar; only Quit exits, and it asks first when something is in progress.
 - **UX-9. Stop does not ask.** Stopping saves right away and offers **Undo** for 5 seconds. Undo resumes the recording into the same file. Processing starts only after the 5 seconds pass. The current "Stop this recording?" dialog goes away. Delete still asks, because it removes data.
 - **UX-10. Limits stay visible.** The 2-hour cap remains. At 5 minutes left, the pill turns amber and the app posts one notification. At the cap, the app saves and posts a notification that says so.
 
@@ -62,7 +62,13 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
   - Disk full: "Your recording is saved, but there isn't enough space to transcribe it." **Free Up Space…**, which opens Settings > Storage.
   - Transcriber crashed: "Transcription stopped partway. Your recording is saved." **Try Again**.
   - Audio unreadable: "This recording's audio can't be read." **Show in Finder**.
-- **UX-14. Done is announced once.** When a job finishes and the window is not key, the app posts a system notification. Clicking it opens that recording.
+- **UX-14. Notifications.** Dory posts a system notification when its window can't tell you itself, and every kind can be turned off in **Settings > General > Notifications** (all on by default, each with its effect in one line):
+  - **Recording started and saved:** when a recording starts or stops while Dory's window is closed, for example from the menu-bar item.
+  - **Recording time limit:** the 5-minute warning and the save at the 2-hour cap (UX-10).
+  - **Transcript ready** and **Summary ready:** when a job finishes a stage and the window is not key. Each is announced once.
+  - **Needs attention:** when a job stops and needs a fix (UX-13), with the one-sentence cause.
+  - **Model downloaded:** when a speech or summary model finishes downloading and the window is not key.
+  - Clicking a notification opens that recording, reopening the window if it is closed. If macOS has notifications turned off for Dory, the Notifications section says so and offers **Open System Settings**.
 - **UX-15. The queue stays out of the way.** The queue appears as status on sidebar rows. **Window > Processing Queue** opens a small non-modal Processing window, which floats and remembers its position, with sections in this order:
   1. Now: the running job, with its stage, percent, time left, and mini waveform.
   2. Up next: the queued jobs in order, with position, length, and start time.

@@ -862,6 +862,18 @@ impl<K: ListKind> ModelList<K> {
     }
 }
 
+impl<K: ListKind> ModelList<K> {
+    /// Opens the first model's explainer. False until the models are listed.
+    pub fn open_first_explainer(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(first) = K::rows(self.models.read(cx)).and_then(|rows| rows.first()) else {
+            return false;
+        };
+        self.controls.open = Some(first.status.entry.id.erase());
+        cx.notify();
+        true
+    }
+}
+
 impl<K: ListKind> Render for ModelList<K> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);

@@ -43,8 +43,13 @@ pub fn apply(prefs: SystemPrefs, cx: &mut App) {
 }
 
 /// Reads the settings now, applies them, and follows every later change for the life of the
-/// app. Called once by `main`.
-pub fn install(cx: &mut App) {
+/// app. Called once by `main`. `pretend` (`DORY_SYSTEM_PREFS`) replaces the Mac's settings, and
+/// then nothing is followed.
+pub fn install(pretend: Option<SystemPrefs>, cx: &mut App) {
+    if let Some(prefs) = pretend {
+        apply(prefs, cx);
+        return;
+    }
     apply(read(), cx);
     let changes = observe();
     cx.spawn(async move |cx: &mut AsyncApp| {

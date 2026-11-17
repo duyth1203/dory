@@ -68,7 +68,8 @@ pub fn open(cx: &mut App) {
         window_min_size: Some(size(px(WIDTH), px(320.))),
         ..Default::default()
     };
-    if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |_, cx| {
+    if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |window, cx| {
+        crate::platform::print_window_id(window);
         cx.new(|_| About {
             scroll: ScrollHandle::new(),
         })

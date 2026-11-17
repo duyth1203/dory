@@ -188,6 +188,11 @@ pub fn current(cx: &App) -> Option<Entity<SettingsWindow>> {
     cx.try_global::<Open>().map(|open| open.1.clone())
 }
 
+/// The open Settings window, for the launch previews in `show`.
+pub fn current_window(cx: &App) -> Option<AnyWindowHandle> {
+    cx.try_global::<Open>().map(|open| open.0)
+}
+
 /// Opens the Settings window on the pane it showed last, or brings it forward when it is open.
 pub fn open(app: &Entity<AppState>, cx: &mut App) {
     if let Some(handle) = cx.try_global::<Open>().map(|open| open.0)
@@ -215,6 +220,7 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
     let owner = app.clone();
     match gpui_kit::open_window(options, cx, move |window, cx| {
         crate::glass::follow(window, cx);
+        crate::platform::print_window_id(window);
         cx.new(|cx| SettingsWindow::new(owner, window, cx))
     }) {
         Ok((handle, view)) => cx.set_global(Open(handle, view)),
@@ -332,6 +338,19 @@ impl SettingsWindow {
 
     pub fn pane(&self) -> Pane {
         self.pane
+    }
+
+    /// Opens the meeting-languages popover, for the launch previews in `show`.
+    pub fn open_languages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.languages
+            .update(cx, |languages, cx| languages.open(window, cx));
+    }
+
+    /// Opens the first speech model's explainer, for the launch previews in `show`. False until
+    /// the models are listed.
+    pub fn open_first_explainer(&mut self, cx: &mut Context<Self>) -> bool {
+        self.speech
+            .update(cx, |list, cx| list.open_first_explainer(cx))
     }
 
     /// The row a search result last jumped to, while it is still highlighted.

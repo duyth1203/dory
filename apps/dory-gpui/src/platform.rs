@@ -1,7 +1,61 @@
-//! The two AppKit calls GPUI does not make for us: reading the user's accent color and posting a
-//! VoiceOver announcement. Everything else in the app is platform-free.
+//! The AppKit calls GPUI does not make for us: reading the user's accent color, posting a
+//! VoiceOver announcement, and, for the visual pass's launch state (`show`), forcing Dory's
+//! appearance and naming a window's number. Everything else in the app is platform-free.
 
-use gpui_kit::Hsla;
+use gpui_kit::{Hsla, Window};
+
+use crate::show::Appearance;
+
+/// Forces `appearance` on `NSApp`, so every Dory window and the theme read it while the rest of
+/// the Mac keeps its own. Call it before the first window opens.
+#[cfg(target_os = "macos")]
+pub fn force_appearance(appearance: Appearance) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{
+        NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
+    };
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: both are immutable AppKit string constants.
+    let name = unsafe {
+        match appearance {
+            Appearance::Light => NSAppearanceNameAqua,
+            Appearance::Dark => NSAppearanceNameDarkAqua,
+        }
+    };
+    let forced = NSAppearance::appearanceNamed(name);
+    NSApplication::sharedApplication(mtm).setAppearance(forced.as_deref());
+    eprintln!("appearance: forced {appearance:?}");
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn force_appearance(_: Appearance) {}
+
+/// Prints `window-id: <NSWindow windowNumber>`, so `scripts/visual-pass.sh` can capture this
+/// window alone with `screencapture -l`.
+#[cfg(target_os = "macos")]
+pub fn print_window_id(window: &Window) {
+    use objc2_app_kit::NSView;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = HasWindowHandle::window_handle(window) else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: GPUI's AppKit handle points at the window's content `NSView`, which lives as long
+    // as `window`, and this runs on the main thread, where GPUI calls window code.
+    let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
+    if let Some(ns_window) = view.window() {
+        eprintln!("window-id: {}", ns_window.windowNumber());
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn print_window_id(_: &Window) {}
 
 #[cfg(target_os = "macos")]
 pub fn system_accent() -> Option<Hsla> {

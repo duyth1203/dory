@@ -10,6 +10,8 @@ use dory_core::domain::{
 };
 use dory_core::models::{KindTag, ModelRef};
 
+use crate::processing::Phase;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SampleStatus {
     Transcribing,
@@ -214,4 +216,86 @@ pub fn rows() -> Vec<RecordingRow> {
 
 fn model() -> ModelRef {
     ModelRef::parse("fake/sample").expect("a valid model ref")
+}
+
+/// Every state of the processing card, P1 to P8 (`docs/design/processing-view.md` section 4),
+/// with lines streamed in while it transcribes.
+pub fn card_phases() -> Vec<(&'static str, Phase, Vec<Segment>)> {
+    use crate::estimate::Left;
+    use crate::processing::{Problem, Spot};
+    use dory_core::app::LightReason;
+    use dory_core::domain::Fraction;
+    const MIN: u64 = 60_000;
+    let lines: Vec<Segment> = [
+        (
+            0,
+            "Let's start with the launch checklist and who owns each item this week.",
+        ),
+        (
+            6_000,
+            "Design is done. The last two screens went to review on Monday.",
+        ),
+        (
+            14_000,
+            "Then we can ship on Friday if the release notes are ready in time.",
+        ),
+    ]
+    .into_iter()
+    .map(|(at, text)| Segment {
+        range: TimeRange::new(Ms(at), Ms(at + 5_000)),
+        speaker: SpeakerId(1),
+        channel: Channel::System,
+        text: text.into(),
+    })
+    .collect();
+    let transcribing = |light| Phase::Transcribing {
+        done: Fraction::new(0.4),
+        left: Left::About(Ms(4 * MIN)),
+        light,
+    };
+    vec![
+        (
+            "P1 stopped",
+            Phase::Stopped {
+                starts_in: 5,
+                auto: true,
+            },
+            Vec::new(),
+        ),
+        ("P2 saving", Phase::Saving, Vec::new()),
+        (
+            "P3a queued",
+            Phase::Queued(Spot {
+                ahead: 2,
+                starts_in: Some(Ms(9 * MIN)),
+            }),
+            Vec::new(),
+        ),
+        ("P3b preparing", Phase::Preparing, Vec::new()),
+        ("P4 transcribing", transcribing(None), lines.clone()),
+        (
+            "P5 transcribing light",
+            transcribing(Some(LightReason::Battery)),
+            lines,
+        ),
+        (
+            "P6 summarizing",
+            Phase::Summarizing {
+                left: Left::About(Ms(MIN)),
+            },
+            Vec::new(),
+        ),
+        ("P7 done", Phase::Done { summary: true }, Vec::new()),
+        (
+            "P8 failed",
+            Phase::Failed(Problem::SpeechModelMissing {
+                model: ModelRef::parse("sherpa/parakeet").unwrap(),
+                kind: KindTag::Stt,
+                name: "Parakeet".into(),
+                bytes: Some(487_211_443),
+                download: None,
+            }),
+            Vec::new(),
+        ),
+    ]
 }

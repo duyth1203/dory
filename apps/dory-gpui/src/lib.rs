@@ -26,6 +26,8 @@
 //! - Icons (`docs/design/settings-icons-blur.md` section 2): `icons`, the vendored Lucide set every
 //!   view draws from, and `about`, which carries its license.
 //!
+//! - The visual pass: `show`, the launch state `scripts/visual-pass.sh` opens each view with.
+//!
 //! Each agent-owned file's doc comment is its contract.
 
 pub mod a11y;
@@ -57,6 +59,7 @@ pub mod record_control;
 pub mod set_up_summaries;
 pub mod settings_window;
 pub mod shell;
+pub mod show;
 pub mod sidebar;
 pub mod status_item;
 pub mod summary_view;

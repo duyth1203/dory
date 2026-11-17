@@ -2,12 +2,19 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use dory_gpui::{glass, icons, menus, notify, prefs, status_item, system_prefs};
+use dory_gpui::{glass, icons, menus, notify, platform, prefs, show, status_item, system_prefs};
 use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 fn main() -> ExitCode {
     let config = match dory::Config::from_env() {
         Ok(config) => config,
+        Err(error) => {
+            eprintln!("dory: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let launch = match show::Launch::from_env() {
+        Ok(launch) => launch,
         Err(error) => {
             eprintln!("dory: {error}");
             return ExitCode::FAILURE;
@@ -27,9 +34,12 @@ fn main() -> ExitCode {
     gpui_kit::application()
         .with_assets(icons::Assets)
         .run(move |cx| {
+            if let Some(appearance) = launch.appearance {
+                platform::force_appearance(appearance);
+            }
             gpui_kit::init(cx);
             menus::install(cx);
-            system_prefs::install(cx);
+            system_prefs::install(launch.system_prefs, cx);
             let (width, height) = prefs.window_size;
             let options = WindowOptions {
                 titlebar: Some(TitlebarOptions {
@@ -52,13 +62,18 @@ fn main() -> ExitCode {
             let core = dory.borrow_mut().take().expect("the app opens one window");
             let prefs = prefs.clone();
             let config = config.clone();
+            let view = launch.view.clone();
             let opened = gpui_kit::open_window(options, cx, move |window, cx| {
                 let (state, shell) = dory_gpui::build(core, prefs, window, cx);
                 glass::follow(window, cx);
+                platform::print_window_id(window);
                 prefs::watch(&state, &config, window, cx);
                 menus::watch(&state, cx);
                 status_item::install(&state, cx);
                 notify::install(&state, cx);
+                if let Some(view) = view {
+                    show::run(view, &state, window, cx);
+                }
                 shell
             });
             if let Err(error) = opened {

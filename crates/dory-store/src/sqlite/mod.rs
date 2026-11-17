@@ -115,8 +115,13 @@ impl SqliteStore {
         writer
             .pragma_update(None, "foreign_keys", true)
             .map_err(db)?;
-        migrate(&mut writer)?;
-        reindex_if_stale(&mut writer)?;
+        if migrate(&mut writer)? | reindex_if_stale(&mut writer)? {
+            // A migration can leave a WAL file of hundreds of megabytes, which the next process
+            // to open the database scans before its first read or write.
+            writer
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+                .map_err(db)?;
+        }
 
         let reader = Connection::open_with_flags(
             path,
@@ -174,12 +179,14 @@ fn user_version(conn: &Connection) -> Result<u32, StoreError> {
         .map_err(db)
 }
 
-fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
+/// Returns whether it changed the schema.
+fn migrate(conn: &mut Connection) -> Result<bool, StoreError> {
     let supported = u32::try_from(MIGRATIONS.len()).unwrap_or(u32::MAX);
     let found = user_version(conn)?;
     if found > supported {
         return Err(StoreError::SchemaTooNew { found, supported });
     }
+    let mut migrated = false;
     for (index, migration) in MIGRATIONS.iter().enumerate() {
         let target = u32::try_from(index + 1).unwrap_or(u32::MAX);
         let tx = conn
@@ -196,22 +203,26 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         tx.execute_batch(&format!("PRAGMA user_version = {target}"))
             .map_err(db)?;
         tx.commit().map_err(db)?;
+        migrated = true;
     }
-    Ok(())
+    Ok(migrated)
 }
 
-/// Rebuilds the search index when it was built by another version of the core's tokens.
-fn reindex_if_stale(conn: &mut Connection) -> Result<(), StoreError> {
+/// Rebuilds the search index when it was built by another version of the core's tokens. Returns
+/// whether it did.
+fn reindex_if_stale(conn: &mut Connection) -> Result<bool, StoreError> {
     if search::is_current(conn)? {
-        return Ok(());
+        return Ok(false);
     }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db)?;
-    if !search::is_current(&tx)? {
+    let stale = !search::is_current(&tx)?;
+    if stale {
         search::rebuild(&tx)?;
     }
-    tx.commit().map_err(db)
+    tx.commit().map_err(db)?;
+    Ok(stale)
 }
 
 // ---- rows ---------------------------------------------------------------------------------

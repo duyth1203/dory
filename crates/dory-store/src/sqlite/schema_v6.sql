@@ -6,7 +6,7 @@ CREATE VIRTUAL TABLE search USING fts5(
     title, speakers, summary, transcript,
     content = '', contentless_delete = 1,
     tokenize = 'unicode61 remove_diacritics 0',
-    prefix = '2 3'
+    prefix = '1 2 3'
 );
 CREATE TABLE search_meta (
     tokens_version INTEGER NOT NULL,

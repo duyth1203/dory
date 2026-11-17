@@ -320,6 +320,13 @@ fn v6_migrates_a_v5_file() {
     }
     let store = SqliteStore::open(&path).unwrap();
     assert_eq!(store.schema_version().unwrap(), LATEST);
+    assert_eq!(
+        std::fs::metadata(dir.path().join("dory.db-wal"))
+            .unwrap()
+            .len(),
+        0,
+        "the migration's write-ahead log is checkpointed and truncated"
+    );
     let conn = rusqlite::Connection::open(&path).unwrap();
     let columns: Vec<String> = conn
         .prepare("SELECT name FROM pragma_table_info('recordings')")

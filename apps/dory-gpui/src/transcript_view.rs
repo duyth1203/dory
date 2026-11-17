@@ -17,7 +17,9 @@
 //! - Up to [`PAGED_TURNS`] turns render as one column that scrolls with the page. Longer
 //!   transcripts render through GPUI's `list`, which lays out only the turns in view, as a
 //!   viewport one window tall less the toolbar and the sticky tab row. The page scrolls the
-//!   header away and the list then fills the column.
+//!   header away and the list then fills the column. The list is a nested scroll area
+//!   (`a11y::nested_list`, UX-31): it takes the wheel while it can move and passes the rest to
+//!   the page, and a trackpad gesture stays with whichever of the two it began in.
 //! - Copy Transcript and Export sit in the tab row, which the detail pane draws.
 //!
 //! The detail pane creates this view once per session and places it under the Transcript tab.
@@ -446,17 +448,21 @@ impl Render for TranscriptView {
                 .into_any_element();
         }
         let height = window.viewport_size().height - px(TOOLBAR) - Theme::get(cx).text(TAB_ROW);
+        // The clearance sits outside the list: GPUI's list reports its scroll range without its
+        // own padding, and the chaining rule reads that range to find the bottom.
         container
-            .child(a11y::contain_scroll(
-                "transcript-scroll",
-                list(
-                    self.list.clone(),
-                    cx.processor(|this, ix, window, cx| this.render_turn(ix, window, cx)),
-                )
-                .w_full()
-                .h(height)
-                .pb(px(DOCK_CLEARANCE)),
-            ))
+            .child(
+                div().pb(px(DOCK_CLEARANCE)).child(a11y::nested_list(
+                    "transcript-scroll",
+                    &self.list,
+                    list(
+                        self.list.clone(),
+                        cx.processor(|this, ix, window, cx| this.render_turn(ix, window, cx)),
+                    )
+                    .w_full()
+                    .h(height - px(DOCK_CLEARANCE)),
+                )),
+            )
             .into_any_element()
     }
 }

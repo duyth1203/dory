@@ -10,13 +10,20 @@
 //!   (finding 3).
 //! - [`focusable`]: GPUI draws no focus ring, and Kit's own is a faint halo (lane 4).
 
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use dory_core::domain::Ms;
+use gpui_kit::base::ScrollbarHandle;
 use gpui_kit::component::input::InputState;
 use gpui_kit::{
-    AccessibleAction, AnyElement, App, Div, ElementId, Entity, FocusHandle, Focusable as _, Global,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Role, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, WeakFocusHandle,
-    Window, div, prelude::FluentBuilder as _, px, transparent_black,
+    AccessibleAction, AnyElement, App, DispatchPhase, Div, ElementId, Entity, FocusHandle,
+    Focusable as _, Global, HitboxBehavior, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ListState, ParentElement as _, Pixels, Point, RenderOnce, Role, ScrollEvent, ScrollHandle,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
+    TouchPhase, ViewElement, WeakFocusHandle, Window, canvas, div, prelude::FluentBuilder as _, px,
+    transparent_black,
 };
 
 use crate::theme::Theme;
@@ -52,13 +59,230 @@ pub fn typing(window: &Window, cx: &App) -> bool {
     })
 }
 
-/// Keeps a scroll inside a scroll area nested in the page: GPUI hands every wheel event to every
-/// scroll area under the pointer, so without this the page moves along with the inner list.
+/// The old rule, which never lets a scroll out of the inner area. Only the meeting languages list
+/// in `models_view` still calls it, and it goes when that list does: use [`nested_scroll`].
 pub fn contain_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> Stateful<Div> {
     div()
         .id(ElementId::Name(id.into()))
         .on_scroll(|_, _, cx| cx.stop_propagation())
         .child(child)
+}
+
+/// UX-31: a scroll area inside the page that passes leftover scrolling to the page. The returned
+/// div is the scroll area itself, and `child` is its content: give the div its height or
+/// `max_h`, and do not make `child` scroll on its own.
+///
+/// GPUI hands each wheel event to every scroll area under the pointer, innermost first, so
+/// without this the page and the inner area move together. Here the inner area takes the event
+/// while it can move that way and leaves it to the page at its edge. A trackpad gesture stays
+/// with the area it began in until the next gesture begins, momentum included, as in AppKit.
+pub fn nested_scroll(id: impl Into<SharedString>, child: impl IntoElement) -> Stateful<Div> {
+    let key: SharedString = id.into();
+    div()
+        .id(ElementId::Name(key.clone()))
+        .flex()
+        .flex_col()
+        .child(NestedArea {
+            key,
+            content: child.into_any_element(),
+        })
+}
+
+/// [`nested_scroll`] for a virtualized GPUI `list`, which scrolls itself through `state`.
+pub fn nested_list(
+    id: impl Into<SharedString>,
+    state: &ListState,
+    list: impl IntoElement,
+) -> Stateful<Div> {
+    chain(id.into(), state.clone(), list)
+}
+
+/// How far a scroll area has scrolled down, and how far it can, in points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Travel {
+    pub offset: f32,
+    pub max: f32,
+}
+
+impl Travel {
+    fn of(handle: &impl ScrollbarHandle) -> Travel {
+        let max = (handle.content_size().height - handle.viewport_bounds().size.height)
+            .max(Pixels::ZERO)
+            .as_f32();
+        Travel {
+            offset: (-handle.offset().y.as_f32()).clamp(0., max),
+            max,
+        }
+    }
+
+    /// GPUI's sign: a positive `dy` moves the content down, toward the top.
+    pub fn can_move(self, dy: f32) -> bool {
+        const SLACK: f32 = 0.5;
+        (dy > 0. && self.offset > SLACK) || (dy < 0. && self.offset < self.max - SLACK)
+    }
+}
+
+/// One wheel event, as the chaining rule reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wheel {
+    /// Vertical points, positive toward the top.
+    pub dy: f32,
+    pub phase: TouchPhase,
+    /// A trackpad or another device with pixel deltas. A mouse wheel's notches are not, and
+    /// carry no gesture.
+    pub precise: bool,
+}
+
+/// Who owns the gesture under way, as one nested area sees it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Latch {
+    /// No gesture: each event goes to the inner area if it can move that way.
+    #[default]
+    Free,
+    /// A gesture began and has not moved yet.
+    Deciding,
+    /// The gesture began over this area while it could move, so it keeps it to the end.
+    Inner,
+    /// The gesture began somewhere else, or at this area's edge.
+    Parent,
+}
+
+/// What happens to one event over a nested area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// The inner area moves and the page does not.
+    Inner,
+    /// The inner area stays and the page gets the event.
+    Parent,
+    /// Neither moves: the gesture belongs to the inner area, which is at its edge.
+    Neither,
+}
+
+/// UX-31's rule. Every nested area sees every wheel event in its window, so it can tell where
+/// each gesture began; `over` says whether this one is under the pointer. Returns the area's
+/// latch after the event and, when `over`, what the event does.
+pub fn route(latch: Latch, wheel: Wheel, over: bool, travel: Travel) -> (Latch, Route) {
+    let latch = match wheel.phase {
+        TouchPhase::Started => Latch::Deciding,
+        TouchPhase::Cancelled => Latch::Free,
+        _ if !wheel.precise => Latch::Free,
+        _ => latch,
+    };
+    if wheel.dy == 0. {
+        return (latch, Route::Parent);
+    }
+    let moves = over && travel.can_move(wheel.dy);
+    match latch {
+        Latch::Free if moves => (latch, Route::Inner),
+        Latch::Free => (latch, Route::Parent),
+        Latch::Deciding if moves => (Latch::Inner, Route::Inner),
+        Latch::Deciding | Latch::Parent => (Latch::Parent, Route::Parent),
+        Latch::Inner if moves => (latch, Route::Inner),
+        Latch::Inner if over => (latch, Route::Neither),
+        Latch::Inner => (latch, Route::Parent),
+    }
+}
+
+/// Each nested area's [`Latch`], by its id.
+#[derive(Default)]
+struct Latches(HashMap<SharedString, Latch>);
+
+impl Global for Latches {}
+
+/// [`nested_scroll`]'s area, which keeps its scroll handle across frames.
+struct NestedArea {
+    key: SharedString,
+    content: AnyElement,
+}
+
+impl IntoElement for NestedArea {
+    type Element = ViewElement<Self>;
+
+    fn into_element(self) -> Self::Element {
+        ViewElement::new(self)
+    }
+}
+
+impl RenderOnce for NestedArea {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let handle = window
+            .use_keyed_state("nested-scroll-handle", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let area = div()
+            .id("nested-scroll-area")
+            .flex_auto()
+            .min_h(px(0.))
+            .overflow_y_scroll()
+            .track_scroll(&handle)
+            .child(self.content);
+        chain(self.key, handle, area)
+            .flex_auto()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+    }
+}
+
+/// The probe's decision for the event in flight, and the area's offset before it moved.
+type Pending = Rc<Cell<Option<(Route, Point<Pixels>)>>>;
+
+/// Wraps `area`, a scroll area whose state `handle` reads, in the chaining rule.
+///
+/// GPUI runs bubble-phase scroll listeners in reverse paint order. The probe is painted after
+/// `area`, so it sees each event before `area` moves and records the decision and the offset;
+/// the wrapper's own listener was registered before `area`, so it runs after, and either stops
+/// the event there or puts `area` back where it was and lets the page have it.
+fn chain<H: ScrollbarHandle + Clone>(
+    key: SharedString,
+    handle: H,
+    area: impl IntoElement,
+) -> Stateful<Div> {
+    let pending = Pending::default();
+    let settle = {
+        let (pending, handle) = (pending.clone(), handle.clone());
+        move |_: &ScrollEvent, _: &mut Window, cx: &mut App| {
+            let Some((route, before)) = pending.take() else {
+                return;
+            };
+            if route != Route::Inner && handle.offset() != before {
+                handle.set_offset(before);
+            }
+            if route != Route::Parent {
+                cx.stop_propagation();
+            }
+        }
+    };
+    let probe_key = key.clone();
+    let probe = canvas(
+        |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+        move |_, hitbox, window, _| {
+            window.on_mouse_event(move |event: &ScrollEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let over = hitbox.should_handle_scroll(window);
+                let wheel = Wheel {
+                    dy: event.delta.pixel_delta(window.line_height()).y.as_f32(),
+                    phase: event.touch_phase,
+                    precise: event.delta.precise(),
+                };
+                let latches = &mut cx.default_global::<Latches>().0;
+                let latch = latches.get(&probe_key).copied().unwrap_or_default();
+                let (latch, route) = route(latch, wheel, over, Travel::of(&handle));
+                latches.insert(probe_key.clone(), latch);
+                pending.set(over.then(|| (route, handle.offset())));
+            });
+        },
+    )
+    .absolute()
+    .inset_0();
+    div()
+        .id(ElementId::Name(format!("{key}-chain").into()))
+        .relative()
+        .on_scroll(settle)
+        .child(area)
+        .child(probe)
 }
 
 pub fn node(id: impl Into<SharedString>, role: Role, label: impl Into<SharedString>) -> Node {
@@ -349,6 +573,129 @@ pub fn spoken_position(position: Ms, total: Ms) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TOP: Travel = Travel {
+        offset: 0.,
+        max: 500.,
+    };
+    const MIDDLE: Travel = Travel {
+        offset: 200.,
+        max: 500.,
+    };
+    const BOTTOM: Travel = Travel {
+        offset: 500.,
+        max: 500.,
+    };
+    const UP: f32 = 40.;
+    const DOWN: f32 = -40.;
+
+    fn wheel(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            phase: TouchPhase::Moved,
+            precise: false,
+        }
+    }
+
+    fn pad(dy: f32, phase: TouchPhase) -> Wheel {
+        Wheel {
+            dy,
+            phase,
+            precise: true,
+        }
+    }
+
+    /// Runs `events` over one area from a fresh latch and returns each event's route.
+    fn routes(events: &[(Wheel, bool, Travel)]) -> Vec<Route> {
+        let mut latch = Latch::default();
+        events
+            .iter()
+            .map(|&(wheel, over, travel)| {
+                let (next, route) = route(latch, wheel, over, travel);
+                latch = next;
+                route
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_mouse_wheel_moves_the_inner_area_until_its_edge_then_the_page() {
+        use Route::*;
+        assert_eq!(
+            routes(&[
+                (wheel(UP), true, MIDDLE),
+                (wheel(UP), true, TOP),
+                (wheel(DOWN), true, TOP),
+                (wheel(DOWN), true, BOTTOM),
+                (wheel(UP), true, BOTTOM),
+            ]),
+            [Inner, Parent, Inner, Parent, Inner]
+        );
+    }
+
+    #[test]
+    fn a_gesture_that_begins_inside_stays_inside_momentum_and_all() {
+        use Route::*;
+        use TouchPhase::*;
+        assert_eq!(
+            routes(&[
+                (pad(0., Started), true, MIDDLE),
+                (pad(UP, Moved), true, MIDDLE),
+                (pad(UP, Moved), true, TOP),
+                (pad(0., Ended), true, TOP),
+                (pad(UP, Moved), true, TOP),
+                (pad(DOWN, Moved), true, TOP),
+            ]),
+            [Parent, Inner, Neither, Parent, Neither, Inner],
+            "at the top mid-gesture neither moves, and momentum after the lift stays inside"
+        );
+    }
+
+    #[test]
+    fn a_gesture_that_begins_at_the_edge_goes_to_the_page_even_if_it_turns_back() {
+        use Route::*;
+        use TouchPhase::*;
+        assert_eq!(
+            routes(&[
+                (pad(0., Started), true, TOP),
+                (pad(UP, Moved), true, TOP),
+                (pad(DOWN, Moved), true, TOP),
+                (pad(DOWN, Moved), true, MIDDLE),
+            ]),
+            [Parent, Parent, Parent, Parent]
+        );
+    }
+
+    #[test]
+    fn a_gesture_that_begins_outside_never_moves_the_area_it_slides_under() {
+        use Route::*;
+        use TouchPhase::*;
+        assert_eq!(
+            routes(&[
+                (pad(0., Started), false, MIDDLE),
+                (pad(DOWN, Moved), false, MIDDLE),
+                (pad(DOWN, Moved), true, MIDDLE),
+                (pad(0., Started), true, MIDDLE),
+                (pad(DOWN, Moved), true, MIDDLE),
+            ]),
+            [Parent, Parent, Parent, Parent, Inner],
+            "only the next gesture moves the area"
+        );
+    }
+
+    #[test]
+    fn a_mouse_wheel_ends_any_latch() {
+        use Route::*;
+        use TouchPhase::*;
+        assert_eq!(
+            routes(&[
+                (pad(0., Started), true, TOP),
+                (pad(UP, Moved), true, TOP),
+                (wheel(DOWN), true, TOP),
+            ]),
+            [Parent, Parent, Inner]
+        );
+    }
 
     #[test]
     fn spoken_times_read_as_a11y_3_writes_them() {

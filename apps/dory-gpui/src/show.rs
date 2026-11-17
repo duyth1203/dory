@@ -9,7 +9,8 @@
 //!   optional trailing `:min-height` for Settings at its shortest
 //! - `about`
 //! - `recording:<title>` and `recording:<title>:transcript`
-//! - `phase:<P1, P2, P3a, P3b, P4, P5, P6, P7, or P8>`, on the newest recording
+//! - `phase:<P1, P2, P3a, P3b, P4, P5, P6, P7, or P8>[:<title>]`, on that recording or the
+//!   newest
 //! - `explainer`, the first speech model's info popover in Settings › Transcription
 //! - `queue`, the Processing Queue dialog
 //!
@@ -44,8 +45,11 @@ pub enum View {
         title: String,
         tab: DetailTab,
     },
-    /// An index into [`fixtures::card_phases`].
-    Phase(usize),
+    /// `ix` indexes [`fixtures::card_phases`]. No title means the newest recording.
+    Phase {
+        ix: usize,
+        title: Option<String>,
+    },
     Explainer,
     Queue,
 }
@@ -80,7 +84,7 @@ impl fmt::Display for LaunchError {
             ),
             LaunchError::View(value) => write!(
                 f,
-                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>, explainer, or queue, not {value:?}"
+                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer, or queue, not {value:?}"
             ),
             LaunchError::Appearance(value) => {
                 write!(f, "{APPEARANCE_VAR} takes light or dark, not {value:?}")
@@ -170,7 +174,12 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
             tab,
         });
     }
-    if let Some(name) = trimmed.strip_prefix("phase:") {
+    if let Some(rest) = trimmed.strip_prefix("phase:") {
+        let (name, title) = match rest.split_once(':') {
+            Some((_, "")) => return Err(bad()),
+            Some((name, title)) => (name, Some(title.to_owned())),
+            None => (rest, None),
+        };
         return fixtures::card_phases()
             .iter()
             .position(|(label, _, _)| {
@@ -179,7 +188,7 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
                     .next()
                     .is_some_and(|key| key.eq_ignore_ascii_case(name))
             })
-            .map(View::Phase)
+            .map(|ix| View::Phase { ix, title })
             .ok_or_else(bad);
     }
     Err(bad())
@@ -273,7 +282,7 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
             })
             .detach();
         }
-        View::Recording { .. } | View::Phase(_) => {
+        View::Recording { .. } | View::Phase { .. } => {
             let done = Rc::new(Cell::new(false));
             // Deferred, so the launch selection rule in `prefs::watch` has run first.
             let try_select = move |app: Entity<AppState>, cx: &mut App| {
@@ -298,18 +307,20 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
 /// Selects the recording `view` names. False when the rows do not list it yet.
 fn select(view: &View, app: &Entity<AppState>, cx: &mut App) -> bool {
     let picked = app.update(cx, |app, cx| {
-        let id = match view {
-            View::Recording { title, .. } => app
-                .recordings
-                .iter()
-                .find(|row| row.recording.title.as_deref() == Some(title))
-                .map(|row| row.recording.id.clone()),
-            _ => app.recordings.first().map(|row| row.recording.id.clone()),
-        }?;
+        let title = match view {
+            View::Recording { title, .. } => Some(title),
+            View::Phase { title, .. } => title.as_ref(),
+            _ => None,
+        };
+        let id = app
+            .recordings
+            .iter()
+            .find(|row| title.is_none_or(|t| row.recording.title.as_deref() == Some(t)))
+            .map(|row| row.recording.id.clone())?;
         app.select(Selection::One(id.clone()), cx);
         match view {
             View::Recording { tab, .. } => app.set_tab(*tab, cx),
-            View::Phase(ix) => {
+            View::Phase { ix, .. } => {
                 let (_, phase, lines) = fixtures::card_phases().swap_remove(*ix);
                 app.preview_phase(id, phase, lines, cx);
             }
@@ -379,9 +390,18 @@ mod tests {
             ["P1", "P2", "P3a", "P3b", "P4", "P5", "P6", "P7", "P8"]
         );
         for (ix, label) in labels.iter().enumerate() {
-            assert_eq!(view(&format!("phase:{label}")), Ok(Some(View::Phase(ix))));
+            assert_eq!(
+                view(&format!("phase:{label}")),
+                Ok(Some(View::Phase { ix, title: None }))
+            );
         }
-        assert_eq!(view("phase:p8"), Ok(Some(View::Phase(8))));
+        assert_eq!(
+            view("phase:p8:1:1 with Sam"),
+            Ok(Some(View::Phase {
+                ix: 8,
+                title: Some("1:1 with Sam".into())
+            }))
+        );
     }
 
     #[test]
@@ -395,6 +415,7 @@ mod tests {
             "recording::transcript",
             "phase:P9",
             "phase:",
+            "phase:P4:",
             "queue:open",
         ] {
             assert_eq!(view(bad), Err(LaunchError::View(bad.into())), "{bad:?}");

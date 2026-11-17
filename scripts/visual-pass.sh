@@ -11,6 +11,7 @@
 #   VISUAL_CARGO_ARGS    extra cargo arguments, split on spaces
 #   VISUAL_LIBRARY       the library to copy (default: ~/Library/Application Support/dory-dev/live-data)
 #   VISUAL_THEMES        themes to run (default: "light dark contrast")
+#   VISUAL_SETTLE        seconds to wait after the view is ready (default: 1.5)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,7 +34,9 @@ if [ ${#views[@]} -eq 0 ]; then
     "recording:Weekly sync" "recording:Weekly sync:transcript"
     "recording:Pulong sa Tagalog" "recording:Pulong sa Tagalog:transcript"
     "recording:Two hour planning" "recording:Two hour planning:transcript"
-    phase:P1 phase:P2 phase:P3a phase:P3b phase:P4 phase:P5 phase:P6 phase:P7 phase:P8
+    "phase:P1:Weekly sync" "phase:P2:Weekly sync" "phase:P3a:Weekly sync" "phase:P3b:Weekly sync"
+    "phase:P4:Weekly sync" "phase:P5:Weekly sync" "phase:P6:Weekly sync" "phase:P7:Weekly sync"
+    "phase:P8:Weekly sync" phase:P4 phase:P8
   )
 fi
 
@@ -99,7 +102,7 @@ capture() {
     sleep 0.1
   done
   # Lets the frame after the view lands paint, and the explainer and popovers settle.
-  sleep 1.5
+  sleep "${VISUAL_SETTLE:-1.5}"
   pid=$(sed -n 's/^first-frame: window opened, pid \([0-9]*\)$/\1/p' "$log" | head -1)
   local ids
   ids=$(sed -n 's/^window-id: \([0-9]*\)$/\1/p' "$log")

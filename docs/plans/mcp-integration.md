@@ -649,7 +649,7 @@ Tools, resources, and prompts.
 
 | Kind | Name | Needs |
 | --- | --- | --- |
-| Tool | `search_recordings { query?, since?, until?, limit?, cursor? }` | Titles. Matches only inside the client's fields. |
+| Tool | `search_recordings { query?, since?, until?, limit?, cursor? }` | Titles. Matches only inside the client's fields, with the app's search rules (amended 2026-11-17, `docs/plans/search.md` section S5). |
 | Tool | `get_recording { id }` | Titles. Speaker names need Summaries. |
 | Tool | `get_summary { id }` | Summaries |
 | Tool | `list_action_items { id?, since?, limit? }` | Summaries |

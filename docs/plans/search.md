@@ -348,6 +348,20 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 - [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
 - [ ] The root appends S4 to the stack on S3's branch.
 
+## Give assistants the same search (S5)
+
+Amended 2026-11-17 at the operator's request: once search lands, an assistant on MCP gets every search capability the app has. Built on `feat/search-assistants` after merging the MCP stack, so the search schema is v8.
+
+**Contract.** `search_recordings { query?, since?, until?, limit?, cursor? }` is unchanged as input. Its output is `{ notice, showing_results_for, corrections, recordings, next_cursor }`. `showing_results_for` is the corrected words joined by ", ", or null when nothing was corrected, and `corrections` lists `{ typed, used }`. Each recording has `id, title, created, duration_seconds, has_transcript, summary`, then `matched_in` (`"title"` or `"conversation"`, null in a listing) and `snippet { field, untrusted_text, marks, matched, turn }`. `field` is `title`, `speakers`, `summary`, or `transcript`. `marks` are `[start, end)` offsets in Unicode characters into `untrusted_text`, counted after the helper drops control characters, and `matched` is the marked words, for clients that do not count characters. `turn` is set for a transcript snippet: `{ cursor, speaker, start_seconds }`, where `cursor` (`r<revision>.t<turn>`) starts `get_transcript` at the matching turn. Order stays newest first. Text with no word in it lists the newest meetings, as the app's empty search does.
+
+**Grant.** A grant is a set of index columns. Titles reads `title`. Summaries adds `speakers` and `summary`. Transcripts adds `transcript`. Speaker names go with Summaries because `get_recording` already lists them at that level, so matching them shows nothing the grant does not. The store compiles the set into one FTS5 column filter, `{title speakers summary} : (...)`, around the same quoted MATCH the app runs, with `hidden = 0` in SQL so `LIMIT` and the cursor count only what the assistant may see.
+
+**Correction.** The assistant path runs the app's `find`: the exact query, then, only when it finds nothing, `Query::corrected` against `assistant_vocabulary(fields)`. That vocabulary holds only terms some visible recording has in a granted column, read from a `col`-mode `fts5vocab` table with the hidden recordings' words subtracted, so "showing results for" can never name a word from an ungranted field or a hidden recording. A correction that finds nothing is dropped, as in the app. Paging a corrected search with its cursor corrects the same way, because the exact words still match nothing.
+
+**Snippet.** A title hit marks the title with `search::highlights`. A conversation hit runs `search::excerpt_within` at 200 characters over only the granted text, in the app's order: transcript turn, then summary line, then speaker name. Its turns are the ones `get_transcript` pages through, so the turn index is a valid cursor.
+
+**Reader.** `SqliteReader` reads the index and migrates nothing. A library at another schema is refused at open, as before. An index built by another `TOKENS_VERSION` makes a lookup fail with `SearchIndexStale` ("open Dory to rebuild it"), and the helper exits so its client restarts it from the new build.
+
 ## Close the program
 
 - [ ] Every box above is checked with its evidence.

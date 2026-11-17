@@ -87,7 +87,7 @@ env = { DORY_MCP_KEY = "<key>" }
 
 | Tool | What it returns |
 | --- | --- |
-| `search_recordings` | Meetings matching words, newest first, with a short snippet around the match. Takes `query`, `since` and `until` as UTC days (`YYYY-MM-DD`), `limit` up to 25, and a `cursor` for the next page. |
+| `search_recordings` | Meetings matching words, newest first, the way Dory's search box matches them: any word order, word starts, case and accents folded, quoted phrases in order, and one typo corrected when nothing matches. Each result says whether it matched in the title or the conversation, and carries a snippet with the matched words marked and, for a transcript match, the turn's speaker, time, and a `get_transcript` cursor. It searches only the text the assistant's level may read. Takes `query`, `since` and `until` as UTC days (`YYYY-MM-DD`), `limit` up to 25, and a `cursor` for the next page. |
 | `get_recording` | One meeting's title, date, duration, whether it has a transcript and summary, and its speakers at the `summaries` level. |
 | `get_summary` | One meeting's summary: key points, decisions, and action items. Needs `summaries`. |
 | `list_action_items` | The action items of one meeting, or of recent meetings since a day. Needs `summaries`. |

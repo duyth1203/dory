@@ -11,6 +11,7 @@ thiserror.workspace = true
 crossbeam-channel.workspace = true
 async-channel.workspace = true
 rtrb.workspace = true
+unicode-normalization.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

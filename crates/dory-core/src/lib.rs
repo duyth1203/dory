@@ -8,6 +8,7 @@ pub mod domain;
 pub mod models;
 pub mod ports;
 pub mod recorder;
+pub mod search;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

@@ -25,6 +25,7 @@ thiserror = "2"
 crossbeam-channel = "0.5"
 async-channel = "2"
 rtrb = "0.4"
+unicode-normalization = "0.1.25"
 hound = "3.5"
 rusqlite = { version = "=0.41.1", features = ["bundled"] }
 flacenc = "0.5"

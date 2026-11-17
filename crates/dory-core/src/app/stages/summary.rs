@@ -7,9 +7,7 @@
 
 use std::fmt::Write as _;
 
-use crate::domain::{
-    Channel, Fraction, LangTag, Revision, Segment, SpeakerId, SpeakerNames, Transcript,
-};
+use crate::domain::{Fraction, LangTag, SpeakerNames, Transcript};
 
 /// Room left for the chat template the engine wraps around the prompt, and for `count_tokens`
 /// being an estimate.
@@ -95,22 +93,12 @@ pub(crate) fn transcript_lines(transcript: &Transcript, names: &SpeakerNames) ->
             let _ = writeln!(
                 line,
                 "{}: {}",
-                speaker_label(segment, names, transcript.revision),
+                names.label(segment, transcript.revision),
                 segment.text
             );
             line
         })
         .collect()
-}
-
-fn speaker_label(segment: &Segment, names: &SpeakerNames, revision: Revision) -> String {
-    match names.name_of(segment.speaker, revision) {
-        Some(name) => name.to_owned(),
-        None if segment.speaker == SpeakerId::LOCAL && segment.channel == Channel::Mic => {
-            "Me".to_owned()
-        }
-        None => format!("Speaker {}", segment.speaker.0),
-    }
 }
 
 /// The summary may take a quarter of the context, up to what a long meeting's summary needs: a
@@ -297,6 +285,7 @@ impl<E> Passes<'_, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::{Channel, Revision, Segment, SpeakerId};
     use crate::domain::{Ms, TimeRange};
     use crate::models::ModelRef;
 

@@ -4,7 +4,8 @@
 #   scripts/bundle-macos.sh [OUT_DIR]
 #
 # OUT_DIR defaults to $CARGO_TARGET_DIR/bundle, or target/bundle. sherpa-onnx links statically,
-# so the bundle holds one executable and no dylibs or sidecars.
+# so the bundle holds two executables and no dylibs: the app, and `dory-mcp`, the helper an
+# assistant launches from `Contents/MacOS/dory-mcp` to read the library.
 #
 # Signing: DORY_SIGNING_IDENTITY (for example "Developer ID Application: Name (TEAMID)") signs
 # with that identity and the hardened runtime. Unset, the repo's local git config
@@ -43,7 +44,7 @@ if [ "$identity" != "-" ] && [ -z "${APPLE_ID:-}${APPLE_API_KEY:-}" ]; then
   echo "bundle: no notarization credentials in the environment, skipping notarization" >&2
 fi
 
-cargo build --release -p dory-gpui
+cargo build --release -p dory-gpui -p dory-mcp
 
 mkdir -p "$out"
 rm -rf "$out/Dory.app"
@@ -56,7 +57,10 @@ print(json.dumps({
     "identifier": "com.dory.app",
     "outDir": os.path.abspath(out),
     "binariesDir": os.path.abspath(binaries_dir),
-    "binaries": [{"path": "dory-gpui", "main": True}],
+    "binaries": [
+        {"path": "dory-gpui", "main": True},
+        {"path": "dory-mcp", "main": False},
+    ],
     "formats": ["app"],
     "icons": ["apps/dory-gpui/Dory.icns"],
     "macos": {

@@ -7,6 +7,7 @@ members = [
     "crates/dory-store",
     "crates/dory-macos",
     "apps/dory-cli",
+    "apps/dory-mcp",
     "apps/dory-gpui",
 ]
 

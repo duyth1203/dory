@@ -9,16 +9,27 @@ mod config;
 #[cfg(feature = "fake-engines")]
 mod fake;
 mod lock;
+#[cfg(feature = "app")]
 mod machine;
+#[cfg(feature = "app")]
 mod platform;
 
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "app")]
 use dory_core::app::{Options, Ports, ReadPorts};
-use dory_core::models::{CatalogError, Llm, Stt};
+use dory_core::assistant::Assistant;
+use dory_core::domain::{Actor, ClientKey};
+use dory_core::models::CatalogError;
+#[cfg(feature = "app")]
+use dory_core::models::{Llm, Stt};
+#[cfg(feature = "app")]
+use dory_core::ports::ModelProvider;
+#[cfg(feature = "app")]
 use dory_core::ports::capture::CaptureBackend;
-use dory_core::ports::{Clock, ModelProvider, StoreError};
+use dory_core::ports::{Clock, StoreError};
+#[cfg(feature = "app")]
 use dory_engines::{Ollama, Sherpa};
 use dory_store::{FsTakes, JsonlAudit, SqliteReader, SqliteStore};
 use thiserror::Error;
@@ -70,12 +81,14 @@ pub enum ImportError {
     Legacy(#[from] dory_store::ImportError),
 }
 
+#[cfg(feature = "app")]
 /// Speech and summary providers.
 struct Providers {
     stt: Vec<Arc<dyn ModelProvider<Stt>>>,
     llm: Vec<Arc<dyn ModelProvider<Llm>>>,
 }
 
+#[cfg(feature = "app")]
 /// The real engines. To add one, push its provider here.
 fn providers(config: &Config) -> Providers {
     let sherpa = Sherpa::new(config.models_dir().join("sherpa"), Sherpa::RELEASES);
@@ -111,6 +124,7 @@ fn create_data_dir(config: &Config) -> Result<(), OpenError> {
     })
 }
 
+#[cfg(feature = "app")]
 fn open_with(
     config: &Config,
     capture: Arc<dyn CaptureBackend>,
@@ -142,6 +156,7 @@ fn open_with(
     Ok(Dory::open(ports, options)?)
 }
 
+#[cfg(feature = "app")]
 fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryReader, OpenError> {
     let store = Arc::new(SqliteReader::open(config.db_path())?);
     Ok(LibraryReader::open(ReadPorts {
@@ -152,6 +167,7 @@ fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryRea
     })?)
 }
 
+#[cfg(feature = "app")]
 /// Opens Dory on `config.data_dir`: SQLite at `dory.sqlite`, takes under `takes/`, the platform's
 /// capture backend, and the system clock. Holds an exclusive lock on `.lock` in that folder until
 /// the returned `Dory` is dropped, so a second open of the same folder, in this process or
@@ -191,6 +207,20 @@ pub fn audit_reader(config: &Config) -> Arc<dyn dory_core::ports::AuditRead> {
     Arc::new(JsonlAudit::reader(config.audit_dir()))
 }
 
+/// The read path for one assistant, as the `dory-mcp` helper runs it: a read-only view of the
+/// library, the audit log this process appends to, and the key the assistant presented. It takes
+/// no lock, so it works while Dory runs, and it never writes the library.
+pub fn open_assistant(config: &Config, key: Option<ClientKey>) -> Result<Assistant, OpenError> {
+    let store = Arc::new(SqliteReader::open(config.db_path())?);
+    let clock = Arc::new(SystemClock::new());
+    let audit = Arc::new(JsonlAudit::writer(
+        config.audit_dir(),
+        Actor::Helper,
+        clock.now(),
+    ));
+    Ok(Assistant::new(store, audit, clock, key))
+}
+
 /// A new key for an assistant, from the system's random source. Show it once and keep it nowhere:
 /// the store keeps only its digest.
 pub fn new_client_key() -> std::io::Result<dory_core::domain::ClientKey> {
@@ -200,6 +230,7 @@ pub fn new_client_key() -> std::io::Result<dory_core::domain::ClientKey> {
     Ok(dory_core::domain::ClientKey::from_bytes(bytes))
 }
 
+#[cfg(feature = "app")]
 /// Opens the library under `config.data_dir` for reading only. It takes no lock, repairs nothing,
 /// and never writes: it creates no file, sets no journal mode, and never migrates, so it works
 /// while another process records into the same folder and cannot change that process's schema.
@@ -244,6 +275,7 @@ pub fn import_legacy(config: &Config, old_data_dir: &Path) -> Result<ImportRepor
     Ok(dory_store::import_legacy(&store, &takes, old_data_dir)?)
 }
 
+#[cfg(feature = "app")]
 /// Removes the audio devices the old app left behind and puts the system default devices
 /// back, once. Reads the old app's restore files from its data folder and writes only a marker
 /// under `config.data_dir`. A no-op off macOS and when `HOME` is unset. It is also skipped when

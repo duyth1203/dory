@@ -5,6 +5,7 @@
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone};
 use dory_core::app::Budget;
 use dory_core::domain::{Fraction, Ms, RecordingId, RecordingRow, Stage, Timestamp};
+use dory_core::search::{Correction, Excerpt, Section, Source};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Selection {
@@ -24,9 +25,9 @@ impl Selection {
 
 /// What the user typed in the sidebar search field, trimmed. Empty means no search.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SearchQuery(String);
+pub struct SearchText(String);
 
-impl SearchQuery {
+impl SearchText {
     pub fn new(text: &str) -> Self {
         Self(text.trim().to_owned())
     }
@@ -38,6 +39,55 @@ impl SearchQuery {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+}
+
+/// The heading of a search section (UX-32).
+pub fn section_label(section: Section) -> &'static str {
+    match section {
+        Section::Titles => "Titles",
+        Section::Conversations => "In conversations",
+    }
+}
+
+/// The words a correction put in the query, such as "roadmap", for the line "Showing results for
+/// roadmap". `None` when nothing was corrected.
+pub fn corrected_words(corrections: &[Correction]) -> Option<String> {
+    let words: Vec<&str> = corrections
+        .iter()
+        .flat_map(|c| c.used.iter().map(String::as_str))
+        .collect();
+    (!words.is_empty()).then(|| words.join(", "))
+}
+
+/// What VoiceOver says once a search settles: "12 results", "1 result", "No results", or, after a
+/// correction, "Showing results for roadmap, 3 results".
+pub fn results_announcement(count: usize, corrections: &[Correction]) -> String {
+    let count = match count {
+        0 => "No results".to_owned(),
+        1 => "1 result".to_owned(),
+        n => format!("{n} results"),
+    };
+    match corrected_words(corrections) {
+        Some(words) if count != "No results" => format!("Showing results for {words}, {count}"),
+        _ => count,
+    }
+}
+
+/// Where a result matched, as its VoiceOver label says it after the row's usual sentence: "Title
+/// match", "In transcript, we agreed the roadmap slips", "In summary, ...", or "Speaker name,
+/// ...". A conversation hit whose snippet has not loaded yet says nothing.
+pub fn match_words(section: Section, excerpt: Option<&Excerpt>) -> Option<String> {
+    if section == Section::Titles {
+        return Some("Title match".into());
+    }
+    let excerpt = excerpt?;
+    let where_ = match excerpt.source {
+        Source::Transcript => "In transcript",
+        Source::Summary => "In summary",
+        Source::Speakers => "Speaker name",
+    };
+    let said = excerpt.snippet.text.trim_matches('…').trim();
+    Some(format!("{where_}, {said}"))
 }
 
 /// UX-1's filter menu.

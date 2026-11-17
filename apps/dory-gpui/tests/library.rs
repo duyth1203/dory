@@ -8,7 +8,7 @@ use dory_core::domain::{Fraction, JobState, Ms, RecordingId, RecordingRow, Stage
 use dory_gpui::estimate::Left;
 use dory_gpui::fixtures::{self, SAMPLES};
 use dory_gpui::library::{
-    DateGroup, Percent, Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal,
+    DateGroup, Percent, Progress, RowStatus, SearchText, Selection, StatusFilter, after_removal,
     group_by_date, row_meta, short_duration,
 };
 use dory_gpui::processing::{Facts, Phase};
@@ -225,8 +225,8 @@ fn selection_after_delete_moves_to_the_next_then_the_previous_row() {
 
 #[test]
 fn search_trims_and_an_empty_search_lists_everything() {
-    assert!(SearchQuery::new("   ").is_empty());
-    assert_eq!(SearchQuery::new("  Lieferung ").text(), "Lieferung");
+    assert!(SearchText::new("   ").is_empty());
+    assert_eq!(SearchText::new("  Lieferung ").text(), "Lieferung");
 }
 
 mod window {

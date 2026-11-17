@@ -62,6 +62,9 @@ pub struct Theme {
     pub meter_off: Hsla,
     /// Opaque, so its contrast can be measured.
     pub playing_bg: Hsla,
+    /// The fill behind a matched word in a search result. `text` is held to 4.5 to 1 on it. A
+    /// match is also semibold, so the fill never carries it alone (A11Y-8).
+    pub search_match: Hsla,
     pub avatar_bg: Hsla,
     /// The fill of everything that floats over the app: dialogs, popovers, menus, toasts, and
     /// the Processing window (`docs/design/floating-surfaces.md` section 2). Opaque, and lighter
@@ -213,6 +216,7 @@ struct Base {
     group_border: u32,
     radio_border: u32,
     playing_alpha: f32,
+    match_alpha: f32,
 }
 
 const LIGHT: Base = Base {
@@ -246,6 +250,7 @@ const LIGHT: Base = Base {
     group_border: 0xE3E6EB,
     radio_border: 0xA9ADB6,
     playing_alpha: 0.07,
+    match_alpha: 0.22,
 };
 
 const DARK: Base = Base {
@@ -279,6 +284,7 @@ const DARK: Base = Base {
     group_border: 0x34353B,
     radio_border: 0x5A5B63,
     playing_alpha: 0.12,
+    match_alpha: 0.35,
 };
 
 /// The glass tints of `docs/design/settings-icons-blur.md` section 5, as color and alpha, light
@@ -323,6 +329,7 @@ impl Theme {
         };
         let border = |normal: u32| if high { text_secondary } else { c(normal) };
         let playing_bg = blend(system_accent, window_bg, base.playing_alpha);
+        let search_match = blend(system_accent, sidebar_bg, base.match_alpha);
         let reading = [
             window_bg,
             sidebar_bg,
@@ -396,6 +403,7 @@ impl Theme {
             on_attention: readable_on(attention),
             meter_off: blend(readable_on(record_red), record_red, 0.4),
             playing_bg,
+            search_match,
             avatar_bg: c(base.avatar_bg),
             surface_raised,
             surface_border: border(base.surface_border),
@@ -651,6 +659,7 @@ impl Theme {
                 self.surface_inset,
             ),
             graphic("playhead on surface_inset", self.text, self.surface_inset),
+            text("text on search_match", self.text, self.search_match),
             text("text on avatar_bg", self.text, self.avatar_bg),
             text("text on chip_bg", self.text, self.chip_bg),
             graphic("wave_rest on card_bg", self.wave_rest, self.card_bg),

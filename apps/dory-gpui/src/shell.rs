@@ -175,7 +175,7 @@ impl Shell {
 
     fn start_screen(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.read(cx);
-        let line = if app.is_loaded() && app.recordings.is_empty() && app.search.is_empty() {
+        let line = if app.is_loaded() && app.recordings.is_empty() && app.typed.is_empty() {
             "Record a call, and Dory writes its transcript and summary on this Mac."
         } else {
             "Pick a recording on the left, or start a new one."

@@ -24,6 +24,7 @@ use dory_core::app::{Dory, Event, RecorderStatus, Trashed};
 use dory_core::domain::{Job, JobId, RecordingId, RecordingQuery, RecordingRow, Segment, Settings};
 use dory_core::models::ModelRef;
 use dory_core::ports::capture::{Access, Source};
+use dory_core::search::{Excerpt, SearchResults, Section};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 pub use player::PlayerHandle;
@@ -32,12 +33,24 @@ pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 use self::core::Core;
 pub use self::models::{Originals, count};
 use crate::estimate::{Estimate, Rates};
-use crate::library::{Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal};
+use crate::library::{Progress, RowStatus, SearchText, Selection, StatusFilter, after_removal};
 use crate::onboarding::OnboardingStep;
 use crate::prefs::Prefs;
 pub use crate::processing::{Download, ModelInfo};
 use crate::processing::{Phase, Run};
 use crate::record_control::Live;
+
+/// Rows with the status each shows, in the order the sidebar lists them.
+pub type Listed<'a> = Vec<(&'a RecordingRow, RowStatus)>;
+
+/// The conversation hits, newest first, whose snippets the sidebar draws.
+fn conversation_ids(results: &SearchResults) -> Vec<RecordingId> {
+    let [_, (_, conversations)] = results.sections();
+    conversations
+        .into_iter()
+        .map(|found| found.row.recording.id.clone())
+        .collect()
+}
 
 fn millis(since: Instant) -> f64 {
     since.elapsed().as_secs_f64() * 1000.0
@@ -56,6 +69,10 @@ fn log_after_paint(cx: &mut gpui_kit::App, line: impl FnOnce() -> String + 'stat
 
 /// How long typing pauses before the search runs.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
+
+/// How many conversation hits get their snippet in the same read as the search, so the first
+/// screen paints once. The rest fill in right after.
+pub const FIRST_SNIPPETS: usize = 30;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DetailTab {
@@ -98,7 +115,17 @@ pub struct AppState {
     /// The store's rows for the current search, newest first.
     pub recordings: Vec<RecordingRow>,
     pub selection: Selection,
-    pub search: SearchQuery,
+    /// What is in the search field, trimmed. Empty means no search.
+    pub typed: SearchText,
+    /// The last settled search: the query that found the hits, which is the corrected one when
+    /// the typed words matched nothing, the hits, and the corrections. `None` while `typed` is
+    /// empty, or holds no word.
+    pub search: Option<SearchResults>,
+    /// Where each conversation hit matched, as far as they have loaded. A hit with no entry
+    /// shows no snippet.
+    pub snippets: HashMap<RecordingId, Excerpt>,
+    /// The words last spoken about the results when a search settled.
+    pub announced: Option<String>,
     pub filter: StatusFilter,
     pub prefs: Prefs,
     /// Here rather than in the detail pane, so Command-1 and Command-2 work from any focus.
@@ -212,7 +239,10 @@ impl AppState {
             core,
             recordings: Vec::new(),
             selection: Selection::None,
-            search: SearchQuery::default(),
+            typed: SearchText::default(),
+            search: None,
+            snippets: HashMap::new(),
+            announced: None,
             filter: StatusFilter::All,
             prefs,
             tab: DetailTab::Summary,
@@ -282,11 +312,35 @@ impl AppState {
         self.phase(row).row()
     }
 
-    /// The rows the sidebar shows, in order, after the status filter.
-    pub fn visible(&self) -> Vec<(&RecordingRow, RowStatus)> {
-        self.recordings
-            .iter()
-            .map(|row| (row, self.status(row)))
+    /// The rows the sidebar shows, in order, after the status filter. While a search has results,
+    /// that is the Titles section, then the Conversations section.
+    pub fn visible(&self) -> Listed<'_> {
+        match self.visible_sections() {
+            Some(sections) => sections.into_iter().flat_map(|(_, rows)| rows).collect(),
+            None => self.shown(self.recordings.iter()),
+        }
+    }
+
+    /// The search's two sections after the status filter, each newest first and possibly empty.
+    /// `None` when no search has settled, so the sidebar groups by date.
+    pub fn visible_sections(&self) -> Option<Vec<(Section, Listed<'_>)>> {
+        let results = self.search.as_ref()?;
+        Some(
+            results
+                .sections()
+                .into_iter()
+                .map(|(section, hits)| {
+                    (
+                        section,
+                        self.shown(hits.into_iter().map(|found| &found.row)),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn shown<'a>(&self, rows: impl Iterator<Item = &'a RecordingRow>) -> Listed<'a> {
+        rows.map(|row| (row, self.status(row)))
             .filter(|(_, status)| self.filter.admits(*status))
             .collect()
     }
@@ -348,11 +402,11 @@ impl AppState {
     /// Searches titles, speaker names, summaries, and transcripts once typing pauses for
     /// [`SEARCH_DEBOUNCE`].
     pub fn set_search(&mut self, text: &str, cx: &mut Context<Self>) {
-        let search = SearchQuery::new(text);
-        if search == self.search {
+        let typed = SearchText::new(text);
+        if typed == self.typed {
             return;
         }
-        self.search = search;
+        self.typed = typed;
         self.search_generation += 1;
         let generation = self.search_generation;
         cx.spawn(async move |this, cx| {
@@ -495,17 +549,24 @@ impl AppState {
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.rows_generation += 1;
         let generation = self.rows_generation;
-        let text = self.search.text().to_owned();
+        let text = self.typed.text().to_owned();
         let list = self.core.run(cx, move |dory| {
-            let rows = match text.is_empty() {
-                true => dory.library().list(&RecordingQuery::default())?,
-                false => dory
-                    .library()
-                    .search(&text)?
-                    .map(|results| results.hits.into_iter().map(|hit| hit.row).collect())
-                    .unwrap_or_default(),
+            let library = dory.library();
+            let (rows, search, first) = match text.is_empty() {
+                true => (library.list(&RecordingQuery::default())?, None, Vec::new()),
+                false => match library.search(&text)? {
+                    None => (Vec::new(), None, Vec::new()),
+                    Some(results) => {
+                        let ids = conversation_ids(&results);
+                        let first = &ids[..ids.len().min(FIRST_SNIPPETS)];
+                        let found = library.snippets(&results.query, first)?;
+                        let first = first.iter().cloned().zip(found).collect();
+                        let rows = results.hits.iter().map(|hit| hit.row.clone()).collect();
+                        (rows, Some(results), first)
+                    }
+                },
             };
-            Ok::<_, dory_core::ports::StoreError>((rows, dory.pipeline().queue()?))
+            Ok::<_, dory_core::ports::StoreError>((rows, search, first, dory.pipeline().queue()?))
         });
         cx.spawn(async move |this, cx| {
             let rows = list.await;
@@ -514,17 +575,20 @@ impl AppState {
                     return;
                 }
                 match rows {
-                    Ok((rows, queue)) => {
+                    Ok((rows, search, first, queue)) => {
                         let before = std::mem::replace(&mut state.recordings, rows);
                         let queued_before = std::mem::replace(&mut state.queue, queue);
                         state.track_finished(&queued_before);
                         state.error = None;
+                        state.set_results(search, first);
                         state.on_rows(&before, cx);
                         if let Some(started) = state.settling.take() {
+                            state.announce_results();
                             log_after_paint(cx, move || {
                                 format!("search-settled ms={:.1}", millis(started))
                             });
                         }
+                        state.fill_snippets(generation, cx);
                     }
                     Err(error) => state.error = Some(error.to_string().into()),
                 }
@@ -537,6 +601,78 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    /// Swaps in the settled search. Snippets of the same query that are already loaded stay, so a
+    /// reload for an event does not blank them while the next read fills them again.
+    fn set_results(
+        &mut self,
+        search: Option<SearchResults>,
+        first: Vec<(RecordingId, Option<Excerpt>)>,
+    ) {
+        let same_query = match (&search, &self.search) {
+            (Some(new), Some(old)) => new.query == old.query,
+            _ => false,
+        };
+        if !same_query {
+            self.snippets.clear();
+        }
+        self.search = search;
+        self.keep_snippets(first);
+    }
+
+    fn keep_snippets(&mut self, found: Vec<(RecordingId, Option<Excerpt>)>) {
+        for (id, excerpt) in found {
+            match excerpt {
+                Some(excerpt) => self.snippets.insert(id, excerpt),
+                None => self.snippets.remove(&id),
+            };
+        }
+    }
+
+    /// Loads the snippets of the conversation hits past the first screen, off the UI thread. A
+    /// newer reload makes the answer stale, so it is dropped.
+    fn fill_snippets(&mut self, generation: u64, cx: &mut Context<Self>) {
+        let Some(results) = &self.search else {
+            return;
+        };
+        let ids = conversation_ids(results);
+        let Some(rest) = ids.get(FIRST_SNIPPETS..).filter(|rest| !rest.is_empty()) else {
+            return;
+        };
+        let (query, rest) = (results.query.clone(), rest.to_vec());
+        let work = self.core.run(cx, move |dory| {
+            let found = dory.library().snippets(&query, &rest)?;
+            Ok::<_, dory_core::ports::StoreError>(rest.into_iter().zip(found).collect::<Vec<_>>())
+        });
+        cx.spawn(async move |this, cx| {
+            let found = match work.await {
+                Ok(found) => found,
+                Err(error) => {
+                    eprintln!("search snippets failed: {error}");
+                    return;
+                }
+            };
+            let _ = this.update(cx, |state, cx| {
+                if state.rows_generation == generation {
+                    state.keep_snippets(found);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Says how many results a search that just settled found. Typing that has not settled says
+    /// nothing, and neither does clearing the field.
+    fn announce_results(&mut self) {
+        self.announced = None;
+        let Some(results) = self.search.as_ref().filter(|_| !self.typed.is_empty()) else {
+            return;
+        };
+        let said = crate::library::results_announcement(self.visible().len(), &results.corrections);
+        crate::a11y::announce(&said);
+        self.announced = Some(said);
     }
 
     fn on_events(&mut self, events: Vec<Event>, cx: &mut Context<Self>) {
@@ -557,7 +693,7 @@ impl AppState {
                     detail |= is_selected(&id);
                 }
                 Event::SpeakerNamesChanged(id) => {
-                    rows |= !self.search.is_empty();
+                    rows |= !self.typed.is_empty();
                     detail |= is_selected(&id);
                 }
                 Event::RecordingDeleted(id) => {

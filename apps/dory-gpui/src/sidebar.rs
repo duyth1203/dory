@@ -1,10 +1,16 @@
 //! The inset sidebar panel (UX-1, UX-25): search, the status filter, and the recordings grouped
-//! by date. It reads `AppState` and writes only through its methods.
+//! by date. While a search has results, the date groups give way to two sections, "Titles" and
+//! "In conversations" (UX-32), with a line saying so above them when the search was corrected.
+//! It reads `AppState` and writes only through its methods.
 //!
 //! Each row has two lines (`docs/design/processing-view.md` section 4): the title, then the date
 //! and duration on the left with the status glyph and word on the right. The row is at least
 //! 52 pt tall and grows with the text. The title truncates up to 125% text and wraps above it;
-//! the status word never truncates, so the title gives way first.
+//! the status word never truncates, so the title gives way first. A conversation hit adds a third
+//! line, the snippet around the first match, in 12 pt secondary text: one line with an ellipsis
+//! up to 125% text, two lines above. Matched words, in the title and the snippet, are drawn
+//! semibold on the `search_match` fill, so the fill never carries a match alone. On the
+//! accent-filled row they are underlined in `on_accent` instead of filled.
 //!
 //! The list is one Tab stop. Up and Down move the selection, and the selected row is the list's
 //! active descendant, so VoiceOver follows the selection the way it does in a native source
@@ -12,15 +18,18 @@
 //! with focus elsewhere it takes `selection_inactive`. The list scrolls the selected row into
 //! view, so the keyboard never moves the selection out of sight, and Return renames it.
 
+use std::ops::Range;
+
 use chrono::Local;
+use dory_core::search::{self, Section};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, ScrollHandle,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px,
+    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, HighlightStyle, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
+    ScrollHandle, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription,
+    UnderlineStyle, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
@@ -122,7 +131,7 @@ impl Sidebar {
             })
     }
 
-    /// The group headers and rows, and the selected row's index among them.
+    /// The headings and rows, and the selected row's index among them.
     fn rows(&self, window: &Window, cx: &mut Context<Self>) -> (Vec<AnyElement>, Option<usize>) {
         let theme = Theme::get(cx);
         let loops = motion::looping(window, cx);
@@ -137,14 +146,14 @@ impl Sidebar {
         if visible.is_empty() {
             let why = if !app.is_loaded() {
                 String::new()
-            } else if !app.search.is_empty() {
-                format!("No recordings match “{}”.", app.search.text())
+            } else if !app.typed.is_empty() {
+                format!("No recordings match “{}”.", app.typed.text())
             } else if app.recordings.is_empty() {
                 "No recordings yet".into()
             } else {
                 format!("No recordings are {}.", app.filter.label().to_lowercase())
             };
-            let empty = div()
+            let empty = a11y::node("sidebar-empty", Role::Label, why.clone())
                 .px(px(12.))
                 .py(px(8.))
                 .text_size(theme.text(13.))
@@ -154,17 +163,48 @@ impl Sidebar {
             return (vec![empty], None);
         }
         let count = visible.len();
-        let groups = library::group_by_date(visible.iter().map(|(row, _)| *row), &now);
         let statuses: std::collections::HashMap<_, _> = visible
             .iter()
             .map(|(row, status)| (row.recording.id.clone(), *status))
             .collect();
+        let blocks: Vec<Block> = match app.visible_sections() {
+            Some(sections) => sections
+                .into_iter()
+                .filter(|(_, rows)| !rows.is_empty())
+                .map(|(section, rows)| Block {
+                    id: format!("section-{}", library::section_label(section)),
+                    label: library::section_label(section).into(),
+                    section: Some(section),
+                    rows: rows.into_iter().map(|(row, _)| row).collect(),
+                })
+                .collect(),
+            None => library::group_by_date(visible.iter().map(|(row, _)| *row), &now)
+                .into_iter()
+                .map(|(group, rows)| {
+                    let label = group.label(today);
+                    Block {
+                        id: format!("group-{label}"),
+                        label,
+                        section: None,
+                        rows,
+                    }
+                })
+                .collect(),
+        };
+        let query = app.search.as_ref().map(|results| &results.query);
         let mut position = 0;
         let mut children: Vec<AnyElement> = Vec::new();
         let mut selected_ix = None;
-        for (group, rows) in groups {
-            children.push(group_header(group, today, &theme).into_any_element());
-            for row in rows {
+        if let Some(words) = app
+            .search
+            .as_ref()
+            .and_then(|results| library::corrected_words(&results.corrections))
+        {
+            children.push(correction_line(&words, &theme).into_any_element());
+        }
+        for block in blocks {
+            children.push(heading(&block.id, &block.label, &theme).into_any_element());
+            for row in block.rows {
                 position += 1;
                 let id = row.recording.id.clone();
                 let is_selected = selected.as_ref() == Some(&id);
@@ -176,17 +216,32 @@ impl Sidebar {
                 let words = status.label();
                 breathing |= status.glyph() == Glyph::Dots || status.glyph() == Glyph::DotsCircle;
                 let title = library::title(row, &now.timezone());
+                let group = DateGroup::of(
+                    library::local(row.recording.created_at, &now.timezone()).date_naive(),
+                    today,
+                );
                 let meta = library::row_meta(row, group, &now);
                 let spoken_time = library::local(row.recording.created_at, &now.timezone())
                     .format("%H:%M")
                     .to_string();
-                let label = match row.recording.take {
+                let mut label = match row.recording.take {
                     Some(take) => format!(
                         "{title}, {spoken_time}, {}, {words}",
                         library::short_duration(take.duration),
                     ),
                     None => format!("{title}, {spoken_time}, {words}"),
                 };
+                let excerpt = (block.section == Some(Section::Conversations))
+                    .then(|| app.snippets.get(&id))
+                    .flatten();
+                if let Some(section) = block.section
+                    && let Some(found) = library::match_words(section, excerpt)
+                {
+                    label = format!("{label}. {found}");
+                }
+                let title_marks = query
+                    .map(|query| search::highlights(query, &title))
+                    .unwrap_or_default();
                 let (fg, fg2) = if filled {
                     (theme.on_accent, theme.on_accent)
                 } else {
@@ -230,11 +285,17 @@ impl Sidebar {
                     .child(
                         div()
                             .text_size(theme.text(14.))
-                            .line_height(gpui_kit::relative(1.25))
+                            .line_height(relative(1.25))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(fg)
                             .when(theme.text_scale <= 1.25, |title| title.truncate())
-                            .child(title),
+                            .child(marked(
+                                title,
+                                &title_marks,
+                                FontWeight::BOLD,
+                                filled,
+                                &theme,
+                            )),
                     )
                     .child(
                         div()
@@ -257,6 +318,23 @@ impl Sidebar {
                                     .child(words),
                             ),
                     )
+                    .when_some(excerpt, |row, excerpt| {
+                        row.child(
+                            div()
+                                .text_size(theme.text(12.))
+                                .line_height(relative(1.25))
+                                .text_color(fg2)
+                                .when(theme.text_scale <= 1.25, |line| line.truncate())
+                                .when(theme.text_scale > 1.25, |line| line.line_clamp(2))
+                                .child(marked(
+                                    excerpt.snippet.text.clone(),
+                                    &excerpt.snippet.marks,
+                                    FontWeight::SEMIBOLD,
+                                    filled,
+                                    &theme,
+                                )),
+                        )
+                    })
                     .context_menu(move |menu, window, cx| {
                         menus::recording_menu(menu, &menu_id, window, cx)
                     });
@@ -270,9 +348,76 @@ impl Sidebar {
     }
 }
 
-fn group_header(group: DateGroup, today: chrono::NaiveDate, theme: &Theme) -> impl IntoElement {
-    let label = group.label(today);
-    a11y::node(format!("group-{label}"), Role::Heading, label.clone())
+/// One heading and the rows under it: a date group, or a search section.
+struct Block<'a> {
+    id: String,
+    label: String,
+    section: Option<Section>,
+    rows: Vec<&'a dory_core::domain::RecordingRow>,
+}
+
+/// `text` with each of `marks` (bytes of `text`) semibold in `weight` on the `search_match` fill.
+/// On the accent-filled row there is no fill to read against, so a mark is underlined.
+fn marked(
+    text: String,
+    marks: &[Range<usize>],
+    weight: FontWeight,
+    on_accent_fill: bool,
+    theme: &Theme,
+) -> AnyElement {
+    if marks.is_empty() {
+        return text.into_any_element();
+    }
+    let style = if on_accent_fill {
+        HighlightStyle {
+            color: Some(theme.on_accent),
+            font_weight: Some(weight),
+            underline: Some(UnderlineStyle {
+                thickness: px(1.),
+                color: Some(theme.on_accent),
+                wavy: false,
+            }),
+            ..HighlightStyle::default()
+        }
+    } else {
+        HighlightStyle {
+            color: Some(theme.text),
+            font_weight: Some(weight),
+            background_color: Some(theme.search_match),
+            ..HighlightStyle::default()
+        }
+    };
+    StyledText::new(text)
+        .with_highlights(marks.iter().map(|mark| (mark.clone(), style)))
+        .into_any_element()
+}
+
+/// "Showing results for roadmap", above the sections of a search that was corrected.
+fn correction_line(words: &str, theme: &Theme) -> impl IntoElement {
+    let lead = "Showing results for ";
+    let line = format!("{lead}{words}");
+    let words = lead.len()..line.len();
+    a11y::node("search-correction", Role::Label, line.clone())
+        .px(px(12.))
+        .pt(px(8.))
+        .text_size(theme.text(12.))
+        .text_color(theme.text_secondary)
+        .child(marked_words(line, words, theme.text))
+}
+
+fn marked_words(text: String, words: Range<usize>, color: Hsla) -> AnyElement {
+    let style = HighlightStyle {
+        color: Some(color),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        ..HighlightStyle::default()
+    };
+    StyledText::new(text)
+        .with_highlights([(words, style)])
+        .into_any_element()
+}
+
+fn heading(id: &str, label: &str, theme: &Theme) -> impl IntoElement {
+    a11y::node(id.to_owned(), Role::Heading, label.to_owned())
         .aria_level(3)
         .px(px(12.))
         .pt(px(12.))
@@ -280,7 +425,7 @@ fn group_header(group: DateGroup, today: chrono::NaiveDate, theme: &Theme) -> im
         .text_size(theme.text(12.))
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.text_secondary)
-        .child(label)
+        .child(label.to_owned())
 }
 
 impl Render for Sidebar {

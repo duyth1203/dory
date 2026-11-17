@@ -1921,7 +1921,18 @@ mod contract {
                 model: model(),
                 why: Unavailable {
                     reason: UnavailableReason::NotEligible {
-                        detail: "Apple Intelligence is off".into(),
+                        detail: "This Mac can't run Apple Intelligence".into(),
+                    },
+                    fix: None,
+                },
+            },
+            Blocker::Unavailable {
+                model: model(),
+                why: Unavailable {
+                    reason: UnavailableReason::TurnedOff {
+                        detail: "Apple Intelligence is turned off".into(),
+                        settings_url: "x-apple.systempreferences:com.apple.Siri-Settings.extension"
+                            .into(),
                     },
                     fix: Some("Turn it on in Settings".into()),
                 },

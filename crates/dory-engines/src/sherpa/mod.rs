@@ -80,6 +80,7 @@ fn entry(model: &Model) -> ModelEntry<Stt> {
         recommended: model.recommended,
         rank: model.rank,
         disk_bytes: Some(model.disk_bytes),
+        built_in: false,
     }
 }
 

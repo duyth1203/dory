@@ -205,6 +205,7 @@ mod tests {
                         recommended: r.recommended,
                         rank: r.rank,
                         disk_bytes: None,
+                        built_in: false,
                     },
                     availability: r.availability.clone(),
                 }
@@ -467,6 +468,7 @@ mod tests {
                     recommended: false,
                     rank: 0,
                     disk_bytes: None,
+                    built_in: false,
                 },
                 availability,
             }
@@ -560,6 +562,7 @@ mod tests {
                 recommended: false,
                 rank: 0,
                 disk_bytes: None,
+                built_in: false,
             },
             availability: Availability::Ready,
         };
@@ -592,6 +595,7 @@ mod tests {
                 recommended,
                 rank: 0,
                 disk_bytes: None,
+                built_in: false,
             },
             availability,
         };

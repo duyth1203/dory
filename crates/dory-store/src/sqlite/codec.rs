@@ -314,6 +314,10 @@ fn reason_to_json(reason: &UnavailableReason) -> Value {
             json!({ "k": "server_unreachable", "endpoint": endpoint })
         }
         UnavailableReason::Preparing { detail } => json!({ "k": "preparing", "detail": detail }),
+        UnavailableReason::TurnedOff {
+            detail,
+            settings_url,
+        } => json!({ "k": "turned_off", "detail": detail, "settings_url": settings_url }),
     }
 }
 
@@ -337,6 +341,10 @@ fn reason_from_json(v: &Value) -> Result<UnavailableReason, StoreError> {
         },
         "preparing" => UnavailableReason::Preparing {
             detail: text(v, "detail")?.to_owned(),
+        },
+        "turned_off" => UnavailableReason::TurnedOff {
+            detail: text(v, "detail")?.to_owned(),
+            settings_url: text(v, "settings_url")?.to_owned(),
         },
         other => return Err(corrupt(format!("unknown unavailable reason {other:?}"))),
     })

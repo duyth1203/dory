@@ -164,6 +164,9 @@ pub struct ModelEntry<K: ModelKind> {
     /// Tie-break among equals. Higher wins. The provider sets it.
     pub rank: i16,
     pub disk_bytes: Option<u64>,
+    /// Comes with the operating system: Dory never downloads it, and the system's own settings
+    /// turn it on or off.
+    pub built_in: bool,
 }
 
 /// Plain-language strengths and weaknesses of a model, written by its provider.
@@ -210,9 +213,15 @@ pub enum UnavailableReason {
     OsTooOld {
         required: String,
     },
-    /// For example Apple Intelligence is off, or the region is not supported.
+    /// For example the region is not supported, or the Mac cannot run the model.
     NotEligible {
         detail: String,
+    },
+    /// A built-in model the user turned off in the system's settings. `settings_url` opens the
+    /// page that turns it back on.
+    TurnedOff {
+        detail: String,
+        settings_url: String,
     },
     ServerUnreachable {
         endpoint: String,

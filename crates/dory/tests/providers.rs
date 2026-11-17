@@ -68,8 +68,9 @@ fn apple_rows_appear_only_with_the_app_feature() {
     assert_eq!(
         apple.availability,
         Availability::Unavailable(Unavailable {
-            reason: UnavailableReason::NotEligible {
+            reason: UnavailableReason::TurnedOff {
                 detail: "Apple Intelligence is turned off".into(),
+                settings_url: "x-apple.systempreferences:com.apple.Siri-Settings.extension".into(),
             },
             fix: Some("Turn it on in System Settings, Apple Intelligence & Siri".into()),
         })

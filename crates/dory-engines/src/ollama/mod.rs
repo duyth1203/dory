@@ -144,6 +144,7 @@ impl ModelProvider<Llm> for Ollama {
                 recommended: row.recommended,
                 rank: row.rank,
                 disk_bytes: row.disk_bytes,
+                built_in: false,
             })
             .collect()
     }

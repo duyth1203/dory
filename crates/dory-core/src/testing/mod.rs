@@ -1141,6 +1141,7 @@ pub fn diar_entry(id: &str) -> ModelEntry<Diar> {
         recommended: false,
         rank: 0,
         disk_bytes: None,
+        built_in: false,
     }
 }
 
@@ -1162,6 +1163,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
         recommended: false,
         rank: 0,
         disk_bytes: None,
+        built_in: false,
     }
 }
 
@@ -1178,6 +1180,7 @@ pub fn llm_entry(id: &str) -> ModelEntry<Llm> {
         recommended: false,
         rank: 0,
         disk_bytes: None,
+        built_in: false,
     }
 }
 

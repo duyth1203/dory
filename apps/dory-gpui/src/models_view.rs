@@ -159,9 +159,9 @@ pub fn unavailable_text(why: &Unavailable) -> String {
     match &why.reason {
         UnavailableReason::UnsupportedPlatform => "Not supported on this Mac".into(),
         UnavailableReason::OsTooOld { required } => format!("Needs {required}"),
-        UnavailableReason::NotEligible { detail } | UnavailableReason::Preparing { detail } => {
-            detail.clone()
-        }
+        UnavailableReason::NotEligible { detail }
+        | UnavailableReason::Preparing { detail }
+        | UnavailableReason::TurnedOff { detail, .. } => detail.clone(),
         UnavailableReason::ServerUnreachable { endpoint } => format!("Can't reach {endpoint}"),
     }
 }

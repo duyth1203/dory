@@ -788,9 +788,9 @@ fn unavailable(reason: &UnavailableReason) -> String {
     match reason {
         UnavailableReason::UnsupportedPlatform => "not supported on this Mac".into(),
         UnavailableReason::OsTooOld { required } => format!("needs {required}"),
-        UnavailableReason::NotEligible { detail } | UnavailableReason::Preparing { detail } => {
-            detail.clone()
-        }
+        UnavailableReason::NotEligible { detail }
+        | UnavailableReason::Preparing { detail }
+        | UnavailableReason::TurnedOff { detail, .. } => detail.clone(),
         UnavailableReason::ServerUnreachable { endpoint } => format!("cannot reach {endpoint}"),
     }
 }

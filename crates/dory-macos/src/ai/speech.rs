@@ -143,14 +143,8 @@ fn entry(row: &Row) -> ModelEntry<Stt> {
         display_name: display_name(row),
         about: ModelAbout {
             summary: format!("Apple's on-device speech recognizer for {}.", row.name),
-            pros: vec![
-                "Very fast, and macOS runs it in its own service".into(),
-                "Nothing to download when macOS already has the language".into(),
-            ],
-            cons: vec![
-                "Hears one language per meeting, chosen up front".into(),
-                "Cannot tell speakers apart".into(),
-            ],
+            pros: vec!["No download for English, and fast".into()],
+            cons: vec!["One language per meeting, and no Tagalog".into()],
         },
         caps: SttCaps {
             languages: LangSupport::FixedLocale {
@@ -163,6 +157,7 @@ fn entry(row: &Row) -> ModelEntry<Stt> {
         recommended: false,
         rank: RANK,
         disk_bytes: None,
+        built_in: false,
     }
 }
 

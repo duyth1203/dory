@@ -122,6 +122,10 @@ pub fn count_tokens(text: &str) -> usize {
 const APPLE_CONTEXT: u32 = 4096;
 /// Below Gemma 4 E4B's 1 and Gemma 4 12B's 0, so a Ready Gemma wins and Apple stands in for it.
 const RANK: i16 = -1;
+/// System Settings, Apple Intelligence & Siri. The pane is `com.apple.Siri-Settings.extension`
+/// (`SiriPreferenceExtension.appex`, which allows this URL scheme), and macOS 26 titles it Apple
+/// Intelligence & Siri on a Mac that supports Apple Intelligence.
+pub const SETTINGS_URL: &str = "x-apple.systempreferences:com.apple.Siri-Settings.extension";
 
 /// `ModelProvider<Llm>` over Apple's on-device model, one row: `apple/foundation-model`.
 pub struct FoundationModels {
@@ -198,8 +202,9 @@ fn availability_of(state: &Availability) -> models::Availability {
             None,
         ),
         Availability::NotEnabled => (
-            UnavailableReason::NotEligible {
+            UnavailableReason::TurnedOff {
                 detail: "Apple Intelligence is turned off".into(),
+                settings_url: SETTINGS_URL.into(),
             },
             Some("Turn it on in System Settings, Apple Intelligence & Siri".into()),
         ),
@@ -281,13 +286,19 @@ impl ModelProvider<Llm> for FoundationModels {
             display_name: "Apple Intelligence".into(),
             about: ModelAbout {
                 summary: "Apple's model, built into macOS, writes the summary on this Mac.".into(),
-                pros: Vec::new(),
-                cons: Vec::new(),
+                pros: vec!["No download, private, and fast on short meetings".into()],
+                cons: vec![
+                    "23 languages and no Tagalog".into(),
+                    "Meetings longer than a few minutes are summarized in parts and can lose \
+                     action items"
+                        .into(),
+                ],
             },
             caps: self.caps.clone(),
             recommended: false,
             rank: RANK,
             disk_bytes: None,
+            built_in: true,
         }]
     }
 
@@ -524,7 +535,10 @@ mod tests {
             (
                 Availability::NotEnabled,
                 unavailable(
-                    not_eligible("Apple Intelligence is turned off"),
+                    UnavailableReason::TurnedOff {
+                        detail: "Apple Intelligence is turned off".into(),
+                        settings_url: SETTINGS_URL.into(),
+                    },
                     Some("Turn it on in System Settings, Apple Intelligence & Siri"),
                 ),
             ),
@@ -621,6 +635,10 @@ mod tests {
         let [row] = ready.catalog().try_into().expect("one row");
         assert_eq!(row.id.to_string(), "apple/foundation-model");
         assert_eq!(row.display_name, "Apple Intelligence");
+        assert!(
+            row.built_in,
+            "macOS ships it, so there is nothing to install"
+        );
         assert!(!row.recommended);
         assert!(row.rank < 0, "Gemma's rows rank 0 and 1, Apple ranks below");
         assert_eq!(row.caps.context_tokens, 4096);

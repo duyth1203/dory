@@ -4,7 +4,7 @@ use dory::{Config, LibraryReader};
 use dory_core::app::{AppKind, ModelRow};
 use dory_core::domain::{Job, JobState, RecordingQuery, RecordingRow, TakeContainer};
 use dory_core::models::{Diar, Llm, Stt};
-use dory_core::search::Found;
+use dory_core::search::{Correction, Found};
 
 use crate::args::{ImportArgs, ListArgs, ModelsArgs, SearchArgs, ShowArgs};
 use crate::wait::block_on;
@@ -34,12 +34,16 @@ pub fn list(config: &Config, _: &ListArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Prints each hit newest first, then the library logs `search ms=` on stderr.
+/// Prints a line per correction, then each hit newest first. The library logs `search ms=` on
+/// stderr.
 pub fn search(config: &Config, args: &SearchArgs) -> Result<(), String> {
     let results = open_library(config, false)?
         .search(&args.text)
         .map_err(crate::chain)?;
-    let hits = results.map(|r| r.hits).unwrap_or_default();
+    let (hits, corrections) = results.map_or_else(Default::default, |r| (r.hits, r.corrections));
+    for correction in &corrections {
+        println!("{}", correction_line(correction));
+    }
     for found in &hits {
         println!("{}", search_line(found));
     }
@@ -47,6 +51,14 @@ pub fn search(config: &Config, args: &SearchArgs) -> Result<(), String> {
         eprintln!("no recordings match {:?}", args.text);
     }
     Ok(())
+}
+
+fn correction_line(correction: &Correction) -> String {
+    format!(
+        "showing results for {} instead of {}",
+        correction.used.join(", "),
+        correction.typed
+    )
 }
 
 fn search_line(found: &Found) -> String {
@@ -237,6 +249,14 @@ mod tests {
         assert_eq!(
             list_line(&bare),
             "rec_1  (untitled)  1970-01-01 00:00:00  -  idle"
+        );
+        let correction = Correction {
+            typed: "roadmpa".into(),
+            used: vec!["roadmap".into(), "roadmaps".into()],
+        };
+        assert_eq!(
+            correction_line(&correction),
+            "showing results for roadmap, roadmaps instead of roadmpa"
         );
         let found = Found {
             row: bare,

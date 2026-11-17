@@ -93,13 +93,14 @@ capture() {
     --env "DORY_APPEARANCE=$appearance" ${prefs_env[@]+"${prefs_env[@]}"} "$app"
   local ok=0
   for _ in $(seq 1 300); do
-    pid=${pid:-$(sed -n 's/^first-frame: window opened, pid \([0-9]*\)$/\1/p' "$log" | head -1)}
     if grep -q '^show: ready' "$log"; then ok=1; break; fi
     if grep -q '^dory: ' "$log" && ! grep -q '^dory: data folder' "$log"; then break; fi
+    if grep -q 'panicked' "$log"; then break; fi
     sleep 0.1
   done
   # Lets the frame after the view lands paint, and the explainer and popovers settle.
   sleep 1.5
+  pid=$(sed -n 's/^first-frame: window opened, pid \([0-9]*\)$/\1/p' "$log" | head -1)
   local ids
   ids=$(sed -n 's/^window-id: \([0-9]*\)$/\1/p' "$log")
   if [ $ok -eq 0 ] || [ -z "$ids" ]; then
@@ -115,16 +116,23 @@ capture() {
       else
         file="$name.png"; role=$([ "$count" -gt 1 ] && echo view || echo main)
       fi
-      screencapture -x -l "$id" "$out/$file"
-      echo "| [$file]($file) | \`$view\` | $theme$suffix | $role ($id) |" >> "$index"
+      if screencapture -x -l "$id" "$out/$file"; then
+        echo "| [$file]($file) | \`$view\` | $theme$suffix | $role ($id) |" >> "$index"
+      else
+        echo "| (none) | \`$view\` | $theme$suffix | $role ($id) not captured: screencapture failed |" >> "$index"
+      fi
     done
     echo "visual-pass: $name"
   fi
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-  for _ in $(seq 1 50); do
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-  done
+  if [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -9 "$pid" 2>/dev/null || true
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.1; done
+  fi
   [ $ok -eq 1 ] && rm -rf "$lib" "$log"
   return 0
 }

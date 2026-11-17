@@ -7,6 +7,7 @@
 //! `PRAGMA user_version` and grown by appending to [`MIGRATIONS`].
 
 pub(crate) mod codec;
+mod search;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -20,6 +21,7 @@ use dory_core::domain::{
 };
 use dory_core::models::{Diar, Llm, Stt};
 use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
+use dory_core::search::{Found, Query};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
     params,
@@ -33,13 +35,32 @@ use codec::{
     range_from_db, stage_from_db, stage_to_db, tags_from_db, tags_to_db, to_i64,
 };
 
+/// A migration step SQL cannot do, run after the version's SQL in the same transaction.
+type Step = fn(&Connection) -> Result<(), StoreError>;
+
+/// One schema version: its SQL, then an optional [`Step`].
+struct Migration {
+    sql: &'static str,
+    then: Option<Step>,
+}
+
+impl Migration {
+    const fn sql(sql: &'static str) -> Self {
+        Self { sql, then: None }
+    }
+}
+
 /// Version `n` of the schema is `MIGRATIONS[n - 1]`. Never edit an entry that has shipped.
-const MIGRATIONS: &[&str] = &[
-    include_str!("schema_v1.sql"),
-    include_str!("schema_v2.sql"),
-    include_str!("schema_v3.sql"),
-    include_str!("schema_v4.sql"),
-    include_str!("schema_v5.sql"),
+const MIGRATIONS: &[Migration] = &[
+    Migration::sql(include_str!("schema_v1.sql")),
+    Migration::sql(include_str!("schema_v2.sql")),
+    Migration::sql(include_str!("schema_v3.sql")),
+    Migration::sql(include_str!("schema_v4.sql")),
+    Migration::sql(include_str!("schema_v5.sql")),
+    Migration {
+        sql: include_str!("schema_v6.sql"),
+        then: Some(search::rebuild),
+    },
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -95,6 +116,7 @@ impl SqliteStore {
             .pragma_update(None, "foreign_keys", true)
             .map_err(db)?;
         migrate(&mut writer)?;
+        reindex_if_stale(&mut writer)?;
 
         let reader = Connection::open_with_flags(
             path,
@@ -158,7 +180,7 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
     if found > supported {
         return Err(StoreError::SchemaTooNew { found, supported });
     }
-    for (index, sql) in MIGRATIONS.iter().enumerate() {
+    for (index, migration) in MIGRATIONS.iter().enumerate() {
         let target = u32::try_from(index + 1).unwrap_or(u32::MAX);
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -167,12 +189,29 @@ fn migrate(conn: &mut Connection) -> Result<(), StoreError> {
         if user_version(&tx)? >= target {
             continue;
         }
-        tx.execute_batch(sql).map_err(db)?;
+        tx.execute_batch(migration.sql).map_err(db)?;
+        if let Some(step) = migration.then {
+            step(&tx)?;
+        }
         tx.execute_batch(&format!("PRAGMA user_version = {target}"))
             .map_err(db)?;
         tx.commit().map_err(db)?;
     }
     Ok(())
+}
+
+/// Rebuilds the search index when it was built by another version of the core's tokens.
+fn reindex_if_stale(conn: &mut Connection) -> Result<(), StoreError> {
+    if search::is_current(conn)? {
+        return Ok(());
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db)?;
+    if !search::is_current(&tx)? {
+        search::rebuild(&tx)?;
+    }
+    tx.commit().map_err(db)
 }
 
 // ---- rows ---------------------------------------------------------------------------------
@@ -401,6 +440,65 @@ fn decode_recording(raw: RawRecording) -> Result<Recording, StoreError> {
     })
 }
 
+/// A list row: the recording, its transcript and summary revisions, and its newest job's state.
+/// Selected from `recordings r` with [`ROW_JOINS`].
+const ROW_COLUMNS: &str = "r.id, r.title, r.created_at, r.language, r.layout, \
+                           r.take_container, r.take_rate_hz, r.take_duration_ms, \
+                           t.revision, s.transcript_revision, \
+                           j.state, j.stage, j.blocker, j.error_class, j.error_message, \
+                           j.error_cause";
+const ROW_WIDTH: usize = 16;
+const ROW_JOINS: &str = "LEFT JOIN transcripts t ON t.recording_id = r.id
+     LEFT JOIN summaries s ON s.recording_id = r.id
+     LEFT JOIN jobs j ON j.id = (SELECT MAX(id) FROM jobs WHERE recording_id = r.id)";
+
+struct RawRow {
+    recording: RawRecording,
+    transcript_revision: Option<i64>,
+    summary_revision: Option<i64>,
+    job: Option<RawState>,
+}
+
+fn raw_row(row: &Row<'_>) -> rusqlite::Result<RawRow> {
+    let job = match row.get::<_, Option<String>>(10)? {
+        None => None,
+        Some(state) => Some(RawState {
+            state,
+            stage: row.get(11)?,
+            blocker: row.get(12)?,
+            error_class: row.get(13)?,
+            error_message: row.get(14)?,
+            error_cause: row.get(15)?,
+        }),
+    };
+    Ok(RawRow {
+        recording: raw_recording(row)?,
+        transcript_revision: row.get(8)?,
+        summary_revision: row.get(9)?,
+        job,
+    })
+}
+
+fn decode_row(raw: RawRow) -> Result<RecordingRow, StoreError> {
+    let revision = |n: Option<i64>| -> Result<Option<Revision>, StoreError> {
+        n.map(|n| {
+            u32::try_from(n)
+                .map(Revision)
+                .map_err(|_| corrupt("revision out of range"))
+        })
+        .transpose()
+    };
+    Ok(RecordingRow {
+        recording: decode_recording(raw.recording)?,
+        job: raw.job.map(decode_state).transpose()?,
+        has_transcript: raw.transcript_revision.is_some(),
+        summary: SummaryFlag::derive(
+            revision(raw.summary_revision)?,
+            revision(raw.transcript_revision)?,
+        ),
+    })
+}
+
 // ---- reads --------------------------------------------------------------------------------
 
 impl StoreRead for SqliteStore {
@@ -419,66 +517,52 @@ impl StoreRead for SqliteStore {
     }
 
     fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
-        let needle = query
-            .text
-            .as_deref()
-            .map(|t| t.trim().to_lowercase())
-            .unwrap_or_default();
         let limit = query.limit.map_or(-1, i64::from);
         self.read(|conn| {
             let mut stmt = conn
                 .prepare_cached(&format!(
-                    "SELECT {RECORDING_COLUMNS}, t.revision, s.transcript_revision,
-                            j.state, j.stage, j.blocker, j.error_class, j.error_message,
-                            j.error_cause
-                     FROM recordings r
-                     LEFT JOIN transcripts t ON t.recording_id = r.id
-                     LEFT JOIN summaries s ON s.recording_id = r.id
-                     LEFT JOIN jobs j ON j.id = (SELECT MAX(id) FROM jobs WHERE recording_id = r.id)
-                     WHERE ?1 = '' OR instr(r.title_lc || char(10) || r.transcript_lc || char(10) || r.summary_lc, ?1) > 0
+                    "SELECT {ROW_COLUMNS} FROM recordings r {ROW_JOINS}
                      ORDER BY r.created_at DESC, r.id ASC
-                     LIMIT ?2"
+                     LIMIT ?1"
                 ))
                 .map_err(db)?;
-            let mapped = stmt
-                .query_map(params![needle, limit], |row| {
-                    let job = match row.get::<_, Option<String>>(10)? {
-                        None => None,
-                        Some(state) => Some(RawState {
-                            state,
-                            stage: row.get(11)?,
-                            blocker: row.get(12)?,
-                            error_class: row.get(13)?,
-                            error_message: row.get(14)?,
-                            error_cause: row.get(15)?,
-                        }),
-                    };
-                    Ok((
-                        raw_recording(row)?,
-                        row.get::<_, Option<i64>>(8)?,
-                        row.get::<_, Option<i64>>(9)?,
-                        job,
-                    ))
+            let raws = stmt
+                .query_map([limit], raw_row)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            raws.into_iter().map(decode_row).collect()
+        })
+    }
+
+    fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError> {
+        let all = search::match_text(query);
+        let title = search::title_match_text(query);
+        self.read(|conn| {
+            let mut stmt = conn
+                .prepare_cached(&format!(
+                    "SELECT {ROW_COLUMNS},
+                            k.key IN (SELECT rowid FROM search WHERE search MATCH ?2)
+                     FROM search
+                     JOIN search_keys k ON k.key = search.rowid
+                     JOIN recordings r ON r.id = k.recording_id
+                     {ROW_JOINS}
+                     WHERE search MATCH ?1
+                     ORDER BY r.created_at DESC, r.id ASC"
+                ))
+                .map_err(db)?;
+            let raws = stmt
+                .query_map(params![all, title], |row| {
+                    Ok((raw_row(row)?, row.get::<_, bool>(ROW_WIDTH)?))
                 })
                 .map_err(db)?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(db)?;
-            mapped
-                .into_iter()
-                .map(|(raw, transcript_rev, summary_rev, job)| {
-                    let revision = |n: Option<i64>| -> Result<Option<Revision>, StoreError> {
-                        n.map(|n| {
-                            u32::try_from(n)
-                                .map(Revision)
-                                .map_err(|_| corrupt("revision out of range"))
-                        })
-                        .transpose()
-                    };
-                    Ok(RecordingRow {
-                        recording: decode_recording(raw)?,
-                        job: job.map(decode_state).transpose()?,
-                        has_transcript: transcript_rev.is_some(),
-                        summary: SummaryFlag::derive(revision(summary_rev)?, revision(transcript_rev)?),
+            raws.into_iter()
+                .map(|(raw, in_title)| {
+                    Ok(Found {
+                        row: decode_row(raw)?,
+                        in_title,
                     })
                 })
                 .collect()
@@ -795,37 +879,36 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
     match change {
         Change::RecordingCreated(rec) => {
             let take = rec.take.as_ref();
-            tx.prepare_cached(
-                "INSERT OR IGNORE INTO recordings
-                   (id, title, created_at, language, layout,
-                    take_container, take_rate_hz, take_duration_ms, title_lc)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )
-            .map_err(db)?
-            .execute(params![
-                rec.id.as_str(),
-                rec.title,
-                rec.created_at.0,
-                language_to_db(&rec.language),
-                layout_to_db(rec.layout),
-                take.map(|t| container_to_db(t.container)),
-                take.map(|t| i64::from(t.rate_hz)),
-                take.map(|t| to_i64(t.duration.0)),
-                rec.title.as_deref().unwrap_or_default().to_lowercase(),
-            ])
-            .map_err(db)?;
+            let created = tx
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO recordings
+                       (id, title, created_at, language, layout,
+                        take_container, take_rate_hz, take_duration_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                )
+                .map_err(db)?
+                .execute(params![
+                    rec.id.as_str(),
+                    rec.title,
+                    rec.created_at.0,
+                    language_to_db(&rec.language),
+                    layout_to_db(rec.layout),
+                    take.map(|t| container_to_db(t.container)),
+                    take.map(|t| i64::from(t.rate_hz)),
+                    take.map(|t| to_i64(t.duration.0)),
+                ])
+                .map_err(db)?;
+            if created > 0 {
+                search::reindex(tx, &rec.id)?;
+            }
             Ok(None)
         }
         Change::RecordingEdited { id, edit } => {
             let changed = match edit {
                 RecordingEdit::Title(title) => tx
-                    .prepare_cached("UPDATE recordings SET title = ?2, title_lc = ?3 WHERE id = ?1")
+                    .prepare_cached("UPDATE recordings SET title = ?2 WHERE id = ?1")
                     .map_err(db)?
-                    .execute(params![
-                        id.as_str(),
-                        title,
-                        title.as_deref().unwrap_or_default().to_lowercase()
-                    ]),
+                    .execute(params![id.as_str(), title]),
                 RecordingEdit::Language(language) => tx
                     .prepare_cached("UPDATE recordings SET language = ?2 WHERE id = ?1")
                     .map_err(db)?
@@ -848,9 +931,13 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
             if changed == 0 {
                 return Err(not_found("recording", id));
             }
+            if matches!(edit, RecordingEdit::Title(_)) {
+                search::reindex(tx, id)?;
+            }
             Ok(None)
         }
         Change::RecordingDeleted(id) => {
+            search::forget(tx, id)?;
             tx.prepare_cached("DELETE FROM recordings WHERE id = ?1")
                 .map_err(db)?
                 .execute([id.as_str()])
@@ -860,6 +947,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
         Change::TranscriptReplaced { id, transcript } => {
             require_recording(tx, id)?;
             replace_transcript(tx, id, transcript)?;
+            search::reindex(tx, id)?;
             Ok(None)
         }
         Change::SpeakerNamesReplaced { id, names } => {
@@ -882,6 +970,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                     .execute(params![id.as_str(), i64::from(speaker.0), name])
                     .map_err(db)?;
             }
+            search::reindex(tx, id)?;
             Ok(None)
         }
         Change::SummaryReplaced { id, summary } => {
@@ -900,10 +989,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 i64::from(summary.transcript_revision.0),
             ])
             .map_err(db)?;
-            tx.prepare_cached("UPDATE recordings SET summary_lc = ?2 WHERE id = ?1")
-                .map_err(db)?
-                .execute(params![id.as_str(), summary.markdown.to_lowercase()])
-                .map_err(db)?;
+            search::reindex(tx, id)?;
             Ok(None)
         }
         Change::JobEnqueued {
@@ -1049,7 +1135,6 @@ fn replace_transcript(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )
         .map_err(db)?;
-    let mut search = String::new();
     for (idx, segment) in transcript.segments.iter().enumerate() {
         insert
             .execute(params![
@@ -1062,13 +1147,7 @@ fn replace_transcript(
                 segment.text,
             ])
             .map_err(db)?;
-        search.push_str(&segment.text);
-        search.push('\n');
     }
-    tx.prepare_cached("UPDATE recordings SET transcript_lc = ?2 WHERE id = ?1")
-        .map_err(db)?
-        .execute(params![id.as_str(), search.to_lowercase()])
-        .map_err(db)?;
     Ok(())
 }
 

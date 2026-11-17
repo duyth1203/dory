@@ -186,10 +186,7 @@ impl AppState {
         if prefs.onboarding.is_none() {
             // One indexed row, once per install, before the first frame, so a first run never
             // flashes the start screen.
-            let one = RecordingQuery {
-                text: None,
-                limit: Some(1),
-            };
+            let one = RecordingQuery { limit: Some(1) };
             let has_recordings = dory.library().list(&one).is_ok_and(|rows| !rows.is_empty());
             prefs.onboarding = Some(OnboardingStep::resolve(None, has_recordings));
         }
@@ -348,7 +345,8 @@ impl AppState {
         self.select(Selection::One(ids[at as usize].clone()), cx);
     }
 
-    /// Searches title, transcript, and summary once typing pauses for [`SEARCH_DEBOUNCE`].
+    /// Searches titles, speaker names, summaries, and transcripts once typing pauses for
+    /// [`SEARCH_DEBOUNCE`].
     pub fn set_search(&mut self, text: &str, cx: &mut Context<Self>) {
         let search = SearchQuery::new(text);
         if search == self.search {
@@ -497,12 +495,17 @@ impl AppState {
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.rows_generation += 1;
         let generation = self.rows_generation;
-        let query = self.search.to_query();
+        let text = self.search.text().to_owned();
         let list = self.core.run(cx, move |dory| {
-            Ok::<_, dory_core::ports::StoreError>((
-                dory.library().list(&query)?,
-                dory.pipeline().queue()?,
-            ))
+            let rows = match text.is_empty() {
+                true => dory.library().list(&RecordingQuery::default())?,
+                false => dory
+                    .library()
+                    .search(&text)?
+                    .map(|results| results.hits.into_iter().map(|hit| hit.row).collect())
+                    .unwrap_or_default(),
+            };
+            Ok::<_, dory_core::ports::StoreError>((rows, dory.pipeline().queue()?))
         });
         cx.spawn(async move |this, cx| {
             let rows = list.await;
@@ -553,7 +556,10 @@ impl AppState {
                     rows = true;
                     detail |= is_selected(&id);
                 }
-                Event::SpeakerNamesChanged(id) => detail |= is_selected(&id),
+                Event::SpeakerNamesChanged(id) => {
+                    rows |= !self.search.is_empty();
+                    detail |= is_selected(&id);
+                }
                 Event::RecordingDeleted(id) => {
                     rows = true;
                     self.progress.remove(&id);

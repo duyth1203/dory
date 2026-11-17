@@ -21,7 +21,8 @@ use dory_core::app::Recovery;
 const USAGE: &str = "usage:
   dory-cli import OLD_DATA_DIR
   dory-cli add AUDIO_FILE [--title TEXT]
-  dory-cli list [--search TEXT]
+  dory-cli list
+  dory-cli search TEXT
   dory-cli seed --recordings N --words N [--seed N]
   dory-cli show ID
   dory-cli delete ID
@@ -47,6 +48,8 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| library::import(&c, &a))),
             Some("list") => args::ListArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| library::list(&c, &a))),
+            Some("search") => args::SearchArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| library::search(&c, &a))),
             Some("seed") => {
                 args::SeedArgs::parse(rest).and_then(|a| config().and_then(|c| seed::run(&c, &a)))
             }

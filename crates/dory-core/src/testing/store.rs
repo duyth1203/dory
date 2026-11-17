@@ -15,9 +15,12 @@
 //!   goal exists, a second enqueue changes nothing, except that a `Front` request promotes it.
 //!   Once that job is terminal, an enqueue creates a new job.
 //! - Job ids are assigned in increasing order and are never reused, even after a delete.
-//! - `recordings` lists newest first (ties broken by id). A text query matches, case-insensitively,
-//!   the title, the transcript text, or the summary. The row's job is the most recently enqueued
-//!   one.
+//! - `recordings` lists newest first (ties broken by id). The row's job is the most recently
+//!   enqueued one.
+//! - `search` finds what [`crate::search::matches`] finds over the title, the speaker names of the
+//!   current transcript revision, the summary, and the transcript, as soon as the change that
+//!   wrote the text commits. It lists hits like `recordings`, and `in_title` is true when the
+//!   title alone matches every clause. FTS syntax in typed text is never syntax.
 //! - `next_runnable_job` is Front first, then lowest `place`, then lowest job id. A job's `place`
 //!   starts as its enqueue time and changes only through `JobEvent::Place`.
 //! - Checkpoints are read per run (recording, model, channel, language), earliest window first. A
@@ -33,6 +36,7 @@ use crate::domain::{
     Transcript,
 };
 use crate::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
+use crate::search::{self, Found, Query};
 
 #[derive(Clone, Debug)]
 struct Entry {
@@ -169,18 +173,67 @@ impl Default for MemStore {
     }
 }
 
-fn matches_text(entry: &Entry, needle: &str) -> bool {
-    let title = entry.recording.title.as_deref().unwrap_or_default();
-    let transcript = entry
-        .transcript
-        .iter()
-        .flat_map(|t| t.segments.iter())
-        .any(|s| s.text.to_lowercase().contains(needle));
-    let summary = entry
-        .summary
-        .as_ref()
-        .is_some_and(|s| s.markdown.to_lowercase().contains(needle));
-    title.to_lowercase().contains(needle) || transcript || summary
+impl Entry {
+    /// The searchable text: title, speaker names, summary, transcript. Names count only for the
+    /// transcript revision they were given for.
+    fn fields(&self) -> [String; 4] {
+        let revision = self.transcript.as_ref().map(|t| t.revision);
+        let names = match revision {
+            Some(revision) if self.names.for_revision == revision => self
+                .names
+                .names
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        let transcript = self
+            .transcript
+            .iter()
+            .flat_map(|t| t.segments.iter().map(|s| s.text.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        [
+            self.recording.title.clone().unwrap_or_default(),
+            names,
+            self.summary
+                .as_ref()
+                .map(|s| s.markdown.clone())
+                .unwrap_or_default(),
+            transcript,
+        ]
+    }
+}
+
+impl State {
+    fn row(&self, e: &Entry) -> RecordingRow {
+        let job = self
+            .jobs
+            .values()
+            .rfind(|j| j.recording == e.recording.id)
+            .map(|j| j.state.clone());
+        RecordingRow {
+            recording: e.recording.clone(),
+            job,
+            has_transcript: e.transcript.is_some(),
+            summary: SummaryFlag::derive(
+                e.summary.as_ref().map(|s| s.transcript_revision),
+                e.transcript.as_ref().map(|t| t.revision),
+            ),
+        }
+    }
+
+    fn newest_first(&self) -> Vec<&Entry> {
+        let mut entries: Vec<&Entry> = self.recordings.values().collect();
+        entries.sort_by(|a, b| {
+            b.recording
+                .created_at
+                .cmp(&a.recording.created_at)
+                .then_with(|| a.recording.id.cmp(&b.recording.id))
+        });
+        entries
+    }
 }
 
 impl StoreRead for MemStore {
@@ -190,42 +243,25 @@ impl StoreRead for MemStore {
 
     fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
         let state = self.state();
-        let needle = query
-            .text
-            .as_deref()
-            .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty());
-        let mut entries: Vec<&Entry> = state
-            .recordings
-            .values()
-            .filter(|e| needle.as_deref().is_none_or(|n| matches_text(e, n)))
-            .collect();
-        entries.sort_by(|a, b| {
-            b.recording
-                .created_at
-                .cmp(&a.recording.created_at)
-                .then_with(|| a.recording.id.cmp(&b.recording.id))
-        });
+        let mut entries = state.newest_first();
         if let Some(limit) = query.limit {
             entries.truncate(limit as usize);
         }
-        Ok(entries
+        Ok(entries.into_iter().map(|e| state.row(e)).collect())
+    }
+
+    fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError> {
+        let state = self.state();
+        Ok(state
+            .newest_first()
             .into_iter()
-            .map(|e| {
-                let job = state
-                    .jobs
-                    .values()
-                    .rfind(|j| j.recording == e.recording.id)
-                    .map(|j| j.state.clone());
-                RecordingRow {
-                    recording: e.recording.clone(),
-                    job,
-                    has_transcript: e.transcript.is_some(),
-                    summary: SummaryFlag::derive(
-                        e.summary.as_ref().map(|s| s.transcript_revision),
-                        e.transcript.as_ref().map(|t| t.revision),
-                    ),
-                }
+            .filter_map(|e| {
+                let fields = e.fields();
+                let fields: Vec<&str> = fields.iter().map(String::as_str).collect();
+                search::matches(query, &fields).then(|| Found {
+                    row: state.row(e),
+                    in_title: search::matches(query, &fields[..1]),
+                })
             })
             .collect())
     }
@@ -359,9 +395,28 @@ mod contract {
         ("settings_round_trip", settings_round_trip),
         ("delete_cascades_and_is_idempotent", delete_cascades),
         (
-            "list_is_newest_first_with_limit_and_text_filter",
+            "list_is_newest_first_with_limit",
             list_order_limit_and_filter,
         ),
+        (
+            "search_words_any_order_and_prefix",
+            search_words_any_order_and_prefix,
+        ),
+        (
+            "search_folds_accents_both_ways",
+            search_folds_accents_both_ways,
+        ),
+        ("search_phrase_needs_order", search_phrase_needs_order),
+        ("search_sets_in_title", search_sets_in_title),
+        (
+            "search_follows_rename_retranscribe_names_and_summary",
+            search_follows_rename_retranscribe_names_and_summary,
+        ),
+        (
+            "search_forgets_deleted_and_finds_restored",
+            search_forgets_deleted_and_finds_restored,
+        ),
+        ("search_quotes_fts_keywords", search_quotes_fts_keywords),
         (
             "list_rows_carry_job_transcript_and_summary_flag",
             list_row_fields,
@@ -985,21 +1040,10 @@ mod contract {
     fn list_order_limit_and_filter(store: &dyn Store) {
         store
             .apply(vec![
-                Change::RecordingCreated(Recording {
-                    title: Some("Budget review".into()),
-                    ..recording("b", 200)
-                }),
+                Change::RecordingCreated(recording("b", 200)),
                 Change::RecordingCreated(recording("a", 300)),
                 Change::RecordingCreated(recording("d", 100)),
                 Change::RecordingCreated(recording("c", 100)),
-                Change::TranscriptReplaced {
-                    id: rid("c"),
-                    transcript: transcript(1, &["We discussed the ROADMAP for Q3"]),
-                },
-                Change::SummaryReplaced {
-                    id: rid("d"),
-                    summary: summary(0, "Decision: ship the Beta on Friday"),
-                },
             ])
             .unwrap();
         let ids = |q: RecordingQuery| -> Vec<String> {
@@ -1010,55 +1054,314 @@ mod contract {
                 .map(|r| r.recording.id.to_string())
                 .collect()
         };
-        assert_eq!(ids(RecordingQuery::default()), ["a", "b", "c", "d"]);
         assert_eq!(
-            ids(RecordingQuery {
-                limit: Some(2),
-                ..RecordingQuery::default()
-            }),
-            ["a", "b"]
-        );
-        let text = |t: &str| RecordingQuery {
-            text: Some(t.into()),
-            limit: None,
-        };
-        assert_eq!(ids(text("budget")), ["b"], "title, any case");
-        assert_eq!(ids(text("  Roadmap  ")), ["c"], "transcript, trimmed");
-        assert_eq!(ids(text("BETA")), ["d"], "summary");
-        assert_eq!(ids(text("nothing like this")), Vec::<String>::new());
-        assert_eq!(
-            ids(text("")),
+            ids(RecordingQuery::default()),
             ["a", "b", "c", "d"],
-            "blank text filters nothing"
+            "newest first, ties by id"
+        );
+        assert_eq!(ids(RecordingQuery { limit: Some(2) }), ["a", "b"]);
+        assert_eq!(ids(RecordingQuery { limit: Some(0) }), Vec::<String>::new());
+    }
+
+    /// The ids `text` finds, in the order the store lists them.
+    fn found(store: &dyn Store, text: &str) -> Vec<String> {
+        let query = Query::parse(text).expect("a query with words");
+        store
+            .search(&query)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.row.recording.id.to_string())
+            .collect()
+    }
+
+    fn titled(id: &str, created: i64, title: &str) -> Change {
+        Change::RecordingCreated(Recording {
+            title: Some(title.into()),
+            ..recording(id, created)
+        })
+    }
+
+    fn said(id: &str, revision: u32, texts: &[&str]) -> Change {
+        Change::TranscriptReplaced {
+            id: rid(id),
+            transcript: transcript(revision, texts),
+        }
+    }
+
+    fn search_words_any_order_and_prefix(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("a", 300, "Weekly sync"),
+                said("a", 1, &["We did the budget review on Monday"]),
+                titled("b", 200, "Planning"),
+                said("b", 1, &["The review of the budget", "slipped again"]),
+                titled("c", 100, "Kickoff"),
+                said("c", 1, &["The budget is fine"]),
+                Change::SummaryReplaced {
+                    id: rid("c"),
+                    summary: summary(1, "## Notes\n- Review the roadmap"),
+                },
+            ])
+            .unwrap();
+        assert_eq!(found(store, "budget review"), ["a", "b", "c"], "c: summary");
+        assert_eq!(found(store, "review budget"), ["a", "b", "c"], "any order");
+        assert_eq!(
+            found(store, "bud rev"),
+            ["a", "b", "c"],
+            "every word is a prefix"
         );
         assert_eq!(
-            ids(RecordingQuery {
-                text: Some("e".into()),
-                limit: Some(1),
-            }),
+            found(store, "BUDGET slipped"),
             ["b"],
-            "limit applies after the filter and the order"
+            "across turns, any case"
         );
+        assert_eq!(
+            found(store, "roadmap budget"),
+            ["c"],
+            "summary and transcript"
+        );
+        assert_eq!(
+            found(store, "udget"),
+            Vec::<String>::new(),
+            "word starts only"
+        );
+        assert_eq!(found(store, "budget zanzibar"), Vec::<String>::new());
+        assert_eq!(found(store, "weekly"), ["a"], "titles");
+    }
 
+    fn search_folds_accents_both_ways(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("plain", 300, "Call with Muller"),
+                titled("umlaut", 200, "Call with Müller"),
+                said("umlaut", 1, &["Die Straße am Ørsted-Park"]),
+                titled("other", 100, "Café ﬁnance"),
+            ])
+            .unwrap();
+        for text in ["muller", "Müller", "MULLER", "mül"] {
+            assert_eq!(found(store, text), ["plain", "umlaut"], "{text}");
+        }
+        assert_eq!(found(store, "strasse"), ["umlaut"]);
+        assert_eq!(found(store, "STRAẞE orsted"), ["umlaut"]);
+        assert_eq!(found(store, "cafe finance"), ["other"]);
+        assert_eq!(found(store, "café ﬁ"), ["other"]);
+    }
+
+    fn search_phrase_needs_order(store: &dyn Store) {
+        store
+            .apply(vec![
+                recording_change("adjacent", 300),
+                said("adjacent", 1, &["the budget review is done"]),
+                recording_change("apart", 200),
+                said("apart", 1, &["the review of the budget"]),
+                recording_change("split", 100),
+                said("split", 1, &["we talked budget", "review next week"]),
+            ])
+            .unwrap();
+        assert_eq!(found(store, "\"budget review\""), ["adjacent", "split"]);
+        assert_eq!(
+            found(store, "\"review budget\""),
+            Vec::<String>::new(),
+            "a phrase keeps its order"
+        );
+        assert_eq!(
+            found(store, "\"budget\""),
+            ["adjacent", "apart", "split"],
+            "a quoted word is a whole word"
+        );
+        assert_eq!(found(store, "\"budge\""), Vec::<String>::new());
+        assert_eq!(
+            found(store, "\"budget review"),
+            ["adjacent", "split"],
+            "unbalanced"
+        );
+        assert_eq!(found(store, "budget-review"), ["adjacent", "split"]);
+    }
+
+    fn recording_change(id: &str, created: i64) -> Change {
+        Change::RecordingCreated(recording(id, created))
+    }
+
+    fn search_sets_in_title(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("title", 300, "Budget review"),
+                titled("half", 200, "Budget"),
+                said("half", 1, &["review it"]),
+                titled("body", 100, "Weekly"),
+                said("body", 1, &["budget review"]),
+            ])
+            .unwrap();
+        let hits: Vec<(String, bool)> = store
+            .search(&Query::parse("budget rev").unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.row.recording.id.to_string(), f.in_title))
+            .collect();
+        assert_eq!(
+            hits,
+            [
+                ("title".to_owned(), true),
+                ("half".to_owned(), false),
+                ("body".to_owned(), false)
+            ]
+        );
+        let row = store.search(&Query::parse("weekly").unwrap()).unwrap();
+        assert_eq!(
+            row[0].row,
+            store.recordings(&RecordingQuery::default()).unwrap()[2],
+            "a hit carries the same row the list does"
+        );
+    }
+
+    fn search_follows_rename_retranscribe_names_and_summary(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("r", 100, "Weekly sync"),
+                said("r", 1, &["kilimanjaro trip", "budget"]),
+            ])
+            .unwrap();
         store
             .apply(vec![Change::RecordingEdited {
-                id: rid("a"),
-                edit: RecordingEdit::Title(Some("Sprint planning".into())),
+                id: rid("r"),
+                edit: RecordingEdit::Title(Some("Atlas kickoff".into())),
             }])
             .unwrap();
-        assert_eq!(ids(text("sprint")), ["a"], "a renamed title is searchable");
+        assert_eq!(found(store, "atlas"), ["r"], "a new title");
+        assert_eq!(
+            found(store, "weekly"),
+            Vec::<String>::new(),
+            "the old title"
+        );
         store
-            .apply(vec![Change::TranscriptReplaced {
-                id: rid("c"),
-                transcript: transcript(2, &["fresh words"]),
+            .apply(vec![Change::SpeakerNamesReplaced {
+                id: rid("r"),
+                names: SpeakerNames {
+                    for_revision: Revision(1),
+                    names: BTreeMap::from([(SpeakerId(2), "Priyanka".to_owned())]),
+                },
+            }])
+            .unwrap();
+        assert_eq!(found(store, "priyanka"), ["r"], "a speaker name");
+        store.apply(vec![said("r", 2, &["fresh words"])]).unwrap();
+        assert_eq!(
+            found(store, "kilimanjaro"),
+            Vec::<String>::new(),
+            "the old transcript"
+        );
+        assert_eq!(found(store, "fresh"), ["r"]);
+        assert_eq!(
+            found(store, "priyanka"),
+            Vec::<String>::new(),
+            "names given for revision 1 do not name revision 2's speakers"
+        );
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: rid("r"),
+                summary: summary(2, "Decision: ship the Beta on Friday"),
+            }])
+            .unwrap();
+        assert_eq!(found(store, "beta friday"), ["r"], "a summary");
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: rid("r"),
+                summary: summary(2, "Nothing decided"),
             }])
             .unwrap();
         assert_eq!(
-            ids(text("roadmap")),
+            found(store, "beta"),
             Vec::<String>::new(),
-            "a replaced transcript is not searchable"
+            "a replaced summary"
         );
-        assert_eq!(ids(text("fresh")), ["c"]);
+        store
+            .apply(vec![Change::RecordingEdited {
+                id: rid("r"),
+                edit: RecordingEdit::Title(None),
+            }])
+            .unwrap();
+        assert_eq!(
+            found(store, "atlas"),
+            Vec::<String>::new(),
+            "a cleared title"
+        );
+        assert_eq!(found(store, "fresh"), ["r"]);
+    }
+
+    fn search_forgets_deleted_and_finds_restored(store: &dyn Store) {
+        let restore = || {
+            vec![
+                titled("gone", 200, "Roadmap"),
+                said("gone", 1, &["kilimanjaro"]),
+                Change::SummaryReplaced {
+                    id: rid("gone"),
+                    summary: summary(1, "okavango"),
+                },
+            ]
+        };
+        store.apply(restore()).unwrap();
+        store
+            .apply(vec![titled("kept", 100, "Roadmap two")])
+            .unwrap();
+        store
+            .apply(vec![Change::RecordingDeleted(rid("gone"))])
+            .unwrap();
+        for text in ["roadmap", "kilimanjaro", "okavango"] {
+            let want: &[&str] = if text == "roadmap" { &["kept"] } else { &[] };
+            assert_eq!(found(store, text), want, "{text} after delete");
+        }
+        store.apply(restore()).unwrap();
+        assert_eq!(found(store, "roadmap"), ["gone", "kept"]);
+        assert_eq!(
+            found(store, "kilimanjaro okavango"),
+            ["gone"],
+            "after restore"
+        );
+        assert!(
+            store
+                .apply(vec![titled("x", 1, "x"), said("missing", 1, &["x"])])
+                .is_err()
+        );
+        assert_eq!(
+            found(store, "x"),
+            Vec::<String>::new(),
+            "a failed apply indexes nothing"
+        );
+    }
+
+    fn search_quotes_fts_keywords(store: &dyn Store) {
+        store
+            .apply(vec![
+                recording_change("k", 200),
+                said(
+                    "k",
+                    1,
+                    &["this OR that, NEAR the NOT-quite AND title: * ^ col"],
+                ),
+                recording_change("other", 100),
+                said("other", 1, &["plain words here"]),
+            ])
+            .unwrap();
+        for text in [
+            "or",
+            "OR",
+            "near",
+            "not",
+            "and",
+            "and or",
+            "title:",
+            "title:col",
+            "NEAR(the",
+            "\"or that\"",
+            "this*",
+            "^col",
+            "col)",
+            "(this",
+            "this -that",
+            "{title}",
+        ] {
+            assert_eq!(found(store, text), ["k"], "{text}");
+        }
+        assert_eq!(found(store, "plain"), ["other"]);
     }
 
     fn list_row_fields(store: &dyn Store) {

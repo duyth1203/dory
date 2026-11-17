@@ -31,6 +31,7 @@ use dory_core::ports::{
     Takes, Transcriber,
 };
 use dory_core::recorder::{FinalizeReason, Limits};
+use dory_core::search::{Found, Query};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
     FakeCapture, FakeLanguageModel, FakeLlmProvider, FakePlayback, FakeSttProvider,
@@ -194,6 +195,9 @@ impl StoreRead for HookedStore {
     }
     fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
         self.inner.recordings(query)
+    }
+    fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError> {
+        self.inner.search(query)
     }
     fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError> {
         self.inner.transcript(id)

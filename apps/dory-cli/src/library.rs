@@ -4,8 +4,9 @@ use dory::{Config, LibraryReader};
 use dory_core::app::{AppKind, ModelRow};
 use dory_core::domain::{Job, JobState, RecordingQuery, RecordingRow, TakeContainer};
 use dory_core::models::{Diar, Llm, Stt};
+use dory_core::search::Found;
 
-use crate::args::{ImportArgs, ListArgs, ModelsArgs, ShowArgs};
+use crate::args::{ImportArgs, ListArgs, ModelsArgs, SearchArgs, ShowArgs};
 use crate::wait::block_on;
 use crate::{open_library, view};
 
@@ -20,12 +21,9 @@ pub fn import(config: &Config, args: &ImportArgs) -> Result<(), String> {
     Ok(())
 }
 
-pub fn list(config: &Config, args: &ListArgs) -> Result<(), String> {
+pub fn list(config: &Config, _: &ListArgs) -> Result<(), String> {
     let rows = open_library(config, false)?
-        .list(&RecordingQuery {
-            text: args.search.clone(),
-            limit: None,
-        })
+        .list(&RecordingQuery::default())
         .map_err(crate::chain)?;
     for row in &rows {
         println!("{}", list_line(row));
@@ -34,6 +32,32 @@ pub fn list(config: &Config, args: &ListArgs) -> Result<(), String> {
         eprintln!("no recordings");
     }
     Ok(())
+}
+
+/// Prints each hit newest first, then the library logs `search ms=` on stderr.
+pub fn search(config: &Config, args: &SearchArgs) -> Result<(), String> {
+    let results = open_library(config, false)?
+        .search(&args.text)
+        .map_err(crate::chain)?;
+    let hits = results.map(|r| r.hits).unwrap_or_default();
+    for found in &hits {
+        println!("{}", search_line(found));
+    }
+    if hits.is_empty() {
+        eprintln!("no recordings match {:?}", args.text);
+    }
+    Ok(())
+}
+
+fn search_line(found: &Found) -> String {
+    let r = &found.row.recording;
+    format!(
+        "{}  {}  {}  {}",
+        r.id,
+        r.title.as_deref().unwrap_or("(untitled)"),
+        view::utc(r.created_at),
+        if found.in_title { "title" } else { "text" }
+    )
 }
 
 fn list_line(row: &RecordingRow) -> String {
@@ -213,6 +237,14 @@ mod tests {
         assert_eq!(
             list_line(&bare),
             "rec_1  (untitled)  1970-01-01 00:00:00  -  idle"
+        );
+        let found = Found {
+            row: bare,
+            in_title: false,
+        };
+        assert_eq!(
+            search_line(&found),
+            "rec_1  (untitled)  1970-01-01 00:00:00  text"
         );
     }
 }

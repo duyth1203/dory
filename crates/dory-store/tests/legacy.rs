@@ -8,6 +8,7 @@ use dory_core::domain::{
     TakeContainer, Timestamp,
 };
 use dory_core::ports::{Change, Store, StoreRead, TakeError, Takes};
+use dory_core::search::Query;
 use dory_store::{FsTakes, ImportError, SqliteStore, import_legacy};
 
 const DONE: &str = "rec_1731234567890_k3j2h1x";
@@ -678,4 +679,43 @@ fn two_hundred_recordings_import_within_the_plans_budget_and_five_hundred_list_f
         "listing 500 recordings took {list_time:?}"
     );
     eprintln!("import 200: {import_time:?}, list 500: {list_time:?}");
+}
+
+#[test]
+fn an_imported_transcript_is_searchable() {
+    let env = Env::new();
+    let (store, takes) = (env.store(), env.takes());
+    import_legacy(&store, &takes, &fixture()).unwrap();
+    let found = |text: &str| -> Vec<(String, bool)> {
+        store
+            .search(&Query::parse(text).unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.row.recording.id.to_string(), f.in_title))
+            .collect()
+    };
+    assert_eq!(
+        found("everyone see"),
+        [(DONE.to_owned(), false)],
+        "a transcript word"
+    );
+    assert_eq!(
+        found("chao moi nguoi"),
+        [(DONE.to_owned(), false)],
+        "folded Vietnamese"
+    );
+    assert_eq!(found("ke hoach"), [(DONE.to_owned(), true)], "a title");
+    assert_eq!(
+        found("deck friday"),
+        [(DONE.to_owned(), false)],
+        "a summary"
+    );
+
+    let again = import_legacy(&store, &takes, &fixture()).unwrap();
+    assert_eq!(again.unchanged, IMPORTED.len());
+    assert_eq!(
+        found("everyone"),
+        [(DONE.to_owned(), false)],
+        "a second import keeps one row"
+    );
 }

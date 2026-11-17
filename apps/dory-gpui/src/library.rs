@@ -4,9 +4,7 @@
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone};
 use dory_core::app::Budget;
-use dory_core::domain::{
-    Fraction, Ms, RecordingId, RecordingQuery, RecordingRow, Stage, Timestamp,
-};
+use dory_core::domain::{Fraction, Ms, RecordingId, RecordingRow, Stage, Timestamp};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Selection {
@@ -39,14 +37,6 @@ impl SearchQuery {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
-    }
-
-    /// The store searches title, transcript, and summary text, so the app never filters text.
-    pub fn to_query(&self) -> RecordingQuery {
-        RecordingQuery {
-            text: (!self.0.is_empty()).then(|| self.0.clone()),
-            limit: None,
-        }
     }
 }
 

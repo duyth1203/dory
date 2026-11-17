@@ -41,19 +41,30 @@ impl AddArgs {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct ListArgs {
-    pub search: Option<String>,
-}
+pub struct ListArgs;
 
 impl ListArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
         match args {
-            [] => Ok(Self { search: None }),
-            [flag, text] if flag == "--search" => Ok(Self {
-                search: Some(text.clone()),
-            }),
-            _ => Err("list takes only --search TEXT".into()),
+            [] => Ok(Self),
+            _ => Err("list takes no arguments; search with dory-cli search TEXT".into()),
         }
+    }
+}
+
+/// `search TEXT...`: the words, joined by spaces, as typed into the search field.
+#[derive(Debug, PartialEq)]
+pub struct SearchArgs {
+    pub text: String,
+}
+
+impl SearchArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let text = args.join(" ");
+        if text.trim().is_empty() {
+            return Err("search needs the text to look for".into());
+        }
+        Ok(Self { text })
     }
 }
 
@@ -407,16 +418,20 @@ mod tests {
 
     #[test]
     fn positional_commands() {
+        assert_eq!(ListArgs::parse(&[]), Ok(ListArgs));
+        assert!(ListArgs::parse(&words("--search roadmap")).is_err());
         assert_eq!(
-            ListArgs::parse(&words("--search weekly sync")).unwrap_err(),
-            "list takes only --search TEXT"
+            SearchArgs::parse(&words("review budget")).unwrap().text,
+            "review budget"
         );
         assert_eq!(
-            ListArgs::parse(&["--search".into(), "weekly sync".into()])
+            SearchArgs::parse(&["\"budget review\"".into()])
                 .unwrap()
-                .search,
-            Some("weekly sync".into())
+                .text,
+            "\"budget review\""
         );
+        assert!(SearchArgs::parse(&[]).is_err());
+        assert!(SearchArgs::parse(&words("  ")).is_err());
         assert_eq!(
             SeedArgs::parse(&words("--recordings 500 --words 18000")).unwrap(),
             SeedArgs {

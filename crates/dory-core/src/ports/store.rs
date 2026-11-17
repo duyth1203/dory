@@ -13,11 +13,16 @@ use crate::domain::{
     Timestamp, Transcript,
 };
 use crate::models::ModelRef;
+use crate::search::{Found, Query};
 
 /// Reads are cheap and safe from any thread, including a UI thread.
 pub trait StoreRead: Send + Sync {
     fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError>;
     fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError>;
+    /// Recordings where every clause matches the title, a speaker name of the current transcript
+    /// revision, the summary, or the transcript, as [`crate::search::matches`] decides. Newest
+    /// first, ties by id, unranked. An adapter keeps its index in the same commit as the text.
+    fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError>;
     fn transcript(&self, id: &RecordingId) -> Result<Option<Transcript>, StoreError>;
     fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
     /// Empty names for a recording that has none.

@@ -54,6 +54,7 @@ use crate::ports::{
     TrashReceipt,
 };
 use crate::recorder::{Input, Limits};
+use crate::search::{Query, SearchResults};
 
 /// Every adapter the core needs. Only the composition root builds this.
 pub struct Ports {
@@ -504,6 +505,11 @@ pub struct Library<'a> {
 impl Library<'_> {
     pub fn list(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
         self.dory.reader.list(query)
+    }
+
+    /// See [`LibraryReader::search`].
+    pub fn search(&self, text: &str) -> Result<Option<SearchResults>, StoreError> {
+        self.dory.reader.search(text)
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
@@ -1021,16 +1027,23 @@ impl LibraryReader {
     }
 
     pub fn list(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError> {
+        self.store.recordings(query)
+    }
+
+    /// The recordings `text` finds, newest first, and the query it parsed to. `None` when the text
+    /// holds no word, such as blank text or punctuation alone.
+    pub fn search(&self, text: &str) -> Result<Option<SearchResults>, StoreError> {
+        let Some(query) = Query::parse(text) else {
+            return Ok(None);
+        };
         let started = std::time::Instant::now();
-        let rows = self.store.recordings(query)?;
-        if query.text.as_deref().is_some_and(|t| !t.trim().is_empty()) {
-            eprintln!(
-                "search ms={:.2} hits={}",
-                started.elapsed().as_secs_f64() * 1000.0,
-                rows.len()
-            );
-        }
-        Ok(rows)
+        let hits = self.store.search(&query)?;
+        eprintln!(
+            "search ms={:.2} hits={}",
+            started.elapsed().as_secs_f64() * 1000.0,
+            hits.len()
+        );
+        Ok(Some(SearchResults { query, hits }))
     }
 
     pub fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {

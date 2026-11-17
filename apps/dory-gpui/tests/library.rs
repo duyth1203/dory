@@ -225,11 +225,8 @@ fn selection_after_delete_moves_to_the_next_then_the_previous_row() {
 
 #[test]
 fn search_trims_and_an_empty_search_lists_everything() {
-    assert_eq!(SearchQuery::new("   ").to_query().text, None);
-    assert_eq!(
-        SearchQuery::new("  Lieferung ").to_query().text.as_deref(),
-        Some("Lieferung")
-    );
+    assert!(SearchQuery::new("   ").is_empty());
+    assert_eq!(SearchQuery::new("  Lieferung ").text(), "Lieferung");
 }
 
 mod window {
@@ -280,6 +277,15 @@ mod window {
         cx.executor().advance_clock(SEARCH_DEBOUNCE);
         cx.run_until_parked();
         assert_eq!(titles(&app, cx), ["Kundengespräch Müller GmbH"]);
+
+        app.update(cx, |app, cx| app.set_search("mull gmb", cx));
+        cx.executor().advance_clock(SEARCH_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(
+            titles(&app, cx),
+            ["Kundengespräch Müller GmbH"],
+            "word starts in any order, with accents folded"
+        );
 
         app.update(cx, |app, cx| app.set_search("", cx));
         cx.executor().advance_clock(SEARCH_DEBOUNCE);

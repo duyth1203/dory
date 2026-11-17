@@ -58,9 +58,9 @@ impl SummaryFlag {
     }
 }
 
+/// The whole library, newest first. Text search is [`crate::ports::StoreRead::search`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordingQuery {
-    pub text: Option<String>,
     pub limit: Option<u32>,
 }
 

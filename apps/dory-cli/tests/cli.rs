@@ -94,9 +94,12 @@ fn imports_lists_and_shows_the_legacy_folder() {
     assert!(done.contains("30:32"), "{done}");
     assert!(done.ends_with("done"), "{done}");
 
-    let found = env.ok(&["list", "--search", "roadmap"]);
+    let found = env.ok(&["search", "roadmap"]);
     assert_eq!(found.lines().count(), 1, "{found}");
     assert!(found.starts_with(DONE));
+    assert!(found.trim_end().ends_with("text"), "{found}");
+    let titled = env.ok(&["search", "ke", "hoach"]);
+    assert!(titled.trim_end().ends_with("title"), "{titled}");
 
     let shown = env.ok(&["show", DONE]);
     for want in [

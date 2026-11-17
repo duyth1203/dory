@@ -4,6 +4,7 @@ use dory_core::domain::{
 };
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
+use dory_core::search::{Query, TOKENS_VERSION};
 use dory_core::testing::store::{CASES, MemStore, run_store_contract};
 use dory_store::SqliteStore;
 
@@ -53,7 +54,7 @@ fn every_contract_case_runs_on_sqlite_by_name() {
 }
 
 /// The schema version this build migrates to.
-const LATEST: u32 = 5;
+const LATEST: u32 = 6;
 
 #[test]
 fn state_survives_closing_and_reopening_the_database() {
@@ -272,4 +273,145 @@ fn a_version_4_database_gives_each_job_its_enqueue_time_as_its_place() {
         index.contains("place"),
         "the worker index follows place: {index}"
     );
+}
+
+fn found(store: &SqliteStore, text: &str) -> Vec<String> {
+    store
+        .search(&Query::parse(text).unwrap())
+        .unwrap()
+        .into_iter()
+        .map(|f| f.row.recording.id.to_string())
+        .collect()
+}
+
+#[test]
+fn v6_migrates_a_v5_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in [
+            include_str!("../src/sqlite/schema_v1.sql"),
+            include_str!("../src/sqlite/schema_v2.sql"),
+            include_str!("../src/sqlite/schema_v3.sql"),
+            include_str!("../src/sqlite/schema_v4.sql"),
+            include_str!("../src/sqlite/schema_v5.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(
+            "PRAGMA user_version = 5;
+             INSERT INTO recordings (id, title, created_at, layout, names_revision, title_lc)
+                 VALUES ('a', 'Atlas kickoff', 3, 'mic_system', 1, 'atlas kickoff'),
+                        ('b', NULL, 2, 'mixed', 0, ''),
+                        ('c', 'Weekly', 1, 'mixed', 0, 'weekly');
+             INSERT INTO transcripts (recording_id, revision, languages, produced_by)
+                 VALUES ('a', 1, 'en', 'sona/whisper-small'),
+                        ('b', 1, '', 'sona/whisper-small');
+             INSERT INTO segments (recording_id, idx, start_ms, end_ms, speaker, channel, text)
+                 VALUES ('a', 0, 0, 900, 1, 'system', 'We climb Kilimanjaro'),
+                        ('a', 1, 1000, 1900, 0, 'mic', 'after the review'),
+                        ('b', 0, NULL, NULL, 0, 'mixed', 'Herr Müller kommt');
+             INSERT INTO speaker_names (recording_id, speaker, name) VALUES ('a', 1, 'Priyanka');
+             INSERT INTO summaries (recording_id, markdown, language, produced_by, transcript_revision)
+                 VALUES ('c', '## Okavango delta', 'en', 'ollama/gemma4:e4b', 0);",
+        )
+        .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), LATEST);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('recordings')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert!(
+        columns.iter().all(|c| !c.ends_with("_lc")),
+        "the _lc columns are gone: {columns:?}"
+    );
+    assert_eq!(found(&store, "atlas"), ["a"], "a title");
+    assert_eq!(found(&store, "kilimanjaro review"), ["a"], "a transcript");
+    assert_eq!(found(&store, "priyanka"), ["a"], "a speaker name");
+    assert_eq!(found(&store, "muller"), ["b"], "folded accents");
+    assert_eq!(found(&store, "okavango"), ["c"], "a summary");
+    let keys: i64 = conn
+        .query_row("SELECT count(*) FROM search_keys", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(keys, 3, "one key per recording");
+    let version: u32 = conn
+        .query_row("SELECT tokens_version FROM search_meta", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, TOKENS_VERSION);
+}
+
+#[test]
+fn tokens_version_bump_reindexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    {
+        let store = SqliteStore::open(&path).unwrap();
+        store
+            .apply(vec![
+                Change::RecordingCreated(Recording {
+                    title: Some("Roadmap".into()),
+                    ..recording("r", 1)
+                }),
+                Change::RecordingCreated(recording("s", 2)),
+            ])
+            .unwrap();
+        assert_eq!(found(&store, "roadmap"), ["r"]);
+    }
+    // What an index built by an older tokenizer looks like to this build: another version, and
+    // rows this build would not have written.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "UPDATE search_meta SET tokens_version = 0;
+             INSERT INTO search (search) VALUES ('delete-all');
+             INSERT INTO search (rowid, title, speakers, summary, transcript)
+                 SELECT key, 'stale', '', '', '' FROM search_keys;",
+        )
+        .unwrap();
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(found(&store, "roadmap"), ["r"], "rebuilt on open");
+    assert_eq!(
+        found(&store, "stale"),
+        Vec::<String>::new(),
+        "old rows are gone"
+    );
+    let version: u32 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT tokens_version FROM search_meta", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, TOKENS_VERSION);
+}
+
+#[test]
+fn renumbered_rowids_keep_each_recording_its_own_index_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    let store = SqliteStore::open(&path).unwrap();
+    for (id, at, title) in [("a", 1, "alpha"), ("b", 2, "beta"), ("c", 3, "gamma")] {
+        store
+            .apply(vec![Change::RecordingCreated(Recording {
+                title: Some(title.into()),
+                ..recording(id, at)
+            })])
+            .unwrap();
+    }
+    store
+        .apply(vec![Change::RecordingDeleted(rid("a"))])
+        .unwrap();
+    drop(store);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("VACUUM")
+        .unwrap();
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(found(&store, "beta"), ["b"]);
+    assert_eq!(found(&store, "gamma"), ["c"]);
+    assert_eq!(found(&store, "alpha"), Vec::<String>::new());
 }

@@ -1,6 +1,7 @@
-//! Status glyphs for the sidebar row, the card's step row, and the Summary tab. Each sits next to
-//! a word that carries the state (A11Y-8), so the glyph itself is not announced. Glyphs keep their
-//! size at every text scale (`docs/design/processing-view.md` section 2).
+//! Status glyphs for the sidebar row, the card's step row, onboarding's permission rows, and the
+//! Summary tab: Lucide icons, and the drawn dots for work under way. Each sits next to a word that
+//! carries the state (A11Y-8), so the glyph itself is not announced. Glyphs keep their size at
+//! every text scale (`docs/design/processing-view.md` section 2).
 //!
 //! The dots glyph replaces the spinning ring: rotation is outside the allowed motion, so its three
 //! dots breathe in opacity instead. `at` is [`crate::motion::clock_ms`] while it may animate and
@@ -8,6 +9,7 @@
 
 use gpui_kit::{Div, Hsla, IntoElement as _, ParentElement as _, Styled as _, div, px};
 
+use crate::icons::Icon;
 use crate::library::Glyph;
 use crate::motion;
 use crate::processing::StepGlyph;
@@ -22,21 +24,8 @@ fn frame(size: f32) -> Div {
         .h(px(size))
 }
 
-fn text(symbol: &'static str, color: Hsla, size: f32) -> Div {
-    frame(size).child(
-        div()
-            .text_size(px(size))
-            .line_height(px(size))
-            .text_color(color)
-            .child(symbol),
-    )
-}
-
-fn ring(color: Hsla, size: f32) -> Div {
-    frame(size)
-        .rounded_full()
-        .border(px(1.5))
-        .border_color(color)
+fn icon(icon: Icon, color: Hsla, size: f32) -> Div {
+    frame(size).child(icon.view(size, color))
 }
 
 /// Three dots that breathe one after another.
@@ -66,42 +55,32 @@ pub fn row(glyph: Glyph, color: Hsla, size: f32, at: Option<u64>) -> Div {
                 .rounded_full()
                 .bg(color),
         ),
-        Glyph::Doc => text("▤", color, size),
-        Glyph::StopCircle => ring(color, size).child(
-            div()
-                .w(px(size * 0.34))
-                .h(px(size * 0.34))
-                .rounded(px(1.))
-                .bg(color),
-        ),
-        Glyph::DotsCircle => ring(color, size).child(dots(color, size * 0.7, at)),
-        Glyph::Clock => text("◷", color, size),
+        Glyph::Doc => icon(Icon::FileText, color, size),
+        Glyph::StopCircle => icon(Icon::CircleStop, color, size),
+        Glyph::DotsCircle => frame(size)
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(Icon::Circle.view(size, color)),
+            )
+            .child(dots(color, size * 0.6, at)),
+        Glyph::Clock => icon(Icon::Clock, color, size),
         Glyph::Dots => dots(color, size, at),
-        Glyph::Check => ring(color, size).child(
-            div()
-                .text_size(px(size * 0.7))
-                .line_height(px(size * 0.7))
-                .text_color(color)
-                .child("✓"),
-        ),
-        Glyph::Triangle => text("⚠︎", color, size),
+        Glyph::Check => icon(Icon::CircleCheck, color, size),
+        Glyph::Triangle => icon(Icon::TriangleAlert, color, size),
     }
 }
 
-/// A step's glyph in the card's step row.
+/// A step's glyph in the card's step row, and a permission's status in onboarding.
 pub fn step(glyph: StepGlyph, color: Hsla, size: f32, at: Option<u64>) -> Div {
     match glyph {
-        StepGlyph::Stop => frame(size).child(
-            div()
-                .w(px(size * 0.6))
-                .h(px(size * 0.6))
-                .rounded(px(2.))
-                .bg(color),
-        ),
+        StepGlyph::Stop => icon(Icon::Square, color, size),
         StepGlyph::Dots => dots(color, size, at),
-        StepGlyph::Check => text("✓", color, size),
-        StepGlyph::Clock => text("◷", color, size),
-        StepGlyph::Pending => text("◌", color, size),
-        StepGlyph::Warning => text("⚠︎", color, size),
+        StepGlyph::Check => icon(Icon::CircleCheck, color, size),
+        StepGlyph::Clock => icon(Icon::Clock, color, size),
+        StepGlyph::Pending => icon(Icon::CircleDashed, color, size),
+        StepGlyph::Warning => icon(Icon::TriangleAlert, color, size),
     }
 }

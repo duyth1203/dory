@@ -31,15 +31,16 @@ use dory_core::domain::{Ms, RecordingId, Waveform};
 use gpui_kit::{
     AnyElement, App, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement as _, Pixels, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, fill, point,
-    prelude::FluentBuilder as _, px, quad, relative, size,
+    MouseMoveEvent, ParentElement as _, Pixels, Render, Role, StatefulInteractiveElement as _,
+    Styled as _, Window, canvas, div, fill, point, prelude::FluentBuilder as _, px, quad, relative,
+    size,
 };
 
 use crate::a11y::{self, Node};
 use crate::app::{AppState, PlayerHandle};
 use crate::detail::{button, spoken_button};
 use crate::glyphs;
+use crate::icons::{self, Icon};
 use crate::library;
 use crate::motion::{self, ease_standard, elapsed, mix};
 use crate::processing::{Fix, Phase, Problem, Step, StepGlyph, light_chip};
@@ -47,6 +48,8 @@ use crate::theme::Theme;
 
 /// Back and Forward move as far as the slider's arrows (A11Y-3).
 pub const SKIP_MS: i64 = 5_000;
+/// The transport icons' size, which their 1.5-stroke copies are drawn for.
+const TRANSPORT: f32 = 20.;
 const GAP: f32 = 2.;
 /// One bar per this much width.
 const BAR_PITCH: f32 = 6.;
@@ -386,11 +389,16 @@ impl PlayerView {
     }
 
     fn control(&self, control: Control, playing: bool, theme: &Theme) -> Node {
-        let (ix, id, label, glyph): (usize, &str, &str, SharedString) = match control {
-            Control::Back => (0, "player-back", "Back 5 seconds", "↺5".into()),
-            Control::Play if playing => (1, "player-play", "Pause", "❚❚".into()),
-            Control::Play => (1, "player-play", "Play", "▶".into()),
-            Control::Forward => (2, "player-forward", "Forward 5 seconds", "5↻".into()),
+        let (ix, id, label, icon) = match control {
+            Control::Back => (0, "player-back", "Back 5 seconds", Icon::TransportRotateCcw),
+            Control::Play if playing => (1, "player-play", "Pause", Icon::TransportPause),
+            Control::Play => (1, "player-play", "Play", Icon::TransportPlay),
+            Control::Forward => (
+                2,
+                "player-forward",
+                "Forward 5 seconds",
+                Icon::TransportRotateCw,
+            ),
         };
         let filled = matches!(control, Control::Play);
         let activate = {
@@ -415,25 +423,34 @@ impl PlayerView {
         .items_center()
         .justify_center()
         .rounded_full()
-        .cursor_pointer()
-        .font_weight(FontWeight::SEMIBOLD);
+        .cursor_pointer();
         if filled {
             button
                 .min_w(px(40.))
                 .min_h(px(40.))
                 .px(px(4.))
                 .bg(theme.accent)
-                .text_color(theme.on_accent)
-                .text_size(theme.text(15.))
-                .child(glyph)
+                .child(icon.view(TRANSPORT, theme.on_accent))
         } else {
-            button
-                .min_w(px(32.))
-                .min_h(px(32.))
-                .px(px(4.))
+            // The seconds sit inside the arrow's circle and keep their size, like the arrow.
+            let seconds = div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(8.))
+                .line_height(px(8.))
+                .font_weight(FontWeight::BOLD)
                 .text_color(theme.text)
-                .text_size(theme.text(13.))
-                .child(glyph)
+                .child(format!("{}", SKIP_MS / 1000));
+            button.min_w(px(32.)).min_h(px(32.)).px(px(4.)).child(
+                div()
+                    .relative()
+                    .size(px(TRANSPORT))
+                    .child(icon.view(TRANSPORT, theme.text))
+                    .child(seconds),
+            )
         }
     }
 
@@ -467,7 +484,13 @@ impl PlayerView {
                 .min_w(px(0.))
                 .text_size(theme.text(12.))
                 .text_color(theme.attention)
-                .child(format!("⚠︎ {why}"))
+                .child(icons::beside(
+                    Icon::TriangleAlert,
+                    12.,
+                    theme.attention,
+                    theme.text(12.) * 1.4,
+                    why,
+                ))
         });
         let controls = div()
             .flex()
@@ -627,13 +650,7 @@ impl PlayerView {
         .line_height(relative(1.3))
         .font_weight(FontWeight::SEMIBOLD)
         .when(failed, |h| {
-            h.child(
-                div()
-                    .flex_none()
-                    .text_size(px(18.))
-                    .text_color(theme.attention)
-                    .child("⚠︎"),
-            )
+            h.child(Icon::TriangleAlert.view(18., theme.attention))
         })
         .child(div().min_w_0().child(shown_headline.unwrap_or_default()));
         // While the old words fade out, VoiceOver already reads the new ones.
@@ -703,7 +720,7 @@ impl PlayerView {
                         .border_color(theme.control_border)
                         .text_size(theme.text(12.))
                         .text_color(theme.text_secondary)
-                        .child(div().flex_none().text_size(px(12.)).child("▭"))
+                        .child(Icon::BatteryMedium.view(12., theme.text_secondary))
                         .child(label),
                 )
                 .child(

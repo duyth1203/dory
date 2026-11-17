@@ -34,6 +34,7 @@ gpui_kit::actions!(
         FilterNeedsAttention,
         FilterDone,
         OpenSettings,
+        ShowAbout,
         Rename,
         Bigger,
         Smaller,

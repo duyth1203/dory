@@ -405,6 +405,11 @@ impl Theme {
     }
 
     /// A text size in points, scaled by View > Bigger and Smaller.
+    /// The selected Settings pane's icon tile, lighter than the accent row it sits on.
+    pub fn selected_tile(&self) -> Hsla {
+        blend(gpui_kit::white(), self.accent, 0.22)
+    }
+
     pub fn text(&self, points: f32) -> Pixels {
         px(points * self.text_scale)
     }
@@ -508,6 +513,16 @@ impl Theme {
             graphic("wave_done on card_bg", self.wave_done, self.card_bg),
             graphic("playhead on card_bg", self.text, self.card_bg),
             graphic("record dot on control_bg", self.record_red, self.control_bg),
+            graphic(
+                "text_secondary icon on chip_bg",
+                self.text_secondary,
+                self.chip_bg,
+            ),
+            graphic(
+                "on_accent icon on the selected pane's tile",
+                self.on_accent,
+                self.selected_tile(),
+            ),
         ]);
         pairs.push(Pair {
             name: "attention_border on card_bg".into(),

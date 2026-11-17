@@ -42,6 +42,7 @@ use gpui_kit::{
 use crate::a11y;
 use crate::app::{AppState, Originals};
 use crate::combobox::LanguageCombobox;
+use crate::icons::{self, Icon};
 use crate::languages;
 use crate::models_view::{self, ModelList, Models, button, note, size_text};
 use crate::processing::PACE_CHOICES;
@@ -104,14 +105,14 @@ impl Pane {
         format!("settings-pane-{}", self.slug())
     }
 
-    /// The icon tile's mark until the Lucide pass replaces it.
-    fn mark(self) -> &'static str {
+    /// The icon on the pane's tile in the sidebar.
+    fn icon(self) -> Icon {
         match self {
-            Pane::General => "G",
-            Pane::Recording => "R",
-            Pane::Transcription => "T",
-            Pane::Summaries => "S",
-            Pane::Storage => "D",
+            Pane::General => Icon::Settings2,
+            Pane::Recording => Icon::Mic,
+            Pane::Transcription => Icon::Captions,
+            Pane::Summaries => Icon::FileText,
+            Pane::Storage => Icon::HardDrive,
         }
     }
 }
@@ -591,7 +592,7 @@ impl SettingsWindow {
             .outline()
             .label(current.clone())
             .accessibility_label(format!("Language, {current}"))
-            .dropdown_caret(true)
+            .child(Icon::ChevronsUpDown.view(12., theme.text_secondary))
             .dropdown_menu(move |menu, _, _| {
                 let mut menu = menu.action_context(root.clone());
                 for (ix, option) in options.iter().enumerate() {
@@ -897,7 +898,7 @@ impl SettingsWindow {
                 )
             }
             Originals::Restoring => ("Putting the files back…".into(), None),
-            Originals::Failed(error) => (format!("⚠︎ {error}"), None),
+            Originals::Failed(error) => (error.to_string(), None),
         };
         let body = div()
             .px(px(14.))
@@ -908,7 +909,19 @@ impl SettingsWindow {
             .child(
                 a11y::node("originals-status", Role::Status, line.clone())
                     .text_size(theme.text(13.))
-                    .child(line),
+                    .map(|status| {
+                        if matches!(originals, Originals::Failed(_)) {
+                            status.child(icons::beside(
+                                Icon::TriangleAlert,
+                                12.,
+                                theme.attention,
+                                theme.text(13.) * 1.4,
+                                line,
+                            ))
+                        } else {
+                            status.child(line)
+                        }
+                    }),
             )
             .children(action.map(|action| div().flex().child(action)))
             .child(note(
@@ -934,7 +947,7 @@ impl SettingsWindow {
             let selected = pane == self.pane;
             let this = this.clone();
             let tile_bg = if selected {
-                gpui_kit::white().opacity(0.22)
+                theme.selected_tile()
             } else {
                 theme.accent
             };
@@ -970,10 +983,7 @@ impl SettingsWindow {
                         .items_center()
                         .justify_center()
                         .bg(tile_bg)
-                        .text_color(theme.on_accent)
-                        .text_size(px(12.))
-                        .font_weight(FontWeight::BOLD)
-                        .child(pane.mark()),
+                        .child(pane.icon().view(14., theme.on_accent)),
                 )
                 .child(pane.title()),
             );
@@ -1277,7 +1287,13 @@ impl Render for SettingsWindow {
                                     a11y::node("settings-error", Role::Status, error.clone())
                                         .text_size(theme.text(12.))
                                         .text_color(theme.attention)
-                                        .child(format!("⚠︎ {error}")),
+                                        .child(icons::beside(
+                                            Icon::TriangleAlert,
+                                            12.,
+                                            theme.attention,
+                                            theme.text(12.) * 1.4,
+                                            error,
+                                        )),
                                 )
                             })
                             .children(page),

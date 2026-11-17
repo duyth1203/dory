@@ -25,6 +25,7 @@ use gpui_kit::{
 };
 
 use crate::a11y;
+use crate::icons::Icon;
 use crate::languages::{self, Edit, KEEP_ONE};
 use crate::models_view::Models;
 use crate::theme::Theme;
@@ -230,9 +231,7 @@ impl LanguageCombobox {
         .items_center()
         .justify_center()
         .rounded_full()
-        .text_size(theme.text(12.))
-        .text_color(theme.text_secondary)
-        .child("✕")
+        .child(Icon::X.view(12., theme.text_secondary))
         .when(only, |b| b.aria_description(KEEP_ONE))
         .when(!only, |b| {
             b.cursor_pointer().on_click(move |_, _, cx| {
@@ -311,8 +310,7 @@ impl LanguageCombobox {
                     div()
                         .flex_none()
                         .w(px(16.))
-                        .text_size(theme.text(12.))
-                        .when(on, |d| d.child("✓")),
+                        .when(on, |d| d.child(Icon::Check.view(12., fg))),
                 )
                 .child(div().flex_1().min_w_0().child(lang.english))
                 .when(lang.native != lang.english, |row| {
@@ -475,11 +473,13 @@ impl Render for LanguageCombobox {
         .px(px(6.))
         .flex()
         .items_center()
+        .gap(px(4.))
         .rounded(px(6.))
         .text_size(theme.text(13.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(theme.accent_text)
-        .child("+ Add Language");
+        .child(Icon::Plus.view(14., theme.accent_text))
+        .child("Add Language");
         let width = self.width.clone();
         let ring = theme.ring;
         let field = a11y::node("meeting-languages", Role::ComboBox, "Meeting languages")

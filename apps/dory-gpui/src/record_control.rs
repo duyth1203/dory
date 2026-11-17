@@ -19,6 +19,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::AppState;
+use crate::icons::Icon;
 use crate::theme::Theme;
 
 /// What the pill shows between recorder phase changes.
@@ -153,8 +154,7 @@ impl RecordControl {
         .rounded_full()
         .bg(theme.control_bg)
         .border_color(theme.control_border)
-        .text_size(theme.text(12.))
-        .child(round.glyph)
+        .child(round.icon.view(14., theme.text))
     }
 }
 
@@ -162,7 +162,7 @@ struct Round {
     id: &'static str,
     label: &'static str,
     keys: &'static str,
-    glyph: &'static str,
+    icon: Icon,
     act: fn(&mut AppState, &mut Context<AppState>),
 }
 
@@ -226,10 +226,10 @@ impl Render for RecordControl {
             .child(div().size(px(8.)).rounded_full().bg(on_fill))
             .child(text)
             .child(meter);
-        let (pause_label, pause_glyph) = if paused {
-            ("Resume recording", "▶")
+        let (pause_label, pause_icon) = if paused {
+            ("Resume recording", Icon::Play)
         } else {
-            ("Pause recording", "⏸")
+            ("Pause recording", Icon::Pause)
         };
         div()
             .flex()
@@ -241,7 +241,7 @@ impl Render for RecordControl {
                     id: "record-pause",
                     label: pause_label,
                     keys: "Command-Shift-P",
-                    glyph: pause_glyph,
+                    icon: pause_icon,
                     act: AppState::toggle_pause,
                 },
                 &self.pause_focus.clone(),
@@ -252,7 +252,7 @@ impl Render for RecordControl {
                     id: "record-stop",
                     label: "Stop recording",
                     keys: "Command-Period",
-                    glyph: "■",
+                    icon: Icon::Square,
                     act: AppState::stop_recording,
                 },
                 &self.stop_focus.clone(),

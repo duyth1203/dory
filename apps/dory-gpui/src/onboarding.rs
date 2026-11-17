@@ -20,6 +20,8 @@ use gpui_kit::{
 use crate::a11y;
 use crate::app::AppState;
 use crate::detail::{button, spoken_button};
+use crate::glyphs;
+use crate::processing::StepGlyph;
 use crate::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -131,7 +133,7 @@ impl PermissionButton {
 /// A permission's status, glyph and word (A11Y-8), and its one button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PermissionRow {
-    pub glyph: &'static str,
+    pub glyph: StepGlyph,
     pub word: &'static str,
     /// Shown in the attention color.
     pub attention: bool,
@@ -139,7 +141,7 @@ pub struct PermissionRow {
 }
 
 const fn row(
-    glyph: &'static str,
+    glyph: StepGlyph,
     word: &'static str,
     attention: bool,
     button: Option<PermissionButton>,
@@ -157,20 +159,26 @@ const fn row(
 pub fn permission_row(source: Source, permission: Permission) -> PermissionRow {
     use PermissionButton::{Grant, OpenSystemSettings};
     match (source, permission) {
-        (_, Permission::Checking) => row("…", "Checking", false, None),
-        (_, Permission::Asking) => row("…", "Waiting for your answer", false, None),
-        (_, Permission::Known(Access::Granted)) => row("✓", "Allowed", false, None),
+        (_, Permission::Checking) => row(StepGlyph::Dots, "Checking", false, None),
+        (_, Permission::Asking) => row(StepGlyph::Dots, "Waiting for your answer", false, None),
+        (_, Permission::Known(Access::Granted)) => row(StepGlyph::Check, "Allowed", false, None),
         (Source::Microphone, Permission::Known(Access::Undetermined)) => {
-            row("○", "Not asked yet", false, Some(Grant))
+            row(StepGlyph::Pending, "Not asked yet", false, Some(Grant))
         }
-        (Source::SystemAudio, Permission::Known(Access::Undetermined)) => {
-            row("○", "Asked the first time you record", false, Some(Grant))
-        }
-        (_, Permission::Known(Access::Denied)) => {
-            row("▲", "Not allowed", true, Some(OpenSystemSettings))
-        }
+        (Source::SystemAudio, Permission::Known(Access::Undetermined)) => row(
+            StepGlyph::Pending,
+            "Asked the first time you record",
+            false,
+            Some(Grant),
+        ),
+        (_, Permission::Known(Access::Denied)) => row(
+            StepGlyph::Warning,
+            "Not allowed",
+            true,
+            Some(OpenSystemSettings),
+        ),
         (_, Permission::Known(Access::Unsupported)) => {
-            row("▲", "Not available on this Mac", true, None)
+            row(StepGlyph::Warning, "Not available on this Mac", true, None)
         }
     }
 }
@@ -253,16 +261,18 @@ pub fn permission_button(
 }
 
 pub fn permission_status(row: PermissionRow, theme: &Theme) -> impl IntoElement + use<> {
+    let color = if row.attention {
+        theme.attention
+    } else {
+        theme.text_secondary
+    };
     div()
         .flex()
+        .items_center()
         .gap(px(4.))
         .text_size(theme.text(12.))
-        .text_color(if row.attention {
-            theme.attention
-        } else {
-            theme.text_secondary
-        })
-        .child(row.glyph)
+        .text_color(color)
+        .child(glyphs::step(row.glyph, color, 12., None))
         .child(row.word)
 }
 

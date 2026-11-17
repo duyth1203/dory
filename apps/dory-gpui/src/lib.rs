@@ -23,9 +23,13 @@
 //!   and their words), `estimate` (time left), `motion` and `glyphs`, with the card in
 //!   `player_view` and the lines below it in `detail`.
 //!
+//! - Icons (`docs/design/settings-icons-blur.md` section 2): `icons`, the vendored Lucide set every
+//!   view draws from, and `about`, which carries its license.
+//!
 //! Each agent-owned file's doc comment is its contract.
 
 pub mod a11y;
+pub mod about;
 pub mod actions;
 pub mod app;
 pub mod combobox;
@@ -35,6 +39,7 @@ pub mod export;
 pub mod fixtures;
 pub mod glass;
 pub mod glyphs;
+pub mod icons;
 pub mod languages;
 pub mod library;
 pub mod menus;

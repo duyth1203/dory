@@ -123,6 +123,8 @@ pub fn build(state: MenuState) -> Vec<Menu> {
     };
     vec![
         Menu::new("Dory").items([
+            MenuItem::action("About Dory", ShowAbout),
+            MenuItem::separator(),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::os_submenu("Services", SystemMenuType::Services),
@@ -217,6 +219,7 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("f6", NextRegion, None),
         KeyBinding::new("shift-f6", PreviousRegion, None),
     ]);
+    cx.on_action(|_: &ShowAbout, cx| crate::about::open(cx));
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {
             let _ = window.update(cx, |_, window, _| window.minimize_window());

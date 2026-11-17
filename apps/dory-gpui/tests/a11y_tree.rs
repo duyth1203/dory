@@ -104,8 +104,43 @@ fn every_view_is_covered(cx: &mut TestAppContext) {
         "settings Transcription, languages open",
         "settings General, 560 tall",
         "settings Storage, 560 tall",
+        "about",
     ] {
         assert!(names.iter().any(|n| n == want), "{want} missing: {names:?}");
+    }
+}
+
+/// A11Y-1: a button that shows only an icon still says what it does. The icon itself has no node,
+/// so VoiceOver never reads it beside its word.
+#[gpui_kit::test]
+fn icon_only_buttons_keep_their_labels(cx: &mut TestAppContext) {
+    let views = every_view(1.0, cx);
+    let label = |id: &str| {
+        views
+            .iter()
+            .flat_map(|v| &v.elements)
+            .filter(|e| e.role() == Some(Role::Button))
+            .find_map(|e| match e.path().last() {
+                Some(ElementId::Name(n))
+                    if n.as_ref() == id || (id.ends_with('-') && n.starts_with(id)) =>
+                {
+                    e.label().map(|l| l.to_string())
+                }
+                _ => None,
+            })
+    };
+    for (id, want) in [
+        ("player-back", "Back 5 seconds"),
+        ("player-play", "Play"),
+        ("player-forward", "Forward 5 seconds"),
+        ("more", "More actions"),
+        ("record-pause", "Pause recording"),
+        ("record-stop", "Stop recording"),
+        ("remove-language-", "Remove "),
+        ("about-", "About "),
+    ] {
+        let got = label(id).unwrap_or_else(|| panic!("no {id} button in any view"));
+        assert!(got.starts_with(want), "{id} reads {got:?}, want {want:?}");
     }
 }
 

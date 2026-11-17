@@ -25,6 +25,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::{AppState, Download};
+use crate::icons::Icon;
 use crate::languages;
 use crate::radio::{Radio, RadioGroup};
 use crate::theme::Theme;
@@ -661,11 +662,7 @@ fn explainer(
     .items_center()
     .justify_center()
     .rounded_full()
-    .bg(theme.field_bg)
-    .text_size(theme.text(12.))
-    .font_weight(FontWeight::SEMIBOLD)
-    .text_color(theme.accent_text)
-    .child("i");
+    .child(Icon::Info.view(16., theme.accent_text));
     let panel = open.then(|| {
         let section = |id: String, title: &'static str, items: Vec<String>| {
             div()

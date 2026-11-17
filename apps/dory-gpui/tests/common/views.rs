@@ -15,7 +15,7 @@ use dory_gpui::app::{AppState, DetailTab};
 use dory_gpui::library::Selection;
 use dory_gpui::prefs::Prefs;
 use dory_gpui::processing::Phase;
-use dory_gpui::{fixtures, queue_popover, settings_window};
+use dory_gpui::{about, fixtures, queue_popover, settings_window};
 use gpui_kit::base::test_support::ElementSnapshot;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, InputEvent as _, TestAppContext,
@@ -276,6 +276,18 @@ fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
     settings_panes(views, window, ", 560 tall", cx);
 }
 
+/// About Dory with its Acknowledgements, over the theme the last window set up.
+fn about(views: &mut Vec<View>, cx: &mut TestAppContext) {
+    let before = cx.update(|cx| cx.windows());
+    cx.update(about::open);
+    let window = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .expect("the About window opened");
+    views.push(frame("about", window, cx));
+}
+
 /// Each Settings pane, and its first model explainer where it has one.
 fn settings_panes(
     views: &mut Vec<View>,
@@ -517,5 +529,6 @@ pub fn every_view(scale: f32, cx: &mut TestAppContext) -> Vec<View> {
         processing(&mut views, scale, Prefs::default().window_size, cx);
     }
     settings(&mut views, scale, cx);
+    about(&mut views, cx);
     views
 }

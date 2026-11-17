@@ -45,6 +45,7 @@ use gpui_kit::{
 use crate::a11y;
 use crate::actions::{CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText};
 use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
+use crate::icons::{self, Icon};
 use crate::library;
 use crate::menus;
 use crate::motion::{self, ease_standard, elapsed};
@@ -444,7 +445,7 @@ impl DetailPane {
             .child(
                 action("export", "Export")
                     .accessibility_label("Export")
-                    .dropdown_caret(true)
+                    .child(Icon::ChevronDown.view(12., theme.accent_text))
                     .dropdown_menu(|menu, _, _| {
                         menu.menu("Markdown", Box::new(ExportMarkdown))
                             .menu("Plain Text", Box::new(ExportText))
@@ -452,7 +453,11 @@ impl DetailPane {
                     }),
             )
             .child(
-                action("more", "⋯")
+                Button::new("more")
+                    .ghost()
+                    .compact()
+                    .accessibility_id("more")
+                    .child(Icon::Ellipsis.view(14., theme.accent_text))
                     .accessibility_label("More actions")
                     .dropdown_menu(move |menu, window, cx| {
                         menus::recording_menu(menu, &id, window, cx)
@@ -730,8 +735,10 @@ impl DetailPane {
             .rounded(px(4.))
             .border_1()
             .border_color(theme.control_border)
-            .when(always, |b| b.bg(theme.accent).text_color(theme.on_accent))
-            .child(if always { "✓" } else { "" });
+            .when(always, |b| {
+                b.bg(theme.accent)
+                    .child(Icon::Check.view(12., theme.on_accent))
+            });
         let checkbox = a11y::focusable(
             a11y::node(
                 "finish-always",
@@ -997,7 +1004,13 @@ impl Render for DetailPane {
                         a11y::node("detail-error", Role::Status, error.clone())
                             .text_size(theme.text(14.))
                             .text_color(theme.attention)
-                            .child(format!("⚠︎ {error}"))
+                            .child(icons::beside(
+                                Icon::TriangleAlert,
+                                14.,
+                                theme.attention,
+                                theme.text(14.) * 1.4,
+                                error,
+                            ))
                     })),
             )
             .children(card_slot)

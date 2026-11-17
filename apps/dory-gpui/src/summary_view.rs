@@ -16,6 +16,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::Detail;
+use crate::icons::{self, Icon};
 use crate::processing::{Fix, Phase};
 use crate::theme::Theme;
 
@@ -107,7 +108,13 @@ pub fn summary(
                         .text_size(theme.text(13.))
                         .text_color(theme.text_secondary)
                         .font_weight(FontWeight::MEDIUM)
-                        .child(format!("⚠︎ {STALE}")),
+                        .child(icons::beside(
+                            Icon::TriangleAlert,
+                            12.,
+                            theme.text_secondary,
+                            theme.text(13.) * 1.4,
+                            STALE,
+                        )),
                 )
             } else {
                 body

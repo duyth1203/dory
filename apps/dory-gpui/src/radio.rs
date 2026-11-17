@@ -15,6 +15,7 @@ use gpui_kit::{
 };
 
 use crate::a11y;
+use crate::icons::{self, Icon};
 use crate::theme::Theme;
 
 /// The control's size and its distance from the row's left edge.
@@ -251,11 +252,15 @@ fn layout(
                         .child(text)
                 }))
                 .children(warning.map(|text| {
-                    div()
-                        .text_size(theme.text(12.))
-                        .line_height(relative(1.4))
-                        .text_color(theme.attention)
-                        .child(format!("⚠︎ {text}"))
+                    icons::beside(
+                        Icon::TriangleAlert,
+                        12.,
+                        theme.attention,
+                        theme.text(12.) * 1.4,
+                        text,
+                    )
+                    .text_size(theme.text(12.))
+                    .text_color(theme.attention)
                 })),
         )
         .children(trailing.map(|trailing| {
@@ -348,10 +353,7 @@ pub fn checkbox(
         .when(on, |b| {
             b.bg(theme.accent)
                 .border_color(theme.accent)
-                .text_size(px(12.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(theme.on_accent)
-                .child("✓")
+                .child(Icon::Check.view(12., theme.on_accent))
         })
         .when(!on, |b| {
             b.bg(theme.control_bg).border_color(theme.radio_border)

@@ -16,6 +16,7 @@ use dory_gpui::onboarding::{
     system_language,
 };
 use dory_gpui::prefs::Prefs;
+use dory_gpui::processing::StepGlyph;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
 };
@@ -150,11 +151,18 @@ fn the_permission_state_table() {
     let mic = Source::Microphone;
     let tap = Source::SystemAudio;
     let cases = [
-        (mic, Permission::Checking, "…", "Checking", false, None),
+        (
+            mic,
+            Permission::Checking,
+            StepGlyph::Dots,
+            "Checking",
+            false,
+            None,
+        ),
         (
             mic,
             Permission::Asking,
-            "…",
+            StepGlyph::Dots,
             "Waiting for your answer",
             false,
             None,
@@ -162,7 +170,7 @@ fn the_permission_state_table() {
         (
             mic,
             Permission::Known(Access::Granted),
-            "✓",
+            StepGlyph::Check,
             "Allowed",
             false,
             None,
@@ -170,7 +178,7 @@ fn the_permission_state_table() {
         (
             mic,
             Permission::Known(Access::Undetermined),
-            "○",
+            StepGlyph::Pending,
             "Not asked yet",
             false,
             Some(Grant),
@@ -178,7 +186,7 @@ fn the_permission_state_table() {
         (
             mic,
             Permission::Known(Access::Denied),
-            "▲",
+            StepGlyph::Warning,
             "Not allowed",
             true,
             Some(OpenSystemSettings),
@@ -186,16 +194,23 @@ fn the_permission_state_table() {
         (
             mic,
             Permission::Known(Access::Unsupported),
-            "▲",
+            StepGlyph::Warning,
             "Not available on this Mac",
             true,
             None,
         ),
-        (tap, Permission::Checking, "…", "Checking", false, None),
+        (
+            tap,
+            Permission::Checking,
+            StepGlyph::Dots,
+            "Checking",
+            false,
+            None,
+        ),
         (
             tap,
             Permission::Known(Access::Granted),
-            "✓",
+            StepGlyph::Check,
             "Allowed",
             false,
             None,
@@ -203,7 +218,7 @@ fn the_permission_state_table() {
         (
             tap,
             Permission::Known(Access::Undetermined),
-            "○",
+            StepGlyph::Pending,
             "Asked the first time you record",
             false,
             Some(Grant),
@@ -211,7 +226,7 @@ fn the_permission_state_table() {
         (
             tap,
             Permission::Known(Access::Denied),
-            "▲",
+            StepGlyph::Warning,
             "Not allowed",
             true,
             Some(OpenSystemSettings),
@@ -219,7 +234,7 @@ fn the_permission_state_table() {
         (
             tap,
             Permission::Known(Access::Unsupported),
-            "▲",
+            StepGlyph::Warning,
             "Not available on this Mac",
             true,
             None,

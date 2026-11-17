@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use dory_gpui::{glass, menus, notify, prefs, status_item, system_prefs};
+use dory_gpui::{glass, icons, menus, notify, prefs, status_item, system_prefs};
 use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 fn main() -> ExitCode {
@@ -24,48 +24,50 @@ fn main() -> ExitCode {
     dory::cleanup_legacy_audio(&config);
     let prefs = prefs::load(&config);
     let dory = Rc::new(RefCell::new(Some(dory)));
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        menus::install(cx);
-        system_prefs::install(cx);
-        let (width, height) = prefs.window_size;
-        let options = WindowOptions {
-            titlebar: Some(TitlebarOptions {
-                title: Some("Dory".into()),
-                appears_transparent: true,
-                traffic_light_position: Some(point(px(18.), px(18.))),
-            }),
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(width), px(height)),
-                cx,
-            ))),
-            window_background: glass::window_background(cx),
-            window_min_size: Some(size(
-                px(dory_gpui::prefs::MIN_WINDOW_SIZE.0),
-                px(dory_gpui::prefs::MIN_WINDOW_SIZE.1),
-            )),
-            ..Default::default()
-        };
-        let core = dory.borrow_mut().take().expect("the app opens one window");
-        let prefs = prefs.clone();
-        let config = config.clone();
-        let opened = gpui_kit::open_window(options, cx, move |window, cx| {
-            let (state, shell) = dory_gpui::build(core, prefs, window, cx);
-            glass::follow(window, cx);
-            prefs::watch(&state, &config, window, cx);
-            menus::watch(&state, cx);
-            status_item::install(&state, cx);
-            notify::install(&state, cx);
-            shell
+    gpui_kit::application()
+        .with_assets(icons::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            menus::install(cx);
+            system_prefs::install(cx);
+            let (width, height) = prefs.window_size;
+            let options = WindowOptions {
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Dory".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(18.), px(18.))),
+                }),
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(width), px(height)),
+                    cx,
+                ))),
+                window_background: glass::window_background(cx),
+                window_min_size: Some(size(
+                    px(dory_gpui::prefs::MIN_WINDOW_SIZE.0),
+                    px(dory_gpui::prefs::MIN_WINDOW_SIZE.1),
+                )),
+                ..Default::default()
+            };
+            let core = dory.borrow_mut().take().expect("the app opens one window");
+            let prefs = prefs.clone();
+            let config = config.clone();
+            let opened = gpui_kit::open_window(options, cx, move |window, cx| {
+                let (state, shell) = dory_gpui::build(core, prefs, window, cx);
+                glass::follow(window, cx);
+                prefs::watch(&state, &config, window, cx);
+                menus::watch(&state, cx);
+                status_item::install(&state, cx);
+                notify::install(&state, cx);
+                shell
+            });
+            if let Err(error) = opened {
+                eprintln!("dory: could not open the window: {error}");
+                cx.quit();
+                return;
+            }
+            cx.activate(true);
+            eprintln!("first-frame: window opened, pid {}", std::process::id());
         });
-        if let Err(error) = opened {
-            eprintln!("dory: could not open the window: {error}");
-            cx.quit();
-            return;
-        }
-        cx.activate(true);
-        eprintln!("first-frame: window opened, pid {}", std::process::id());
-    });
     ExitCode::SUCCESS
 }

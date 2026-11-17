@@ -37,6 +37,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::{Detail, PlayerHandle, Session, Turn};
+use crate::icons::Icon;
 use crate::theme::Theme;
 
 /// Past this many turns the transcript virtualizes. A column this short renders in well under a
@@ -390,9 +391,13 @@ impl TranscriptView {
                             .when(playing, |row| {
                                 row.child(
                                     div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.))
                                         .text_size(theme.text(12.))
                                         .text_color(theme.accent_text)
-                                        .child("▶ Playing"),
+                                        .child(Icon::Play.view(12., theme.accent_text))
+                                        .child("Playing"),
                                 )
                             }),
                     )

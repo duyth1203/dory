@@ -176,6 +176,7 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
                 format!("Doesn't support {}", missing.join(" or "))
             }
         }
+        Mismatch::LanguagesUnknown => "Needs your meeting languages set in Settings".into(),
         Mismatch::AutoLanguageUnsupported => "Needs a language chosen, can't detect one".into(),
         Mismatch::NoDiarization => "Can't tell speakers apart".into(),
         Mismatch::InputTooLong => "Long recordings get cut short".into(),

@@ -75,6 +75,10 @@ pub enum Mismatch {
     AutoLanguageUnsupported,
     #[error("does not support this language")]
     LanguageUnsupported,
+    /// A model that reads only some languages cannot be trusted with a meeting whose languages
+    /// are unknown, because it may drop the parts it cannot read.
+    #[error("needs your meeting languages set in Settings")]
+    LanguagesUnknown,
     #[error("cannot tell speakers apart")]
     NoDiarization,
     #[error("input is longer than the model accepts")]
@@ -196,7 +200,7 @@ pub struct LlmNeeds {
     /// The meeting's main language, when known. The prompt asks for the summary in it.
     pub main: Option<LangTag>,
     /// Every language the meeting may use, each once. A model must read all of them. Empty means
-    /// nothing is known, and every model fits.
+    /// nothing is known, and only a model for any language fits.
     pub all: Vec<LangTag>,
 }
 
@@ -230,14 +234,17 @@ impl ModelKind for Llm {
     type Caps = LlmCaps;
     type Needs = LlmNeeds;
 
-    /// Unknown languages fit on purpose: with no meeting languages set and nothing detected,
-    /// every model may try, and a model that refuses the meeting at run time is fallen back from
-    /// on `Auto`.
+    /// A model for any language fits every meeting. A model that reads only some languages needs
+    /// the meeting's languages known, because with none set it may summarize the half it reads
+    /// and drop the rest without refusing.
     fn fit(caps: &LlmCaps, needs: &LlmNeeds) -> Fit {
-        if needs.all.iter().all(|lang| caps.languages.supports(lang)) {
-            Fit::Yes
-        } else {
-            Fit::No(Mismatch::LanguageUnsupported)
+        match &caps.languages {
+            LangSet::Any => Fit::Yes,
+            LangSet::Only(_) if needs.all.is_empty() => Fit::No(Mismatch::LanguagesUnknown),
+            LangSet::Only(_) if needs.all.iter().all(|lang| caps.languages.supports(lang)) => {
+                Fit::Yes
+            }
+            LangSet::Only(_) => Fit::No(Mismatch::LanguageUnsupported),
         }
     }
 }
@@ -485,10 +492,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_languages_fit() {
+    fn a_limited_llm_needs_known_languages() {
         assert_eq!(
             Llm::fit(&llm_caps(only(&["en"])), &llm_needs(&[])),
-            Fit::Yes
+            Fit::No(Mismatch::LanguagesUnknown)
+        );
+        assert_eq!(
+            Llm::fit(&llm_caps(LangSet::Any), &llm_needs(&[])),
+            Fit::Yes,
+            "a model for any language fits when nothing is known"
         );
     }
 

@@ -108,7 +108,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 **Build.**
 
 - [ ] Replace `LlmNeeds::language` with `LlmNeeds { main: Option<LangTag>, all: Vec<LangTag> }`. `all` is the union of the recording's pinned language, `Settings::meeting_languages`, and `transcript.detected_languages`. Today the sherpa engines report no language (`crates/dory-engines/src/sherpa/engine.rs` returns `language: None` and a default outcome), so `detected_languages` is empty and the settings carry the signal. `listing_needs` fills `all` the same way from settings, so Settings shows the fit the job will get.
-- [ ] `Llm::fit` returns `No(LanguageUnsupported)` when any tag in `all` is outside `LlmCaps::languages`, and `Yes` when `all` is empty. Unknown languages fit on purpose, because `meeting_languages` is empty by default and Apple refuses Tagalog and Taglish at once (Appendix A, finding 7), which the fallback below turns into Gemma or a clear block. Gemma's `LangSet::Any` keeps it fitting every meeting.
+- [ ] `Llm::fit` returns `Yes` for a model whose `LlmCaps::languages` is `LangSet::Any`. A model with a limited language set fits only when `all` is not empty and every tag in it is supported. It returns `No(LanguageUnsupported)` for a tag outside the set, and `No(LanguagesUnknown)` when `all` is empty, with the text "needs your meeting languages set in Settings". This holds for `Auto` and `Pinned` alike. Apple accepts a Taglish transcript with no meeting languages set and summarizes only the English half (P2 live lane 4), and the sherpa engines detect no language, so Settings is the only guard. Gemma's `LangSet::Any` keeps it fitting every meeting.
 - [ ] Let a `FixedLocale` speech model fit `Auto` when `SttNeeds::expected` is not empty and every tag in it shares one primary language that the row covers. Add `pub fn run_language(caps: &SttCaps, needs: &SttNeeds) -> LanguagePref` in `fit.rs`, which returns `Pinned(<that language>)` for such a row and `needs.language` otherwise. The transcribe stage uses it for `TranscribeRequest::language` and `CheckpointKey::language`. An empty expected list keeps today's `No(AutoLanguageUnsupported)`.
 - [ ] Add `EngineError::Busy(String)`, classed `Transient`, for an engine that asks the caller to come back later. It is retried up to `MAX_ATTEMPTS` (3), and each retry reruns the whole summary, because the summary stage keeps no checkpoints.
 - [ ] Add `UnavailableReason::Preparing { detail: String }` for a model the OS is still downloading. A job blocked on it is rechecked by the triggers that free a job blocked on a stopped Ollama today, which are launch, a finished download, and Check again (`pipeline::unblock_all`). Add the variant to the store's JSON codec, the CLI view, and the GPUI processing and model views.
@@ -123,7 +123,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-core/src/models/fit.rs` tests gain `an_llm_must_read_every_known_language`, `unknown_languages_fit`, `a_fixed_locale_row_fits_auto_for_one_language`, `a_fixed_locale_row_never_fits_two_languages`, and `run_language_pins_the_one_language`. Run `cargo test -p dory-core models::fit`.
+- [ ] `crates/dory-core/src/models/fit.rs` tests gain `an_llm_must_read_every_known_language`, `a_limited_llm_needs_known_languages`, `a_fixed_locale_row_fits_auto_for_one_language`, `a_fixed_locale_row_never_fits_two_languages`, and `run_language_pins_the_one_language`. Run `cargo test -p dory-core models::fit`.
 - [ ] `crates/dory-core/src/models/resolve.rs` tests gain `auto_prefers_a_ready_fallback_over_an_unreachable_server`. Run `cargo test -p dory-core models::resolve`.
 - [ ] `crates/dory-core/tests/pipeline.rs` gains `auto_summary_falls_back_when_the_engine_rejects_the_language`, `the_draft_resets_on_fallback`, `a_pinned_summary_does_not_fall_back`, `busy_is_retried_then_fails_after_max_attempts`, and `preparing_unblocks_on_check_again`. Run `cargo test -p dory-core --test pipeline`.
 - [ ] `crates/dory-store` codec tests gain `preparing_round_trips`. Run `cargo test -p dory-store`.
@@ -138,7 +138,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 - [ ] Lane 5. Run `dory-cli languages en`, then `dory-cli process <weekly id> --fake-engines` with Auto speech and `DORY_FAKE_ROWS=limited`. Save `fixed-locale-auto.txt`. Pass when `fake/en-locale-stt` is chosen and its checkpoint key names `en`.
 - [ ] Lane 6. Run `dory-cli languages en tl` and the same command. Save `fixed-locale-two.txt`. Pass when `fake/en-locale-stt` is not chosen and the step is blocked with a language sentence.
 - [ ] Lane 7. Clear meeting languages with `dory-cli languages --clear` and run the same command. Save `fixed-locale-unknown.txt`. Pass when `fake/en-locale-stt` is not chosen.
-- [ ] Lane 8. Set `DORY_FAKE_LLM=reject-language` on Auto with `fake/en-only-llm` ranked first. Save `fallback.txt`. Pass when the summary's `produced_by` is `fake/llm`, the event log shows one `DraftReset`, and the stored summary holds no text from the first model.
+- [ ] Lane 8. Run `dory-cli languages en`, then set `DORY_FAKE_LLM=reject-language` on Auto with `fake/en-only-llm` ranked first. Save `fallback.txt`. Pass when the summary's `produced_by` is `fake/llm`, the event log shows one `DraftReset`, and the stored summary holds no text from the first model.
 - [ ] Lane 9. Set `DORY_FAKE_LLM=busy:2`, then `busy:5`. Save `busy.txt`. Pass when the first job finishes after two retries and the second fails after three attempts with a retryable message.
 - [ ] Lane 10. With real engines, build `taglish.flac`, add it with `dory-cli add`, run `dory-cli languages en tl`, and process it on Auto with Ollama running. Save `taglish-real.txt`. Pass when Whisper transcribes it and Gemma summarizes it, exactly as on trunk.
 
@@ -555,7 +555,7 @@ How Auto picks after P1, with Gemma `recommended` and the Apple rows ranked belo
 | English only, no Ollama | Parakeet | Apple Intelligence |
 | English only, meeting languages set to `en`, no sherpa model downloaded | Apple Speech (English) | Apple Intelligence |
 | Tagalog, or Tagalog and English | Whisper | Gemma, or skipped |
-| Languages not set | Parakeet or Whisper, as today | Gemma, else Apple, which refuses Tagalog at once and falls back to a block |
+| Languages not set | Parakeet or Whisper, as today | Gemma, else blocked or skipped, never Apple |
 
 `produced_by` stays an opaque `provider/name` string, so stored values such as `apple/foundation-model` and `apple/speech-en` need no schema change. A summary keeps its `produced_by` when Apple Intelligence is turned off later. The next job re-resolves.
 

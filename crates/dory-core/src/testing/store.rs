@@ -1954,6 +1954,10 @@ mod contract {
             },
             Blocker::Incompatible {
                 model: model(),
+                why: Mismatch::LanguagesUnknown,
+            },
+            Blocker::Incompatible {
+                model: model(),
                 why: Mismatch::NoDiarization,
             },
             Blocker::Incompatible {

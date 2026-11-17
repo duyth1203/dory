@@ -612,10 +612,12 @@ mod tests {
             Resolution::Use("apple/foundation-model".parse().unwrap()),
             "a ready model that reads the meeting beats a recommended one that cannot run"
         );
-        assert_eq!(
-            resolve(&Choice::Auto, &statuses, &needs(&[])),
-            Resolution::Use("apple/foundation-model".parse().unwrap()),
-            "unknown languages fit, so the ready model still runs"
+        assert!(
+            matches!(
+                resolve(&Choice::Auto, &statuses, &needs(&[])),
+                Resolution::Blocked(Blocker::Unavailable { model, .. }) if model == mref("ollama/gemma")
+            ),
+            "unknown languages never reach a model that reads only some, so Auto waits for Gemma"
         );
         assert!(
             matches!(

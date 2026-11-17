@@ -691,3 +691,19 @@ Recording control is decided. An assistant can never start a recording, and the 
 3. **Should re-summarize keep the previous summary so it can be restored?** Recommend yes. An assistant-requested summary that wipes a good one is a bad surprise, and one earlier copy per recording is small. M9 builds it unless you say no.
 4. **Should `dory-cli assistants add` require `--exposure`?** Recommend yes, with no default. The user picks Titles, Summaries, or Full transcripts each time, because the right level differs by assistant and the choice is the consent.
 5. **How long should the activity log keep entries, and should it keep search text?** Recommend 30 days, with search text cut to 200 characters. Search text can itself be sensitive, but without it the log cannot answer "what was it looking for".
+
+## Appendix I. Build status
+
+Built on 2026-11-17 as one linear stack of local branches, each commit signed, none pushed. Gates at every head were `cargo fmt --check`, `cargo clippy --workspace --all-features --all-targets -- -D warnings`, the same for `dory` without default features from M4 on, and `cargo test --workspace --all-features`. All passed. Live evidence for each PR is in `/tmp/swarm-<pr>/RESULT.md` on the build machine, and the consent screenshots are in the session notes folder under `mcp-review/`.
+
+| PR | Branch | Commit | What is verified | What is not |
+| --- | --- | --- | --- | --- |
+| M1 | `fix/strict-library-reader` | `24bb6c3` | The reader never migrates, creates, or writes `dory.sqlite`, at trunk parity for list and show. | Lane 6 (app on screen) and `fs_usage`, which needs sudo. |
+| M2 | `feat/assistant-access` | `a0804d6` | Keys stored as digests, levels, hidden recordings, field-scoped search on SQLite, the reader, and the fake. | App lanes 6 and 9. |
+| M3 | `feat/assistant-audit` | `95ccbaf` | Per-process logs, 8 concurrent writers, torn lines, modes, pruning. Appends take 10 µs without fsync. | None. |
+| M4 | `feat/mcp-read-tools` | `9ed1133` | Five tools in both protocol eras, fencing, refusals, paging, schema-change exit, bundle signing, Claude Code connected. Cold start 2.7 ms. | A model-driven call (headless sign-in fails), Claude Desktop, and multi-page paging on real data. |
+| M5 | `feat/mcp-resources-prompts` | `2c7397b` | Templates, listing, reads, and prompts that carry links only. | Claude Desktop and Claude Code UI lanes. |
+| M8 | `feat/assistant-edits` | `03e03da` | Socket, consent alert on the real app with Don't Allow as default, the timeout and app-not-running paths, and every refusal in tests. | Clicking Allow live, a second macOS user, and the closed-window notification, which is not built. |
+| M9 | `feat/resummarize` | `5827723` | Instruction in the final pass only, previous summary kept and restorable, consent alert shows the instruction. | A run with real Gemma, and the in-app Restore button, which is not built. |
+
+Each branch's base is the branch above it, from `docs/mcp-integration-plan` down to `feat/resummarize`. This appendix is committed on `feat/resummarize`.

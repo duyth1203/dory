@@ -5,8 +5,9 @@ use dory_core::domain::{
     Transcript,
 };
 use dory_core::ports::StoreError;
-use dory_core::search::{self, Query};
-use gpui_kit::{AppContext as _, Context, Entity, SharedString, Task};
+use dory_core::search::Query;
+use gpui_kit::component::text::{RenderedText, TextViewState};
+use gpui_kit::{AppContext as _, Context, Entity, SharedString, Subscription, Task};
 
 use super::core::Core;
 use super::player::PlayerHandle;
@@ -90,6 +91,10 @@ pub fn speaker_label(
 /// While a search is active the session also holds the [`Matches`] of its query in this
 /// recording (UX-32). `reveal` counts the times the views should bring the current match into
 /// view: a hit opening, and each step. A view remembers the count it last acted on.
+///
+/// The session owns the summary's text view state, and the Summary tab draws that same state. A
+/// match in the summary is counted over the text the state renders, so what is counted is what
+/// is marked, and a link's address is neither.
 pub struct Session {
     core: Core,
     id: RecordingId,
@@ -100,7 +105,13 @@ pub struct Session {
     query: Option<Query>,
     found: Option<Matches>,
     reveal: u64,
+    summary: Entity<TextViewState>,
+    /// The rendered summary the matches were counted over.
+    counted: Option<RenderedText>,
+    /// A jump that waited for the summary to be rendered.
+    jump_pending: bool,
     _load: Option<Task<()>>,
+    _summary_watch: Subscription,
 }
 
 /// The current match after a step, and what VoiceOver says about it.
@@ -120,6 +131,8 @@ impl Session {
         let id = row.recording.id.clone();
         let duration = row.recording.take.map(|t| t.duration).unwrap_or_default();
         let player = cx.new(|_| PlayerHandle::new(core.clone(), id.clone(), duration));
+        let summary = cx.new(|cx| TextViewState::markdown("", cx));
+        let watch = cx.observe(&summary, |this, _, cx| this.on_summary_rendered(cx));
         let mut session = Self {
             core,
             id,
@@ -130,7 +143,11 @@ impl Session {
             query,
             found: None,
             reveal: 0,
+            summary,
+            counted: None,
+            jump_pending: false,
             _load: None,
+            _summary_watch: watch,
         };
         session.reload(cx);
         session
@@ -165,6 +182,16 @@ impl Session {
         self.found.as_ref()
     }
 
+    /// The state the Summary tab draws. Only the session sets its text.
+    pub fn summary_state(&self) -> &Entity<TextViewState> {
+        &self.summary
+    }
+
+    /// The rendered summary the matches were counted over, `None` until it is rendered.
+    pub fn counted_summary(&self) -> Option<&RenderedText> {
+        self.counted.as_ref()
+    }
+
     /// How many times the views have been asked to bring the current match into view.
     pub fn reveal(&self) -> u64 {
         self.reveal
@@ -193,27 +220,43 @@ impl Session {
     }
 
     /// Lists the query's matches in the loaded detail. A reload keeps the current match, and only
-    /// a new query or the first load asks the views to jump to it.
+    /// a new query or the first load asks the views to jump to it. The summary's matches wait for
+    /// its text to be rendered, and the jump with them.
     fn rematch(&mut self, jump: bool, cx: &mut Context<Self>) {
         let kept = self.found.take();
-        if let (Some(query), Some(detail)) = (&self.query, self.detail()) {
+        self.counted = None;
+        if let (Some(query), Some(detail)) = (self.query.clone(), self.detail()) {
+            let rendered = self.summary.read(cx).rendered_text();
+            let ready = rendered.source() == markdown_of(&detail);
+            let summary = if ready { rendered.as_str() } else { "" };
             let title = crate::library::given_title(&detail.recording).unwrap_or_default();
             let turns: Vec<&str> = detail.turns.iter().map(|t| t.text.as_str()).collect();
-            let blocks = detail
-                .summary
-                .as_ref()
-                .map(|s| search::summary_blocks(&s.markdown))
-                .unwrap_or_default();
-            let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-            self.found = Matches::open(query, title, &turns, &blocks).map(|opened| match kept {
-                Some(old) if !jump && old.query() == query => opened.on(old.current()),
+            self.found = Matches::open(&query, title, &turns, summary).map(|opened| match kept {
+                Some(old) if !jump && old.query() == &query => opened.on(old.current()),
                 _ => opened,
             });
+            if ready {
+                self.counted = Some(rendered);
+                self.jump_pending = false;
+            } else {
+                self.jump_pending |= jump;
+            }
             if jump && self.found.is_some() {
                 self.reveal += 1;
             }
         }
         cx.notify();
+    }
+
+    /// The summary's text view parsed new text, so its matches are counted again.
+    fn on_summary_rendered(&mut self, cx: &mut Context<Self>) {
+        if self.query.is_none()
+            || self.counted.as_ref() == Some(&self.summary.read(cx).rendered_text())
+        {
+            return;
+        }
+        let jump = std::mem::take(&mut self.jump_pending);
+        self.rematch(jump, cx);
     }
 
     /// Names a speaker for the whole recording. `None` or blank goes back to "Speaker N".
@@ -268,6 +311,12 @@ impl Session {
                     Ok(None) => Loadable::Failed("This recording was deleted.".into()),
                     Err(error) => Loadable::Failed(error.to_string().into()),
                 };
+                let markdown = this
+                    .detail()
+                    .map(|d| markdown_of(&d).to_owned())
+                    .unwrap_or_default();
+                this.summary
+                    .update(cx, |state, cx| state.set_text(&markdown, cx));
                 this.rematch(first, cx);
             });
         }));
@@ -290,6 +339,11 @@ impl Session {
         })
         .detach();
     }
+}
+
+/// The summary's Markdown, empty without a summary.
+fn markdown_of(detail: &Detail) -> &str {
+    detail.summary.as_ref().map_or("", |s| s.markdown.as_str())
 }
 
 fn read_detail(

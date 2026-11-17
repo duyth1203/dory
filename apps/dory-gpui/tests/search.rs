@@ -973,7 +973,7 @@ fn a_summary_only_match_opens_the_summary(cx: &mut TestAppContext) {
     let (window, app, _) = open_corpus(cx);
     open_hit(SUMMARY_ONLY, "kilimanjaro", &app, window, cx);
     assert_eq!(tab(&app, cx), DetailTab::Summary);
-    assert_eq!(current(&app, cx), Some((0, 1, Place::SummaryBlock(1))));
+    assert_eq!(current(&app, cx), Some((0, 1, Place::Summary)));
     assert_eq!(readout(window, cx).as_deref(), Some("1 of 1 match"));
     assert_eq!(
         summary_marks(window, cx),
@@ -1217,4 +1217,55 @@ fn punctuation_only_text_says_no_results_once_it_settles(cx: &mut TestAppContext
     assert_eq!(said(cx), None, "clearing the field says nothing");
     search(&app, "?", cx);
     assert_eq!(said(cx).as_deref(), Some("No results"));
+}
+
+#[gpui_kit::test]
+fn a_long_summary_is_counted_once_it_is_rendered_and_the_hit_still_opens_on_it(
+    cx: &mut TestAppContext,
+) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(MID, "zanzibar", &app, window, cx);
+    assert_eq!(tab(&app, cx), DetailTab::Summary);
+    assert_eq!(readout(window, cx).as_deref(), Some("1 of 2 matches"));
+    app.read_with(cx, |app, cx| {
+        let reveal = app.session().unwrap().read(cx).reveal();
+        assert_eq!(
+            reveal, 1,
+            "the views were asked to show the first match once"
+        );
+    });
+    assert_eq!(summary_marks(window, cx), ["Zanzibar", "Zanzibar"]);
+}
+
+#[gpui_kit::test]
+fn a_link_address_in_the_summary_is_not_a_match(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(LINKED, "roadmap", &app, window, cx);
+    assert_eq!(tab(&app, cx), DetailTab::Summary);
+    assert_eq!(readout(window, cx).as_deref(), Some("1 of 2 matches"));
+    let (rendered, ranges) = summary_ranges(window, cx);
+    assert_eq!(
+        ranges
+            .iter()
+            .map(|r| &rendered[r.clone()])
+            .collect::<Vec<_>>(),
+        ["roadmap", "roadmap"],
+        "the word in the sentence and the word in the next paragraph"
+    );
+    app.read_with(cx, |app, cx| {
+        let found = app.session().unwrap().read(cx).found().unwrap();
+        let counted: Vec<_> = found
+            .in_summary()
+            .0
+            .iter()
+            .map(|m| m.span.clone())
+            .collect();
+        assert_eq!(counted, ranges, "the count and the marks are over one text");
+    });
+    step(window, true, cx);
+    assert_eq!(readout(window, cx).as_deref(), Some("2 of 2 matches"));
+    app.read_with(cx, |app, cx| {
+        let found = app.session().unwrap().read(cx).found().unwrap();
+        assert_eq!(found.in_summary().1, Some(1), "the second mark");
+    });
 }

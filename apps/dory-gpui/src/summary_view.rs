@@ -7,19 +7,19 @@
 //! button that fixes it (UX-13), which `detail.rs` builds, while the transcript stays readable.
 //! Copy and Export sit in the tab row, which `detail.rs` draws.
 //!
-//! The Markdown is drawn by [`SummaryText`], one per detail pane, which keeps its text view's
-//! state across tab switches. While a search is active it marks every match in the rendered text
+//! The Markdown is drawn by [`SummaryText`], one per detail pane, from the text view state the
+//! session owns, which keeps its state across tab switches. The session counts the matches over
+//! the text that state renders, so while a search is active this view marks exactly those ranges
 //! with the `search_match` fill, and scrolls the page to the current one when the session asks.
 //! The text view takes a background per range and nothing else, so unlike the transcript's
 //! marks these are the fill alone.
 
 use dory_core::domain::Stage;
-use dory_core::search::{self, Query};
 use gpui_kit::component::text::{
     RangeHighlight, RenderedText, TextView, TextViewState, TextViewStyle,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, Hsla, IntoElement as _,
+    AnyElement, Context, Entity, EventEmitter, FontWeight, Hsla, IntoElement as _,
     ParentElement as _, Render, Role, ScrollHandle, Styled as _, Subscription, Window, div, point,
     px, relative, rems,
 };
@@ -85,7 +85,7 @@ impl<'a> SummaryState<'a> {
 #[derive(Clone, PartialEq)]
 struct Marked {
     text: RenderedText,
-    query: Option<Query>,
+    ranges: Vec<Range<usize>>,
     fill: Hsla,
 }
 
@@ -96,7 +96,6 @@ pub struct SummaryText {
     session: Entity<Session>,
     page: ScrollHandle,
     state: Entity<TextViewState>,
-    markdown: String,
     /// The session's `reveal` count this view last acted on.
     seen: u64,
     /// The current match's place among the summary's matches, until the view has scrolled to it.
@@ -108,31 +107,16 @@ pub struct SummaryText {
 
 impl EventEmitter<Revealed> for SummaryText {}
 
-fn markdown_of(session: &Session) -> String {
-    session
-        .detail()
-        .and_then(|d| d.summary.as_ref().map(|s| s.markdown.clone()))
-        .unwrap_or_default()
-}
-
-fn has_markdown(session: &Session, markdown: &str) -> bool {
-    session.detail().map_or(markdown.is_empty(), |d| {
-        d.summary.as_ref().map_or("", |s| s.markdown.as_str()) == markdown
-    })
-}
-
 impl SummaryText {
     /// `page` is the scroll area the detail pane sits in, which a match scrolls into view.
     pub fn new(session: Entity<Session>, page: ScrollHandle, cx: &mut Context<Self>) -> Self {
-        let markdown = markdown_of(session.read(cx));
-        let state = cx.new(|cx| TextViewState::markdown(&markdown, cx));
+        let state = session.read(cx).summary_state().clone();
         let on_session = cx.observe(&session, |this, _, cx| this.sync(cx));
         let on_state = cx.observe(&state, |this, _, cx| this.sync(cx));
         let mut view = Self {
             session,
             page,
             state,
-            markdown,
             seen: 0,
             wanted: None,
             marked: None,
@@ -153,44 +137,39 @@ impl SummaryText {
         self.state.read(cx).rendered_text().as_str().to_owned()
     }
 
-    /// Brings the text, its highlights, and the wish to scroll in line with the session.
+    /// Brings the highlights and the wish to scroll in line with the session.
     fn sync(&mut self, cx: &mut Context<Self>) {
         let session = self.session.read(cx);
-        let markdown = (!has_markdown(session, &self.markdown)).then(|| markdown_of(session));
         let reveal = session.reveal();
         let found = session.found();
-        let query = found
-            .filter(|found| !found.in_summary().0.is_empty())
-            .map(|found| found.query().clone());
         let wanted = found.and_then(|found| found.in_summary().1);
         if reveal != self.seen {
             self.seen = reveal;
             self.wanted = wanted;
         }
-        if let Some(markdown) = markdown {
-            self.markdown = markdown;
-            self.marked = None;
-            self.state
-                .update(cx, |state, cx| state.set_text(&self.markdown, cx));
-        }
         let rendered = self.state.read(cx).rendered_text();
-        if rendered.source() != self.markdown {
-            return;
-        }
+        let ranges: Vec<Range<usize>> = match (found, session.counted_summary()) {
+            (Some(found), Some(counted)) if *counted == rendered => found
+                .in_summary()
+                .0
+                .iter()
+                .map(|m| m.span.clone())
+                .collect(),
+            // The session counts the text this view draws, and has not counted this version of it.
+            (Some(_), _) => return,
+            (None, _) => Vec::new(),
+        };
         let key = Marked {
-            text: rendered.clone(),
-            query,
+            text: rendered,
+            ranges,
             fill: Theme::get(cx).search_match,
         };
         if self.marked.as_ref() == Some(&key) {
             return;
         }
-        self.ranges = match &key.query {
-            Some(query) => search::highlights(query, rendered.as_str()),
-            None => Vec::new(),
-        };
+        self.ranges = key.ranges.clone();
         let fill = key.fill;
-        let ranges = self.ranges.clone();
+        let ranges = key.ranges.clone();
         self.state.update(cx, |state, cx| {
             if ranges.is_empty() {
                 state.clear_range_highlights(cx);

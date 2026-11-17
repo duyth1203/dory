@@ -13,13 +13,14 @@ use dory_core::app::RecorderStatus;
 use dory_core::domain::Ms;
 use gpui_kit::{
     Context, Entity, FocusHandle, FontWeight, IntoElement, ParentElement as _, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
     prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
 use crate::app::AppState;
 use crate::icons::Icon;
+use crate::surface;
 use crate::theme::Theme;
 
 /// What the pill shows between recorder phase changes.
@@ -272,46 +273,55 @@ pub fn undo_toast(
     let seconds = app.read(cx).grace_left()?;
     let target = app.clone();
     let label = format!("Recording saved. Undo, {seconds} seconds left");
-    Some(
-        a11y::node("undo-stop-toast", Role::Status, label)
+    Some(toast(
+        "undo-stop-toast",
+        label,
+        "Recording saved".into(),
+        surface::button(
+            "undo-stop",
+            "Undo stop",
+            "Undo",
+            surface::Look::Secondary,
+            focus,
+            theme,
+            move |_, cx| target.update(cx, |app, cx| app.undo_stop(cx)),
+        ),
+        seconds,
+        theme,
+    ))
+}
+
+/// The family's toast (`docs/design/floating-surfaces.md` section 3): 40 pt tall, the words, one
+/// bordered Undo, and the seconds left in secondary text. It is a status, never focused, and
+/// ⌘Z also undoes.
+pub fn toast(
+    id: &'static str,
+    spoken: String,
+    text: SharedString,
+    undo: a11y::Node,
+    seconds: u8,
+    theme: &Theme,
+) -> a11y::Node {
+    surface::paint(
+        a11y::node(id, Role::Status, spoken)
             .flex()
             .items_center()
-            .gap(px(12.))
-            .min_h(px(36.))
-            .px(px(14.))
-            .py(px(4.))
-            .rounded(px(10.))
-            .bg(theme.toast_bg)
-            .text_color(theme.toast_text)
-            .text_size(theme.text(13.))
-            .when(theme.shadows, |toast| toast.shadow_lg())
-            .when(theme.high_contrast, |toast| {
-                toast.border_1().border_color(theme.toast_text)
-            })
-            .child("Recording saved")
-            .child(
-                a11y::focusable(
-                    a11y::node("undo-stop", Role::Button, "Undo stop"),
-                    focus,
-                    theme,
-                    false,
-                )
-                .on_click(move |_, _, cx| target.update(cx, |app, cx| app.undo_stop(cx)))
-                .min_h(px(28.))
-                .min_w(px(28.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .px(px(8.))
-                .rounded(px(6.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child("Undo"),
-            )
-            .child(
-                div()
-                    .text_color(theme.toast_text_secondary)
-                    .child(format!("{seconds} s")),
-            ),
+            .gap(px(10.))
+            .min_h(px(40.))
+            .pl(px(16.))
+            .pr(px(8.))
+            .text_size(theme.text(13.)),
+        surface::Kind::Toast,
+        theme,
+    )
+    .child(div().min_w_0().child(text))
+    .child(undo.font_weight(FontWeight::SEMIBOLD))
+    .child(
+        div()
+            .flex_none()
+            .text_color(theme.text_secondary)
+            .font_features(crate::theme::tabular())
+            .child(format!("{seconds} s")),
     )
 }
 

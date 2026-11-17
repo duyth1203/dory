@@ -63,6 +63,7 @@ pub mod show;
 pub mod sidebar;
 pub mod status_item;
 pub mod summary_view;
+pub mod surface;
 pub mod system_prefs;
 pub mod theme;
 pub mod transcript_view;

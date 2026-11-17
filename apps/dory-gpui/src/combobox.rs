@@ -386,12 +386,7 @@ impl LanguageCombobox {
         .flex()
         .flex_col()
         .gap(px(6.))
-        .rounded(px(10.))
-        .bg(theme.menu_bg)
-        .border_1()
-        .border_color(theme.menu_border)
-        .when(theme.shadows, |p| p.shadow_lg())
-        .text_color(theme.text)
+        .map(|p| crate::surface::paint(p, crate::surface::Kind::Popover, &theme))
         .child(
             div()
                 .flex()

@@ -612,7 +612,7 @@ pub(crate) fn progress_bar(
 }
 
 /// The popover's distance below its button, and its clearance from the window's edges.
-const POPOVER_GAP: f32 = 28.;
+const POPOVER_GAP: f32 = 30.;
 const POPOVER_MARGIN: f32 = 8.;
 
 /// The info button and, while open, its popover (UX-28). Click, Return, or Space toggles it
@@ -711,19 +711,15 @@ fn explainer(
                     )
                     .occlude()
                     .on_mouse_down_out(move |_, window, cx| on_out(Some(false), window, cx))
-                    .w(px(340.))
+                    .w(px(300.))
                     .max_h((room - px(2. * POPOVER_MARGIN)).max(px(120.)))
                     .overflow_y_scroll()
-                    .p(px(12.))
+                    .px(px(16.))
+                    .py(px(14.))
                     .flex()
                     .flex_col()
                     .gap(px(8.))
-                    .rounded(px(10.))
-                    .bg(theme.menu_bg)
-                    .border_1()
-                    .border_color(theme.menu_border)
-                    .when(theme.shadows, |pop| pop.shadow_lg())
-                    .text_color(theme.text)
+                    .map(|pop| crate::surface::paint(pop, crate::surface::Kind::Popover, theme))
                     .child(
                         div()
                             .text_size(theme.text(13.))

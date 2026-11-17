@@ -63,11 +63,25 @@ pub struct Theme {
     /// Opaque, so its contrast can be measured.
     pub playing_bg: Hsla,
     pub avatar_bg: Hsla,
-    pub toast_bg: Hsla,
-    pub toast_text: Hsla,
-    pub toast_text_secondary: Hsla,
-    pub menu_bg: Hsla,
-    pub menu_border: Hsla,
+    /// The fill of everything that floats over the app: dialogs, popovers, menus, toasts, and
+    /// the Processing window (`docs/design/floating-surfaces.md` section 2). Opaque, and lighter
+    /// than the window in dark mode.
+    pub surface_raised: Hsla,
+    /// The 1 pt edge of a floating surface. Light is the operator's `#C3C7CF`, which reads
+    /// against white with the shadow; Increase Contrast takes `text_secondary`, which reaches
+    /// 3 to 1 against the surface and the dimmed window.
+    pub surface_border: Hsla,
+    /// Cards inside a surface: the running job and the setup steps.
+    pub surface_inset: Hsla,
+    pub inset_border: Hsla,
+    /// Behind modal dialogs only, over the whole window, glass included.
+    pub scrim: Hsla,
+    /// The scrim under Reduce Transparency.
+    pub scrim_opaque: Hsla,
+    /// A dialog's close button at rest. Transparent under Increase Contrast, which rings it.
+    pub close_bg: Hsla,
+    /// The empty part of a progress bar, and the disabled primary button.
+    pub track: Hsla,
     /// A Settings group's fill (settings brief section 1).
     pub group_bg: Hsla,
     pub group_border: Hsla,
@@ -82,6 +96,15 @@ pub struct Theme {
 }
 
 impl Global for Theme {}
+
+/// Which shadow a floating surface casts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elevation {
+    /// Dialogs and the Processing window.
+    Float,
+    /// Popovers, menus, and toasts.
+    Pop,
+}
 
 /// What the theme is built from besides the appearance and accent: the macOS display settings
 /// and the text scale. `system_prefs` and the View menu change it, then call [`sync`].
@@ -178,9 +201,14 @@ struct Base {
     attention: u32,
     attention_border: u32,
     avatar_bg: u32,
-    toast_bg: u32,
-    menu_bg: u32,
-    menu_border: u32,
+    surface_raised: u32,
+    surface_border: u32,
+    surface_inset: u32,
+    inset_border: u32,
+    scrim: (u32, f32),
+    scrim_opaque: u32,
+    close_bg: (u32, f32),
+    track: u32,
     group_bg: u32,
     group_border: u32,
     radio_border: u32,
@@ -206,9 +234,14 @@ const LIGHT: Base = Base {
     attention: 0xA35400,
     attention_border: 0xE2B98A,
     avatar_bg: 0xE3E7F0,
-    toast_bg: 0x2C2D31,
-    menu_bg: 0xFFFFFF,
-    menu_border: 0xD5D8DE,
+    surface_raised: 0xFFFFFF,
+    surface_border: 0xC3C7CF,
+    surface_inset: 0xF3F5FA,
+    inset_border: 0xE0E4EE,
+    scrim: (0x0F1117, 0.16),
+    scrim_opaque: 0xC4C7CE,
+    close_bg: (0x000000, 0.05),
+    track: 0xE1E4EA,
     group_bg: 0xF7F8FA,
     group_border: 0xE3E6EB,
     radio_border: 0xA9ADB6,
@@ -228,15 +261,20 @@ const DARK: Base = Base {
     card_bg: 0x212637,
     card_border: 0x323A52,
     selection_inactive: 0x393A41,
-    wave_rest: 0x6E7385,
+    wave_rest: 0x7C8193,
     record_red: 0xE0303A,
     record_glyph: 0xFF6961,
     attention: 0xFFB340,
     attention_border: 0x8A6220,
     avatar_bg: 0x323A52,
-    toast_bg: 0x3A3B41,
-    menu_bg: 0x2C2D33,
-    menu_border: 0x45464D,
+    surface_raised: 0x2B2C32,
+    surface_border: 0x777A84,
+    surface_inset: 0x33343B,
+    inset_border: 0x45464E,
+    scrim: (0x000000, 0.48),
+    scrim_opaque: 0x0B0B0D,
+    close_bg: (0xFFFFFF, 0.08),
+    track: 0x45464E,
     group_bg: 0x212226,
     group_border: 0x34353B,
     radio_border: 0x5A5B63,
@@ -271,6 +309,8 @@ impl Theme {
         let field_bg = c(base.field_bg);
         let selection_inactive = c(base.selection_inactive);
         let group_bg = c(base.group_bg);
+        let surface_raised = c(base.surface_raised);
+        let surface_inset = c(base.surface_inset);
         let on_accent = c(0xFFFFFF);
         let text_secondary = if high {
             c(if dark {
@@ -292,6 +332,8 @@ impl Theme {
             selection_inactive,
             playing_bg,
             group_bg,
+            surface_raised,
+            surface_inset,
         ];
         let accent = with_contrast(system_accent, on_accent);
         let record_red = c(base.record_red);
@@ -301,14 +343,13 @@ impl Theme {
         } else {
             MIN_NON_TEXT_CONTRAST
         };
-        let wave_rest = with_contrast_all(c(base.wave_rest), &[card_bg], wave_floor);
+        let waves = [card_bg, surface_inset];
+        let wave_rest = with_contrast_all(c(base.wave_rest), &waves, wave_floor);
         let wave_done = with_contrast_all(
             if dark { system_accent } else { accent },
-            &[card_bg],
+            &waves,
             wave_floor,
         );
-        let toast_bg = c(base.toast_bg);
-        let toast_text = c(0xFFFFFF);
         Theme {
             dark,
             high_contrast: high,
@@ -356,11 +397,18 @@ impl Theme {
             meter_off: blend(readable_on(record_red), record_red, 0.4),
             playing_bg,
             avatar_bg: c(base.avatar_bg),
-            toast_bg,
-            toast_text,
-            toast_text_secondary: blend(toast_text, toast_bg, 0.7),
-            menu_bg: c(base.menu_bg),
-            menu_border: border(base.menu_border),
+            surface_raised,
+            surface_border: border(base.surface_border),
+            surface_inset,
+            inset_border: border(base.inset_border),
+            scrim: tint(base.scrim),
+            scrim_opaque: c(base.scrim_opaque),
+            close_bg: if high {
+                gpui_kit::transparent_black()
+            } else {
+                tint(base.close_bg)
+            },
+            track: c(base.track),
             group_bg,
             group_border: border(base.group_border),
             radio_border: with_contrast_all(
@@ -410,6 +458,65 @@ impl Theme {
         blend(gpui_kit::white(), self.accent, 0.22)
     }
 
+    /// The window under a modal dialog's scrim, as one opaque color.
+    pub fn dimmed_window(&self) -> Hsla {
+        blend(
+            Hsla {
+                a: 1.0,
+                ..self.scrim
+            },
+            self.window_bg,
+            self.scrim.a,
+        )
+    }
+
+    /// The close button's resting fill over the surface, as one opaque color.
+    pub fn close_fill(&self) -> Hsla {
+        blend(
+            Hsla {
+                a: 1.0,
+                ..self.close_bg
+            },
+            self.surface_raised,
+            self.close_bg.a,
+        )
+    }
+
+    /// The filled part of a progress bar: the accent where it reaches 3 to 1 on the track, else
+    /// the accent text color, which is lightened (dark) or darkened (light) until it does.
+    pub fn progress_fill(&self) -> Hsla {
+        if contrast(self.accent, self.track) >= MIN_NON_TEXT_CONTRAST {
+            self.accent
+        } else {
+            with_contrast_all(self.accent_text, &[self.track], MIN_NON_TEXT_CONTRAST)
+        }
+    }
+
+    /// `shadow_float` for dialogs and `shadow_pop` for popovers, menus, and toasts, as the
+    /// spec's CSS layers. GPUI takes a blur radius as the gaussian's deviation, half of CSS's
+    /// blur, so each blur is halved. None under Increase Contrast.
+    pub fn shadow(&self, elevation: Elevation) -> Vec<gpui_kit::BoxShadow> {
+        if !self.shadows {
+            return Vec::new();
+        }
+        let layers: [(f32, f32, f32); 2] = match (elevation, self.dark) {
+            (Elevation::Float, false) => [(1., 2., 0.08), (12., 32., 0.18)],
+            (Elevation::Float, true) => [(1., 2., 0.5), (16., 40., 0.55)],
+            (Elevation::Pop, false) => [(1., 2., 0.08), (8., 24., 0.16)],
+            (Elevation::Pop, true) => [(1., 2., 0.5), (10., 28., 0.5)],
+        };
+        layers
+            .into_iter()
+            .map(|(y, blur, alpha)| gpui_kit::BoxShadow {
+                color: gpui_kit::hsla(0., 0., 0., alpha),
+                offset: gpui_kit::point(px(0.), px(y)),
+                blur_radius: px(blur / 2.),
+                spread_radius: px(0.),
+                inset: false,
+            })
+            .collect()
+    }
+
     pub fn text(&self, points: f32) -> Pixels {
         px(points * self.text_scale)
     }
@@ -456,8 +563,9 @@ impl Theme {
             ("field_bg", self.field_bg),
             ("selection_inactive", self.selection_inactive),
             ("playing_bg", self.playing_bg),
-            ("menu_bg", self.menu_bg),
             ("group_bg", self.group_bg),
+            ("surface_raised", self.surface_raised),
+            ("surface_inset", self.surface_inset),
         ];
         let mut pairs = Vec::new();
         for (fg_name, fg) in [
@@ -477,8 +585,34 @@ impl Theme {
             ("card_bg", self.card_bg),
             ("control_bg", self.control_bg),
             ("group_bg", self.group_bg),
+            ("surface_raised", self.surface_raised),
+            ("surface_inset", self.surface_inset),
         ] {
             pairs.push(graphic(&format!("focus ring on {bg_name}"), self.ring, bg));
+        }
+        // The operator chose a light border that reads with the white fill and the shadow rather
+        // than alone (floating-surfaces.md, the operator's decisions), so standard light only
+        // has to show it on the surface. Dark and Increase Contrast hold it to 3 to 1 on the
+        // surface and on the window the scrim dims, translucent and opaque.
+        let edge_floor = if self.dark || self.high_contrast {
+            MIN_NON_TEXT_CONTRAST
+        } else {
+            ATTENTION_BORDER_MIN
+        };
+        let mut edges = vec![("surface_raised", self.surface_raised)];
+        if self.dark || self.high_contrast {
+            edges.extend([
+                ("the dimmed window", self.dimmed_window()),
+                ("scrim_opaque", self.scrim_opaque),
+            ]);
+        }
+        for (bg_name, bg) in edges {
+            pairs.push(Pair {
+                name: format!("surface_border on {bg_name}"),
+                fg: self.surface_border,
+                bg,
+                min: edge_floor,
+            });
         }
         for (bg_name, bg) in [
             ("control_bg", self.control_bg),
@@ -500,12 +634,23 @@ impl Theme {
                 self.on_attention,
                 self.attention,
             ),
-            text("toast_text on toast_bg", self.toast_text, self.toast_bg),
             text(
-                "toast_text_secondary on toast_bg",
-                self.toast_text_secondary,
-                self.toast_bg,
+                "text_secondary on close_bg",
+                self.text_secondary,
+                self.close_fill(),
             ),
+            graphic("progress on track", self.progress_fill(), self.track),
+            graphic(
+                "wave_rest on surface_inset",
+                self.wave_rest,
+                self.surface_inset,
+            ),
+            graphic(
+                "wave_done on surface_inset",
+                self.wave_done,
+                self.surface_inset,
+            ),
+            graphic("playhead on surface_inset", self.text, self.surface_inset),
             text("text on avatar_bg", self.text, self.avatar_bg),
             text("text on chip_bg", self.text, self.chip_bg),
             graphic("wave_rest on card_bg", self.wave_rest, self.card_bg),
@@ -524,18 +669,23 @@ impl Theme {
                 self.selected_tile(),
             ),
         ]);
-        pairs.push(Pair {
-            name: "attention_border on card_bg".into(),
-            fg: self.attention_border,
-            bg: self.card_bg,
-            // It only adds to the triangle and the words, so it needs to be seen, not read.
-            // Increase Contrast holds it to the full graphics floor.
-            min: if self.high_contrast {
-                MIN_NON_TEXT_CONTRAST
-            } else {
-                ATTENTION_BORDER_MIN
-            },
-        });
+        for (bg_name, bg) in [
+            ("card_bg", self.card_bg),
+            ("surface_inset", self.surface_inset),
+        ] {
+            pairs.push(Pair {
+                name: format!("attention_border on {bg_name}"),
+                fg: self.attention_border,
+                bg,
+                // It only adds to the triangle and the words, so it needs to be seen, not read.
+                // Increase Contrast holds it to the full graphics floor.
+                min: if self.high_contrast {
+                    MIN_NON_TEXT_CONTRAST
+                } else {
+                    ATTENTION_BORDER_MIN
+                },
+            });
+        }
         if self.high_contrast {
             for (bg_name, bg) in [
                 ("window_bg", self.window_bg),
@@ -550,32 +700,55 @@ impl Theme {
                     bg,
                 ));
             }
+            for (fg_name, fg) in [
+                ("inset_border", self.inset_border),
+                ("close ring", self.text_secondary),
+                ("track outline", self.text_secondary),
+            ] {
+                pairs.push(graphic(
+                    &format!("{fg_name} on surface_raised"),
+                    fg,
+                    self.surface_raised,
+                ));
+            }
         }
         pairs
     }
 }
 
 /// Installs the theme for the current appearance, accent, and [`Display`], and keeps GPUI Kit's
-/// own components in step: the same mode, the direction C focus ring, Increase Contrast's borders
-/// and missing shadows, and the text scale as Kit's rem size. Call it at launch and on every
-/// change of any input.
+/// own components in step in every appearance: the same mode, the direction C focus ring, the
+/// floating-surface fill, text, scrim, and dialog radius (`docs/design/floating-surfaces.md`
+/// section 6), Increase Contrast's borders and missing shadows, and the text scale as Kit's rem
+/// size. Call it at launch and on every change of any input.
 pub fn sync(cx: &mut App) {
     let display = cx.try_global::<Display>().copied().unwrap_or_default();
     let appearance = cx.window_appearance();
     let theme = Theme::for_appearance(appearance, crate::platform::system_accent(), display);
     cx.set_global(theme);
     gpui_kit::component::Theme::change(appearance, None, cx);
-    let kit = gpui_kit::component::Theme::global_mut(cx);
-    kit.ring = theme.ring;
-    // Kit sizes its controls in rems, so below 100% its buttons would shrink under 24 pt
-    // (A11Y-9). They grow with the text but never shrink.
-    kit.font_size = px(16. * theme.text_scale.max(1.0));
-    kit.shadow = theme.shadows;
-    if theme.high_contrast {
-        kit.border = theme.control_border;
-        kit.input = theme.control_border;
-        kit.muted_foreground = theme.text_secondary;
-    }
+    let scrim = if crate::glass::reduces_transparency(cx) {
+        theme.scrim_opaque
+    } else {
+        theme.scrim
+    };
+    gpui_kit::component::Theme::update(cx, |kit| {
+        kit.ring = theme.ring;
+        // Kit sizes its controls in rems, so below 100% its buttons would shrink under 24 pt
+        // (A11Y-9). They grow with the text but never shrink.
+        kit.font_size = px(16. * theme.text_scale.max(1.0));
+        kit.shadow = theme.shadows;
+        kit.foreground = theme.text;
+        kit.popover = theme.surface_raised;
+        kit.popover_foreground = theme.text;
+        kit.overlay = scrim;
+        kit.radius_lg = px(crate::surface::Kind::Dialog.radius());
+        if theme.high_contrast {
+            kit.border = theme.control_border;
+            kit.input = theme.control_border;
+            kit.muted_foreground = theme.text_secondary;
+        }
+    });
     cx.refresh_windows();
 }
 

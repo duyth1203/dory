@@ -35,6 +35,11 @@ pub fn set_reduce_transparency(reduce: bool, cx: &mut App) {
     }
 }
 
+/// macOS Reduce Transparency, as `system_prefs` last reported it.
+pub fn reduces_transparency(cx: &App) -> bool {
+    cx.try_global::<Transparency>().is_some_and(|t| t.reduce)
+}
+
 fn translucent(high_contrast: bool, cx: &App) -> bool {
     !high_contrast && !cx.try_global::<Transparency>().is_some_and(|t| t.reduce)
 }

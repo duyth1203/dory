@@ -551,7 +551,8 @@ impl Render for Shell {
                     .children(onboarding_actions)
                     .children(status)
                     .children(toast),
-            );
+            )
+            .children(crate::surface::dialog_layer(window, cx));
         self.with_actions(root, cx)
     }
 }

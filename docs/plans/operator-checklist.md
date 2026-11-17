@@ -1,6 +1,6 @@
 # Operator checklist for P4 to P8
 
-Everything an agent could not check. Work top to bottom. Each step says what passes and what to save. Send back the pass or fail per step and the saved files. Paths assume the repo root of the `refactor/hexagonal-core` worktree.
+Everything an agent could not check. Work top to bottom. Each step says what passes and what to save. Send back the pass or fail per step and the saved files. Paths assume the repo root of the `feat/gpui-rewrite` worktree.
 
 ## 0. Set up once
 

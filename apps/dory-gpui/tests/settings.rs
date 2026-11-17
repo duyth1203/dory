@@ -223,6 +223,36 @@ fn label(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> Option<S
     .unwrap()
 }
 
+fn description(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> Option<String> {
+    render(window, cx);
+    cx.update_window(window, |_, window, _| {
+        window
+            .try_find(ElementId::from(id.to_owned()))
+            .and_then(|e| e.description().map(str::to_owned))
+    })
+    .unwrap()
+}
+
+fn value(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> Option<String> {
+    render(window, cx);
+    cx.update_window(window, |_, window, _| {
+        window
+            .try_find(ElementId::from(id.to_owned()))
+            .and_then(|e| e.value().map(str::to_owned))
+    })
+    .unwrap()
+}
+
+fn checked(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> Option<bool> {
+    render(window, cx);
+    cx.update_window(window, |_, window, _| {
+        window
+            .try_find(ElementId::from(id.to_owned()))
+            .and_then(|e| e.checked())
+    })
+    .unwrap()
+}
+
 fn has(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> bool {
     label(window, id, cx).is_some()
 }
@@ -242,8 +272,7 @@ fn reveal(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
         if visible || !scrollable {
             return;
         }
-        // Aim at the panel's left margin: a nested list such as Meeting languages keeps the
-        // scroll when the pointer is over it, as it should.
+        // Aim at the panel's left margin, clear of any control.
         cx.update_window(window, |_, window, cx| {
             let panel = window.find("settings-panel").bounds();
             let position = point(panel.left() + px(4.), panel.center().y);
@@ -295,7 +324,7 @@ fn focused(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> bool {
 fn open_settings(
     app: &Entity<AppState>,
     main: AnyWindowHandle,
-    tab: settings_window::Tab,
+    pane: settings_window::Pane,
     cx: &mut TestAppContext,
 ) -> AnyWindowHandle {
     cx.update(|cx| settings_window::open(app, cx));
@@ -304,7 +333,7 @@ fn open_settings(
         .into_iter()
         .find(|w| *w != main)
         .expect("the Settings window opened");
-    click(window, &tab.id(), cx);
+    click(window, &pane.id(), cx);
     window
 }
 
@@ -316,21 +345,23 @@ fn settings(rig: &Rig) -> Settings {
 fn rows_say_which_meeting_language_a_model_lacks(cx: &mut TestAppContext) {
     let rig = rig(&["tl", "en"]);
     let (main, app) = open(&rig, cx);
-    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
     let row = format!("model-{PARAKEET}");
     until(cx, "the speech rows", |cx| has(window, &row, cx));
-    let parakeet = label(window, &row, cx).unwrap();
+    let parakeet = description(window, &row, cx).unwrap();
     assert!(
         parakeet.contains("Doesn't support Tagalog"),
         "the row itself names the language: {parakeet}"
     );
-    let whisper = label(window, &format!("model-{WHISPER}"), cx).unwrap();
+    let whisper = description(window, &format!("model-{WHISPER}"), cx).unwrap();
     assert!(!whisper.contains("Doesn't support"), "{whisper}");
-    assert!(
-        !has(window, &format!("choose-{PARAKEET}"), cx),
-        "a model that cannot do the job is not offered"
+    click(window, &row, cx);
+    render(window, cx);
+    assert_eq!(
+        settings(&rig).stt,
+        Choice::Auto,
+        "a model that cannot do the job cannot be chosen"
     );
-    assert!(has(window, &format!("choose-{WHISPER}"), cx));
     let auto = cx
         .update_window(window, |_, window, _| {
             let auto = window.find("choice-auto-speech");
@@ -339,8 +370,8 @@ fn rows_say_which_meeting_language_a_model_lacks(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(auto, (Some(true), Some("Uses Whisper.".to_owned())));
     assert_eq!(
-        label(window, "meeting-languages-summary", cx).as_deref(),
-        Some("Meetings are in Tagalog and English.")
+        value(window, "meeting-languages", cx).as_deref(),
+        Some("Tagalog, English")
     );
 }
 
@@ -348,29 +379,39 @@ fn rows_say_which_meeting_language_a_model_lacks(cx: &mut TestAppContext) {
 fn dropping_tagalog_makes_parakeet_fit_again(cx: &mut TestAppContext) {
     let rig = rig(&["tl", "en"]);
     let (main, app) = open(&rig, cx);
-    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
-    until(cx, "the checkboxes", |cx| {
-        has(window, "meeting-language-tl", cx)
-    });
-    click(window, "meeting-language-tl", cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the chips", |cx| has(window, "remove-language-tl", cx));
+    assert_eq!(
+        label(window, "remove-language-tl", cx).as_deref(),
+        Some("Remove Tagalog")
+    );
+    click(window, "remove-language-tl", cx);
     until(cx, "the saved languages", |_| {
         settings(&rig).meeting_languages == tags(&["en"])
     });
     until(cx, "the refit row", |cx| {
-        label(window, &format!("model-{PARAKEET}"), cx).is_some_and(|l| !l.contains("Doesn't"))
+        description(window, &format!("model-{PARAKEET}"), cx)
+            .is_some_and(|l| !l.contains("Doesn't"))
     });
-    assert!(focused(window, "meeting-language-tl", cx));
-    press(window, "space", cx);
-    until(cx, "Space checks it once", |_| {
-        settings(&rig).meeting_languages == tags(&["en", "tl"])
-    });
+    assert_eq!(
+        label(window, "remove-language-en", cx).as_deref(),
+        Some("Remove English, unavailable"),
+        "the last language stays"
+    );
+    assert_eq!(
+        description(window, "remove-language-en", cx).as_deref(),
+        Some("Keep at least one meeting language.")
+    );
+    click(window, "remove-language-en", cx);
+    render(window, cx);
+    assert_eq!(settings(&rig).meeting_languages, tags(&["en"]));
 }
 
 #[gpui_kit::test]
 fn the_explainer_shows_the_catalog_text_and_opens_and_closes_by_keyboard(cx: &mut TestAppContext) {
     let rig = rig(&["tl", "en"]);
     let (main, app) = open(&rig, cx);
-    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
     let info = format!("about-{WHISPER}");
     let panel = format!("about-panel-{WHISPER}");
     until(cx, "the info button", |cx| has(window, &info, cx));
@@ -433,18 +474,18 @@ fn the_explainer_shows_the_catalog_text_and_opens_and_closes_by_keyboard(cx: &mu
 fn choose_saves_the_pinned_model(cx: &mut TestAppContext) {
     let rig = rig(&["tl", "en"]);
     let (main, app) = open(&rig, cx);
-    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
-    let choose = format!("choose-{WHISPER}");
-    until(cx, "the Choose button", |cx| has(window, &choose, cx));
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    let choose = format!("model-{WHISPER}");
+    until(cx, "the Whisper radio", |cx| has(window, &choose, cx));
     click(window, &choose, cx);
     let whisper: ModelId<Stt> = WHISPER.parse().unwrap();
     until(cx, "the saved choice", |_| {
         settings(&rig).stt == Choice::Pinned(whisper.clone())
     });
     until(cx, "the row in use", |cx| {
-        label(window, &format!("model-{WHISPER}"), cx).is_some_and(|l| l.ends_with("in use"))
+        checked(window, &choose, cx) == Some(true)
     });
-    assert!(!has(window, &choose, cx));
+    assert_eq!(checked(window, "choice-auto-speech", cx), Some(false));
     click(window, "choice-auto-speech", cx);
     until(cx, "Automatic again", |_| {
         settings(&rig).stt == Choice::Auto
@@ -455,7 +496,7 @@ fn choose_saves_the_pinned_model(cx: &mut TestAppContext) {
 fn a_download_shows_progress_and_cancel_stops_it(cx: &mut TestAppContext) {
     let rig = rig(&[]);
     let (main, app) = open(&rig, cx);
-    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
     let download = format!("download-{HELD}");
     until(cx, "the Download button", |cx| has(window, &download, cx));
     assert_eq!(
@@ -465,14 +506,18 @@ fn a_download_shows_progress_and_cancel_stops_it(cx: &mut TestAppContext) {
     click(window, &download, cx);
     let row = format!("model-{HELD}");
     until(cx, "the progress", |cx| {
-        label(window, &row, cx).is_some_and(|l| l.contains("Downloading, 25%"))
+        description(window, &row, cx).is_some_and(|l| l.contains("Downloading, 25%"))
     });
     assert!(has(window, &format!("progress-{HELD}"), cx));
     click(window, &format!("cancel-{HELD}"), cx);
     until(cx, "Download again after Cancel", |cx| {
         has(window, &download, cx)
     });
-    assert!(label(window, &row, cx).unwrap().contains("Not downloaded"));
+    assert!(
+        description(window, &row, cx)
+            .unwrap()
+            .contains("Not downloaded")
+    );
 }
 
 #[gpui_kit::test]
@@ -551,7 +596,7 @@ impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         gpui_kit::div()
             .child(models_view::speech_step(&self.0, window, cx))
-            .child(models_view::meeting_languages_picker(&self.0, window, cx))
+            .child(dory_gpui::combobox::meeting_languages(&self.0, window, cx))
     }
 }
 
@@ -575,8 +620,8 @@ fn the_speech_step_offers_the_model_auto_picks_for_tagalog(cx: &mut TestAppConte
         Some("Whisper, 1.0 GB on disk")
     );
     assert_eq!(
-        label(window, "meeting-languages-summary", cx).as_deref(),
-        Some("Meetings are in Tagalog and English.")
+        value(window, "meeting-languages", cx).as_deref(),
+        Some("Tagalog, English")
     );
 }
 
@@ -584,7 +629,7 @@ fn the_speech_step_offers_the_model_auto_picks_for_tagalog(cx: &mut TestAppConte
 fn processing_saves_by_click_and_keyboard_and_speaks_each_effect(cx: &mut TestAppContext) {
     let rig = rig(&[]);
     let (main, app) = open(&rig, cx);
-    let window = open_settings(&app, main, settings_window::Tab::Transcription, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
     until(cx, "the Processing choices", |cx| {
         has(window, "processing-auto", cx)
     });
@@ -593,35 +638,45 @@ fn processing_saves_by_click_and_keyboard_and_speaks_each_effect(cx: &mut TestAp
         ("processing-fast", "Fast", "Uses up to 4 cores."),
         ("processing-light", "Light", "Uses 2 cores."),
     ] {
-        let spoken = label(window, id, cx).unwrap();
-        assert!(
-            spoken.starts_with(name) && spoken.contains(effect),
-            "{id}: {spoken}"
-        );
+        assert_eq!(label(window, id, cx).as_deref(), Some(name));
+        let spoken = description(window, id, cx).unwrap();
+        assert!(spoken.contains(effect), "{id}: {spoken}");
     }
-    let checked = |id: &str, cx: &mut TestAppContext| {
-        cx.update_window(window, |_, window, _| window.find(id.to_owned()).checked())
-            .unwrap()
-    };
-    assert_eq!(checked("processing-auto", cx), Some(true), "the default");
+    assert_eq!(
+        label(window, "processing", cx).as_deref(),
+        Some("Processing"),
+        "one radio group"
+    );
+    assert_eq!(
+        checked(window, "processing-auto", cx),
+        Some(true),
+        "the default"
+    );
 
     click(window, "processing-fast", cx);
     until(cx, "Fast saved", |_| {
         settings(&rig).processing == Processing::Fast
     });
-    assert!(focused(window, "processing-fast", cx));
-    press(window, "tab", cx);
     assert!(
-        focused(window, "processing-light", cx),
-        "Tab reaches the next choice"
+        focused(window, "processing", cx),
+        "the click puts focus on the group"
     );
-    press(window, "space", cx);
-    until(cx, "Light saved by Space", |_| {
+    press(window, "down", cx);
+    until(cx, "Light saved by Down", |_| {
         settings(&rig).processing == Processing::Light
     });
     until(cx, "Light shows as chosen", |cx| {
-        checked("processing-light", cx) == Some(true)
+        checked(window, "processing-light", cx) == Some(true)
     });
+    press(window, "down", cx);
+    until(cx, "Down wraps to Automatic", |_| {
+        settings(&rig).processing == Processing::Auto
+    });
+    press(window, "tab", cx);
+    assert!(
+        !focused(window, "processing", cx),
+        "the group is one Tab stop"
+    );
 }
 
 #[gpui_kit::test]
@@ -740,7 +795,7 @@ fn storage_moves_the_original_webm_files_to_the_trash_and_undo_puts_them_back(
     cx: &mut TestAppContext,
 ) {
     let (rig, main, app) = upgraded(cx);
-    let window = open_settings(&app, main, settings_window::Tab::Storage, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Storage, cx);
     until(cx, "the originals are listed", |cx| {
         has(window, "trash-originals", cx)
     });
@@ -779,10 +834,484 @@ fn storage_moves_the_original_webm_files_to_the_trash_and_undo_puts_them_back(
 fn storage_offers_nothing_when_no_webm_files_are_left(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let (main, app) = open_with(cx, common::dory_on(sample_store()));
-    let window = open_settings(&app, main, settings_window::Tab::Storage, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Storage, cx);
     for _ in 0..20 {
         render(window, cx);
     }
     assert!(!has(window, "settings-originals", cx));
     assert!(!has(window, "trash-originals", cx));
+}
+
+/// Every radio's circle and the top of its label, keyed by the radio's row.
+fn radio_geometry(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<(String, f32, f32)> {
+    render(window, cx);
+    cx.update_window(window, |_, window, _| {
+        let all = gpui_kit::base::test_support::snapshots(window);
+        let mut out = Vec::new();
+        for radio in all
+            .iter()
+            .filter(|e| e.role() == Some(Role::RadioButton) && e.visible())
+        {
+            let under = |name: &str| {
+                all.iter().find(|e| {
+                    e.path().starts_with(radio.path())
+                        && matches!(e.path().last(), Some(ElementId::Name(n)) if n == name)
+                })
+            };
+            let (Some(control), Some(text)) = (under("control"), under("label")) else {
+                continue;
+            };
+            let id = format!("{:?}", radio.path().last());
+            let x = f32::from(control.bounds().origin.x - radio.bounds().origin.x);
+            let dy = f32::from(control.bounds().origin.y - text.bounds().origin.y);
+            out.push((id, x, dy));
+        }
+        out
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn every_radio_sits_at_the_same_place_in_recording_and_transcription(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Recording, cx);
+    until(cx, "the microphones", |cx| {
+        has(window, "microphone-automatic", cx)
+    });
+    let mut radios = radio_geometry(window, cx);
+    click(window, &settings_window::Pane::Transcription.id(), cx);
+    until(cx, "the speech rows", |cx| {
+        has(window, &format!("model-{WHISPER}"), cx)
+    });
+    for _ in 0..10 {
+        radios.extend(radio_geometry(window, cx));
+        reveal(window, "processing-light", cx);
+    }
+    radios.sort_by(|a, b| a.0.cmp(&b.0));
+    radios.dedup_by(|a, b| a.0 == b.0);
+    let ids: Vec<&str> = radios.iter().map(|r| r.0.as_str()).collect();
+    for want in [
+        "microphone-automatic",
+        "system-audio-separate",
+        "choice-auto-speech",
+        "processing-auto",
+    ] {
+        assert!(
+            ids.iter().any(|id| id.contains(want)),
+            "{want} missing: {ids:?}"
+        );
+    }
+    let (_, x, dy) = radios[0].clone();
+    assert_eq!(x, 14., "the circle sits 14 from the row's left edge");
+    assert_eq!(dy, 1., "the circle is centered on the 18 pt first line");
+    for (id, rx, rdy) in &radios {
+        assert_eq!((*rx, *rdy), (x, dy), "{id} is out of line");
+    }
+}
+
+fn focus_by_tab(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
+    for _ in 0..80 {
+        if focused(window, id, cx) {
+            return;
+        }
+        press(window, "tab", cx);
+    }
+    panic!("Tab never reached {id}");
+}
+
+fn chosen(rig: &Rig) -> Vec<String> {
+    settings(rig)
+        .meeting_languages
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[gpui_kit::test]
+fn the_combobox_works_from_the_keyboard_alone(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the field", |cx| has(window, "meeting-languages", cx));
+    let field = cx
+        .update_window(window, |_, window, _| {
+            let f = window.find("meeting-languages");
+            (f.role(), f.label().map(str::to_owned), f.expanded())
+        })
+        .unwrap();
+    assert_eq!(
+        field,
+        (
+            Some(Role::ComboBox),
+            Some("Meeting languages".into()),
+            Some(false)
+        )
+    );
+    focus_by_tab(window, "meeting-languages", cx);
+    press(window, "down", cx);
+    assert!(
+        has(window, "meeting-languages-popover", cx),
+        "Down opens it"
+    );
+    assert!(
+        focused(window, "language-search", cx),
+        "the search has focus"
+    );
+    assert_eq!(
+        cx.update_window(window, |_, window, _| window
+            .find("language-options")
+            .role())
+            .unwrap(),
+        Some(Role::ListBox)
+    );
+
+    cx.update_window(window, |_, window, cx| window.input("ge", cx))
+        .unwrap();
+    render(window, cx);
+    assert_eq!(
+        label(window, "language-match-count", cx).as_deref(),
+        Some("4 matches")
+    );
+    for code in ["ka", "de", "nds", "gsw"] {
+        assert!(
+            has(window, &format!("language-option-{code}"), cx),
+            "{code}"
+        );
+    }
+    assert!(!has(window, "language-option-en", cx));
+    let option = |code: &str, cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, _| {
+            let o = window.find(format!("language-option-{code}"));
+            (o.role(), o.selected(), o.description().map(str::to_owned))
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        option("de", cx),
+        (
+            Some(Role::ListBoxOption),
+            Some(false),
+            Some("Deutsch".into())
+        )
+    );
+    press(window, "down", cx);
+    press(window, "enter", cx);
+    until(cx, "German added", |_| chosen(&rig) == ["tl", "en", "de"]);
+    assert!(
+        has(window, "meeting-languages-popover", cx),
+        "Return keeps it open"
+    );
+    assert_eq!(
+        label(window, "language-match-count", cx).as_deref(),
+        Some(format!("{} matches", dory_gpui::languages::LANGUAGES.len()).as_str()),
+        "the search clears"
+    );
+    assert_eq!(option("de", cx).1, Some(true), "German shows as chosen");
+
+    cx.update_window(window, |_, window, cx| window.input("de", cx))
+        .unwrap();
+    render(window, cx);
+    assert_eq!(
+        label(window, "language-match-count", cx).as_deref(),
+        Some("1 match")
+    );
+    press(window, "enter", cx);
+    until(cx, "German removed by Return", |_| {
+        chosen(&rig) == ["tl", "en"]
+    });
+
+    press(window, "backspace", cx);
+    until(cx, "Delete removes the last chip", |_| {
+        chosen(&rig) == ["tl"]
+    });
+    assert_eq!(
+        label(window, "meeting-languages-status", cx).as_deref(),
+        Some("English removed")
+    );
+    press(window, "backspace", cx);
+    render(window, cx);
+    assert_eq!(chosen(&rig), ["tl"], "the last chip stays");
+    assert_eq!(
+        label(window, "meeting-languages-status", cx).as_deref(),
+        Some("Keep at least one meeting language.")
+    );
+
+    cx.update_window(window, |_, window, cx| window.input("xyz", cx))
+        .unwrap();
+    render(window, cx);
+    assert_eq!(
+        label(window, "language-no-match", cx).as_deref(),
+        Some("No language matches “xyz”.")
+    );
+    press(window, "escape", cx);
+    assert!(
+        !has(window, "meeting-languages-popover", cx),
+        "Esc closes it"
+    );
+    assert!(
+        focused(window, "meeting-languages", cx),
+        "focus returns to the field"
+    );
+    press(window, "down", cx);
+    assert_eq!(
+        label(window, "language-match-count", cx).as_deref(),
+        Some(format!("{} matches", dory_gpui::languages::LANGUAGES.len()).as_str()),
+        "it reopens with an empty search"
+    );
+    let rows = dory_gpui::languages::search("").rows;
+    let shown = |code: &str, cx: &mut TestAppContext| {
+        for _ in 0..3 {
+            render(window, cx);
+        }
+        cx.update_window(window, |_, window, _| {
+            window.find(format!("language-option-{code}")).visible()
+        })
+        .unwrap()
+    };
+    let (first, last) = (rows[0].code, rows[rows.len() - 1].code);
+    assert!(!shown(last, cx), "the list is longer than it shows");
+    press(window, "up", cx);
+    assert!(
+        shown(last, cx),
+        "Up wraps to the last language and shows it"
+    );
+    press(window, "down", cx);
+    assert!(shown(first, cx), "Down wraps to the first and scrolls back");
+    press(window, "tab", cx);
+    assert!(
+        !has(window, "meeting-languages-popover", cx),
+        "Tab closes it"
+    );
+    assert!(focused(window, "meeting-languages", cx));
+}
+
+#[gpui_kit::test]
+fn language_follows_the_meeting_languages(cx: &mut TestAppContext) {
+    let rig = rig(&["en", "de"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    until(cx, "the Language row", |cx| {
+        has(window, "setting-language", cx)
+    });
+    assert_eq!(
+        label(window, "language-popup", cx).as_deref(),
+        Some("Language, Automatic")
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_action(
+            Box::new(settings_window::ChooseLanguage {
+                language: LanguagePref::Pinned(LangTag::parse("de").unwrap()),
+            }),
+            cx,
+        )
+    })
+    .unwrap();
+    until(cx, "German saved", |_| {
+        settings(&rig).language == LanguagePref::Pinned(LangTag::parse("de").unwrap())
+    });
+    until(cx, "the popup shows German", |cx| {
+        label(window, "language-popup", cx).as_deref() == Some("Language, German")
+    });
+    click(window, "remove-language-de", cx);
+    until(cx, "Language back on Automatic", |_| {
+        settings(&rig).language == LanguagePref::Auto
+            && settings(&rig).meeting_languages == tags(&["en"])
+    });
+    assert_eq!(
+        label(window, "language-note", cx).as_deref(),
+        Some("German was removed from meeting languages, so Language is back to Automatic.")
+    );
+    until(cx, "the popup shows Automatic", |cx| {
+        label(window, "language-popup", cx).as_deref() == Some("Language, Automatic")
+    });
+    let names: Vec<Option<String>> = dory_gpui::menus::retranscribe_choices(&tags(&["en", "de"]))
+        .into_iter()
+        .map(|c| c.map(|(name, _)| name))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            Some("Automatic".into()),
+            None,
+            Some("English".into()),
+            Some("German".into())
+        ],
+        "Re-transcribe in… offers the same options"
+    );
+}
+
+#[gpui_kit::test]
+fn settings_reopens_on_the_pane_it_showed_last(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Storage, cx);
+    assert_eq!(
+        app.read_with(cx, |app, _| app.prefs.settings_pane),
+        settings_window::Pane::Storage,
+        "saved in the UI prefs"
+    );
+    let size = cx
+        .update_window(window, |_, window, _| window.viewport_size())
+        .unwrap();
+    assert_eq!(
+        (f32::from(size.width), f32::from(size.height)),
+        (settings_window::WIDTH, settings_window::HEIGHT)
+    );
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| settings_window::open(&app, cx));
+    cx.run_until_parked();
+    let pane = cx.update(|cx| settings_window::current(cx).unwrap().read(cx).pane());
+    assert_eq!(pane, settings_window::Pane::Storage);
+    let reopened = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| *w != main)
+        .unwrap();
+    let selected = cx
+        .update_window(reopened, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("settings-pane-storage").selected()
+        })
+        .unwrap();
+    assert_eq!(selected, Some(true));
+}
+
+#[gpui_kit::test]
+fn search_jumps_to_the_setting_and_highlights_it(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::General, cx);
+    click(window, "settings-search", cx);
+    cx.update_window(window, |_, window, cx| window.input("process", cx))
+        .unwrap();
+    render(window, cx);
+    assert!(has(window, "settings-hit-processing", cx));
+    assert!(has(
+        window,
+        "settings-hit-process-recordings-automatically",
+        cx
+    ));
+    assert!(
+        !has(window, "settings-pane-storage", cx),
+        "panes filter too"
+    );
+    click(window, "settings-hit-processing", cx);
+    render(window, cx);
+    let view = cx.update(|cx| settings_window::current(cx).unwrap());
+    assert_eq!(
+        view.read_with(cx, |v, _| (v.pane(), v.highlighted())),
+        (settings_window::Pane::Transcription, Some("row-processing"))
+    );
+    render(window, cx);
+    until(cx, "the row scrolled into view", |cx| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("processing-light").visible()
+        })
+        .unwrap()
+    });
+    cx.executor()
+        .advance_clock(settings_window::HIGHLIGHT + Duration::from_millis(100));
+    until(cx, "the highlight fades", |cx| {
+        view.read_with(cx, |v, _| v.highlighted().is_none())
+    });
+}
+
+/// UX-31: a wheel anywhere over Settings content moves the page, so no inner area keeps it.
+#[gpui_kit::test]
+fn settings_content_has_one_scroll_area(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en", "de", "fr", "es"]);
+    let (main, app) = open(&rig, cx);
+    cx.update(|cx| dory_gpui::theme::set_display(|d| d.text_scale = 2.0, cx));
+    let window = open_settings(&app, main, settings_window::Pane::General, cx);
+    cx.update_window(window, |_, window, _| {
+        window.resize(gpui_kit::size(
+            px(settings_window::WIDTH),
+            px(settings_window::MIN_HEIGHT),
+        ))
+    })
+    .unwrap();
+    let mut probed = 0;
+    for pane in settings_window::Pane::ALL {
+        click(window, &pane.id(), cx);
+        until(cx, "the pane", |cx| {
+            label(window, "settings-panel", cx).as_deref() == Some(pane.title())
+        });
+        for _ in 0..20 {
+            render(window, cx);
+        }
+        let (panel, points) = cx
+            .update_window(window, |_, window, _| {
+                let panel = window.find("settings-panel");
+                let path = panel.path().to_vec();
+                let points: Vec<_> = gpui_kit::base::test_support::snapshots(window)
+                    .into_iter()
+                    .filter(|e| e.path().starts_with(&path) && e.path() != path && e.visible())
+                    .map(|e| e.bounds().center())
+                    .filter(|c| panel.bounds().contains(c))
+                    .collect();
+                (panel.bounds(), points)
+            })
+            .unwrap();
+        let top = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let path = window.find("settings-panel").path().to_vec();
+                gpui_kit::base::test_support::snapshots(window)
+                    .into_iter()
+                    .filter(|e| e.path().starts_with(&path) && e.path() != path)
+                    .map(|e| f32::from(e.bounds().origin.y))
+                    .fold(f32::INFINITY, f32::min)
+            })
+            .unwrap()
+        };
+        let wheel = |at: gpui_kit::Point<gpui_kit::Pixels>, dy: f32, cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| {
+                window.dispatch_event(
+                    gpui_kit::MouseMoveEvent {
+                        position: at,
+                        pressed_button: None,
+                        modifiers: window.modifiers(),
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui_kit::ScrollEvent {
+                        position: at,
+                        delta: ScrollDelta::Pixels(point(px(0.), px(dy))),
+                        modifiers: window.modifiers(),
+                        ..Default::default()
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+            })
+            .unwrap();
+            render(window, cx);
+        };
+        let margin = point(panel.left() + px(4.), panel.center().y);
+        wheel(margin, 5_000., cx);
+        let before = top(cx);
+        wheel(margin, -60., cx);
+        if top(cx) >= before {
+            continue;
+        }
+        for at in points {
+            wheel(margin, 5_000., cx);
+            let before = top(cx);
+            wheel(at, -60., cx);
+            let after = top(cx);
+            probed += 1;
+            assert!(
+                after < before,
+                "{}: a wheel at {at:?} did not move the page",
+                pane.title()
+            );
+        }
+    }
+    assert!(probed > 30, "only {probed} points probed");
 }

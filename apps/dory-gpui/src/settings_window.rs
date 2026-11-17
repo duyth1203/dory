@@ -1,40 +1,65 @@
-//! The Settings window (UX-19, UX-20): a separate native window with five tabs. Each option
-//! names its effect in one line. Appearance follows the system, so there is no theme option.
+//! The Settings window (UX-19, UX-20) in the System Settings layout of
+//! `docs/design/settings-icons-blur.md` section 1: a sidebar panel with a search field and the
+//! five panes, then a 52 pt toolbar with the pane's title over one scrolling content area. The
+//! window is 860 wide, fixed, and at least 560 tall. It reopens on the pane it showed last.
 //!
-//! - General: process recordings automatically.
-//! - Recording: the Mac's inputs, read-only. No setting carries a microphone or a layout yet;
-//!   every take starts with `StartOptions::default()`, the system default input plus system audio.
-//! - Transcription: language (UX-26), meeting languages (UX-29), the speech models (UX-28), and
-//!   Processing (UX-30). **Add model file...** stays disabled: no speech provider accepts a
-//!   user's file today.
+//! - General: process recordings automatically, and the appearance note.
+//! - Recording: the Mac's inputs and system audio, as radio groups. No setting carries a
+//!   microphone or a layout yet; every take starts with `StartOptions::default()`, the system
+//!   default input plus system audio, so only those options are enabled.
+//! - Transcription: Language (UX-26), computed from the meeting languages by
+//!   `languages::choices`; the meeting-languages combobox (UX-29); the speech models (UX-28);
+//!   Add model file, which stays disabled because no speech provider accepts a user's file today;
+//!   and Processing (UX-30).
 //! - Summaries: the summary models, and the Ollama steps when Ollama does not answer.
 //! - Storage: the data folder, its size, and Show in Finder, then the old app's WebM files and
 //!   **Move original WebM files to Trash** with Undo.
+//!
+//! Content has exactly one scroll area (UX-31). The combobox's list is the only inner one, and it
+//! sits in a popover, not in the page.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
-use dory_core::domain::{LangTag, LanguagePref};
+use dory_core::domain::LanguagePref;
 use dory_core::models::{Availability, Llm, Stt, UnavailableReason};
 use dory_core::ports::capture::InputDevice;
+use gpui_kit::component::Sizable as _;
+use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, FontWeight,
-    Global, IntoElement, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, div, prelude::FluentBuilder as _, px, size,
+    AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
+    FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
+    Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    TestSupportExt as _, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
+    canvas, div, point, prelude::FluentBuilder as _, px, relative, size,
 };
 
 use crate::a11y;
 use crate::app::{AppState, Originals};
-use crate::models_view::{
-    self, LanguagePicker, Mark, ModelList, Models, button, language_name, note, option, size_text,
-};
+use crate::combobox::LanguageCombobox;
+use crate::languages;
+use crate::models_view::{self, ModelList, Models, button, note, size_text};
 use crate::processing::PACE_CHOICES;
+use crate::radio::{self, Radio, RadioGroup};
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
 use crate::theme::Theme;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Tab {
+pub const WIDTH: f32 = 860.;
+pub const HEIGHT: f32 = 720.;
+pub const MIN_HEIGHT: f32 = 560.;
+const SIDEBAR: f32 = 220.;
+const INSET: f32 = 8.;
+/// How long a search result's row stays highlighted after the jump.
+pub const HIGHLIGHT: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Pane {
+    #[default]
     General,
     Recording,
     Transcription,
@@ -42,38 +67,127 @@ pub enum Tab {
     Storage,
 }
 
-impl Tab {
-    pub const ALL: [Tab; 5] = [
-        Tab::General,
-        Tab::Recording,
-        Tab::Transcription,
-        Tab::Summaries,
-        Tab::Storage,
+impl Pane {
+    pub const ALL: [Pane; 5] = [
+        Pane::General,
+        Pane::Recording,
+        Pane::Transcription,
+        Pane::Summaries,
+        Pane::Storage,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
-            Tab::General => "General",
-            Tab::Recording => "Recording",
-            Tab::Transcription => "Transcription",
-            Tab::Summaries => "Summaries",
-            Tab::Storage => "Storage",
+            Pane::General => "General",
+            Pane::Recording => "Recording",
+            Pane::Transcription => "Transcription",
+            Pane::Summaries => "Summaries",
+            Pane::Storage => "Storage",
         }
     }
 
-    pub fn id(self) -> String {
-        format!("settings-tab-{}", self.title().to_lowercase())
+    pub fn slug(self) -> &'static str {
+        match self {
+            Pane::General => "general",
+            Pane::Recording => "recording",
+            Pane::Transcription => "transcription",
+            Pane::Summaries => "summaries",
+            Pane::Storage => "storage",
+        }
     }
+
+    pub fn parse(slug: &str) -> Option<Pane> {
+        Pane::ALL.into_iter().find(|p| p.slug() == slug)
+    }
+
+    pub fn id(self) -> String {
+        format!("settings-pane-{}", self.slug())
+    }
+
+    /// The icon tile's mark until the Lucide pass replaces it.
+    fn mark(self) -> &'static str {
+        match self {
+            Pane::General => "G",
+            Pane::Recording => "R",
+            Pane::Transcription => "T",
+            Pane::Summaries => "S",
+            Pane::Storage => "D",
+        }
+    }
+}
+
+/// One setting the sidebar search can find, and the element it jumps to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub pane: Pane,
+    pub label: &'static str,
+    pub row: &'static str,
+}
+
+const fn entry(pane: Pane, label: &'static str, row: &'static str) -> Entry {
+    Entry { pane, label, row }
+}
+
+pub const ENTRIES: &[Entry] = &[
+    entry(
+        Pane::General,
+        "Process recordings automatically",
+        "row-auto-process",
+    ),
+    entry(Pane::General, "Appearance", "row-appearance"),
+    entry(Pane::Recording, "Microphone", "row-microphone"),
+    entry(Pane::Recording, "System audio", "row-system-audio"),
+    entry(Pane::Transcription, "Language", "row-language"),
+    entry(
+        Pane::Transcription,
+        "Meeting languages",
+        "row-meeting-languages",
+    ),
+    entry(Pane::Transcription, "Speech model", "row-speech-model"),
+    entry(Pane::Transcription, "Add model file", "row-add-model-file"),
+    entry(Pane::Transcription, "Processing", "row-processing"),
+    entry(Pane::Summaries, "Summary model", "row-summary-model"),
+    entry(Pane::Storage, "Data folder", "row-data-folder"),
+    entry(Pane::Storage, "Show in Finder", "row-data-folder"),
+    entry(Pane::Storage, "Files from the old app", "row-originals"),
+];
+
+/// What the sidebar shows for a search: the panes whose name or settings match, then each
+/// matching setting. Case and accents do not matter.
+pub fn search(query: &str) -> (Vec<Pane>, Vec<Entry>) {
+    let query = languages::fold(query.trim());
+    if query.is_empty() {
+        return (Pane::ALL.to_vec(), Vec::new());
+    }
+    let hit = |text: &str| languages::fold(text).contains(&query);
+    let entries: Vec<Entry> = ENTRIES.iter().copied().filter(|e| hit(e.label)).collect();
+    let panes = Pane::ALL
+        .into_iter()
+        .filter(|p| hit(p.title()) || entries.iter().any(|e| e.pane == *p))
+        .collect();
+    (panes, entries)
 }
 
 pub const ADD_MODEL_FILE_REASON: &str =
     "No speech engine in Dory can load a model file yet, so models come from the list above.";
 
+/// Language > a choice from the popup.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct ChooseLanguage {
+    pub language: LanguagePref,
+}
+
 struct Open(AnyWindowHandle, Entity<SettingsWindow>);
 
 impl Global for Open {}
 
-/// Opens the Settings window, or brings it forward when it is already open.
+/// The open Settings window's view, for a fix button and the tests.
+pub fn current(cx: &App) -> Option<Entity<SettingsWindow>> {
+    cx.try_global::<Open>().map(|open| open.1.clone())
+}
+
+/// Opens the Settings window on the pane it showed last, or brings it forward when it is open.
 pub fn open(app: &Entity<AppState>, cx: &mut App) {
     if let Some(handle) = cx.try_global::<Open>().map(|open| open.0)
         && handle
@@ -85,17 +199,21 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some("Settings".into()),
-            ..Default::default()
+            appears_transparent: true,
+            traffic_light_position: Some(point(px(20.), px(20.))),
         }),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(640.), px(620.)),
+            size(px(WIDTH), px(HEIGHT)),
             cx,
         ))),
+        window_min_size: Some(size(px(WIDTH), px(MIN_HEIGHT))),
+        window_background: crate::glass::window_background(cx),
         ..Default::default()
     };
     let owner = app.clone();
     match gpui_kit::open_window(options, cx, move |window, cx| {
+        crate::glass::follow(window, cx);
         cx.new(|cx| SettingsWindow::new(owner, window, cx))
     }) {
         Ok((handle, view)) => cx.set_global(Open(handle, view)),
@@ -105,15 +223,15 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
     }
 }
 
-/// Opens Settings on `tab`: a fix button that sends the user to the setting that fixes it.
-pub fn open_at(app: &Entity<AppState>, tab: Tab, cx: &mut App) {
+/// Opens Settings on `pane`: a fix button that sends the user to the setting that fixes it.
+pub fn open_at(app: &Entity<AppState>, pane: Pane, cx: &mut App) {
     open(app, cx);
-    if let Some(view) = cx.try_global::<Open>().map(|open| open.1.clone()) {
-        view.update(cx, |view, cx| view.select(tab, cx));
+    if let Some(view) = current(cx) {
+        view.update(cx, |view, cx| view.select(pane, cx));
     }
 }
 
-/// The data folder's path and size, read when the Storage tab first shows.
+/// The data folder's path and size, read when the Storage pane first shows.
 enum Storage {
     Unread,
     Reading(PathBuf),
@@ -137,20 +255,29 @@ pub fn folder_size(path: &Path) -> std::io::Result<u64> {
 pub struct SettingsWindow {
     app: Entity<AppState>,
     models: Entity<Models>,
-    tab: Tab,
-    tab_focus: HashMap<Tab, FocusHandle>,
+    pane: Pane,
+    root: FocusHandle,
+    pane_focus: HashMap<Pane, FocusHandle>,
+    hit_focus: HashMap<&'static str, FocusHandle>,
     focus: HashMap<String, FocusHandle>,
+    search: Entity<InputState>,
+    query: SharedString,
+    scroll: ScrollHandle,
+    highlight: Option<&'static str>,
+    highlight_generation: u64,
+    /// Set by a search jump until the row's place is known and the page has scrolled to it.
+    jump: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
     speech: Entity<ModelList<Stt>>,
     summaries: Entity<ModelList<Llm>>,
-    languages: Entity<LanguagePicker>,
+    languages: Entity<LanguageCombobox>,
     devices: Option<Result<Vec<InputDevice>, String>>,
     storage: Storage,
     copy_focus: Vec<FocusHandle>,
-    _observe: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsWindow {
-    fn new(app: Entity<AppState>, _: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let models = models_view::install(&app, cx);
         models.update(cx, |m, cx| m.refresh(cx));
         let observe = cx.observe(&models, |_, _, cx| cx.notify());
@@ -163,31 +290,88 @@ impl SettingsWindow {
             });
         })
         .detach();
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        a11y::register_text_field(&search, cx);
+        let on_type = cx.subscribe(&search, |this, search, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.query = search.read(cx).value();
+                cx.notify();
+            }
+        });
+        let width = cx.observe_window_bounds(window, |_, window, _| {
+            let now = window.viewport_size();
+            if (f32::from(now.width) - WIDTH).abs() > 0.5 {
+                window.resize(size(px(WIDTH), now.height));
+            }
+        });
+        let pane = app.read(cx).prefs.settings_pane;
         Self {
             speech: cx.new(|cx| ModelList::new(models.clone(), cx)),
             summaries: cx.new(|cx| ModelList::new(models.clone(), cx)),
-            languages: cx.new(|cx| LanguagePicker::new(models.clone(), cx)),
-            tab_focus: Tab::ALL.iter().map(|t| (*t, cx.focus_handle())).collect(),
+            languages: cx.new(|cx| LanguageCombobox::new(models.clone(), window, cx)),
+            root: cx.focus_handle(),
+            pane_focus: Pane::ALL.iter().map(|p| (*p, cx.focus_handle())).collect(),
+            hit_focus: HashMap::new(),
             focus: HashMap::new(),
             copy_focus: COMMANDS.iter().map(|_| cx.focus_handle()).collect(),
+            search,
+            query: SharedString::default(),
+            scroll: ScrollHandle::new(),
+            highlight: None,
+            highlight_generation: 0,
+            jump: None,
             app,
             models,
-            tab: Tab::General,
+            pane,
             devices: None,
             storage: Storage::Unread,
-            _observe: observe,
+            _subscriptions: vec![observe, on_type, width],
         }
     }
 
-    pub fn tab(&self) -> Tab {
-        self.tab
+    pub fn pane(&self) -> Pane {
+        self.pane
     }
 
-    pub fn select(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        if tab == Tab::Storage && self.tab != tab {
+    /// The row a search result last jumped to, while it is still highlighted.
+    pub fn highlighted(&self) -> Option<&'static str> {
+        self.highlight
+    }
+
+    pub fn select(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        if pane == Pane::Storage && self.pane != pane {
             self.storage = Storage::Unread;
         }
-        self.tab = tab;
+        if self.pane != pane {
+            self.scroll.set_offset(point(px(0.), px(0.)));
+        }
+        self.pane = pane;
+        self.app.update(cx, |app, cx| {
+            if app.prefs.settings_pane != pane {
+                app.prefs.settings_pane = pane;
+                cx.notify();
+            }
+        });
+        cx.notify();
+    }
+
+    /// A search result: shows its pane, scrolls to the row, and highlights it for a second.
+    pub fn jump(&mut self, entry: Entry, cx: &mut Context<Self>) {
+        self.select(entry.pane, cx);
+        self.highlight = Some(entry.row);
+        self.jump = Some(Rc::default());
+        self.highlight_generation += 1;
+        let generation = self.highlight_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(HIGHLIGHT).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.highlight_generation == generation {
+                    this.highlight = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -226,7 +410,45 @@ impl SettingsWindow {
             .clone()
     }
 
-    fn general(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::Div {
+    /// Wraps a row so a search can scroll to it and highlight it: a 12% accent fill, or a 2 pt
+    /// accent outline under Reduce Motion.
+    fn mark(&self, row: &'static str, el: impl IntoElement, theme: &Theme, cx: &App) -> AnyElement {
+        let lit = self.highlight == Some(row);
+        let still = cx.reduce_motion();
+        div()
+            .id(row)
+            .test_support()
+            .relative()
+            .when_some(self.jump.clone().filter(|_| lit), |d, place| {
+                d.child(
+                    canvas(move |bounds, _, _| place.set(Some(bounds)), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+            })
+            .when(lit && !still, |d| d.bg(theme.accent.opacity(0.12)))
+            .child(el)
+            .when(lit && still, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .rounded(px(10.))
+                        .border_2()
+                        .border_color(theme.accent),
+                )
+            })
+            .into_any_element()
+    }
+
+    fn general(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let on = self
             .models
             .read(cx)
@@ -234,144 +456,194 @@ impl SettingsWindow {
             .map_or_else(|| self.app.read(cx).auto_process(), |s| s.auto_process);
         let focus = self.focus("auto-process", cx);
         let models = self.models.clone();
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .child(section(
+        let auto = radio::checkbox(
+            radio::Radio::new("setting-auto-process", "Process recordings automatically")
+                .description("Transcribes and summarizes each recording as soon as it is saved."),
+            on,
+            &focus,
+            theme,
+            window,
+            move |_, cx| models.update(cx, |m, cx| m.edit(move |s| s.auto_process = !on, cx)),
+        );
+        vec![
+            section(
                 "settings-processing",
                 "Processing",
                 theme,
-                div().child(option(
-                    "setting-auto-process",
-                    Mark::Check(on),
-                    "Process recordings automatically",
-                    "Transcribes and summarizes each recording as soon as it is saved.",
-                    &focus,
-                    theme,
-                    move |_, cx| {
-                        models.update(cx, |m, cx| m.edit(move |s| s.auto_process = !on, cx))
-                    },
-                )),
-            ))
-            .child(section(
+                vec![self.mark("row-auto-process", auto, theme, cx)],
+            ),
+            section(
                 "settings-appearance",
                 "Appearance",
                 theme,
-                note(
-                    "Dory follows the system's light or dark appearance and its accent color.",
+                vec![self.mark(
+                    "row-appearance",
+                    row(
+                        "setting-appearance",
+                        "Follows the system",
+                        "Dory follows the system's light or dark appearance and its accent color.",
+                        None,
+                        theme,
+                    ),
                     theme,
-                ),
-            ))
+                    cx,
+                )],
+            ),
+        ]
     }
 
-    fn recording(&mut self, theme: &Theme) -> gpui_kit::Div {
-        let devices = match &self.devices {
-            None => note("Looking for microphones", theme),
-            Some(Err(error)) => note(format!("Could not list microphones: {error}"), theme),
+    fn recording(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let microphone = match &self.devices {
+            None => row(
+                "microphones-loading",
+                "Looking for microphones",
+                "",
+                None,
+                theme,
+            )
+            .into_any_element(),
+            Some(Err(error)) => row(
+                "microphones-failed",
+                "Could not list microphones",
+                error.clone(),
+                None,
+                theme,
+            )
+            .into_any_element(),
             Some(Ok(devices)) => {
-                let mut list = a11y::node("settings-microphones", Role::List, "Microphones")
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.));
+                let default = devices
+                    .iter()
+                    .find(|d| d.is_default)
+                    .map(|d| d.name.clone());
+                let mut group = RadioGroup::new("microphone", "Microphone")
+                    .option(Radio::new("microphone-automatic", "Automatic").description(
+                        match default {
+                            Some(name) => {
+                                format!("Follows the system's default input, now {name}.")
+                            }
+                            None => "Follows the system's default input.".into(),
+                        },
+                    ))
+                    .selected(Some(0));
                 for device in devices {
-                    let text = if device.is_default {
-                        format!("{}, system default", device.name)
-                    } else {
-                        device.name.clone()
-                    };
-                    list = list.child(
-                        a11y::node(
-                            format!("microphone-{}", device.uid),
-                            Role::ListItem,
-                            text.clone(),
-                        )
-                        .text_size(theme.text(13.))
-                        .child(if device.is_default {
-                            format!("● {text}")
-                        } else {
-                            format!("○ {text}")
-                        }),
+                    group = group.option(
+                        Radio::new(format!("microphone-{}", device.uid), device.name.clone())
+                            .description("Choose it in System Settings > Sound to record from it.")
+                            .enabled(false),
                     );
                 }
-                div().child(list)
+                let focus = self.focus("microphone", cx);
+                group
+                    .render(&focus, theme, window, |_, _, _| {})
+                    .into_any_element()
             }
         };
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .child(section(
+        let focus = self.focus("system-audio", cx);
+        let system = RadioGroup::new("system-audio", "System audio")
+            .option(
+                Radio::new("system-audio-separate", "On a separate channel").description(
+                    "Records the Mac's audio apart from your microphone, so Dory can tell you from the people on the call.",
+                ),
+            )
+            .option(
+                Radio::new("system-audio-off", "Off")
+                    .description("Not available yet: every recording includes the Mac's audio.")
+                    .enabled(false),
+            )
+            .selected(Some(0))
+            .render(&focus, theme, window, |_, _, _| {});
+        vec![
+            section(
                 "settings-microphone",
                 "Microphone",
                 theme,
-                div().flex().flex_col().gap(px(6.)).child(devices).child(note(
-                    "Dory records from the system's default input and follows it when it changes. Pick another one in System Settings > Sound.",
-                    theme,
-                )),
-            ))
-            .child(section(
-                "settings-layout",
-                "Channels",
+                vec![self.mark("row-microphone", microphone, theme, cx)],
+            ),
+            section(
+                "settings-system-audio",
+                "System audio",
                 theme,
-                note(
-                    "Dory records your microphone and the Mac's audio on separate channels, so it can tell you apart from the people on the call.",
-                    theme,
-                ),
-            ))
+                vec![self.mark("row-system-audio", system, theme, cx)],
+            ),
+        ]
     }
 
-    fn transcription(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::Div {
-        let settings = self.models.read(cx).settings().cloned();
-        let mut languages = div().flex().flex_col().gap(px(2.));
-        if let Some(settings) = settings {
-            let mut pinnable: Vec<LangTag> = settings.meeting_languages.clone();
-            if let LanguagePref::Pinned(tag) = &settings.language
-                && !pinnable.contains(tag)
-            {
-                pinnable.push(tag.clone());
-            }
-            let choices = std::iter::once(LanguagePref::Auto)
-                .chain(pinnable.into_iter().map(LanguagePref::Pinned));
-            for choice in choices {
-                let (id, label, effect) = match &choice {
-                    LanguagePref::Auto => (
-                        "language-auto".to_owned(),
-                        "Automatic".to_owned(),
-                        "Detects the language and follows switches mid-meeting.".to_owned(),
-                    ),
-                    LanguagePref::Pinned(tag) => {
-                        let name = language_name(tag);
-                        (
-                            format!("language-{tag}"),
-                            format!("Always {name}"),
-                            format!("Transcribes every meeting as {name}, with no detection."),
-                        )
+    fn language_row(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let models = self.models.read(cx);
+        let Some(settings) = models.settings().cloned() else {
+            return row("setting-language", "Language", "Loading", None, theme).into_any_element();
+        };
+        let choices = languages::choices(&settings.meeting_languages, &settings.language);
+        let note = models
+            .language_note()
+            .map(|n| n.to_string())
+            .or(choices.note.clone());
+        let current = languages::label(&choices.effective);
+        let options = choices.options.clone();
+        let effective = choices.effective.clone();
+        let root = self.root.clone();
+        let popup = Button::new("language-popup")
+            .outline()
+            .label(current.clone())
+            .accessibility_label(format!("Language, {current}"))
+            .dropdown_caret(true)
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.action_context(root.clone());
+                for (ix, option) in options.iter().enumerate() {
+                    if ix == 1 {
+                        menu = menu.separator();
                     }
-                };
-                let focus = self.focus(id.clone(), cx);
-                let models = self.models.clone();
-                let on = settings.language == choice;
-                languages = languages.child(option(
-                    id,
-                    Mark::Radio(on),
-                    label,
-                    effect,
-                    &focus,
-                    theme,
-                    move |_, cx| {
-                        let choice = choice.clone();
-                        models.update(cx, |m, cx| m.edit(move |s| s.language = choice.clone(), cx))
-                    },
-                ));
-            }
-            if settings.meeting_languages.is_empty() {
-                languages = languages.child(note(
-                    "Add meeting languages below to pin one of them.",
-                    theme,
-                ));
-            }
-        }
+                    menu = menu.menu_with_check(
+                        languages::label(option),
+                        *option == effective,
+                        Box::new(ChooseLanguage {
+                            language: option.clone(),
+                        }),
+                    );
+                }
+                menu
+            });
+        let line = row(
+            "setting-language",
+            "Language",
+            languages::description(&settings.meeting_languages, &choices.effective),
+            Some(popup.into_any_element()),
+            theme,
+        );
+        div()
+            .child(line)
+            .children(note.map(|note| {
+                a11y::node("language-note", Role::Status, note.clone())
+                    .px(px(14.))
+                    .pb(px(11.))
+                    .mt(px(-6.))
+                    .text_size(theme.text(12.))
+                    .text_color(theme.text_secondary)
+                    .child(note)
+            }))
+            .into_any_element()
+    }
+
+    fn transcription(
+        &mut self,
+        theme: &Theme,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let language = self.language_row(theme, cx);
+        let meeting = row(
+            "setting-meeting-languages",
+            "Meeting languages",
+            "With Language on Automatic, Dory only picks a speech model that covers every language listed here.",
+            None,
+            theme,
+        )
+        .child(div().pt(px(8.)).child(self.languages.clone()));
         let add_file = a11y::node(
             "add-model-file",
             Role::Button,
@@ -389,65 +661,62 @@ impl SettingsWindow {
         .text_size(theme.text(13.))
         .text_color(theme.text_secondary)
         .child("Add model file...");
-        let mut paces = div().flex().flex_col().gap(px(2.));
-        if let Some(settings) = self.models.read(cx).settings().cloned() {
+        let add_file = row(
+            "setting-add-model-file",
+            "Add model file",
+            ADD_MODEL_FILE_REASON,
+            Some(add_file.into_any_element()),
+            theme,
+        );
+        let settings = self.models.read(cx).settings().cloned();
+        let paces = settings.map(|settings| {
+            let selected = PACE_CHOICES
+                .iter()
+                .position(|c| c.setting == settings.processing);
+            let mut group = RadioGroup::new("processing", "Processing").selected(selected);
             for choice in &PACE_CHOICES {
-                let focus = self.focus(choice.id, cx);
-                let models = self.models.clone();
-                let setting = choice.setting;
-                paces = paces.child(
-                    option(
-                        choice.id,
-                        Mark::Radio(settings.processing == setting),
-                        choice.label,
-                        choice.effect,
-                        &focus,
-                        theme,
-                        move |_, cx| {
-                            models.update(cx, |m, cx| m.edit(move |s| s.processing = setting, cx))
-                        },
-                    )
-                    .aria_label(format!("{}. {}", choice.label, choice.effect)),
-                );
+                group =
+                    group.option(Radio::new(choice.id, choice.label).description(choice.effect));
             }
-            paces = paces.child(note(
-                "Light limits both transcription and summaries.",
+            let focus = self.focus("processing", cx);
+            let models = self.models.clone();
+            group.render(&focus, theme, window, move |ix, _, cx| {
+                let setting = PACE_CHOICES[ix].setting;
+                models.update(cx, |m, cx| m.edit(move |s| s.processing = setting, cx))
+            })
+        });
+        vec![
+            section(
+                "settings-language",
+                "Language",
                 theme,
-            ));
-        }
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .child(section("settings-language", "Language", theme, languages))
-            .child(section(
-                "settings-meeting-languages",
-                "Meeting languages",
-                theme,
-                div().child(self.languages.clone()),
-            ))
-            .child(section(
+                vec![
+                    self.mark("row-language", language, theme, cx),
+                    self.mark("row-meeting-languages", meeting, theme, cx),
+                ],
+            ),
+            section(
                 "settings-speech-models",
                 "Speech model",
                 theme,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(self.speech.clone())
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(add_file)
-                            .child(note(ADD_MODEL_FILE_REASON, theme).flex_1()),
-                    ),
-            ))
-            .child(section("settings-pace", "Processing", theme, paces))
+                vec![
+                    self.mark("row-speech-model", self.speech.clone(), theme, cx),
+                    self.mark("row-add-model-file", add_file, theme, cx),
+                ],
+            ),
+            section(
+                "settings-pace",
+                "Processing",
+                theme,
+                paces
+                    .map(|paces| vec![self.mark("row-processing", paces, theme, cx)])
+                    .unwrap_or_default(),
+            ),
+            footnote("Light limits both transcription and summaries.", theme),
+        ]
     }
 
-    fn summaries(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::Div {
+    fn summaries(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let models = self.models.read(cx);
         let unreachable = models.rows::<Llm>().is_some_and(|rows| {
             rows.iter().any(|r| {
@@ -459,50 +728,54 @@ impl SettingsWindow {
             })
         });
         let checking = models.is_checking();
-        let mut page = div().flex().flex_col().gap(px(16.));
+        let mut page = Vec::new();
         if unreachable {
             let focus = self.focus("check-again", cx);
             let models = self.models.clone();
-            page = page.child(section(
+            let steps = div()
+                .px(px(14.))
+                .py(px(11.))
+                .flex()
+                .flex_col()
+                .gap(px(8.))
+                .child(note(
+                    "Summaries run on this Mac through Ollama. Install and start it in Terminal, then choose Check again.",
+                    theme,
+                ))
+                .child(ollama_steps(&self.copy_focus, theme))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(button(
+                            "settings-check-again",
+                            "Check again",
+                            "Check again",
+                            true,
+                            &focus,
+                            theme,
+                            move |_, cx| models.update(cx, |m, cx| m.refresh(cx)),
+                        ))
+                        .children(checking.then(|| note("Checking for Ollama", theme))),
+                );
+            page.push(section(
                 "settings-ollama",
                 "Ollama is not running",
                 theme,
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .child(note(
-                        "Summaries run on this Mac through Ollama. Install and start it in Terminal, then choose Check again.",
-                        theme,
-                    ))
-                    .child(ollama_steps(&self.copy_focus, theme))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.))
-                            .child(button(
-                                "settings-check-again",
-                                "Check again",
-                                "Check again",
-                                true,
-                                &focus,
-                                theme,
-                                move |_, cx| models.update(cx, |m, cx| m.refresh(cx)),
-                            ))
-                            .children(checking.then(|| note("Checking for Ollama", theme))),
-                    ),
+                vec![steps.into_any_element()],
             ));
         }
-        page.child(section(
+        page.push(section(
             "settings-summary-models",
             "Summary model",
             theme,
-            div().child(self.summaries.clone()),
-        ))
+            vec![self.mark("row-summary-model", self.summaries.clone(), theme, cx)],
+        ));
+        page
     }
 
-    fn storage(&mut self, theme: &Theme, cx: &mut Context<Self>) -> gpui_kit::Div {
+    fn storage(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         if matches!(self.storage, Storage::Unread) {
             self.read_storage(cx);
         }
@@ -514,24 +787,11 @@ impl SettingsWindow {
             }
             Storage::Failed(error) => (None, error.to_string()),
         };
-        let mut body = div().flex().flex_col().gap(px(8.));
-        if let Some(path) = path {
-            let shown = path.display().to_string();
-            let focus = self.focus("show-in-finder", cx);
-            body = body
-                .child(
-                    a11y::node("data-folder", Role::Label, format!("Data folder: {shown}"))
-                        .text_size(theme.text(13.))
-                        .font_family("Menlo")
-                        .child(shown),
-                )
-                .child(
-                    a11y::node("data-folder-size", Role::Label, size.clone())
-                        .text_size(theme.text(12.))
-                        .text_color(theme.text_secondary)
-                        .child(size),
-                )
-                .child(div().flex().child(button(
+        let folder = match path {
+            Some(path) => {
+                let shown = path.display().to_string();
+                let focus = self.focus("show-in-finder", cx);
+                let finder = button(
                     "show-in-finder",
                     "Show in Finder, the data folder",
                     "Show in Finder",
@@ -539,29 +799,54 @@ impl SettingsWindow {
                     &focus,
                     theme,
                     move |_, cx| cx.reveal_path(&path),
-                )));
-        } else {
-            body = body.child(note(size, theme));
-        }
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(16.))
-            .child(section(
+                );
+                row_with(
+                    "setting-data-folder",
+                    "Data folder",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(
+                            a11y::node("data-folder", Role::Label, format!("Data folder: {shown}"))
+                                .text_size(theme.text(12.))
+                                .font_family("Menlo")
+                                .child(shown),
+                        )
+                        .child(
+                            a11y::node("data-folder-size", Role::Label, size.clone())
+                                .text_size(theme.text(12.))
+                                .text_color(theme.text_secondary)
+                                .child(size),
+                        )
+                        .into_any_element(),
+                    Some(finder.into_any_element()),
+                    theme,
+                )
+            }
+            None => row("setting-data-folder", "Data folder", size, None, theme),
+        };
+        let mut page = vec![
+            section(
                 "settings-storage",
                 "Data folder",
                 theme,
-                body.child(note(
-                    "Recordings, transcripts, summaries, and downloaded speech models live here.",
-                    theme,
-                )),
-            ))
-            .children(self.originals(theme, cx))
+                vec![self.mark("row-data-folder", folder, theme, cx)],
+            ),
+            footnote(
+                "Recordings, transcripts, summaries, and downloaded speech models live here.",
+                theme,
+            ),
+        ];
+        if let Some(originals) = self.originals(theme, cx) {
+            page.push(originals);
+        }
+        page
     }
 
-    /// The old app's WebM files (moved here from P8): what they cost, the one action that moves
-    /// them to the Trash, and Undo. Hidden when there are none.
-    fn originals(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<a11y::Node> {
+    /// The old app's WebM files: what they cost, the one action that moves them to the Trash,
+    /// and Undo. Hidden when there are none.
+    fn originals(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
         if matches!(self.app.read(cx).originals(), Originals::Unread) {
             self.app.update(cx, |app, cx| app.read_originals(cx));
         }
@@ -614,109 +899,389 @@ impl SettingsWindow {
             Originals::Restoring => ("Putting the files back…".into(), None),
             Originals::Failed(error) => (format!("⚠︎ {error}"), None),
         };
+        let body = div()
+            .px(px(14.))
+            .py(px(11.))
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                a11y::node("originals-status", Role::Status, line.clone())
+                    .text_size(theme.text(13.))
+                    .child(line),
+            )
+            .children(action.map(|action| div().flex().child(action)))
+            .child(note(
+                "Nothing is deleted. The Trash keeps the files until you empty it.",
+                theme,
+            ));
         Some(section(
             "settings-originals",
             "Files from the old app",
             theme,
-            div()
+            vec![self.mark("row-originals", body, theme, cx)],
+        ))
+    }
+
+    fn sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let this = cx.entity().downgrade();
+        let (panes, hits) = search(&self.query);
+        let mut list = a11y::node("settings-panes", Role::TabList, "Settings")
+            .flex()
+            .flex_col()
+            .gap(px(2.));
+        for pane in panes {
+            let selected = pane == self.pane;
+            let this = this.clone();
+            let tile_bg = if selected {
+                gpui_kit::white().opacity(0.22)
+            } else {
+                theme.accent
+            };
+            list = list.child(
+                a11y::focusable(
+                    a11y::node(pane.id(), Role::Tab, pane.title()),
+                    &self.pane_focus[&pane],
+                    theme,
+                    selected,
+                )
+                .aria_selected(selected)
+                .on_click(move |_, _, cx| {
+                    let _ = this.update(cx, |w, cx| w.select(pane, cx));
+                })
+                .cursor_pointer()
+                .min_h(px(32.))
+                .px(px(6.))
+                .py(px(3.))
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .rounded(px(8.))
+                .text_size(theme.text(13.))
+                .when(selected, |row| {
+                    row.bg(theme.accent).text_color(theme.on_accent)
+                })
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(22.))
+                        .rounded(px(6.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(tile_bg)
+                        .text_color(theme.on_accent)
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(pane.mark()),
+                )
+                .child(pane.title()),
+            );
+        }
+        let results = (!hits.is_empty()).then(|| {
+            let mut found = a11y::node("settings-results", Role::List, "Settings found")
                 .flex()
                 .flex_col()
-                .gap(px(8.))
+                .gap(px(2.))
                 .child(
-                    a11y::node("originals-status", Role::Status, line.clone())
-                        .text_size(theme.text(13.))
-                        .child(line),
-                )
-                .children(action.map(|action| div().flex().child(action)))
-                .child(note(
-                    "Nothing is deleted. The Trash keeps the files until you empty it.",
-                    theme,
-                )),
-        ))
+                    div()
+                        .px(px(6.))
+                        .pt(px(8.))
+                        .text_size(theme.text(11.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme.text_secondary)
+                        .child("Settings"),
+                );
+            for hit in hits {
+                let focus = self
+                    .hit_focus
+                    .entry(hit.label)
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone();
+                let this = this.clone();
+                let label = format!("{}, in {}", hit.label, hit.pane.title());
+                found = found.child(
+                    a11y::focusable(
+                        a11y::node(
+                            format!(
+                                "settings-hit-{}",
+                                hit.label.to_lowercase().replace(' ', "-")
+                            ),
+                            Role::Button,
+                            label,
+                        ),
+                        &focus,
+                        theme,
+                        false,
+                    )
+                    .on_click(move |_, _, cx| {
+                        let _ = this.update(cx, |w, cx| w.jump(hit, cx));
+                    })
+                    .cursor_pointer()
+                    .min_h(px(28.))
+                    .px(px(6.))
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .child(div().text_size(theme.text(13.)).child(hit.label))
+                    .child(
+                        div()
+                            .text_size(theme.text(11.))
+                            .text_color(theme.text_secondary)
+                            .child(hit.pane.title()),
+                    ),
+                );
+            }
+            found
+        });
+        div()
+            .flex_none()
+            .w(px(SIDEBAR + 2. * INSET))
+            .h_full()
+            .p(px(INSET))
+            .child(
+                a11y::node("settings-sidebar", Role::Navigation, "Settings panes")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .pt(px(44.))
+                    .px(px(8.))
+                    .rounded(px(12.))
+                    .bg(crate::glass::sidebar_panel(theme, cx))
+                    .border_1()
+                    .border_color(theme.panel_border)
+                    .when(theme.shadows, |panel| panel.shadow_sm())
+                    .child(
+                        Input::new(&self.search)
+                            .id("settings-search")
+                            .aria_label("Search settings")
+                            .small()
+                            .cleanable(true),
+                    )
+                    .child(
+                        div()
+                            .id("settings-sidebar-list")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(list)
+                            .children(results),
+                    ),
+            )
+            .into_any_element()
     }
 }
 
+/// A section: a 13 pt semibold header in `text_secondary`, then its rows in a group box with
+/// full-width dividers between them.
 fn section(
     id: &'static str,
     title: &'static str,
     theme: &Theme,
-    body: impl IntoElement,
-) -> a11y::Node {
+    rows: Vec<AnyElement>,
+) -> AnyElement {
+    let mut group = div()
+        .flex()
+        .flex_col()
+        .rounded(px(10.))
+        .bg(theme.group_bg)
+        .border_1()
+        .border_color(theme.group_border)
+        .overflow_hidden();
+    for (ix, row) in rows.into_iter().enumerate() {
+        group = group.child(
+            div()
+                .when(ix > 0, |d| d.border_t_1().border_color(theme.group_border))
+                .child(row),
+        );
+    }
     a11y::node(id, Role::Group, title)
         .flex()
         .flex_col()
         .gap(px(8.))
         .child(
             a11y::node(format!("{id}-title"), Role::Heading, title)
+                .pl(px(4.))
                 .text_size(theme.text(13.))
                 .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme.text_secondary)
                 .child(title),
         )
-        .child(body)
+        .child(group)
+        .into_any_element()
+}
+
+/// A plain row: the label (13 medium) with its one-line effect below (12 secondary), and a
+/// control on the right aligned to the label's first line.
+fn row(
+    id: &'static str,
+    label: &'static str,
+    description: impl Into<SharedString>,
+    control: Option<AnyElement>,
+    theme: &Theme,
+) -> a11y::Node {
+    let description: SharedString = description.into();
+    let text = (!description.is_empty()).then(|| {
+        div()
+            .text_size(theme.text(12.))
+            .line_height(relative(1.4))
+            .text_color(theme.text_secondary)
+            .child(description)
+            .into_any_element()
+    });
+    row_with(
+        id,
+        label,
+        text.unwrap_or_else(|| div().into_any_element()),
+        control,
+        theme,
+    )
+}
+
+fn row_with(
+    id: &'static str,
+    label: &'static str,
+    below: AnyElement,
+    control: Option<AnyElement>,
+    theme: &Theme,
+) -> a11y::Node {
+    let line = theme.text(radio::LINE);
+    a11y::node(id, Role::Group, label)
+        .px(px(14.))
+        .py(px(11.))
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap(px(12.))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(
+                            div()
+                                .text_size(theme.text(13.))
+                                .line_height(line)
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(label),
+                        )
+                        .child(below),
+                )
+                .children(control.map(|control| {
+                    let tall = line.max(px(28.));
+                    div()
+                        .flex_none()
+                        .min_h(tall)
+                        .mt((line - tall) / 2.)
+                        .flex()
+                        .items_center()
+                        .child(control)
+                })),
+        )
+}
+
+fn footnote(text: &'static str, theme: &Theme) -> AnyElement {
+    div()
+        .mt(px(-12.))
+        .pl(px(4.))
+        .text_size(theme.text(12.))
+        .text_color(theme.text_secondary)
+        .child(text)
+        .into_any_element()
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
-        let this = cx.entity().downgrade();
-        let mut tabs = a11y::node("settings-tabs", Role::TabList, "Settings")
-            .flex()
-            .justify_center()
-            .gap(px(4.))
-            .pt(px(12.))
-            .pb(px(8.))
-            .border_b_1()
-            .border_color(theme.divider);
-        for tab in Tab::ALL {
-            let this = this.clone();
-            tabs = tabs.child(
-                a11y::tab(
-                    tab.id(),
-                    tab.title(),
-                    tab == self.tab,
-                    &self.tab_focus[&tab],
-                    &theme,
-                    move |_, cx| {
-                        let _ = this.update(cx, |w, cx| w.select(tab, cx));
-                    },
-                )
-                .flex(),
-            );
-        }
-        let page = match self.tab {
-            Tab::General => self.general(&theme, cx),
-            Tab::Recording => self.recording(&theme),
-            Tab::Transcription => self.transcription(&theme, cx),
-            Tab::Summaries => self.summaries(&theme, cx),
-            Tab::Storage => self.storage(&theme, cx),
+        let page = match self.pane {
+            Pane::General => self.general(&theme, window, cx),
+            Pane::Recording => self.recording(&theme, window, cx),
+            Pane::Transcription => self.transcription(&theme, window, cx),
+            Pane::Summaries => self.summaries(&theme, cx),
+            Pane::Storage => self.storage(&theme, cx),
         };
+        if let Some(place) = self.jump.clone() {
+            match place.get() {
+                Some(row) => {
+                    let view = self.scroll.bounds();
+                    let offset = self.scroll.offset();
+                    let by = view.top() + px(20.) - row.top();
+                    self.scroll
+                        .set_offset(point(offset.x, (offset.y + by).min(px(0.))));
+                    self.jump = None;
+                }
+                None => cx.notify(),
+            }
+        }
         let error = self.models.read(cx).error().cloned();
+        let sidebar = self.sidebar(&theme, cx);
         div()
+            .track_focus(&self.root)
+            .on_action(cx.listener(|this, action: &ChooseLanguage, _, cx| {
+                let language = action.language.clone();
+                this.models.update(cx, |m, cx| {
+                    m.edit(move |s| s.language = language.clone(), cx)
+                });
+            }))
             .size_full()
             .flex()
-            .flex_col()
-            .bg(theme.window_bg)
+            .bg(crate::glass::sidebar_column(&theme, cx))
             .text_color(theme.text)
-            .child(tabs)
+            .child(sidebar)
             .child(
-                a11y::node("settings-panel", Role::TabPanel, self.tab.title())
+                div()
                     .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px(px(24.))
-                    .py(px(20.))
+                    .min_w_0()
+                    .h_full()
                     .flex()
                     .flex_col()
-                    .gap(px(16.))
-                    .when_some(error, |panel, error| {
-                        panel.child(
-                            a11y::node("settings-error", Role::Status, error.clone())
-                                .text_size(theme.text(12.))
-                                .text_color(theme.attention)
-                                .child(format!("⚠︎ {error}")),
-                        )
-                    })
-                    .child(page),
+                    .bg(theme.window_bg)
+                    .child(
+                        div()
+                            .flex_none()
+                            .h(px(52.))
+                            .px(px(28.))
+                            .flex()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(theme.divider)
+                            .window_control_area(WindowControlArea::Drag)
+                            .child(
+                                a11y::node("settings-title", Role::Heading, self.pane.title())
+                                    .text_size(theme.text(15.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(self.pane.title()),
+                            ),
+                    )
+                    .child(
+                        a11y::node("settings-panel", Role::TabPanel, self.pane.title())
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            .pt(px(20.))
+                            .px(px(28.))
+                            .pb(px(28.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(20.))
+                            .when_some(error, |panel, error| {
+                                panel.child(
+                                    a11y::node("settings-error", Role::Status, error.clone())
+                                        .text_size(theme.text(12.))
+                                        .text_color(theme.attention)
+                                        .child(format!("⚠︎ {error}")),
+                                )
+                            })
+                            .children(page),
+                    ),
             )
     }
 }
@@ -733,5 +1298,26 @@ mod tests {
         std::fs::write(dir.join("takes/a.wav"), vec![0u8; 2_500]).unwrap();
         assert_eq!(folder_size(&dir).unwrap(), 3_500);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn search_finds_panes_and_settings_by_name() {
+        let (panes, hits) = search("lang");
+        assert_eq!(panes, [Pane::Transcription]);
+        let labels: Vec<&str> = hits.iter().map(|h| h.label).collect();
+        assert_eq!(labels, ["Language", "Meeting languages"]);
+        let (panes, hits) = search("STORAGE");
+        assert_eq!(panes, [Pane::Storage]);
+        assert!(hits.is_empty());
+        assert_eq!(search("").0, Pane::ALL);
+        assert_eq!(search("zzz"), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn panes_round_trip_through_their_slugs() {
+        for pane in Pane::ALL {
+            assert_eq!(Pane::parse(pane.slug()), Some(pane));
+        }
+        assert_eq!(Pane::parse("tabs"), None);
     }
 }

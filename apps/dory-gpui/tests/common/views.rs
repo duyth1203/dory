@@ -249,12 +249,46 @@ fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {
         .into_iter()
         .find(|w| !before.contains(w))
         .expect("the Settings window opened");
-    for tab in settings_window::Tab::ALL {
+    settings_panes(views, window, "", cx);
+    // The meeting-languages popover, open over Transcription, then closed with Escape.
+    click(window, &settings_window::Pane::Transcription.id(), cx);
+    click(window, "add-language", cx);
+    let popover = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("meeting-languages-popover").is_some()
+        })
+        .unwrap()
+    };
+    until(cx, "the languages popover opens", popover);
+    views.push(frame("settings Transcription, languages open", window, cx));
+    cx.update_window(window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    until(cx, "the languages popover closes", |cx| !popover(cx));
+    // The shortest window Settings allows.
+    cx.update_window(window, |_, window, _| {
+        window.resize(gpui_kit::size(
+            gpui_kit::px(settings_window::WIDTH),
+            gpui_kit::px(settings_window::MIN_HEIGHT),
+        ))
+    })
+    .unwrap();
+    settings_panes(views, window, ", 560 tall", cx);
+}
+
+/// Each Settings pane, and its first model explainer where it has one.
+fn settings_panes(
+    views: &mut Vec<View>,
+    window: AnyWindowHandle,
+    at: &str,
+    cx: &mut TestAppContext,
+) {
+    for tab in settings_window::Pane::ALL {
         click(window, &tab.id(), cx);
-        views.push(frame(format!("settings {}", tab.title()), window, cx));
+        views.push(frame(format!("settings {}{at}", tab.title()), window, cx));
         if open_explainer(window, cx) {
             views.push(frame(
-                format!("settings {} explainer", tab.title()),
+                format!("settings {} explainer{at}", tab.title()),
                 window,
                 cx,
             ));

@@ -402,7 +402,7 @@ impl Onboarding {
         vec![
             heading(OnboardingStep::Models.title(), theme),
             paragraph("Which languages are your meetings in?", theme),
-            crate::models_view::meeting_languages_picker(&self.app, window, cx),
+            crate::combobox::meeting_languages(&self.app, window, cx),
             crate::models_view::speech_step(&self.app, window, cx),
             a11y::node("onboarding-queue-note", Role::Label, QUEUE_NOTE)
                 .text_size(theme.text(13.))

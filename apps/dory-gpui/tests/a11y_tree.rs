@@ -101,6 +101,9 @@ fn every_view_is_covered(cx: &mut TestAppContext) {
         "settings Transcription",
         "settings Summaries",
         "settings Storage",
+        "settings Transcription, languages open",
+        "settings General, 560 tall",
+        "settings Storage, 560 tall",
     ] {
         assert!(names.iter().any(|n| n == want), "{want} missing: {names:?}");
     }

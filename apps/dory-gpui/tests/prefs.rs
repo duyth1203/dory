@@ -22,6 +22,7 @@ fn prefs_round_trip_through_the_file() {
         quit_at: Some(Timestamp(5)),
         onboarding: Some(dory_gpui::onboarding::OnboardingStep::Models),
         text_scale: 1.5,
+        settings_pane: dory_gpui::settings_window::Pane::Storage,
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);

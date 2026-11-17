@@ -13,7 +13,7 @@
 //!   `set_up_summaries`.
 //! - P6 (onboarding and configuration): `onboarding` and the shell files above; a parallel agent
 //!   owns `settings_window`, `models_view`, and `set_up_summaries`, wired only through
-//!   `settings_window::open`, `models_view::speech_step`, `models_view::meeting_languages_picker`,
+//!   `settings_window::open`, `models_view::speech_step`, `combobox::meeting_languages`,
 //!   and `set_up_summaries::sheet`.
 //!
 //! - P7 (accessibility): `system_prefs`, and fixes across every view above.
@@ -28,6 +28,7 @@
 pub mod a11y;
 pub mod actions;
 pub mod app;
+pub mod combobox;
 pub mod detail;
 pub mod estimate;
 pub mod export;
@@ -46,6 +47,7 @@ pub mod player_view;
 pub mod prefs;
 pub mod processing;
 pub mod queue_popover;
+pub mod radio;
 pub mod record_control;
 pub mod set_up_summaries;
 pub mod settings_window;

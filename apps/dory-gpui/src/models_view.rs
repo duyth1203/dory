@@ -25,138 +25,9 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::app::{AppState, Download};
+use crate::languages;
+use crate::radio::{Radio, RadioGroup};
 use crate::theme::Theme;
-
-/// BCP-47 tags and English names, for every language a catalog row lists today.
-pub const LANGUAGES: &[(&str, &str)] = &[
-    ("af", "Afrikaans"),
-    ("am", "Amharic"),
-    ("ar", "Arabic"),
-    ("as", "Assamese"),
-    ("az", "Azerbaijani"),
-    ("ba", "Bashkir"),
-    ("be", "Belarusian"),
-    ("bg", "Bulgarian"),
-    ("bn", "Bengali"),
-    ("bo", "Tibetan"),
-    ("br", "Breton"),
-    ("bs", "Bosnian"),
-    ("ca", "Catalan"),
-    ("cs", "Czech"),
-    ("cy", "Welsh"),
-    ("da", "Danish"),
-    ("de", "German"),
-    ("el", "Greek"),
-    ("en", "English"),
-    ("es", "Spanish"),
-    ("et", "Estonian"),
-    ("eu", "Basque"),
-    ("fa", "Persian"),
-    ("fi", "Finnish"),
-    ("fil", "Filipino"),
-    ("fo", "Faroese"),
-    ("fr", "French"),
-    ("gl", "Galician"),
-    ("gu", "Gujarati"),
-    ("ha", "Hausa"),
-    ("haw", "Hawaiian"),
-    ("he", "Hebrew"),
-    ("hi", "Hindi"),
-    ("hr", "Croatian"),
-    ("ht", "Haitian Creole"),
-    ("hu", "Hungarian"),
-    ("hy", "Armenian"),
-    ("id", "Indonesian"),
-    ("is", "Icelandic"),
-    ("it", "Italian"),
-    ("ja", "Japanese"),
-    ("jv", "Javanese"),
-    ("ka", "Georgian"),
-    ("kk", "Kazakh"),
-    ("km", "Khmer"),
-    ("kn", "Kannada"),
-    ("ko", "Korean"),
-    ("la", "Latin"),
-    ("lb", "Luxembourgish"),
-    ("ln", "Lingala"),
-    ("lo", "Lao"),
-    ("lt", "Lithuanian"),
-    ("lv", "Latvian"),
-    ("mg", "Malagasy"),
-    ("mi", "Māori"),
-    ("mk", "Macedonian"),
-    ("ml", "Malayalam"),
-    ("mn", "Mongolian"),
-    ("mr", "Marathi"),
-    ("ms", "Malay"),
-    ("mt", "Maltese"),
-    ("my", "Burmese"),
-    ("nb", "Norwegian Bokmål"),
-    ("ne", "Nepali"),
-    ("nl", "Dutch"),
-    ("nn", "Norwegian Nynorsk"),
-    ("no", "Norwegian"),
-    ("oc", "Occitan"),
-    ("pa", "Punjabi"),
-    ("pl", "Polish"),
-    ("ps", "Pashto"),
-    ("pt", "Portuguese"),
-    ("ro", "Romanian"),
-    ("ru", "Russian"),
-    ("sa", "Sanskrit"),
-    ("sd", "Sindhi"),
-    ("si", "Sinhala"),
-    ("sk", "Slovak"),
-    ("sl", "Slovenian"),
-    ("sn", "Shona"),
-    ("so", "Somali"),
-    ("sq", "Albanian"),
-    ("sr", "Serbian"),
-    ("su", "Sundanese"),
-    ("sv", "Swedish"),
-    ("sw", "Swahili"),
-    ("ta", "Tamil"),
-    ("te", "Telugu"),
-    ("tg", "Tajik"),
-    ("th", "Thai"),
-    ("tk", "Turkmen"),
-    ("tl", "Tagalog"),
-    ("tr", "Turkish"),
-    ("tt", "Tatar"),
-    ("uk", "Ukrainian"),
-    ("ur", "Urdu"),
-    ("uz", "Uzbek"),
-    ("vi", "Vietnamese"),
-    ("yi", "Yiddish"),
-    ("yo", "Yoruba"),
-    ("yue", "Cantonese"),
-    ("zh", "Chinese"),
-];
-
-/// "Tagalog" for `tl`, "English (US)" for `en-US`, and the tag itself when the table lacks it.
-pub fn language_name(tag: &LangTag) -> String {
-    let named = |code: &str| {
-        LANGUAGES
-            .iter()
-            .find(|(t, _)| *t == code)
-            .map(|(_, name)| *name)
-    };
-    match (named(tag.as_str()), named(tag.primary())) {
-        (Some(name), _) => name.to_owned(),
-        (None, Some(name)) => format!("{name} ({})", &tag.as_str()[tag.primary().len() + 1..]),
-        (None, None) => tag.to_string(),
-    }
-}
-
-/// "Tagalog", "Tagalog and English", "Tagalog, English, and French".
-pub fn name_list(names: &[String]) -> String {
-    match names {
-        [] => String::new(),
-        [one] => one.clone(),
-        [a, b] => format!("{a} and {b}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
-}
 
 /// "670 MB", "9.5 GB".
 pub fn size_text(bytes: u64) -> String {
@@ -297,7 +168,7 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
             let missing: Vec<String> = K::wanted(settings)
                 .iter()
                 .filter(|tag| !set.supports(tag))
-                .map(language_name)
+                .map(languages::name)
                 .collect();
             if missing.is_empty() {
                 "Doesn't support this language".into()
@@ -368,18 +239,18 @@ pub fn languages_text(set: &LangSet, first: &[LangTag]) -> String {
     let mut names: Vec<String> = first
         .iter()
         .filter(|tag| set.supports(tag))
-        .map(language_name)
+        .map(languages::name)
         .collect();
     let mut rest: Vec<String> = tags
         .iter()
-        .map(language_name)
+        .map(languages::name)
         .filter(|name| !names.contains(name))
         .collect();
     rest.sort();
     rest.dedup();
     names.extend(rest);
     if names.len() <= NAMED_LANGUAGES {
-        return name_list(&names);
+        return languages::name_list(&names, "and");
     }
     format!(
         "{} languages, including {}",
@@ -456,6 +327,8 @@ pub struct Models {
     speech: Option<Vec<ModelRow<Stt>>>,
     summaries: Option<Vec<ModelRow<Llm>>>,
     error: Option<SharedString>,
+    /// Said once Language falls back to Automatic, and kept for the rest of the session.
+    language_note: Option<SharedString>,
     checking: bool,
     generation: u64,
     /// Listed models downloading at the last look, so the end of one triggers a refresh.
@@ -517,6 +390,7 @@ impl Models {
             speech: None,
             summaries: None,
             error: None,
+            language_note: None,
             checking: false,
             generation: 0,
             downloading: HashSet::new(),
@@ -608,6 +482,37 @@ impl Models {
         self.after(saved, cx);
     }
 
+    /// Adds or removes a meeting language by the rule in [`languages::toggle`], and saves the
+    /// result. `None` until the settings have loaded.
+    pub fn toggle_language(
+        &mut self,
+        tag: LangTag,
+        cx: &mut Context<Self>,
+    ) -> Option<languages::Edit> {
+        let edit = languages::toggle(self.settings.as_mut()?, &tag);
+        match &edit {
+            languages::Edit::KeptLast => return Some(edit),
+            languages::Edit::Removed { note: Some(note) } => {
+                self.language_note = Some(note.clone().into());
+            }
+            languages::Edit::Added | languages::Edit::Removed { note: None } => {}
+        }
+        let saved = self.app.update(cx, |app, cx| {
+            app.edit_settings(
+                move |s| {
+                    languages::toggle(s, &tag);
+                },
+                cx,
+            )
+        });
+        self.after(saved, cx);
+        Some(edit)
+    }
+
+    pub fn language_note(&self) -> Option<&SharedString> {
+        self.language_note.as_ref()
+    }
+
     pub fn choose<K: ListKind>(&mut self, choice: Choice<K>, cx: &mut Context<Self>) {
         let saved = self.app.update(cx, |app, cx| app.choose_model(choice, cx));
         self.after(saved, cx);
@@ -670,108 +575,6 @@ pub(crate) fn button(
             b.bg(theme.control_bg).border_color(theme.control_border)
         })
         .child(text.into())
-}
-
-/// A radio button or a checkbox, and whether it is on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Mark {
-    Radio(bool),
-    Check(bool),
-}
-
-/// The drawn box or circle of a checkbox or radio button, 16 points at actual size. Off, it is an
-/// outline in secondary text color, which keeps 3 to 1 against the window (A11Y-8). On, it fills
-/// with the accent and shows a check or a dot.
-fn indicator(mark: Mark, theme: &Theme) -> gpui_kit::Div {
-    let on = matches!(mark, Mark::Radio(true) | Mark::Check(true));
-    let base = div()
-        .size(theme.text(16.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .border_1()
-        .border_color(if on {
-            theme.accent
-        } else {
-            theme.text_secondary
-        })
-        .when(on, |b| b.bg(theme.accent));
-    match mark {
-        Mark::Check(_) => base
-            .rounded(px(4.))
-            .text_size(theme.text(12.))
-            .font_weight(FontWeight::BOLD)
-            .text_color(theme.on_accent)
-            .when(on, |b| b.child("✓")),
-        Mark::Radio(_) => base.rounded_full().when(on, |b| {
-            b.child(
-                div()
-                    .size(theme.text(6.))
-                    .rounded_full()
-                    .bg(theme.on_accent),
-            )
-        }),
-    }
-}
-
-/// A radio button or checkbox row: the option on one line and its effect on the next (UX-20).
-pub(crate) fn option(
-    id: impl Into<SharedString>,
-    mark: Mark,
-    label: impl Into<SharedString>,
-    effect: impl Into<SharedString>,
-    focus: &FocusHandle,
-    theme: &Theme,
-    press: impl Fn(&mut Window, &mut App) + Clone + 'static,
-) -> a11y::Node {
-    let label: SharedString = label.into();
-    let effect: SharedString = effect.into();
-    let (role, on) = match mark {
-        Mark::Radio(on) => (Role::RadioButton, on),
-        Mark::Check(on) => (Role::CheckBox, on),
-    };
-    let hover = theme.control_bg;
-    a11y::focusable(a11y::node(id, role, label.clone()), focus, theme, false)
-        .aria_toggled(if on {
-            gpui_kit::accesskit::Toggled::True
-        } else {
-            gpui_kit::accesskit::Toggled::False
-        })
-        .aria_description(effect.clone())
-        .on_click(move |_, window, cx| press(window, cx))
-        .cursor_pointer()
-        .hover(move |row| row.bg(hover))
-        .flex()
-        .items_start()
-        .gap(px(8.))
-        .px(px(6.))
-        .py(px(4.))
-        .min_h(px(28.))
-        .rounded(px(6.))
-        .child(
-            div()
-                .flex_none()
-                .h(theme.text(19.))
-                .flex()
-                .items_center()
-                .child(indicator(mark, theme)),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .child(div().text_size(theme.text(13.)).child(label))
-                .when(!effect.is_empty(), |d| {
-                    d.child(
-                        div()
-                            .text_size(theme.text(12.))
-                            .text_color(theme.text_secondary)
-                            .child(effect),
-                    )
-                }),
-        )
 }
 
 pub(crate) fn note(text: impl Into<SharedString>, theme: &Theme) -> gpui_kit::Div {
@@ -1039,13 +842,12 @@ fn download_controls<K: ListKind>(
     }
 }
 
-/// Every model of one kind with Automatic first, and Off for a kind that can be off: what
-/// Settings > Transcription and Settings > Summaries show.
+/// Every model of one kind as one radio group, with Automatic first and Off last for a kind that
+/// can be off: what Settings > Transcription and Settings > Summaries show.
 pub struct ModelList<K: ListKind> {
     models: Entity<Models>,
     controls: Controls,
-    auto_focus: FocusHandle,
-    off_focus: FocusHandle,
+    group: FocusHandle,
     _observe: Subscription,
     kind: PhantomData<K>,
 }
@@ -1056,8 +858,7 @@ impl<K: ListKind> ModelList<K> {
         Self {
             models,
             controls: Controls::default(),
-            auto_focus: cx.focus_handle(),
-            off_focus: cx.focus_handle(),
+            group: cx.focus_handle(),
             _observe: observe,
             kind: PhantomData,
         }
@@ -1068,40 +869,25 @@ impl<K: ListKind> Render for ModelList<K> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let tag = K::TAG.as_str();
-        let list = a11y::node(
-            format!("{tag}-models"),
-            Role::List,
-            format!("{} models", K::NOUN),
-        )
-        .flex()
-        .flex_col()
-        .gap(px(2.));
         let models = self.models.read(cx);
         let (Some(settings), Some(rows)) = (models.settings.clone(), K::rows(models)) else {
-            return list.child(note("Checking models", &theme));
+            return div()
+                .px(px(14.))
+                .py(px(11.))
+                .child(note("Checking models", &theme))
+                .into_any_element();
         };
         let rows: Vec<ModelRow<K>> = rows.to_vec();
         let app = models.app.clone();
-        let choice = K::choice(&settings).clone();
+        let current = K::choice(&settings).clone();
         let this = cx.entity().downgrade();
 
-        let pick = |choice: Choice<K>| {
-            let models = self.models.clone();
-            move |_: &mut Window, cx: &mut App| {
-                let choice = choice.clone();
-                models.update(cx, |m, cx| m.choose(choice, cx))
-            }
-        };
-        let mut list = list.child(option(
-            format!("choice-auto-{tag}"),
-            Mark::Radio(choice == Choice::Auto),
-            "Automatic",
-            auto_line(&rows, &settings),
-            &self.auto_focus,
-            &theme,
-            pick(Choice::Auto),
-        ));
-
+        let mut choices: Vec<Choice<K>> = vec![Choice::Auto];
+        let mut group = RadioGroup::new(format!("{tag}-models"), format!("{} model", K::NOUN))
+            .option(
+                Radio::new(format!("choice-auto-{tag}"), "Automatic")
+                    .description(auto_line(&rows, &settings)),
+            );
         for model_row in &rows {
             let entry = &model_row.status.entry;
             let worded = row(
@@ -1122,18 +908,6 @@ impl<K: ListKind> Render for ModelList<K> {
                     });
                 }
             };
-            let choose = (!worded.chosen && worded.usable).then(|| {
-                let focus = self.controls.focus(&model, "choose", cx);
-                button(
-                    format!("choose-{model}"),
-                    format!("Choose {}", worded.name),
-                    "Choose",
-                    false,
-                    &focus,
-                    &theme,
-                    pick(Choice::Pinned(entry.id.clone())),
-                )
-            });
             let fetch = download_controls(
                 &self.models,
                 &entry.id,
@@ -1144,83 +918,49 @@ impl<K: ListKind> Render for ModelList<K> {
             );
             let detail = {
                 let mut parts: Vec<String> = worded.size.iter().cloned().collect();
-                if !matches!(worded.state, RowState::Downloading(_)) {
-                    parts.push(worded.state.words());
-                }
+                parts.push(worded.state.words());
                 parts.join(" · ")
             };
-            list = list.child(
-                a11y::node(format!("model-{model}"), Role::ListItem, worded.label())
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .px(px(6.))
-                    .py(px(6.))
-                    .border_t_1()
-                    .border_color(theme.divider)
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.))
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(
-                                        div()
-                                            .text_size(theme.text(13.))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(worded.name.clone()),
-                                    )
-                                    .when(worded.chosen, |d| {
-                                        d.child(
-                                            div()
-                                                .text_size(theme.text(12.))
-                                                .text_color(theme.accent_text)
-                                                .child("✓ In use"),
-                                        )
-                                    }),
-                            )
-                            .child(note(detail, &theme))
-                            .when_some(worded.fit.clone(), |d, fit| {
-                                d.child(
-                                    div()
-                                        .text_size(theme.text(12.))
-                                        .text_color(theme.attention)
-                                        .child(format!("⚠︎ {fit}")),
-                                )
-                            }),
-                    )
-                    .child(explainer(
-                        about(entry, &worded, &settings),
-                        &model,
-                        open,
-                        window.viewport_size().height,
-                        &about_focus,
-                        &theme,
-                        toggle,
-                    ))
-                    .children(fetch)
-                    .children(choose),
+            let trailing = div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .children(fetch)
+                .child(explainer(
+                    about(entry, &worded, &settings),
+                    &model,
+                    open,
+                    window.viewport_size().height,
+                    &about_focus,
+                    &theme,
+                    toggle,
+                ));
+            choices.push(Choice::Pinned(entry.id.clone()));
+            group = group.option(
+                Radio::new(format!("model-{model}"), worded.name.clone())
+                    .description(detail)
+                    .warning(worded.fit.clone())
+                    .enabled(worded.usable || worded.chosen)
+                    .trailing(trailing),
             );
         }
-
         if K::OPTIONAL {
-            list = list.child(option(
-                format!("choice-off-{tag}"),
-                Mark::Radio(choice == Choice::Off),
-                "Off",
-                format!("Dory makes no {} at all.", K::NOUN.to_lowercase()),
-                &self.off_focus,
-                &theme,
-                pick(Choice::Off),
-            ));
+            choices.push(Choice::Off);
+            group = group.option(
+                Radio::new(format!("choice-off-{tag}"), "Off")
+                    .description(format!("Dory makes no {} at all.", K::NOUN.to_lowercase())),
+            );
         }
-        list
+        let selected = choices.iter().position(|c| *c == current);
+        let models = self.models.clone();
+        group
+            .selected(selected)
+            .render(&self.group, &theme, window, move |ix, _, cx| {
+                if let Some(choice) = choices.get(ix).cloned() {
+                    models.update(cx, |m, cx| m.choose(choice, cx));
+                }
+            })
+            .into_any_element()
     }
 }
 
@@ -1273,11 +1013,14 @@ impl Render for SpeechStep {
         let Some(model_row) =
             model.and_then(|m| rows.iter().find(|r| r.status.entry.id.erase() == m))
         else {
-            let wanted: Vec<String> = Stt::wanted(&settings).iter().map(language_name).collect();
+            let wanted: Vec<String> = Stt::wanted(&settings).iter().map(languages::name).collect();
             let text = if wanted.is_empty() {
                 "No speech model is available on this Mac.".to_owned()
             } else {
-                format!("No speech model covers {}.", name_list(&wanted))
+                format!(
+                    "No speech model covers {}.",
+                    languages::name_list(&wanted, "and")
+                )
             };
             return group.child(
                 a11y::node("speech-step-status", Role::Label, text.clone())
@@ -1359,150 +1102,6 @@ impl Render for SpeechStep {
     }
 }
 
-/// The languages a speech model in the catalog covers, by name. Every known language when a
-/// model takes any language, or before the list loads.
-fn language_options(models: &Models, selected: &[LangTag]) -> Vec<LangTag> {
-    let any = || {
-        LANGUAGES
-            .iter()
-            .filter_map(|(tag, _)| LangTag::parse(tag).ok())
-            .collect::<Vec<_>>()
-    };
-    let mut tags = match &models.speech {
-        Some(rows) if !rows.is_empty() => {
-            let mut tags = Vec::new();
-            for r in rows {
-                match Stt::languages(&r.status.entry.caps) {
-                    LangSet::Any => return sorted(any(), selected),
-                    LangSet::Only(only) => tags.extend(only.iter().cloned()),
-                }
-            }
-            tags
-        }
-        _ => any(),
-    };
-    tags.extend(selected.iter().cloned());
-    sorted(tags, &[])
-}
-
-fn sorted(mut tags: Vec<LangTag>, extra: &[LangTag]) -> Vec<LangTag> {
-    tags.extend(extra.iter().cloned());
-    tags.sort_by_key(|tag| (language_name(tag), tag.clone()));
-    tags.dedup();
-    tags
-}
-
-/// The meeting languages (UX-29): one checkbox per language, in name order.
-pub fn meeting_languages_picker(
-    app: &Entity<AppState>,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let models = install(app, cx);
-    window
-        .use_keyed_state("meeting-languages-picker", cx, |_, cx| {
-            LanguagePicker::new(models, cx)
-        })
-        .into_any_element()
-}
-
-pub(crate) struct LanguagePicker {
-    models: Entity<Models>,
-    focus: HashMap<LangTag, FocusHandle>,
-    _observe: Subscription,
-}
-
-impl LanguagePicker {
-    pub(crate) fn new(models: Entity<Models>, cx: &mut Context<Self>) -> Self {
-        let observe = cx.observe(&models, |_, _, cx| cx.notify());
-        if models.read(cx).settings.is_none() {
-            models.update(cx, |m, cx| m.refresh(cx));
-        }
-        Self {
-            models,
-            focus: HashMap::new(),
-            _observe: observe,
-        }
-    }
-}
-
-impl Render for LanguagePicker {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = Theme::get(cx);
-        let group = a11y::node("meeting-languages", Role::Group, "Meeting languages")
-            .flex()
-            .flex_col()
-            .gap(px(6.));
-        let models = self.models.read(cx);
-        let Some(selected) = models
-            .settings
-            .as_ref()
-            .map(|s| s.meeting_languages.clone())
-        else {
-            return group.child(note("Loading", &theme));
-        };
-        let options = language_options(models, &selected);
-        let names: Vec<String> = selected.iter().map(language_name).collect();
-        let summary = if names.is_empty() {
-            "None chosen, so any speech model can be picked.".to_owned()
-        } else {
-            format!("Meetings are in {}.", name_list(&names))
-        };
-        let mut list = a11y::node("meeting-languages-list", Role::List, "Languages")
-            .flex()
-            .flex_col()
-            .max_h(px(220.))
-            .overflow_y_scroll()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.control_border)
-            .p(px(4.));
-        for tag in options {
-            let on = selected.contains(&tag);
-            let focus = self
-                .focus
-                .entry(tag.clone())
-                .or_insert_with(|| cx.focus_handle())
-                .clone();
-            let models = self.models.clone();
-            let toggled = tag.clone();
-            list = list.child(option(
-                format!("meeting-language-{tag}"),
-                Mark::Check(on),
-                language_name(&tag),
-                "",
-                &focus,
-                &theme,
-                move |_, cx| {
-                    let tag = toggled.clone();
-                    models.update(cx, |m, cx| {
-                        m.edit(
-                            move |s| match s.meeting_languages.iter().position(|t| *t == tag) {
-                                Some(ix) => {
-                                    s.meeting_languages.remove(ix);
-                                }
-                                None => s.meeting_languages.push(tag.clone()),
-                            },
-                            cx,
-                        )
-                    })
-                },
-            ));
-        }
-        group
-            .child(
-                a11y::node("meeting-languages-summary", Role::Label, summary.clone())
-                    .text_size(theme.text(13.))
-                    .child(summary),
-            )
-            .child(note(
-                "With Language on Automatic, Dory only picks a speech model that covers every language listed here.",
-                &theme,
-            ))
-            .child(a11y::contain_scroll("meeting-languages-scroll", list))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1551,23 +1150,6 @@ mod tests {
     }
 
     #[test]
-    fn names_read_as_plain_english() {
-        assert_eq!(language_name(&tag("tl")), "Tagalog");
-        assert_eq!(language_name(&tag("en-US")), "English (US)");
-        assert_eq!(language_name(&tag("xx")), "xx");
-        let names = |n: &[&str]| n.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(name_list(&names(&["Tagalog"])), "Tagalog");
-        assert_eq!(
-            name_list(&names(&["Tagalog", "English"])),
-            "Tagalog and English"
-        );
-        assert_eq!(
-            name_list(&names(&["Tagalog", "English", "French"])),
-            "Tagalog, English, and French"
-        );
-    }
-
-    #[test]
     fn sizes_read_in_megabytes_then_gigabytes() {
         assert_eq!(size_text(670_576_784), "671 MB");
         assert_eq!(size_text(1_036_613_791), "1.0 GB");
@@ -1589,10 +1171,5 @@ mod tests {
         let short = LangSet::Only(vec![tag("en"), tag("fr")]);
         assert_eq!(languages_text(&short, &[]), "English and French");
         assert_eq!(languages_text(&LangSet::Any, &[]), "Any language");
-    }
-
-    #[test]
-    fn the_table_is_sorted_and_has_no_duplicates() {
-        assert!(LANGUAGES.windows(2).all(|w| w[0].0 < w[1].0));
     }
 }

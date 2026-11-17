@@ -547,11 +547,11 @@ impl PlayerView {
             }
             Fix::ChooseSpeechModel => crate::settings_window::open_at(
                 &app,
-                crate::settings_window::Tab::Transcription,
+                crate::settings_window::Pane::Transcription,
                 cx,
             ),
             Fix::FreeUpSpace => {
-                crate::settings_window::open_at(&app, crate::settings_window::Tab::Storage, cx)
+                crate::settings_window::open_at(&app, crate::settings_window::Pane::Storage, cx)
             }
             Fix::SetUpSummaries => crate::set_up_summaries::sheet(window, cx),
             Fix::TryAgain => app.update(cx, |app, cx| app.try_again(id.clone(), cx)),

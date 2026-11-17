@@ -6,9 +6,9 @@
 //! file gives `Prefs::default()`, never an error.
 //!
 //! `watch` restores the selection on the first list of rows (only after a short absence, see
-//! [`RESTORE_WITHIN`]) and saves with a debounce whenever the window size, the sidebar width, or
-//! the selection, the onboarding step, or the text scale changes, and once more on quit with the
-//! quit time.
+//! [`RESTORE_WITHIN`]) and saves with a debounce whenever the window size, the sidebar width, the
+//! selection, the onboarding step, the text scale, or the last Settings pane changes, and once
+//! more on quit with the quit time.
 
 use std::cell::RefCell;
 use std::io;
@@ -29,6 +29,7 @@ use crate::a11y;
 use crate::app::{AppEvent, AppState};
 use crate::library::Selection;
 use crate::onboarding::OnboardingStep;
+use crate::settings_window::Pane;
 
 pub const SIDEBAR_WIDTH: RangeInclusive<f32> = 240.0..=380.0;
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
@@ -57,6 +58,8 @@ pub struct Prefs {
     pub onboarding: Option<OnboardingStep>,
     /// View > Bigger and Smaller (A11Y-7), within `theme::TEXT_SCALES`.
     pub text_scale: f32,
+    /// The Settings pane ⌘, opens on.
+    pub settings_pane: Pane,
 }
 
 impl Default for Prefs {
@@ -68,6 +71,7 @@ impl Default for Prefs {
             quit_at: None,
             onboarding: None,
             text_scale: 1.0,
+            settings_pane: Pane::General,
         }
     }
 }
@@ -83,6 +87,7 @@ struct Disk {
     quit_at_ms: Option<i64>,
     onboarding: Option<String>,
     text_scale: f32,
+    settings_pane: Option<String>,
 }
 
 impl Default for Disk {
@@ -102,6 +107,7 @@ impl From<&Prefs> for Disk {
             quit_at_ms: prefs.quit_at.map(|t| t.0),
             onboarding: prefs.onboarding.map(|step| step.as_str().to_owned()),
             text_scale: prefs.text_scale,
+            settings_pane: Some(prefs.settings_pane.slug().to_owned()),
         }
     }
 }
@@ -140,6 +146,11 @@ impl Prefs {
             quit_at: disk.quit_at_ms.map(Timestamp),
             onboarding: disk.onboarding.as_deref().and_then(OnboardingStep::parse),
             text_scale: crate::theme::clamp_text_scale(disk.text_scale),
+            settings_pane: disk
+                .settings_pane
+                .as_deref()
+                .and_then(Pane::parse)
+                .unwrap_or(Pane::General),
         }
     }
 
@@ -160,6 +171,7 @@ impl Prefs {
             && self.last_selection == other.last_selection
             && self.onboarding == other.onboarding
             && self.text_scale == other.text_scale
+            && self.settings_pane == other.settings_pane
     }
 }
 

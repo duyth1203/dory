@@ -31,9 +31,8 @@ use std::time::Duration;
 use dory_core::domain::{Exposure, LanguagePref, Writes};
 use dory_core::models::{Availability, Llm, Stt, UnavailableReason};
 use dory_core::ports::capture::InputDevice;
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
@@ -52,6 +51,7 @@ use crate::models_view::{self, ModelList, Models, button, note, size_text};
 use crate::notify::{self, NoteKind};
 use crate::processing::PACE_CHOICES;
 use crate::radio::{self, Radio, RadioGroup};
+use crate::search_field;
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
 use crate::theme::Theme;
 use crate::theme::ThemeName;
@@ -1780,13 +1780,22 @@ impl SettingsWindow {
                     .border_1()
                     .border_color(theme.panel_border)
                     .when(theme.shadows, |panel| panel.shadow_sm())
-                    .child(
-                        Input::new(&self.search)
-                            .id("settings-search")
-                            .aria_label("Search settings")
-                            .small()
-                            .cleanable(true),
-                    )
+                    .child(div().px(px(4.)).child(search_field::view(
+                        &self.search,
+                        "settings-search",
+                        "Search settings",
+                        theme,
+                        cx,
+                        {
+                            let this = cx.entity().downgrade();
+                            move |_, cx| {
+                                let _ = this.update(cx, |this, cx| {
+                                    this.query = SharedString::default();
+                                    cx.notify();
+                                });
+                            }
+                        },
+                    )))
                     .child(
                         div()
                             .id("settings-sidebar-list")

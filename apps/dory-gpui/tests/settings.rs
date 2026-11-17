@@ -1270,6 +1270,48 @@ fn search_jumps_to_the_setting_and_highlights_it(cx: &mut TestAppContext) {
     });
 }
 
+/// Settings' search field is the main window's: a "Clear search" button at its end while it holds
+/// text, which empties it, keeps focus in it, and brings every pane back.
+#[gpui_kit::test]
+fn the_clear_button_empties_the_settings_search(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::General, cx);
+    render(window, cx);
+    assert!(
+        !has(window, "settings-search-clear", cx),
+        "no clear button while the field is empty"
+    );
+    click(window, "settings-search", cx);
+    cx.update_window(window, |_, window, cx| window.input("process", cx))
+        .unwrap();
+    render(window, cx);
+    assert!(!has(window, "settings-pane-storage", cx), "typing filters");
+    let (label, role) = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let clear = window.find("settings-search-clear");
+            (clear.label().map(str::to_owned), clear.role())
+        })
+        .unwrap();
+    assert_eq!(
+        (label.as_deref(), role),
+        (Some("Clear search"), Some(gpui_kit::Role::Button))
+    );
+    click(window, "settings-search-clear", cx);
+    render(window, cx);
+    assert!(!has(window, "settings-search-clear", cx), "gone once empty");
+    assert!(!has(window, "settings-hit-processing", cx), "no hits left");
+    assert!(
+        has(window, "settings-pane-storage", cx),
+        "every pane is back"
+    );
+    let typing = cx
+        .update_window(window, |_, window, cx| dory_gpui::a11y::typing(window, cx))
+        .unwrap();
+    assert!(typing, "focus stays in the field");
+}
+
 /// UX-31: a wheel anywhere over Settings content moves the page, so no inner area keeps it.
 #[gpui_kit::test]
 fn settings_content_has_one_scroll_area(cx: &mut TestAppContext) {

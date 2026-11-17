@@ -64,6 +64,7 @@ pub mod processing_window;
 pub mod quit;
 pub mod radio;
 pub mod record_control;
+pub mod search_field;
 pub mod set_up_summaries;
 pub mod settings_window;
 pub mod shell;

@@ -10,13 +10,13 @@ It comes from a pstack architect arena. Two runners on different models designed
 - Only `dory` (the composition root) names adapters. Apps depend on `dory-core` for types and on `dory` for `open()`. An app that imports an adapter crate fails review.
 - Each platform gets its own adapter crate. `dory-macos` is first and targets macOS 26. `dory-windows` and `dory-linux` come later and implement the same ports.
 - Domain types carry no serde. Each storage adapter owns versioned DTOs, so a domain change cannot silently change a file format.
-- Every persisted fact goes through one write, `Store::apply(Vec<Change>)`. Events come from the same `Change` list.
+- Every persisted fact goes through one write, `Store::apply(Vec<Change>)`. Events come from the same `Change` list. The search index is derived from those facts, not a fact of its own. A store updates it inside the same commit as the text, and may rebuild it outside `apply` the way a schema migration rewrites tables (see "Search").
 
 ## Crates
 
 | Crate | Role | Depends on |
 | --- | --- | --- |
-| `crates/dory-core` | Domain types, ports, pure policy, the `Dory` facade, actors, fakes | `thiserror`, `crossbeam-channel`, `async-channel`, `rtrb` |
+| `crates/dory-core` | Domain types, ports, pure policy, the `Dory` facade, actors, fakes | `thiserror`, `crossbeam-channel`, `async-channel`, `rtrb`, `unicode-normalization` |
 | `crates/dory-store` | `Store` over SQLite, `Takes` over the file system, legacy import | core, `rusqlite`, `hound`, `flacenc`, `claxon`, `rubato` |
 | `crates/dory-engines` | Portable model providers: Sona, Ollama, sherpa-onnx | core, `ureq`, `sha2`, optional `sherpa-rs` |
 | `crates/dory-macos` | macOS 26 adapters: Core Audio capture, SpeechAnalyzer, Foundation Models. Its `dory-capture` example is the capture harness, which drives the adapter directly. | core, `objc2`, `objc2-core-audio`, `objc2-core-foundation`, `objc2-avf-audio`, one Swift static library |
@@ -78,6 +78,11 @@ pub trait CaptureHandle: Send {
 }
 
 // Storage.
+pub trait StoreRead: Send + Sync {
+    fn recordings(&self, query: &RecordingQuery) -> Result<Vec<RecordingRow>, StoreError>;   // newest first
+    fn search(&self, query: &Query) -> Result<Vec<Found>, StoreError>;                      // newest first, unranked
+    // recording, transcript, summary, speaker_names, jobs, settings, checkpoints
+}
 pub trait Store: StoreRead + Send + Sync { fn apply(&self, changes: Vec<Change>) -> Result<(), StoreError>; }
 pub trait Takes: Send + Sync {
     fn begin(&self, id: &RecordingId, layout: ChannelLayout, rate_hz: u32) -> Result<Box<dyn TakeWriter>, TakeError>;
@@ -148,6 +153,16 @@ pub trait Machine: Send + Sync {
 | `ModelProvider<Diar>` | `dory_engines::Sherpa` diarizers | Optional. With none, remote speakers stay one "Remote" speaker. |
 
 `dory-macos` builds its Swift code (SpeechAnalyzer and Foundation Models, both Swift-only) as a SwiftPM static library from `build.rs`, behind a small `@_cdecl` C ABI with (context, callback) completions and explicit cancel handles. Capture does not use Swift.
+
+## Search
+
+`dory_core::search` owns every search rule as pure functions. `tokens(text)` splits text into words (a run of letters and digits, and each Han, Hiragana, and Katakana character on its own), each with its byte span and its `fold`: lowercase, NFKD, no combining marks, and a table for `ß`, `ø`, `ł`, `æ`, `œ`, `đ`, and `þ`. `Query::parse` turns typed text into clauses joined by AND: an unquoted word matches the start of any word, and a quoted run, or a typed word that splits into several tokens such as "e-mail", matches whole words in order. `matches`, `highlights`, `locate`, and `snippet` answer where a query matches inside text the caller already has. Because the index, the marks, and the snippet all read the same tokens, a hit always has something to mark.
+
+`StoreRead::search(&Query) -> Vec<Found>` returns the recordings where every clause matches the title, a speaker name of the current transcript revision, the summary, or the transcript. `Found` is the list row plus `in_title`, true when the title alone matches every clause. Hits come newest first and are not ranked. `Library::search(text)` parses, looks up, logs `search ms=`, and returns `SearchResults { query, hits }`, or `None` for text with no word in it. `MemStore` implements search with `matches` over its entries, and is the reference the store contract suite holds `SqliteStore` to.
+
+`SqliteStore` keeps one row per recording in a contentless FTS5 table (`content=''`, `contentless_delete=1`, `prefix='1 2 3'`). A row holds the core's folded tokens joined by spaces, never the raw text, so FTS5's `unicode61` tokenizer only splits on spaces and agrees with the core on every word. The FTS rowid is `search_keys.key`, because `recordings` has a text key and VACUUM may renumber its implicit rowid. `apply_change` reindexes a recording in the same transaction as the change that wrote its text: `RecordingCreated`, a title edit, `TranscriptReplaced`, `SpeakerNamesReplaced`, and `SummaryReplaced`. `RecordingDeleted` drops the row first. The legacy importer calls `apply_change`, so imports are indexed too. A query compiles to one `MATCH` string with every token double-quoted, so a typed "or" or "near" is a word, and a second `{title} :` match sets `in_title`.
+
+`search_meta` holds `tokens_version` and `generation`. Schema v6 builds the index for every recording inside its migration transaction, so a crash leaves v5 and the next open runs v6 again. When `dory_core::search::TOKENS_VERSION` differs from the stored one, `SqliteStore::open` rebuilds the index the same way. Both log `search-backfill ms=`. These two rebuilds are the only index writes outside `apply`, like any schema migration. `generation` goes up with every index write, for caches built from the index.
 
 ## How a model is chosen and added
 

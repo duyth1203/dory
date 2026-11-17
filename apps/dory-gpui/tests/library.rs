@@ -9,7 +9,7 @@ use dory_gpui::estimate::Left;
 use dory_gpui::fixtures::{self, SAMPLES};
 use dory_gpui::library::{
     DateGroup, Percent, Progress, RowStatus, SearchQuery, Selection, StatusFilter, after_removal,
-    group_by_date, row_meta,
+    group_by_date, row_meta, short_duration,
 };
 use dory_gpui::processing::{Facts, Phase};
 
@@ -102,6 +102,19 @@ fn date_group_boundaries() {
         .label(today),
         "November"
     );
+}
+
+/// The meta line and the player's clock round the same way, down, so one take never reads
+/// "43 s" in one place and "0:42" in the other.
+#[test]
+fn durations_round_down_like_the_player_clock() {
+    use dory_core::domain::Ms;
+    assert_eq!(short_duration(Ms(42_600)), "42 s");
+    assert_eq!(dory_gpui::a11y::clock(Ms(42_600)), "0:42");
+    assert_eq!(short_duration(Ms(59_999)), "59 s");
+    assert_eq!(short_duration(Ms(60_000)), "1 min");
+    assert_eq!(short_duration(Ms(7_905_600)), "131 min");
+    assert_eq!(dory_gpui::a11y::clock(Ms(7_905_600)), "2:11:45");
 }
 
 #[test]

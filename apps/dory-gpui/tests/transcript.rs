@@ -421,3 +421,29 @@ fn the_player_says_why_audio_will_not_open(cx: &mut TestAppContext) {
         assert_eq!(why.label(), Some("This recording has no audio."));
     });
 }
+
+/// Paused, the turn under the playhead keeps its place in the list but no longer says "Playing".
+#[gpui_kit::test]
+fn a_paused_turn_does_not_say_playing(cx: &mut TestAppContext) {
+    let (window, app, _) = open(cx);
+    show(TIMED, &app, cx);
+    with_window(window, cx, |window, cx| window.click("turn-2-time", cx));
+    assert_eq!(position(&app, cx), (Ms(780_000), true));
+    with_window(window, cx, |window, _| {
+        assert_eq!(window.find("turn-2").description(), Some("Playing"));
+    });
+
+    app.update(cx, |app, cx| {
+        let player = app.session().unwrap().read(cx).player().clone();
+        player.update(cx, |player, cx| player.toggle(cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(position(&app, cx), (Ms(780_000), false), "paused");
+    with_window(window, cx, |window, _| {
+        assert_eq!(
+            window.find("turn-2").description(),
+            None,
+            "a paused playhead does not say Playing"
+        );
+    });
+}

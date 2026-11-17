@@ -769,7 +769,7 @@ impl PlayerView {
             ..theme.accent
         };
         let target = t.head.to;
-        let has_head = transcribing || matches!(phase, Phase::Preparing);
+        let has_head = phase.has_reading_head();
         let arrive = t.arrived.filter(|_| waveform.is_some());
         let wave = a11y::node(
             "card-wave",

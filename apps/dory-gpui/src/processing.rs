@@ -457,6 +457,12 @@ impl Phase {
         matches!(self, Phase::Queued(spot) if spot.ahead > 0)
     }
 
+    /// Whether the waveform draws the reading head: only while transcription moves through the
+    /// audio. Saving, queued, and preparing show no head, so it never sits idle at 0:00.
+    pub fn has_reading_head(&self) -> bool {
+        matches!(self, Phase::Transcribing { .. })
+    }
+
     /// How far transcription got through the audio, for the waveform and its caption.
     pub fn transcribed(&self) -> Fraction {
         match self {
@@ -873,6 +879,20 @@ pub fn outcomes(before: &[RecordingRow], after: &[RecordingRow]) -> Vec<(Recordi
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_reading_head_shows_only_while_transcribing() {
+        assert!(!Phase::Saving.has_reading_head());
+        assert!(!Phase::Preparing.has_reading_head());
+        assert!(!Phase::Ready.has_reading_head());
+        assert!(
+            !Phase::Summarizing {
+                left: Left::Estimating
+            }
+            .has_reading_head()
+        );
+    }
+
     use dory_core::app::Budget;
     use dory_core::domain::JobError;
 

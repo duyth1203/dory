@@ -6,8 +6,8 @@
 //! - Click-to-seek: the timestamp, and Return on the current turn, call
 //!   `PlayerHandle::play_from`. Turns with no range (legacy transcripts) show no timestamp, do
 //!   not seek, and say so in their AX description.
-//! - The turn under the playhead gets `playing_bg`, a glyph, and the word "Playing", following
-//!   the session's `PlayerHandle`.
+//! - The turn under the playhead gets `playing_bg`, following the session's `PlayerHandle`.
+//!   The play glyph and the word "Playing" show only while the audio plays, not when paused.
 //! - Speaker rename: clicking the label, or Shift-Return on the current turn, turns the label into
 //!   a 150 pt field with the hint "Renames Speaker 3 in all 14 turns. Return to save, Escape to
 //!   cancel." Saving goes through `Session::rename_speaker`; the new labels arrive in the next
@@ -260,6 +260,7 @@ impl TranscriptView {
             return div().into_any_element();
         };
         let playing = self.playing == Some(ix);
+        let sounding = playing && self.player.read(cx).is_playing();
         let current = self.cursor == Some(ix);
         let ring = current && self.focus.is_focused(window);
         let spoken = match turn.range {
@@ -342,7 +343,7 @@ impl TranscriptView {
             .when(turn.range.is_none(), |el| {
                 el.aria_description("No timestamp, so it cannot play from here")
             })
-            .when(playing, |el| el.aria_description("Playing"))
+            .when(sounding, |el| el.aria_description("Playing"))
             .flex()
             .gap(px(12.))
             .px(px(12.))
@@ -391,7 +392,7 @@ impl TranscriptView {
                             .gap(px(8.))
                             .child(name)
                             .children(timestamp)
-                            .when(playing, |row| {
+                            .when(sounding, |row| {
                                 row.child(
                                     div()
                                         .flex()

@@ -311,13 +311,14 @@ pub fn after_removal(visible: &[RecordingId], removed: &RecordingId) -> Selectio
         .map_or(Selection::None, |id| Selection::One(id.clone()))
 }
 
-/// "62 min", or "45 s" under a minute.
+/// "62 min", or "45 s" under a minute. It rounds down, like the player's clock, so a 42.6 s
+/// take reads "42 s" here and "0:42" in the player.
 pub fn short_duration(ms: Ms) -> String {
-    let secs = (ms.0 + 500) / 1000;
+    let secs = ms.0 / 1000;
     if secs < 60 {
         format!("{secs} s")
     } else {
-        format!("{} min", (secs + 30) / 60)
+        format!("{} min", secs / 60)
     }
 }
 

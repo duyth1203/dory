@@ -380,3 +380,21 @@ fn retranscribe_in_pins_the_language_and_queues_the_whole_pipeline(cx: &mut Test
     assert!(jobs[0].is_terminal());
     assert!(!jobs[1].is_terminal());
 }
+
+/// A library that skipped onboarding still gets a meeting language, and one already chosen is
+/// kept.
+#[test]
+fn a_library_with_no_meeting_languages_gets_the_system_language() {
+    let store = sample_store();
+    let dory = dory_on(store.clone());
+    assert!(store.settings().unwrap().meeting_languages.is_empty());
+    let english = LangTag::parse("en").unwrap();
+    dory_gpui::seed_meeting_languages(&dory, Some(english.clone())).unwrap();
+    assert_eq!(store.settings().unwrap().meeting_languages, vec![english]);
+    dory_gpui::seed_meeting_languages(&dory, LangTag::parse("fr").ok()).unwrap();
+    assert_eq!(
+        store.settings().unwrap().meeting_languages,
+        vec![LangTag::parse("en").unwrap()],
+        "a chosen list is kept"
+    );
+}

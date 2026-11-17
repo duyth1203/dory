@@ -29,6 +29,11 @@ fn main() -> ExitCode {
     };
     eprintln!("dory: data folder {}", config.data_dir.display());
     dory::cleanup_legacy_audio(&config);
+    if let Err(error) =
+        dory_gpui::seed_meeting_languages(&dory, dory_gpui::onboarding::system_language())
+    {
+        eprintln!("dory: could not set the meeting languages: {error}");
+    }
     let prefs = prefs::load(&config);
     let dory = Rc::new(RefCell::new(Some(dory)));
     gpui_kit::application()

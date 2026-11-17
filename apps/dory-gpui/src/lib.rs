@@ -69,6 +69,23 @@ pub mod transcript_view;
 
 use gpui_kit::{App, AppContext as _, Entity, Window};
 
+/// Gives a library with no meeting languages the system's, as onboarding would. A library
+/// that skipped onboarding, such as an import, never had them chosen. `main` calls it once
+/// before any window opens, so the list is set before the first frame reads it.
+pub fn seed_meeting_languages(
+    dory: &dory_core::app::Dory,
+    language: Option<dory_core::domain::LangTag>,
+) -> Result<(), dory_core::app::DoryError> {
+    let Some(language) = language else {
+        return Ok(());
+    };
+    dory.update_settings(move |settings| {
+        if settings.meeting_languages.is_empty() {
+            settings.meeting_languages = vec![language];
+        }
+    })
+}
+
 /// Builds the window's root view on `dory`. `main` and the tests share it.
 pub fn build(
     dory: dory_core::app::Dory,

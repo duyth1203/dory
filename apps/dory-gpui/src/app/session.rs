@@ -197,7 +197,7 @@ impl Session {
     fn rematch(&mut self, jump: bool, cx: &mut Context<Self>) {
         let kept = self.found.take();
         if let (Some(query), Some(detail)) = (&self.query, self.detail()) {
-            let title = crate::detail::shown_title(&detail.recording, &chrono::Local);
+            let title = crate::library::given_title(&detail.recording).unwrap_or_default();
             let turns: Vec<&str> = detail.turns.iter().map(|t| t.text.as_str()).collect();
             let blocks = detail
                 .summary
@@ -205,7 +205,7 @@ impl Session {
                 .map(|s| search::summary_blocks(&s.markdown))
                 .unwrap_or_default();
             let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-            self.found = Matches::open(query, &title, &turns, &blocks).map(|opened| match kept {
+            self.found = Matches::open(query, title, &turns, &blocks).map(|opened| match kept {
                 Some(old) if !jump && old.query() == query => opened.on(old.current()),
                 _ => opened,
             });

@@ -4,8 +4,8 @@
 
 use chrono::{DateTime, Datelike, NaiveDate, TimeZone};
 use dory_core::app::Budget;
-use dory_core::domain::{Fraction, Ms, RecordingId, RecordingRow, Stage, Timestamp};
-use dory_core::search::{Correction, Excerpt, Section, Source};
+use dory_core::domain::{Fraction, Ms, Recording, RecordingId, RecordingRow, Stage, Timestamp};
+use dory_core::search::{self, Correction, Excerpt, Query, Section, Source};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Selection {
@@ -382,16 +382,34 @@ where
     }
 }
 
+/// The title the user gave, trimmed. `None` for an untitled recording, which the views show by
+/// its date. The index holds only this text, so it is the only title text a search matches.
+pub fn given_title(recording: &Recording) -> Option<&str> {
+    recording
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+}
+
 /// The row title, with a date-based fallback for an untitled recording.
 pub fn title<Tz: TimeZone>(row: &RecordingRow, tz: &Tz) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
-    match row.recording.title.as_deref().map(str::trim) {
-        Some(title) if !title.is_empty() => title.to_owned(),
-        _ => format!(
+    match given_title(&row.recording) {
+        Some(title) => title.to_owned(),
+        None => format!(
             "Recording {}",
             local(row.recording.created_at, tz).format("%-d %b, %H:%M")
         ),
     }
+}
+
+/// The bytes of the shown [`title`] that `query` marks. An untitled recording's date label is not
+/// a title the search can match, so it has none.
+pub fn title_marks(query: &Query, recording: &Recording) -> Vec<std::ops::Range<usize>> {
+    given_title(recording)
+        .map(|title| search::highlights(query, title))
+        .unwrap_or_default()
 }

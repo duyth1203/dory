@@ -701,14 +701,15 @@ impl AppState {
         .detach();
     }
 
-    /// Says how many results a search that just settled found. Typing that has not settled says
-    /// nothing, and neither does clearing the field.
+    /// Says how many results a search that just settled found, "No results" for text that holds
+    /// no word. Typing that has not settled says nothing, and neither does clearing the field.
     fn announce_results(&mut self) {
         self.announced = None;
-        let Some(results) = self.search.as_ref().filter(|_| !self.typed.is_empty()) else {
+        if self.typed.is_empty() {
             return;
-        };
-        let said = crate::library::results_announcement(self.visible().len(), &results.corrections);
+        }
+        let corrections = self.search.as_ref().map_or(&[][..], |r| &r.corrections);
+        let said = crate::library::results_announcement(self.visible().len(), corrections);
         crate::a11y::announce(&said);
         self.announced = Some(said);
     }

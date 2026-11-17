@@ -21,7 +21,7 @@
 use std::ops::Range;
 
 use chrono::Local;
-use dory_core::search::{self, Section};
+use dory_core::search::Section;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
@@ -244,7 +244,7 @@ impl Sidebar {
                     label = format!("{label}. {found}");
                 }
                 let title_marks = query
-                    .map(|query| search::highlights(query, &title))
+                    .map(|query| library::title_marks(query, &row.recording))
                     .unwrap_or_default();
                 let (fg, fg2) = if filled {
                     (theme.on_accent, theme.on_accent)

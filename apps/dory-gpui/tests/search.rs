@@ -11,11 +11,12 @@ use std::sync::Arc;
 
 use dory_core::app::{Dory, Options, Ports};
 use dory_core::domain::{
-    Channel, Ms, Revision, Segment, SpeakerId, Summary, TimeRange, Timestamp, Transcript,
+    Channel, ChannelLayout, LanguagePref, Ms, Recording, RecordingId, Revision, Segment, SpeakerId,
+    SpeakerNames, Summary, TimeRange, Timestamp, Transcript,
 };
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, Store as _, Takes as _};
-use dory_core::search::{Correction, Excerpt, Section, Snippet, Source};
+use dory_core::search::{Correction, Excerpt, Query, Section, Snippet, Source};
 use dory_core::testing::playback::FakePlayback;
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{FakeCapture, ManualClock, MemTakes};
@@ -25,6 +26,7 @@ use dory_gpui::find::Place;
 use dory_gpui::fixtures::{self, SAMPLES};
 use dory_gpui::library::{
     Selection, StatusFilter, corrected_words, match_words, results_announcement, section_label,
+    title_marks,
 };
 use dory_gpui::prefs::Prefs;
 use dory_gpui::transcript_view::PAGED_TURNS;
@@ -483,6 +485,10 @@ const MID_TURNS: usize = 70;
 const SUMMARY_ONLY: &str = "Hiring debrief";
 /// Imported from the old app: no times and no take.
 const LEGACY: &str = "1:1 with Sam";
+/// Its summary is longer than the text view parses at once, so its parse lands a moment later.
+const LONG_SUMMARY_PARAGRAPHS: usize = 150;
+/// Its summary has a link whose address holds the word "roadmap".
+const LINKED: &str = "Partner call, Lyon office";
 
 fn segment(speaker: u16, channel: Channel, range: Option<(u64, u64)>, text: &str) -> Segment {
     Segment {
@@ -564,6 +570,23 @@ fn corpus_summary(title: &str) -> Option<Summary> {
     let markdown = match title {
         TALK => "## Roadmap notes\n\n- Ship the docked player.\n- The roadmap moves to Q3.\n",
         SUMMARY_ONLY => "## Notes\n\n- Kilimanjaro came up twice.\n",
+        MID => {
+            return Some(Summary {
+                markdown: format!(
+                    "{}\n\nZanzibar ends it, and the Zanzibar trip is last.\n",
+                    (0..LONG_SUMMARY_PARAGRAPHS)
+                        .map(|i| format!("Paragraph {i} is filler about nothing at all."))
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                ),
+                language: None,
+                produced_by: ModelRef::parse("fake/sample").unwrap(),
+                transcript_revision: Revision(1),
+            });
+        }
+        LINKED => {
+            "## Plan\n\nSee [the plan](https://roadmap.example.com/x) for the roadmap.\n\nThe roadmap slips.\n"
+        }
         _ => return None,
     };
     Some(Summary {
@@ -576,6 +599,14 @@ fn corpus_summary(title: &str) -> Option<Summary> {
 
 /// The samples with the transcripts and summaries above, and takes for [`TALK`] and [`LONG`].
 fn open_corpus(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>, Arc<FakePlayback>) {
+    open_corpus_with(Vec::new(), cx)
+}
+
+/// [`open_corpus`] with `extra` changes applied after the samples.
+fn open_corpus_with(
+    extra: Vec<Change>,
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<AppState>, Arc<FakePlayback>) {
     cx.update(gpui_kit::init);
     let store = Arc::new(MemStore::new());
     let mut changes = Vec::new();
@@ -594,6 +625,7 @@ fn open_corpus(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>, A
             });
         }
     }
+    changes.extend(extra);
     store.apply(changes).expect("seed the corpus");
     let takes = Arc::new(MemTakes::new());
     for title in [TALK, LONG] {
@@ -663,8 +695,18 @@ fn open_hit(
     window: AnyWindowHandle,
     cx: &mut TestAppContext,
 ) {
+    open_id(id_of(title), typed, app, window, cx);
+}
+
+fn open_id(
+    id: RecordingId,
+    typed: &str,
+    app: &Entity<AppState>,
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) {
     search(app, typed, cx);
-    app.update(cx, |app, cx| app.select(Selection::One(id_of(title)), cx));
+    app.update(cx, |app, cx| app.select(Selection::One(id), cx));
     settle(window, cx);
 }
 
@@ -680,6 +722,18 @@ fn settle(window: AnyWindowHandle, cx: &mut TestAppContext) {
 
 /// The summary's marks as the words they cover in the rendered text.
 fn summary_marks(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<String> {
+    let (rendered, ranges) = summary_ranges(window, cx);
+    ranges
+        .iter()
+        .map(|r| rendered[r.clone()].to_owned())
+        .collect()
+}
+
+/// The text the summary draws, and the ranges of it that are marked.
+fn summary_ranges(
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) -> (String, Vec<std::ops::Range<usize>>) {
     let _ = window;
     let shell = SHELL
         .with(|slot| slot.borrow().clone())
@@ -689,13 +743,7 @@ fn summary_marks(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<String
             shell.detail().map(|d| d.read(cx).summary().clone())
         })
         .expect("a detail pane");
-    summary.read_with(cx, |text, cx| {
-        let rendered = text.rendered(cx);
-        text.marks()
-            .iter()
-            .map(|r| rendered[r.clone()].to_owned())
-            .collect()
-    })
+    summary.read_with(cx, |text, cx| (text.rendered(cx), text.marks().to_vec()))
 }
 
 fn current(app: &Entity<AppState>, cx: &mut TestAppContext) -> Option<(usize, usize, Place)> {
@@ -1062,4 +1110,111 @@ fn a_match_in_the_title_scrolls_the_page_back_to_the_top(cx: &mut TestAppContext
         in_view(window, "title", cx),
         "a match in the title scrolls the page back to the top"
     );
+}
+
+fn untitled_recording() -> Recording {
+    Recording {
+        id: untitled_id(),
+        title: None,
+        created_at: untitled_at(),
+        language: LanguagePref::Auto,
+        layout: ChannelLayout::MicSystem,
+        take: None,
+    }
+}
+
+fn untitled_id() -> RecordingId {
+    RecordingId::generate(untitled_at(), 0)
+}
+
+fn untitled_at() -> Timestamp {
+    Timestamp(fixtures::now().timestamp_millis() - 3_600_000)
+}
+
+/// A recording with no title, so the sidebar shows "Recording 12 Nov, 10:30". Its transcript says
+/// "recording", and a speaker is named Novak, so "nov" finds it by that name alone.
+fn untitled_changes() -> Vec<Change> {
+    let id = untitled_id();
+    vec![
+        Change::RecordingCreated(untitled_recording()),
+        Change::TranscriptReplaced {
+            id: id.clone(),
+            transcript: spoken_transcript(vec![segment(
+                4,
+                Channel::System,
+                Some((0, 5_000)),
+                "The recording starts at ten.",
+            )]),
+        },
+        Change::SpeakerNamesReplaced {
+            id,
+            names: SpeakerNames {
+                for_revision: Revision(1),
+                names: [(SpeakerId(4), "Novak".to_owned())].into(),
+            },
+        },
+    ]
+}
+
+#[test]
+fn the_sidebar_marks_a_given_title_and_never_the_date_label() {
+    let query = Query::parse("recording nov").unwrap();
+    assert!(title_marks(&query, &untitled_recording()).is_empty());
+    let given = Recording {
+        title: Some("  Recording plan, Nov  ".into()),
+        ..untitled_recording()
+    };
+    assert_eq!(
+        title_marks(&query, &given),
+        [0..9, 16..19],
+        "bytes of the trimmed title the row shows"
+    );
+}
+
+#[gpui_kit::test]
+fn an_untitled_recording_has_no_title_match(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus_with(untitled_changes(), cx);
+    open_id(untitled_id(), "recording", &app, window, cx);
+    app.read_with(cx, |app, cx| {
+        let found = app.session().unwrap().read(cx).found().unwrap();
+        assert!(found.in_title().is_empty(), "the date label is not text");
+        assert_eq!(found.len(), 1, "only the transcript's word counts");
+        assert_eq!(found.current_at().place, Place::Turn(0));
+    });
+}
+
+#[gpui_kit::test]
+fn a_speaker_only_hit_on_an_untitled_recording_has_no_matches(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus_with(untitled_changes(), cx);
+    open_id(untitled_id(), "nov", &app, window, cx);
+    assert_eq!(current(&app, cx), None, "a name is not a match to step to");
+    assert_eq!(readout(window, cx), None);
+    app.read_with(cx, |app, cx| {
+        assert!(!dory_gpui::menus::menu_state(app, cx).can_step);
+    });
+}
+
+#[gpui_kit::test]
+fn punctuation_only_text_says_no_results_once_it_settles(cx: &mut TestAppContext) {
+    let (window, app) = open(cx);
+    let said = |cx: &mut TestAppContext| app.read_with(cx, |app, _| app.announced.clone());
+    app.update(cx, |app, cx| app.set_search("!!!", cx));
+    cx.run_until_parked();
+    assert_eq!(said(cx), None, "typing that has not settled says nothing");
+    cx.executor().advance_clock(SEARCH_DEBOUNCE);
+    cx.run_until_parked();
+    assert_eq!(said(cx).as_deref(), Some("No results"));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("sidebar-empty").label(),
+            Some("No recordings match “!!!”.")
+        );
+    })
+    .unwrap();
+
+    search(&app, "", cx);
+    assert_eq!(said(cx), None, "clearing the field says nothing");
+    search(&app, "?", cx);
+    assert_eq!(said(cx).as_deref(), Some("No results"));
 }

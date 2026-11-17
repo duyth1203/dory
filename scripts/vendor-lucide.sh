@@ -12,7 +12,7 @@ version=${1:-$(cat "$dest/VERSION")}
 
 # Keep in step with `Icon` in apps/dory-gpui/src/icons.rs; its tests fail on a mismatch.
 icons=(
-  battery-medium captions check chevron-down chevron-right chevrons-up-down circle circle-check
+  battery-medium bot captions check chevron-down chevron-right chevrons-up-down circle circle-check
   circle-dashed circle-stop clock ellipsis file-text hard-drive info mic pause play plus
   search settings-2 square triangle-alert x
 )

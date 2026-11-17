@@ -2,9 +2,7 @@
 //! no assistant ever sees. Every change takes the data folder's lock; `list` only reads.
 
 use dory::Config;
-use dory_core::domain::{
-    Access, AuditEntry, AuditOutcome, Exposure, RecordingId, Timestamp, Writes,
-};
+use dory_core::domain::{AuditEntry, AuditOutcome, Exposure, RecordingId, Timestamp, Writes};
 
 use crate::{chain, open, open_library, view};
 
@@ -207,21 +205,7 @@ fn describe(e: &AuditEntry) -> String {
         (None, Some(name)) => format!("unknown assistant calling itself {name}"),
         (None, None) => "unknown assistant".to_owned(),
     };
-    let what = match &e.access {
-        Access::Search { text, hits } => format!("searched {text:?} ({hits} hits)"),
-        Access::Recording(id) => format!("read recording {id}"),
-        Access::Summary(id) => format!("read the summary of {id}"),
-        Access::Transcript { id, turns } => {
-            format!("read turns {}-{} of {id}'s transcript", turns.0, turns.1)
-        }
-        Access::ActionItems { ids } => format!("read action items of {} meeting(s)", ids.len()),
-        Access::ResourceList => "listed meetings".to_owned(),
-        Access::Prompt { name } => format!("used the {name} prompt"),
-        Access::Write { what, id } => match id {
-            Some(id) => format!("asked to {what} on {id}"),
-            None => format!("asked to {what}"),
-        },
-    };
+    let what = e.access.describe();
     let outcome = match &e.outcome {
         AuditOutcome::Served { .. } => "served".to_owned(),
         AuditOutcome::Refused(why) => format!("refused: {why}"),

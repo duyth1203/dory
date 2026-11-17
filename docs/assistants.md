@@ -8,33 +8,31 @@ Access is off until you turn it on. Each assistant you add gets its own key and 
 
 Anything an assistant reads from Dory is sent to that assistant's provider, like anything else you paste into it. Dory itself sends nothing. A cloud assistant such as Claude sends what it reads to its provider under that provider's retention settings, and Dory cannot see or limit what happens after that.
 
-## Turn it on and add an assistant
+## Turn it on and connect an assistant
 
-1. Turn access on. The command prints the sentence above first.
+Open Dory's Settings (Command-Comma) and choose **Assistants**.
 
-   ```bash
-   dory-cli assistants on
-   ```
-
-2. Add an assistant with the level it may read. There is no default level.
-
-   ```bash
-   dory-cli assistants add "Claude Code" --exposure summaries
-   ```
-
-   The levels are these.
+1. Check **Let assistants read your meetings**. The sentence under it is the one above.
+2. Under **Connect an assistant**, choose what it may read. Nothing is chosen for you.
 
    | Level | The assistant can read |
    | --- | --- |
-   | `titles` | Each meeting's id, title, date, duration, and language. Search matches titles only. |
-   | `summaries` | Adds summaries, speaker names, and action items. Search also matches summaries. |
-   | `transcripts` | Adds full transcripts. Search also matches what was said. |
+   | Titles | Each meeting's id, title, date, duration, and language. Search matches titles only. |
+   | Summaries | Adds summaries, speaker names, and action items. Search also matches summaries. |
+   | Full transcripts | Adds every word said. Search also matches what was said. |
 
-3. Copy the key the command prints. It starts with `dk_` and is shown once. Dory keeps only a digest of it, so if you lose it, remove the assistant and add it again.
+3. Check **May ask for changes** if it may ask to rename meetings, name speakers, or summarize again. Each change still waits for your click.
+4. Click **Copy Claude Code Command** or **Copy Claude Desktop Setup**. Dory gives that assistant its own key and copies its setup with the key and the helper's path already in it. Then paste it as below.
+
+Copying again for the same assistant gives it a new key, and the old one stops working, so paste the new setup too. **Connected** lists each assistant with its level, its **May ask for changes** switch, and **Remove**. **Activity** shows the latest reads.
+
+Dory keeps only a digest of each key, so a lost key cannot be shown again. Copy the setup again instead.
+
+The same can be done from Terminal with `dory-cli`, while Dory is not running: `dory-cli assistants on`, then `dory-cli assistants add "Claude Code" --exposure summaries`, which prints the key once.
 
 ## Connect Claude Code
 
-Run this once, with your key in place of `<key>`. `--env` has to come before `--scope`, or Claude Code reads the key as the server's name.
+Paste the copied command into Terminal and press Return, then start a new Claude Code session. By hand, it is this, with your key in place of `<key>`. `--env` has to come before `--scope`, or Claude Code reads the key as the server's name.
 
 ```bash
 claude mcp add --env DORY_MCP_KEY=<key> --scope user dory -- /Applications/Dory.app/Contents/MacOS/dory-mcp
@@ -44,7 +42,7 @@ Check it with `claude mcp list`, which should show `dory` as connected. Then ask
 
 ## Connect Claude Desktop
 
-Open Claude Desktop's settings, go to Developer, and choose Edit Config. That opens `~/Library/Application Support/Claude/claude_desktop_config.json`. Add a `dory` entry under `mcpServers`, keeping any servers already there.
+Open Claude Desktop's settings, go to Developer, and choose Edit Config. That opens `~/Library/Application Support/Claude/claude_desktop_config.json`. Add the copied `dory` entry under `mcpServers`, keeping any servers already there. It looks like this.
 
 ```json
 {
@@ -103,7 +101,7 @@ Each request then shows an alert in Dory's window with the exact change, for exa
 - See every read with `dory-cli assistants activity`, newest first, for the last 30 days, or `--days N`. Each line says which assistant read what and when, never the meeting text. Dory deletes activity older than 30 days each time it opens, and `dory-cli assistants prune` does it on demand.
 - List assistants and whether access is on with `dory-cli assistants list`.
 
-Changing access needs Dory's data folder to itself, so quit Dory first. `list` and `activity` work while Dory runs.
+Settings > Assistants does all of this while Dory runs. The `dory-cli` commands that change access need Dory's data folder to themselves, so quit Dory before using them; `list` and `activity` work while Dory runs.
 
 ## When something is wrong
 

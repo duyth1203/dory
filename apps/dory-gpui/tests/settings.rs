@@ -1349,3 +1349,110 @@ fn settings_content_has_one_scroll_area(cx: &mut TestAppContext) {
     }
     assert!(probed > 30, "only {probed} points probed");
 }
+
+fn status(window: AnyWindowHandle, cx: &mut TestAppContext) -> String {
+    label(window, "assistant-connected", cx).unwrap_or_default()
+}
+
+#[gpui_kit::test]
+fn the_assistants_pane_connects_claude_code_and_manages_it(cx: &mut TestAppContext) {
+    use dory_core::domain::{ClientKey, Exposure, Writes};
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let helper = rig.dir.join("dory-mcp");
+    std::fs::write(&helper, b"").unwrap();
+    app.update(cx, |app, _| app.set_assistant_helper(Some(helper.clone())));
+    let window = open_settings(&app, main, settings_window::Pane::Assistants, cx);
+
+    until(cx, "the access switch", |cx| {
+        checked(window, "setting-assistants-enabled", cx) == Some(false)
+    });
+    assert!(
+        !has(window, "connect-claude-code", cx),
+        "nothing to connect while off"
+    );
+    click(window, "setting-assistants-enabled", cx);
+    until(cx, "access to turn on", |_| {
+        rig.store.assistant_access().unwrap().enabled
+    });
+    until(cx, "the connect buttons", |cx| {
+        has(window, "connect-claude-code", cx)
+    });
+
+    click(window, "connect-claude-code", cx);
+    until(cx, "the missing level to be named", |cx| {
+        status(window, cx) == "Choose what it may read first."
+    });
+    assert!(rig.store.assistant_access().unwrap().clients.is_empty());
+
+    click(window, "assistant-level-summaries", cx);
+    click(window, "connect-claude-code", cx);
+    until(cx, "the command to be copied", |cx| {
+        status(window, cx).starts_with("Copied.")
+    });
+    let copied = cx
+        .read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default();
+    assert!(
+        copied.starts_with("claude mcp add --env DORY_MCP_KEY=dk_"),
+        "{copied}"
+    );
+    assert!(copied.contains(" dory -- "), "{copied}");
+    assert!(copied.contains(&helper.display().to_string()), "{copied}");
+    let key = |text: &str| {
+        text.split_whitespace()
+            .find_map(|w| w.strip_prefix("DORY_MCP_KEY="))
+            .and_then(ClientKey::parse)
+            .unwrap()
+    };
+    let first = key(&copied);
+    let client = rig.store.assistant_client(&first).unwrap().unwrap();
+    assert_eq!(
+        (client.label.as_str(), client.exposure, client.writes),
+        ("Claude Code", Exposure::Summaries, Writes::Never)
+    );
+    assert!(has(window, "assistant-Claude Code", cx));
+
+    click(window, "connect-claude-code", cx);
+    until(cx, "the key to be replaced", |cx| {
+        status(window, cx).contains("old key no longer works")
+    });
+    assert_eq!(rig.store.assistant_client(&first).unwrap(), None);
+    assert_eq!(rig.store.assistant_access().unwrap().clients.len(), 1);
+
+    click(window, "assistant-edits-Claude Code", cx);
+    until(cx, "edits to be allowed", |_| {
+        rig.store.assistant_access().unwrap().clients[0].writes == Writes::Ask
+    });
+
+    click(window, "assistant-remove-Claude Code", cx);
+    until(cx, "the assistant to go", |_| {
+        rig.store.assistant_access().unwrap().clients.is_empty()
+    });
+    until(cx, "the empty list", |cx| {
+        has(window, "setting-assistants-none", cx)
+    });
+}
+
+#[gpui_kit::test]
+fn connect_says_so_when_no_helper_ships_with_the_app(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    app.update(cx, |app, _| app.set_assistant_helper(None));
+    rig.store
+        .apply(vec![Change::Assistant(
+            dory_core::domain::AssistantChange::Enabled(true),
+        )])
+        .unwrap();
+    let window = open_settings(&app, main, settings_window::Pane::Assistants, cx);
+    until(cx, "the connect buttons", |cx| {
+        has(window, "connect-claude-desktop", cx)
+    });
+    click(window, "assistant-level-titles", cx);
+    click(window, "connect-claude-desktop", cx);
+    until(cx, "the missing helper to be named", |cx| {
+        status(window, cx).contains("no dory-mcp helper")
+    });
+    assert!(rig.store.assistant_access().unwrap().clients.is_empty());
+}

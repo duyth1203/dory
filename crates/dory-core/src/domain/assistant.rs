@@ -327,6 +327,30 @@ impl Access {
     /// How much of a search's text the log keeps.
     pub const SEARCH_TEXT_CHARS: usize = 200;
 
+    /// What was asked for, as a phrase that follows the assistant's name.
+    pub fn describe(&self) -> String {
+        match self {
+            Access::Search { text, hits } if text.is_empty() => {
+                format!("listed meetings ({hits} found)")
+            }
+            Access::Search { text, hits } => format!("searched \"{text}\" ({hits} found)"),
+            Access::Recording(id) => format!("looked at {id}"),
+            Access::Summary(id) => format!("read the summary of {id}"),
+            Access::Transcript { id, turns } => {
+                format!("read turns {}-{} of {id}'s transcript", turns.0, turns.1)
+            }
+            Access::ActionItems { ids } => {
+                format!("read action items of {} meeting(s)", ids.len())
+            }
+            Access::ResourceList => "listed meetings".to_owned(),
+            Access::Prompt { name } => format!("used the {name} prompt"),
+            Access::Write { what, id } => match id {
+                Some(id) => format!("asked to {what} on {id}"),
+                None => format!("asked to {what}"),
+            },
+        }
+    }
+
     pub fn search(text: &str, hits: u32) -> Access {
         Access::Search {
             text: text.chars().take(Self::SEARCH_TEXT_CHARS).collect(),

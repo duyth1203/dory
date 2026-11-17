@@ -8,6 +8,7 @@
 //! `record` adds the record flow and processing (P5): recorder commands, the recorder's events,
 //! progress and estimates, finish and fix actions.
 
+mod assistants;
 mod core;
 mod models;
 mod player;
@@ -28,6 +29,10 @@ use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Tas
 pub use player::PlayerHandle;
 pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
 
+pub use self::assistants::{
+    ACTIVITY_LINES, Assistants, AssistantsView, Connected, Target, helper_path, setup_text,
+    shorten_key,
+};
 use self::core::Core;
 pub use self::models::{Originals, count};
 use crate::estimate::{Estimate, Rates};
@@ -143,6 +148,12 @@ pub struct AppState {
     asking: HashSet<Source>,
     /// Settings > Storage's old-app WebM files (P7, moved from P8).
     originals: Originals,
+    /// Settings > Assistants: access, the connected assistants, and their latest reads.
+    assistants: Assistants,
+    /// The last Connect in Settings > Assistants.
+    connected: Option<Connected>,
+    /// `dory-mcp`, which Connect points assistants at.
+    assistant_helper: Option<std::path::PathBuf>,
     epoch: Instant,
     _pump: Task<()>,
 }
@@ -223,6 +234,9 @@ impl AppState {
             settings: Settings::default(),
             asking: HashSet::new(),
             originals: Originals::Unread,
+            assistants: Assistants::Unread,
+            connected: None,
+            assistant_helper: helper_path(),
             epoch: Instant::now(),
             _pump: pump,
         };

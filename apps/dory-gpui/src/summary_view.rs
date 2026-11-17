@@ -238,6 +238,7 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
             .line_height(relative(1.7))
     };
     let line_height = theme.text(17.) * 1.7;
+    let initial = theme.text(17.) * 5.7;
     let mut column = div().flex().flex_col();
     for (ix, line) in lines.iter().enumerate() {
         if presentation.section_ornament && marks.ornament_before == Some(ix) {
@@ -291,16 +292,19 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
                     .gap(px(6.))
                     .pb(px(8.))
                     .child(
-                        theme
-                            .reading(div())
-                            .id("drop-cap")
-                            .flex_none()
-                            .h(line_height * 3.)
-                            .text_size(theme.text(56.))
-                            .line_height(relative(1.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(theme.accent_text)
-                            .child(text[..split].to_owned()),
+                        div().flex_none().h(line_height * 3.).child(
+                            theme
+                                .reading(div())
+                                .id("drop-cap")
+                                // Sized so the capital runs from the first line's cap height
+                                // to the third line's baseline, then lifted onto the first.
+                                .mt(-(initial * 0.067))
+                                .text_size(initial)
+                                .line_height(relative(1.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(theme.accent_text)
+                                .child(text[..split].to_owned()),
+                        ),
                     )
                     .child(
                         div()

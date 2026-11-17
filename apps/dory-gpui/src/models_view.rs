@@ -187,6 +187,7 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
             }
         }
         Mismatch::LanguagesUnknown => "Needs your meeting languages set in Settings".into(),
+        Mismatch::OneLanguagePerMeeting => "Handles one language per meeting".into(),
         Mismatch::AutoLanguageUnsupported => "Needs a language chosen, can't detect one".into(),
         Mismatch::NoDiarization => "Can't tell speakers apart".into(),
         Mismatch::InputTooLong => "Long recordings get cut short".into(),

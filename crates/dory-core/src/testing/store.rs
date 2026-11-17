@@ -1958,6 +1958,10 @@ mod contract {
             },
             Blocker::Incompatible {
                 model: model(),
+                why: Mismatch::OneLanguagePerMeeting,
+            },
+            Blocker::Incompatible {
+                model: model(),
                 why: Mismatch::NoDiarization,
             },
             Blocker::Incompatible {

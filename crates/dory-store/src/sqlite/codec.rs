@@ -283,6 +283,7 @@ fn mismatch_to_db(why: Mismatch) -> &'static str {
         Mismatch::AutoLanguageUnsupported => "auto_language_unsupported",
         Mismatch::LanguageUnsupported => "language_unsupported",
         Mismatch::LanguagesUnknown => "languages_unknown",
+        Mismatch::OneLanguagePerMeeting => "one_language_per_meeting",
         Mismatch::NoDiarization => "no_diarization",
         Mismatch::InputTooLong => "input_too_long",
     }
@@ -293,6 +294,7 @@ fn mismatch_from_db(s: &str) -> Result<Mismatch, StoreError> {
         "auto_language_unsupported" => Mismatch::AutoLanguageUnsupported,
         "language_unsupported" => Mismatch::LanguageUnsupported,
         "languages_unknown" => Mismatch::LanguagesUnknown,
+        "one_language_per_meeting" => Mismatch::OneLanguagePerMeeting,
         "no_diarization" => Mismatch::NoDiarization,
         "input_too_long" => Mismatch::InputTooLong,
         other => return Err(corrupt(format!("unknown mismatch {other:?}"))),

@@ -79,6 +79,9 @@ pub enum Mismatch {
     /// are unknown, because it may drop the parts it cannot read.
     #[error("needs your meeting languages set in Settings")]
     LanguagesUnknown,
+    /// The model runs in one language chosen up front, and the meeting uses two or more.
+    #[error("handles one language per meeting")]
+    OneLanguagePerMeeting,
     #[error("cannot tell speakers apart")]
     NoDiarization,
     #[error("input is longer than the model accepts")]
@@ -142,7 +145,11 @@ impl ModelKind for Stt {
             LangSupport::Multilingual { auto_detect, tags } => (*auto_detect, tags),
             LangSupport::FixedLocale { tags } => (one_language(&needs.expected).is_some(), tags),
         };
+        let fixed = matches!(caps.languages, LangSupport::FixedLocale { .. });
         match &needs.language {
+            LanguagePref::Auto if !can_auto && fixed && !needs.expected.is_empty() => {
+                return Fit::No(Mismatch::OneLanguagePerMeeting);
+            }
             LanguagePref::Auto if !can_auto => return Fit::No(Mismatch::AutoLanguageUnsupported),
             LanguagePref::Auto if needs.expected.iter().any(|lang| !tags.supports(lang)) => {
                 return Fit::No(Mismatch::LanguageUnsupported);
@@ -569,7 +576,7 @@ mod tests {
         for caps in [fixed_english(), any_locale] {
             assert_eq!(
                 Stt::fit(&caps, &expecting(&["en", "tl"])),
-                Fit::No(Mismatch::AutoLanguageUnsupported),
+                Fit::No(Mismatch::OneLanguagePerMeeting),
                 "{caps:?}"
             );
         }

@@ -535,9 +535,10 @@ impl PlayerView {
                         .items_center()
                         .gap(px(12.))
                         .child(
+                            // No `min_w(0)`: the column keeps the time's width, so at large text
+                            // it pushes the controls right instead of running under them.
                             div()
                                 .flex_1()
-                                .min_w(px(0.))
                                 .flex()
                                 .flex_wrap()
                                 .items_center()

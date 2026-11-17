@@ -363,4 +363,31 @@ fn the_title_editor_is_as_tall_as_the_title_and_keeps_the_meta_line_clear(cx: &m
         );
     })
     .unwrap();
+
+/// At 200% text in the smallest window, a long recording's `0:00 / 1:34:00` never runs under
+/// the transport buttons beside it.
+#[gpui_kit::test]
+fn the_player_time_clears_the_transport_at_200_percent(cx: &mut TestAppContext) {
+    let prefs = dory_gpui::prefs::Prefs {
+        text_scale: 2.0,
+        window_size: dory_gpui::prefs::MIN_WINDOW_SIZE,
+        ..common::past_first_run()
+    };
+    let (window, app) = common::open_with_prefs(cx, dory_on(sample_store()), prefs);
+    select(&app, "Customer interview: Ortega", cx);
+    let (time, back) = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.find("player-time").bounds(),
+                window.find("player-back").bounds(),
+            )
+        })
+        .unwrap();
+    let side_by_side = time.right() <= back.left();
+    let stacked = time.bottom() <= back.top() || back.bottom() <= time.top();
+    assert!(
+        side_by_side || stacked,
+        "the time {time:?} overlaps Back {back:?}"
+    );
 }

@@ -1,8 +1,9 @@
 //! Export and copy (UX-4, UX-23).
 //!
 //! `render` is pure and turns a `Detail` into a document. Markdown is the title, the metadata
-//! line, the summary, then the transcript as `**Label** [12:24]` turns. Text is the same without
-//! markup. SRT numbers each segment (not each turn) with `00:12:24,000 --> 00:12:27,500`. Names
+//! line, the summary, then the transcript as `**Label** [12:24]` turns, with the spoken language
+//! after the label, `**Label (English)** [12:24]`, on the turns the tab tags. Text is the same
+//! without markup. SRT numbers each segment (not each turn) with `00:12:24,000 --> 00:12:27,500`. Names
 //! come from `Detail.turns` and the speaker names, so an export always matches what the
 //! transcript tab shows. A translated transcript exports the text the tab shows, translated or
 //! as spoken, whichever the Original / Translated switch is on.
@@ -156,10 +157,14 @@ fn turns_text(markdown: bool, turns: &[Turn]) -> String {
             .range
             .map(|range| format!(" [{}]", a11y::clock(range.start())))
             .unwrap_or_default();
+        let who = match &turn.tag {
+            Some(tag) => format!("{} ({tag})", turn.label),
+            None => turn.label.to_string(),
+        };
         if markdown {
-            let _ = write!(out, "\n**{}**{stamp}\n{}\n", turn.label, turn.text);
+            let _ = write!(out, "\n**{who}**{stamp}\n{}\n", turn.text);
         } else {
-            let _ = write!(out, "\n{}{stamp}\n{}\n", turn.label, turn.text);
+            let _ = write!(out, "\n{who}{stamp}\n{}\n", turn.text);
         }
     }
     out

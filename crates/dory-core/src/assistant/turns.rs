@@ -1,6 +1,6 @@
 //! A transcript as speaker turns, a page at a time.
 //!
-//! Consecutive segments by the same speaker merge into one turn of at most [`MAX_TURN_CHARS`], so
+//! Consecutive segments by the same speaker in the same language merge into one turn of at most [`MAX_TURN_CHARS`], so
 //! any page budget of at least that size holds at least one turn. A cursor names the transcript
 //! revision and the next turn, so a page from a transcript that changed since is refused rather
 //! than spliced into the new one.
@@ -17,6 +17,9 @@ pub struct Turn {
     /// `None` for transcripts imported without times.
     pub start: Option<Ms>,
     pub end: Option<Ms>,
+    /// The language the turn was spoken in, whether or not it was translated. `None` when the
+    /// engine did not say.
+    pub language: Option<LangTag>,
     /// What the assistant should read: the translation when the turn was translated, else what
     /// was spoken.
     pub text: String,
@@ -82,10 +85,16 @@ fn pieces(text: &str, max: usize) -> Vec<String> {
     out
 }
 
+/// Whether two segments were spoken in the same language: `en` and `en-US` are, and an unknown
+/// language only matches itself.
+fn same_language(a: Option<&LangTag>, b: Option<&LangTag>) -> bool {
+    a.map(LangTag::primary) == b.map(LangTag::primary)
+}
+
 /// Every turn of a transcript, speakers named as the summary names them. With a translation
-/// that applies, a translated segment reads as translated and carries what was spoken. Turns
-/// merge only within one kind: untranslated text, or text translated from one language, so a
-/// transcript with no translation splits exactly as it always did.
+/// that applies, a translated segment reads as translated and carries what was spoken. A turn
+/// ends when the speaker or the language changes, so a turn has one language, and a turn
+/// merges only within one kind: untranslated text, or text translated from one language.
 pub fn turns(
     transcript: &Transcript,
     names: &SpeakerNames,
@@ -109,6 +118,7 @@ pub fn turns(
             match out.last_mut() {
                 Some(last)
                     if last.speaker == speaker
+                        && same_language(last.language.as_ref(), segment.language.as_ref())
                         && last.translated.as_ref().map(|t| &t.from) == from.as_ref()
                         && last.text.chars().count() + 1 + piece.chars().count()
                             <= MAX_TURN_CHARS =>
@@ -125,6 +135,7 @@ pub fn turns(
                     speaker: speaker.clone(),
                     start,
                     end,
+                    language: segment.language.clone(),
                     text: piece,
                     translated: from.clone().map(|from| Translated {
                         from,
@@ -269,6 +280,40 @@ mod tests {
             turns(&t, &SpeakerNames::default(), Some(&mismatched)),
             turns(&t, &SpeakerNames::default(), None),
             "a translation of another revision is ignored"
+        );
+    }
+
+    #[test]
+    fn a_change_of_language_ends_a_turn_of_one_speaker() {
+        let mut t = transcript(&[
+            (1, Some((0, 1000)), "Sige."),
+            (1, Some((1000, 2000)), "Ako na."),
+            (1, Some((2000, 3000)), "Okay then."),
+            (1, Some((3000, 4000)), "Done."),
+            (2, Some((4000, 5000)), "Salamat."),
+        ]);
+        for (segment, tag) in t.segments.iter_mut().zip(["tl", "tl", "en", "en-US", "tl"]) {
+            segment.language = Some(LangTag::parse(tag).unwrap());
+        }
+        let all = turns(&t, &SpeakerNames::default(), None);
+        let got: Vec<(&str, Option<&str>, &str)> = all
+            .iter()
+            .map(|t| {
+                (
+                    t.speaker.as_str(),
+                    t.language.as_ref().map(LangTag::as_str),
+                    t.text.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("Speaker 1", Some("tl"), "Sige. Ako na."),
+                ("Speaker 1", Some("en"), "Okay then. Done."),
+                ("Speaker 2", Some("tl"), "Salamat."),
+            ],
+            "en and en-US are one language"
         );
     }
 

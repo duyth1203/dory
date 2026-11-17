@@ -71,14 +71,18 @@ pub fn playing_turn(turns: &[Turn], at: Ms) -> Option<usize> {
     turns[ix].range.filter(|r| r.contains(at)).map(|_| ix)
 }
 
-/// What VoiceOver reads for a turn: "Sam, 12 minutes 30 seconds, translated from Tagalog, then the
-/// text". The note is only there on a translated turn.
+/// What VoiceOver reads for a turn: "Sam, 12 minutes 30 seconds, English, then the text". The
+/// language is only there on a tagged turn. A translated turn says "translated from Tagalog"
+/// instead, which already names the language it was spoken in.
 pub fn spoken_turn(turn: &Turn) -> String {
     let mut parts = vec![turn.label.to_string()];
     if let Some(range) = turn.range {
         parts.push(a11y::spoken_duration(range.start()));
     }
-    parts.extend(turn.translated_note());
+    match turn.translated_note() {
+        Some(note) => parts.push(note),
+        None => parts.extend(turn.tag.as_ref().map(ToString::to_string)),
+    }
     parts.push(turn.text.clone());
     parts.join(", ")
 }
@@ -92,6 +96,18 @@ pub fn rename_hint(turns: &[Turn], speaker: SpeakerId, label: &str) -> String {
         format!("all {count} turns")
     };
     format!("Renames {label} in {scope}. Return to save, Escape to cancel.")
+}
+
+/// The spoken language after the speaker's name, as text in `text_secondary` and never as color
+/// alone (A11Y-8). VoiceOver already hears it in the turn's own label.
+fn language_tag(ix: usize, turn: &Turn, theme: &Theme) -> Option<a11y::Node> {
+    let tag = turn.tag.clone()?;
+    Some(
+        a11y::node(format!("turn-{ix}-language"), Role::Label, tag.clone())
+            .text_size(theme.text(12.))
+            .text_color(theme.text_secondary)
+            .child(tag),
+    )
 }
 
 fn initial(turn: &Turn) -> SharedString {
@@ -610,6 +626,7 @@ impl TranscriptView {
                             .items_center()
                             .gap(px(8.))
                             .child(name)
+                            .children(language_tag(ix, turn, &theme))
                             .children(timestamp)
                             .when(sounding, |row| {
                                 row.child(
@@ -699,12 +716,23 @@ impl TranscriptView {
                 None,
             )
             .width;
-        let text = format!("{name} {}", turn.text);
         let body_font = font(FontWeight::NORMAL, Default::default());
+        let tag = turn.tag.as_ref().map(|tag| format!("({tag})"));
+        let lead = match &tag {
+            Some(tag) => format!("{name} {tag}"),
+            None => name.clone(),
+        };
+        let text = format!("{lead} {}", turn.text);
         let mut runs = vec![run(name.len(), name_font)];
-        let mut at = name.len();
+        if let Some(tag) = &tag {
+            runs.push(TextRun {
+                color: theme.text_secondary,
+                ..run(tag.len() + 1, body_font.clone())
+            });
+        }
+        let mut at = lead.len();
         for mark in marks {
-            let (start, end) = (name.len() + 1 + mark.start, name.len() + 1 + mark.end);
+            let (start, end) = (lead.len() + 1 + mark.start, lead.len() + 1 + mark.end);
             if start < at || end > text.len() {
                 continue;
             }
@@ -964,6 +992,8 @@ mod tests {
             label: format!("Speaker {speaker}").into(),
             range: range.and_then(|(a, b)| TimeRange::new(Ms(a), Ms(b))),
             text: String::new(),
+            language: None,
+            tag: None,
             translated_from: None,
         }
     }

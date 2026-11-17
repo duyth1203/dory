@@ -220,6 +220,13 @@ mod tests {
     }
 
     #[test]
+    fn a_taglish_segment_is_decided_whole_by_its_main_language() {
+        let taglish = segment("Bagaman wala ako present, I will join later.", Some("tl"));
+        assert!(needs_translation(&taglish, &tag("en")), "translated whole");
+        assert!(!needs_translation(&taglish, &tag("tl")), "kept whole");
+    }
+
+    #[test]
     fn a_mostly_english_meeting_translated_to_english_keeps_its_english_parts() {
         let transcript = Transcript {
             revision: Revision(1),

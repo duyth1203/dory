@@ -1346,6 +1346,54 @@ fn an_output_language_translates_what_is_not_in_it_and_summarizes_in_it() {
     );
 }
 
+const TAGLISH: &str = "Bagaman wala ako present sa meeting, I will join later.";
+
+/// An English line and a Taglish line whose grammar is Tagalog, which the engine tags `tl`.
+fn mixed_sentence() -> (Rig, RecordingId) {
+    let rig = Rig::with_model(
+        FakeTranscriber::new()
+            .with_segments_in(Channel::Mixed, "en", &[(0, 900, 0, "Ship it Friday.")])
+            .with_segments_in(Channel::Mixed, "tl", &[(1_000, 1_900, 1, TAGLISH)]),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(8_192),
+        translator(),
+    );
+    let id = rig.seed("taglish-sentence", ChannelLayout::Mixed, 3);
+    (rig, id)
+}
+
+#[test]
+fn taglish_segment_is_translated_whole_or_not_at_all() {
+    let (rig, id) = mixed_sentence();
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let spoken = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(texts(&spoken.segments), ["Ship it Friday.", TAGLISH]);
+    assert_eq!(
+        translate_prompts(&rig),
+        [format!("[1] {TAGLISH}\n")],
+        "into English the whole Taglish sentence goes to the model and the English one stays"
+    );
+    let translation = dory.library().translation(&id).unwrap().unwrap();
+    assert_eq!(translation.texts, [None, Some(format!("EN: {TAGLISH}"))]);
+
+    let (rig, id) = mixed_sentence();
+    let dory = rig.open();
+    set_output_language(&dory, Some(LangTag::parse("tl").unwrap()));
+    process(&dory, &id, Goal::TRANSCRIBE);
+    assert_eq!(
+        translate_prompts(&rig),
+        ["[1] Ship it Friday.\n"],
+        "into Tagalog the Taglish sentence is kept whole, with no word of it sent"
+    );
+    let translation = dory.library().translation(&id).unwrap().unwrap();
+    assert_eq!(
+        translation.texts,
+        [Some("EN: Ship it Friday.".to_owned()), None]
+    );
+}
+
 #[test]
 fn a_meeting_already_in_the_output_language_translates_nothing() {
     let rig = Rig::with_model(

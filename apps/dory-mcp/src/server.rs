@@ -320,7 +320,7 @@ impl Server {
     }
 
     #[tool(
-        description = "One meeting's transcript as speaker turns with times, a page at a time. Pass the cursor a page gives to read the next one. When the meeting was translated, turns read in the output language and each translated turn shows the language it was spoken in and the original words.",
+        description = "One meeting's transcript as speaker turns with times, a page at a time. Each turn names the language it was spoken in after the speaker, such as \"Sam (en)\", and a turn ends where the speaker or the language changes. Pass the cursor a page gives to read the next one. When the meeting was translated, turns read in the output language and each translated turn shows the language it was spoken in and the original words.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

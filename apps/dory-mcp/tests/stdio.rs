@@ -310,7 +310,7 @@ fn a_translated_transcript_reads_as_translated_with_the_original_and_its_languag
     let text = text_of(&page);
     assert!(text.contains("translated_into=en"), "{text}");
     assert!(
-        text.contains("Speaker 1: The budget is approved.\n    (translated from tl; original: Aprubado na ang badyet.)"),
+        text.contains("Speaker 1 (tl): The budget is approved.\n    (translated from tl; original: Aprubado na ang badyet.)"),
         "{text}"
     );
     assert!(
@@ -320,6 +320,11 @@ fn a_translated_transcript_reads_as_translated_with_the_original_and_its_languag
     assert_eq!(page["structuredContent"]["translated_into"], "en");
     assert_eq!(page["structuredContent"]["translated_turns_on_page"], 1);
     assert_eq!(page["structuredContent"]["total_turns"], 2);
+    assert_eq!(
+        page["structuredContent"]["turn_languages"],
+        json!(["tl", null]),
+        "each turn names the language it was spoken in, null when the engine did not say"
+    );
     server.finish();
 
     let titles = tempfile::tempdir().unwrap();

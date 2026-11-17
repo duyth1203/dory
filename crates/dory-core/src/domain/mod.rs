@@ -32,6 +32,6 @@ pub use recording::{
 pub use settings::{Processing, Recovery, Settings};
 pub use summary_sections::{Sections, list_items, sections};
 pub use time::{Fraction, TimeRange, Timestamp};
-pub use transcript::{Segment, SpeakerId, SpeakerNames, Summary, Transcript};
+pub use transcript::{BILINGUAL_SHARE, Segment, SpeakerId, SpeakerNames, Summary, Transcript};
 pub use translation::{Translation, TranslationFlag};
 pub use waveform::{BUCKETS, LevelMeter, Levels, Waveform};

@@ -497,8 +497,8 @@ fn a_translated_transcript_shows_the_translation_and_says_so_to_voiceover(cx: &m
         );
         assert_eq!(
             window.find("turn-1").label(),
-            Some("Speaker 2, 12 minutes 40 seconds, Hello."),
-            "a turn that was spoken in English is not marked"
+            Some("Speaker 2, 12 minutes 40 seconds, English, Hello."),
+            "a turn spoken in English is not marked translated, and a bilingual meeting names its language"
         );
         let group = window.find("transcript-text");
         assert_eq!(group.role(), Some(Role::RadioGroup));

@@ -72,6 +72,11 @@ pub struct Turn {
     /// `None` for transcripts imported from the old app, which have no times and cannot seek.
     pub range: Option<TimeRange>,
     pub text: String,
+    /// The language the turn was spoken in, in a translated turn too. `None` when unknown.
+    pub language: Option<LangTag>,
+    /// The spoken language's name, set only where it tells the reader something: the transcript
+    /// is bilingual and this turn is not in its main language. `None` everywhere else.
+    pub tag: Option<SharedString>,
     /// Set on a translated turn: the languages its translated segments were spoken in, which may
     /// be none when the engine did not say. `None` on a turn as spoken.
     pub translated_from: Option<Vec<LangTag>>,
@@ -92,13 +97,14 @@ impl Turn {
     }
 }
 
-/// Groups segments into turns. The local user on the mic channel reads "Me", as in the CLI.
+/// Groups segments into turns, a new turn at each change of speaker or language. The local user
+/// on the mic channel reads "Me", as in the CLI.
 pub fn turns(transcript: &Transcript, names: &SpeakerNames) -> Vec<Turn> {
     group(transcript, names, None)
 }
 
-/// The same turns with each translated segment as translated. Turns split on speakers alone, as
-/// in [`turns`], so turn `n` here is turn `n` there.
+/// The same turns with each translated segment as translated. Turns split on the spoken speaker
+/// and language alone, as in [`turns`], so turn `n` here is turn `n` there.
 pub fn translated_turns(
     transcript: &Transcript,
     names: &SpeakerNames,
@@ -113,6 +119,11 @@ fn group(
     translation: Option<&Translation>,
 ) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
+    let main = transcript.main_language().cloned().or_else(|| {
+        let (tag, _) = transcript.language_shares().into_iter().next()?;
+        Some(tag)
+    });
+    let tagged = transcript.is_bilingual();
     for (ix, segment) in transcript.segments.iter().enumerate() {
         let translated = translation.and_then(|t| t.text(ix));
         let text = translated.unwrap_or(&segment.text);
@@ -128,7 +139,11 @@ fn group(
             }
         };
         match turns.last_mut() {
-            Some(turn) if turn.speaker == segment.speaker => {
+            Some(turn)
+                if turn.speaker == segment.speaker
+                    && turn.language.as_ref().map(LangTag::primary)
+                        == segment.language.as_ref().map(LangTag::primary) =>
+            {
                 turn.text.push(' ');
                 turn.text.push_str(text);
                 if let (Some(range), Some(next)) = (turn.range, segment.range) {
@@ -142,6 +157,17 @@ fn group(
                     label: speaker_label(segment.speaker, segment.channel, transcript, names),
                     range: segment.range,
                     text: text.to_owned(),
+                    language: segment.language.clone(),
+                    tag: segment
+                        .language
+                        .as_ref()
+                        .filter(|language| {
+                            tagged
+                                && main
+                                    .as_ref()
+                                    .is_some_and(|m| m.primary() != language.primary())
+                        })
+                        .map(|language| crate::languages::primary_name(language).into()),
                     translated_from: None,
                 };
                 marked(&mut turn);
@@ -489,4 +515,127 @@ fn read_detail(
         translation,
         translated_turns,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dory_core::domain::{Ms, Revision, Segment};
+    use dory_core::models::ModelRef;
+
+    fn tag(code: &str) -> LangTag {
+        LangTag::parse(code).unwrap()
+    }
+
+    /// One 10 s segment per entry, in order: (speaker, language).
+    fn transcript(lines: &[(u16, &str)]) -> Transcript {
+        let segments = lines
+            .iter()
+            .zip(0u64..)
+            .map(|((speaker, language), n)| Segment {
+                range: TimeRange::new(Ms(n * 10_000), Ms(n * 10_000 + 10_000)),
+                speaker: SpeakerId(*speaker),
+                channel: Channel::System,
+                text: format!("line {n}"),
+                language: Some(tag(language)),
+            })
+            .collect();
+        let mut t = Transcript {
+            revision: Revision(1),
+            segments,
+            detected_languages: Vec::new(),
+            produced_by: ModelRef::parse("sona/whisper-small").unwrap(),
+        };
+        t.detected_languages = t
+            .language_shares()
+            .into_iter()
+            .map(|(tag, _)| tag)
+            .collect();
+        t
+    }
+
+    fn shown(turns: &[Turn]) -> Vec<(u16, Option<&str>, Option<&str>)> {
+        turns
+            .iter()
+            .map(|t| {
+                (
+                    t.speaker.0,
+                    t.language.as_ref().map(LangTag::as_str),
+                    t.tag.as_deref(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_language_change_splits_a_turn_of_one_speaker() {
+        let t = transcript(&[(1, "tl"), (1, "tl"), (1, "en"), (1, "en-US"), (2, "en")]);
+        let turns = turns(&t, &SpeakerNames::default());
+        assert_eq!(
+            turns.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            ["line 0 line 1", "line 2 line 3", "line 4"]
+        );
+    }
+
+    #[test]
+    fn only_a_bilingual_transcripts_minority_turns_are_tagged() {
+        let bilingual = transcript(&[(1, "tl"), (1, "tl"), (1, "en"), (2, "tl"), (2, "tl")]);
+        assert_eq!(
+            shown(&turns(&bilingual, &SpeakerNames::default())),
+            [
+                (1, Some("tl"), None),
+                (1, Some("en"), Some("English")),
+                (2, Some("tl"), None)
+            ],
+            "the main language is never tagged"
+        );
+        let mut lines = vec![(1, "tl"); 11];
+        lines.push((1, "en"));
+        let greeting = transcript(&lines);
+        assert!(!greeting.is_bilingual());
+        assert!(
+            turns(&greeting, &SpeakerNames::default())
+                .iter()
+                .all(|t| t.tag.is_none()),
+            "one English line in two minutes of Tagalog is not a second language"
+        );
+    }
+
+    #[test]
+    fn a_meeting_in_one_language_or_with_none_known_has_no_tags() {
+        let one = transcript(&[(1, "en"), (2, "en")]);
+        let mut unknown = transcript(&[(1, "tl"), (1, "en")]);
+        for segment in &mut unknown.segments {
+            segment.language = None;
+        }
+        for t in [&one, &unknown] {
+            assert!(
+                turns(t, &SpeakerNames::default())
+                    .iter()
+                    .all(|t| t.tag.is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn translated_turns_split_and_tag_exactly_as_spoken_turns_do() {
+        let t = transcript(&[(1, "tl"), (1, "en"), (1, "tl")]);
+        let translation = Translation {
+            target: tag("en"),
+            transcript_revision: t.revision,
+            produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+            texts: vec![Some("zero".into()), None, Some("two".into())],
+        };
+        let names = SpeakerNames::default();
+        let spoken = turns(&t, &names);
+        let translated = translated_turns(&t, &names, &translation);
+        assert_eq!(shown(&spoken), shown(&translated));
+        assert_eq!(
+            translated
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>(),
+            ["zero", "line 1", "two"]
+        );
+    }
 }

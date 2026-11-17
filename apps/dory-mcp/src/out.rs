@@ -262,8 +262,12 @@ pub fn summary(s: &SummaryView) -> CallToolResult {
 }
 
 fn turn_line(t: &Turn) -> String {
+    let language = t
+        .language
+        .as_ref()
+        .map_or(String::new(), |tag| format!(" ({tag})"));
     let line = format!(
-        "{}{}: {}",
+        "{}{}{language}: {}",
         clock(t.start),
         clean(&t.speaker),
         clean(&t.text)
@@ -309,6 +313,7 @@ pub fn transcript(p: &TranscriptPage) -> CallToolResult {
         "turns_on_page": p.turns.len(),
         "translated_into": p.translated_into.as_ref().map(ToString::to_string),
         "translated_turns_on_page": p.turns.iter().filter(|t| t.translated.is_some()).count(),
+        "turn_languages": p.turns.iter().map(|t| t.language.as_ref().map(ToString::to_string)).collect::<Vec<_>>(),
         "total_turns": p.total,
         "next_cursor": p.next.map(|c| c.to_string()),
     }));

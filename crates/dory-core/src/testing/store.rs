@@ -421,6 +421,10 @@ mod contract {
             "search_reads_final_sigma_and_letters_unicode61_splits",
             search_reads_final_sigma_and_letters_unicode61_splits,
         ),
+        (
+            "search_prefixes_the_last_part_of_a_typed_split_word",
+            search_prefixes_the_last_part_of_a_typed_split_word,
+        ),
         ("search_phrase_needs_order", search_phrase_needs_order),
         ("search_sets_in_title", search_sets_in_title),
         (
@@ -1184,6 +1188,26 @@ mod contract {
             let marks = search::highlights(&Query::parse(text).unwrap(), "🅐 budget");
             assert_eq!(marks.len(), 1, "{text} marks what the index found");
         }
+    }
+
+    fn search_prefixes_the_last_part_of_a_typed_split_word(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("title", 300, "Follow-up notes"),
+                titled("talk", 200, "Weekly"),
+                said("talk", 1, &["a follow up is due", "write an e-mail"]),
+                titled("far", 100, "Planning"),
+                said("far", 1, &["follow the plan, up to you"]),
+            ])
+            .unwrap();
+        for text in ["follow-u", "follow-up", "Follow-UP"] {
+            assert_eq!(found(store, text), ["title", "talk"], "{text}");
+        }
+        assert_eq!(found(store, "\"follow u\""), Vec::<String>::new(), "quoted");
+        assert_eq!(found(store, "\"follow up\""), ["title", "talk"]);
+        assert_eq!(found(store, "follow-down"), Vec::<String>::new());
+        assert_eq!(found(store, "e-mai"), ["talk"]);
+        assert_eq!(found(store, "e-mai follow-u"), ["talk"]);
     }
 
     fn search_phrase_needs_order(store: &dyn Store) {

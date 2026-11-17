@@ -49,12 +49,23 @@ fn matches_at(clause: &Clause, words: &[Token], at: usize) -> Option<Range<usize
                 })
                 .then_some(at..at + 1)
         }
-        Clause::Phrase(phrase) => {
+        Clause::Phrase {
+            words: phrase,
+            prefix,
+        } => {
             let run = words.get(at..at + phrase.len())?;
-            run.iter()
-                .zip(phrase)
-                .all(|(word, want)| &word.folded == want)
-                .then_some(at..at + phrase.len())
+            let (last, whole) = run.split_last()?;
+            let (want_last, want_whole) = phrase.split_last()?;
+            let last_matches = match prefix {
+                true => last.folded.starts_with(want_last.as_str()),
+                false => &last.folded == want_last,
+            };
+            (last_matches
+                && whole
+                    .iter()
+                    .zip(want_whole)
+                    .all(|(w, want)| &w.folded == want))
+            .then_some(at..at + phrase.len())
         }
     }
 }
@@ -214,6 +225,12 @@ mod tests {
                 "send an e-mail, or an e mail",
                 &["e-mail", "e mail"],
             ),
+            (
+                "follow-u",
+                "a follow-up, a follow upside, follow it",
+                &["follow-up", "follow upside"],
+            ),
+            ("\"follow u\"", "a follow-up, follow u", &["follow u"]),
             ("map", "roadmap", &[]),
             ("東京", "明日東京で", &["東京"]),
             ("re review", "review", &["review"]),
@@ -235,6 +252,8 @@ mod tests {
         assert!(matches(&q("\"budget review\""), &fields));
         assert!(!matches(&q("\"review kilimanjaro\""), &fields));
         assert!(matches(&q("trip budget"), &fields));
+        assert!(matches(&q("e-mai"), &["send an e-mail"]));
+        assert!(!matches(&q("\"e mai\""), &["send an e-mail"]));
     }
 
     #[test]
@@ -252,6 +271,8 @@ mod tests {
             })
         );
         assert_eq!(locate(&q("friday"), &turns).map(|l| l.item), Some(1));
+        let notes = ["follow it", "a follow-up plan"];
+        assert_eq!(locate(&q("follow-u"), &notes).map(|l| l.item), Some(1));
         assert_eq!(locate(&q("zanzibar"), &turns), None);
     }
 

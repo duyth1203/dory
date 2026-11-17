@@ -14,8 +14,9 @@ pub enum Clause {
     /// Any word that starts with one of `alts`, or equals one when `prefix` is false. Each alt is
     /// one folded token.
     Word { alts: Vec<String>, prefix: bool },
-    /// Whole folded words, next to each other, in this order.
-    Phrase(Vec<String>),
+    /// Whole folded words, next to each other, in this order. The last word is a prefix when
+    /// `prefix` is true, so a word typed with a hyphen still finds its whole while it is typed.
+    Phrase { words: Vec<String>, prefix: bool },
 }
 
 /// A typed word that [`Query::corrected`] replaced.
@@ -34,8 +35,10 @@ fn is_quote(c: char) -> bool {
 
 impl Query {
     /// `None` when the text holds no word. Unquoted words become [`Clause::Word`] prefixes. A
-    /// quoted run becomes a [`Clause::Phrase`], and so does a typed word that splits into several
-    /// tokens, such as "e-mail", "don't", or "東京". A quote without its pair runs to the end.
+    /// quoted run becomes a [`Clause::Phrase`] of whole words. A typed word that splits into
+    /// several tokens, such as "e-mail", "don't", or "東京", becomes a phrase whose last word is a
+    /// prefix, so "follow-u" already finds "follow-up". A quote without its pair runs to the
+    /// end.
     pub fn parse(text: &str) -> Option<Query> {
         let mut clauses = Vec::new();
         for (index, part) in text.split(is_quote).enumerate() {
@@ -43,7 +46,10 @@ impl Query {
             if quoted {
                 let words: Vec<String> = tokens(part).map(|t| t.folded).collect();
                 if !words.is_empty() {
-                    clauses.push(Clause::Phrase(words));
+                    clauses.push(Clause::Phrase {
+                        words,
+                        prefix: false,
+                    });
                 }
                 continue;
             }
@@ -55,7 +61,10 @@ impl Query {
                         alts: vec![words.remove(0)],
                         prefix: true,
                     }),
-                    _ => clauses.push(Clause::Phrase(words)),
+                    _ => clauses.push(Clause::Phrase {
+                        words,
+                        prefix: true,
+                    }),
                 }
             }
         }
@@ -125,11 +134,11 @@ impl Query {
     pub(super) fn phrase_words(&self) -> Option<Query> {
         let mut clauses: Vec<Clause> = Vec::new();
         for clause in &self.clauses {
-            if let Clause::Phrase(words) = clause {
-                for word in words {
+            if let Clause::Phrase { words, prefix } = clause {
+                for (at, word) in words.iter().enumerate() {
                     let loose = Clause::Word {
                         alts: vec![word.clone()],
-                        prefix: false,
+                        prefix: *prefix && at + 1 == words.len(),
                     };
                     if !clauses.contains(&loose) {
                         clauses.push(loose);
@@ -153,7 +162,17 @@ mod tests {
     }
 
     fn phrase(words: &[&str]) -> Clause {
-        Clause::Phrase(words.iter().map(|w| w.to_string()).collect())
+        Clause::Phrase {
+            words: words.iter().map(|w| w.to_string()).collect(),
+            prefix: false,
+        }
+    }
+
+    fn typed_phrase(words: &[&str]) -> Clause {
+        Clause::Phrase {
+            words: words.iter().map(|w| w.to_string()).collect(),
+            prefix: true,
+        }
     }
 
     #[test]
@@ -190,20 +209,26 @@ mod tests {
                 "atlas \"budget review",
                 Some(vec![word("atlas"), phrase(&["budget", "review"])]),
             ),
-            ("e-mail", Some(vec![phrase(&["e", "mail"])])),
-            ("don't", Some(vec![phrase(&["don", "t"])])),
-            ("Q3.5", Some(vec![phrase(&["q3", "5"])])),
+            ("e-mail", Some(vec![typed_phrase(&["e", "mail"])])),
+            ("follow-u", Some(vec![typed_phrase(&["follow", "u"])])),
+            ("\"follow u\"", Some(vec![phrase(&["follow", "u"])])),
+            ("\"follow-u\"", Some(vec![phrase(&["follow", "u"])])),
+            ("don't", Some(vec![typed_phrase(&["don", "t"])])),
+            ("Q3.5", Some(vec![typed_phrase(&["q3", "5"])])),
             (
                 "or near NOT",
                 Some(vec![word("or"), word("near"), word("not")]),
             ),
-            ("title:atlas", Some(vec![phrase(&["title", "atlas"])])),
+            ("title:atlas", Some(vec![typed_phrase(&["title", "atlas"])])),
             ("budget*", Some(vec![word("budget")])),
             (
                 "東京 budget",
-                Some(vec![phrase(&["東", "京"]), word("budget")]),
+                Some(vec![typed_phrase(&["東", "京"]), word("budget")]),
             ),
-            ("会議budget", Some(vec![phrase(&["会", "議", "budget"])])),
+            (
+                "会議budget",
+                Some(vec![typed_phrase(&["会", "議", "budget"])]),
+            ),
             ("会", Some(vec![word("会")])),
         ];
         for (text, want) in cases {
@@ -279,7 +304,7 @@ mod tests {
             [
                 whole(&["budget"]),
                 word("kilimanjaro"),
-                Clause::Phrase(vec!["road".into(), "map".into()])
+                phrase(&["road", "map"])
             ]
         );
         assert_eq!(corrections.len(), 1);

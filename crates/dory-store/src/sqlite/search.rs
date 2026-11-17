@@ -218,8 +218,8 @@ fn quoted(words: &[String]) -> String {
     format!("\"{}\"", words.join(" "))
 }
 
-/// The FTS5 `MATCH` text for `query`: a word is `("tok"*)`, a phrase is `"tok1 tok2"`, joined
-/// with AND. Tokens hold only letters and digits, so no token can close its quotes.
+/// The FTS5 `MATCH` text for `query`: a word is `("tok"*)`, a phrase is `"tok1 tok2"`, and a
+/// phrase with a prefix last word is `"tok1 tok2" *`, joined with AND. Tokens hold only letters and digits, so no token can close its quotes.
 pub(super) fn match_text(query: &Query) -> String {
     query
         .clauses()
@@ -233,7 +233,10 @@ pub(super) fn match_text(query: &Query) -> String {
                     .collect();
                 format!("({})", alts.join(" OR "))
             }
-            Clause::Phrase(words) => quoted(words),
+            Clause::Phrase { words, prefix } => match prefix {
+                true => format!("{} *", quoted(words)),
+                false => quoted(words),
+            },
         })
         .collect::<Vec<_>>()
         .join(" AND ")
@@ -254,7 +257,8 @@ mod tests {
             ("budget", "(\"budget\"*)"),
             ("Budget REVIEW", "(\"budget\"*) AND (\"review\"*)"),
             ("\"budget review\" or", "\"budget review\" AND (\"or\"*)"),
-            ("near(x", "\"near x\""),
+            ("near(x", "\"near x\" *"),
+            ("follow-u \"follow u\"", "\"follow u\" * AND \"follow u\""),
             ("{title}: *", "(\"title\"*)"),
         ];
         for (text, want) in cases {

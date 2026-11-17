@@ -224,22 +224,23 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Files.**
 
-- [ ] Edit `crates/dory-core/src/search/mod.rs` and `crates/dory-core/src/app/mod.rs`.
-- [ ] Edit `apps/dory-gpui/src/sidebar.rs`, `apps/dory-gpui/src/library.rs`, `apps/dory-gpui/src/app.rs`, `apps/dory-gpui/src/theme.rs`, `apps/dory-gpui/src/menus.rs`, and `apps/dory-gpui/src/actions.rs`.
+- [ ] Edit `crates/dory-core/src/search/mod.rs` and `crates/dory-core/src/app/mod.rs`, and create `crates/dory-core/src/search/excerpt.rs`, which holds the snippet-source rules.
+- [ ] Edit `apps/dory-gpui/src/sidebar.rs`, `apps/dory-gpui/src/library.rs`, `apps/dory-gpui/src/app.rs`, and `apps/dory-gpui/src/theme.rs`. With no scope control, `menus.rs` and `actions.rs` stay unchanged.
 - [ ] Create `apps/dory-gpui/tests/search.rs`.
 - [ ] Edit `docs/plans/ux-redesign.md` to rewrite UX-1's search sentence and add the search rules as UX-32.
 
 **Build.**
 
-- [ ] Name the data shapes first. `Section { Titles, Conversations }`. `SearchResults` gains `sections() -> [(Section, &[Found]); 2]`, built by one pure function, `search::sections(hits)`. A hit with `in_title` goes to Titles. Every other hit goes to Conversations. Each section is newest first. `AppState` holds `search: Option<SearchResults>` and `snippets: HashMap<RecordingId, Snippet>`.
-- [ ] Add `Library::snippets(&self, query: &Query, ids: &[RecordingId]) -> Result<Vec<Option<Snippet>>, StoreError>`. For each id it reads the transcript and speaker names, builds the turns, and calls `search::locate` and `search::snippet` on them. It falls back to the summary Markdown when no turn matches. `reload` asks for the first 30 Conversations hits in the same `core.run` call as the search, so the first screen paints once. A second call fills the rest in the background under the same generation.
+- [ ] Name the data shapes first. `Section { Titles, Conversations }`. `SearchResults` gains `sections() -> [(Section, Vec<&Found>); 2]`, built by one pure function, `search::sections(hits)`. A hit with `in_title` goes to Titles. Every other hit goes to Conversations. Each section is newest first. `AppState` holds `typed: SearchText` (the trimmed field text), `search: Option<SearchResults>`, `snippets: HashMap<RecordingId, Excerpt>`, and `announced`, the last result count spoken. An `Excerpt` is a `Snippet` and its `Source` (`Transcript`, `Summary`, or `Speakers`), so a row can say where it matched.
+- [ ] Add `Library::snippets(&self, query: &Query, ids: &[RecordingId]) -> Result<Vec<Option<Excerpt>>, StoreError>`. For each id it reads the transcript, speaker names, and summary, builds the turns, and calls the pure `search::excerpt`, which uses `search::locate` and `search::snippet`. It falls back to the summary's lines, with their Markdown stripped, when no turn matches, and to a speaker name when neither does. `reload` asks for the first 30 Conversations hits in the same `core.run` call as the search, so the first screen paints once. A second call fills the rest in the background under the same generation.
 - [ ] While the field has text, the sidebar replaces its date groups with two section headings, "Titles" and "In conversations", each a heading for the VoiceOver rotor. An empty section has no heading.
 - [ ] Search always covers all text. There is no scope control, no filter-menu group, and no **Search Titles Only** menu item. The Titles section already answers "which recording is called this", so a title-only mode adds a control without a new answer (operator, 2026-11-17).
 - [ ] A Conversations row gains a third line, the snippet, in 12 pt `text_secondary`. Matched words use `text`, semibold weight, and a new `search_match` fill token, so color never carries the match alone (A11Y-8). At text scale 1.25 or below the snippet is one line with an ellipsis. Above 1.25 it wraps to two lines, like the title. The row grows to fit, from 52 pt to about 68 pt at 100%. A title hit marks the matched words in its title the same way and has no third line.
-- [ ] Each row's VoiceOver label adds where it matched to today's sentence, for example "Design review, 10:30, 48 minutes, Done. In transcript, we agreed the roadmap slips to Q3." A summary snippet says "In summary". A title hit adds "Title match".
+- [ ] Each row's VoiceOver label adds where it matched to today's sentence, for example "Design review, 10:30, 48 minutes, Done. In transcript, we agreed the roadmap slips to Q3." A summary snippet says "In summary", a speaker-name match says "Speaker name", and a title hit adds "Title match".
 - [ ] When results settle, post one polite announcement through `a11y::announce`, such as "12 results", "No results", or "Showing results for roadmap, 3 results". Typing that has not settled announces nothing.
 - [ ] When S2 corrected the query, show one line above the sections, "Showing results for **roadmap**". When nothing matches, the list says "No recordings match "<text>"."
 - [ ] The status filter (All, Processing, Needs attention, Done) applies on top of the search, as it does today.
+- [ ] Escape in the search field clears it, like the clear button. Lane 10 depends on it, and the field did not do it before.
 
 **You see.**
 

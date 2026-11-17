@@ -83,11 +83,12 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
 
 ## Settings
 
-- **UX-19. A native Settings window** opens with Command-Comma. Its tabs are **General**, **Recording**, **Transcription**, **Summaries**, and **Storage**.
+- **UX-19. A native Settings window** opens with Command-Comma. It uses the System Settings layout: a sidebar with the panes **General**, **Recording**, **Transcription**, **Summaries**, and **Storage**, and a search field that finds settings by name. Layout per `docs/design/settings-icons-blur.md` section 1.
 - **UX-20. Fewer options.** Appearance follows the system. The custom palette setting goes away, and the system accent color tints the app. Each remaining option names its effect in one line.
 - **UX-28. Model explainer.** Each model row in **Settings > Transcription** and **Settings > Summaries** has an info button that opens a popover. The popover gives one sentence on what the model is, then **Good at** and **Watch out for** lists, then the download size and the languages it covers. The text comes from the model's catalog row, so a new model brings its own explanation. A row that cannot handle one of the meeting languages says which one, for example "Doesn't support Tagalog", in the row itself, not only in the popover. The popover opens on click and with Space on the focused info button, and VoiceOver reads it as a group labelled with the model name.
-- **UX-29. Meeting languages.** **Settings > Transcription > Meeting languages** lists the languages meetings are held in. Onboarding asks once and preselects the system language. With language on **Automatic**, Dory only picks a speech model that covers every listed language, so a meeting that mixes Tagalog and English never goes to an English-only model.
-- **UX-26. Language.** **Settings > Transcription > Language** defaults to **Automatic**, which detects the language and follows switches mid-meeting. The detail pane shows the detected language next to the duration. The user can pick a language for one recording and re-transcribe it from the detail pane. Summaries use the meeting's main language.
+- **UX-29. Meeting languages.** **Settings > Transcription > Meeting languages** lists the languages meetings are held in. Onboarding asks once and preselects the system language. With language on **Automatic**, Dory only picks a speech model that covers every listed language, so a meeting that mixes Tagalog and English never goes to an English-only model. Meeting languages is a combobox with chips and type-ahead search. The list keeps at least one language.
+- **UX-26. Language.** **Settings > Transcription > Language** defaults to **Automatic**, which detects the language and follows switches mid-meeting. The detail pane shows the detected language next to the duration. The user can pick a language for one recording and re-transcribe it from the detail pane. Summaries use the meeting's main language. The Language options are Automatic plus the meeting languages (UX-29), and nothing else. When the selected language is removed from the meeting languages, Language returns to Automatic and says so.
+- **UX-31. Scrolling.** Settings content has one scroll area. Any inner scroll area passes scrolling to its parent when it reaches its edge; a trackpad gesture that starts inside it stays with it until the gesture ends.
 
 ## Platform conventions on macOS
 
@@ -95,7 +96,7 @@ One main window with a sidebar and a detail pane. This is the standard macOS sou
 - **UX-22. Delete is recoverable.** Delete moves the recording to the macOS Trash and offers Undo with Command-Z.
 - **UX-23. Export.** **File > Export** writes Markdown, plain text, or SRT subtitles through a native save panel.
 - **UX-24. Window state.** The app restores the window size and the sidebar width (240 to 380 pt) on relaunch. **Proposed.** It restores the selected recording only if the app quit less than 4 hours ago. Otherwise it opens on the start screen (UX-6).
-- **UX-25. Materials and type.** The sidebar uses the system blurred material. Text uses the system font. Light and dark follow the system appearance.
+- **UX-25. Materials and type.** The main and Settings windows use a blurred window background. The sidebar column is translucent, and the content pane is opaque. Popovers and menus are opaque. Text uses the system font. Light and dark follow the system appearance. Icons come from Lucide, vendored in `assets/icons/` (`docs/design/settings-icons-blur.md` section 2).
 
 ## Keyboard shortcuts
 
@@ -124,7 +125,7 @@ GPUI draws its own controls, so the app gets none of these from AppKit. Each one
 - **A11Y-3. The player is a slider.** It exposes its value as elapsed time ("12 minutes 30 seconds of 48 minutes"). Arrow keys move it 5 seconds, and Page Up and Page Down move it 1 minute.
 - **A11Y-4. State changes are spoken.** Recording started, recording stopped, processing finished, and processing failed each produce a VoiceOver announcement. If GPUI lacks live regions, the app posts `NSAccessibilityAnnouncementRequestedNotification` through AppKit.
 - **A11Y-5. Reduce Motion is honored.** The app reads the macOS **Reduce motion** setting at launch and on change, and passes it to GPUI's `set_reduce_motion`. With it on, the level meter shows a static bar and no view animates.
-- **A11Y-6. Increase Contrast is honored.** The app reads the macOS **Increase contrast** setting and switches to a high-contrast theme with solid borders and no translucent materials.
+- **A11Y-6. Increase Contrast is honored.** The app reads the macOS **Increase contrast** setting and switches to a high-contrast theme with solid borders and no translucent materials. Reduce Transparency switches the windows to an opaque background and a solid sidebar.
 - **A11Y-7. Text size is adjustable.** GPUI does not follow a system text size. **View > Bigger** and **View > Smaller** (Command-Plus, Command-Minus) scale all text from 85% to 200%, and the layout reflows without clipping.
 - **A11Y-8. Color never carries meaning alone.** Every status has a glyph and a text label. Text contrast meets WCAG 2.2 AA (4.5 to 1 for body text) in both appearances. The app reads the user's accent from `NSColor.controlAccentColor` and derives `accent`, `accent_text`, and `on_accent` by darkening its lightness until each pair passes 4.5 to 1. macOS's default blue fails as is (about 4.0 to 1 on white). A unit test covers all eight macOS accent colors in both appearances.
 - **A11Y-9. Targets are large enough.** Pointer targets are at least 24 by 24 points. Primary actions are at least 28 points tall.

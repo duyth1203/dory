@@ -10,7 +10,7 @@ use crate::open;
 use crate::wait::block_on;
 
 pub fn choose(config: &Config, args: &ChooseArgs) -> Result<(), String> {
-    let dory = open(config, false)?;
+    let dory = open(config, args.fake_engines)?;
     match args.kind {
         KindArg::Stt => choose_kind::<Stt>(&dory, &args.choice),
         KindArg::Llm => choose_kind::<Llm>(&dory, &args.choice),

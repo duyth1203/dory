@@ -31,7 +31,7 @@ const USAGE: &str = "usage:
   dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]
   dory-cli play ID [--seek SECONDS]
   dory-cli models [--about] [--fake-engines]
-  dory-cli models choose stt|llm|diar auto|off|MODEL_ID
+  dory-cli models choose stt|llm|diar auto|off|MODEL_ID [--fake-engines]
   dory-cli models provision stt|llm|diar MODEL_ID
   dory-cli languages [TAG...|--clear]
   dory-cli assistants on|off|list

@@ -1,6 +1,6 @@
-# Claude Design request: dialogs and popovers
+# Claude Design request: dialogs, popovers, and the Processing Queue
 
-A follow-up to `docs/plans/claude-design-brief.md`, in the chosen direction C. The owner found that the Processing Queue dialog doesn't stand out in dark mode: its border is too faint and it blends into the window behind it. This request asks for one designed treatment for every surface that floats over the app.
+A follow-up to `docs/plans/claude-design-brief.md`, in the chosen direction C. The owner found that the Processing Queue dialog doesn't stand out in dark mode: its border is too faint and it blends into the window behind it. The owner also asked for a better design of the queue itself. This request asks for one designed treatment for every surface that floats over the app, and a redesign of what the Processing Queue shows.
 
 ## What is wrong today
 
@@ -12,6 +12,19 @@ A follow-up to `docs/plans/claude-design-brief.md`, in the chosen direction C. T
   - toasts use `toast_bg`
   - the About window is a separate window
 - Kit's dialog also gives VoiceOver no title (`docs/plans/upstream/kit-dialog-has-no-accessible-name.md`). The design should name each dialog in its title so the fix has a string to use.
+
+### The Processing Queue's contents today
+
+The dialog (`queue_popover.rs`) is a plain list. Each row is the recording's title and one status word: "Transcribing, 40%", "Summarizing", "Queued", "Needs attention", "Failed", "Done", or "Cancelled". Rows run in the order the worker takes them. A queued row after the first has **Move to Top**, and every unfinished row has **Cancel**, which acts at once with no Undo. The empty state is "Nothing is processing.", and the footer has one **Done** button.
+
+What it lacks:
+
+- No progress you can see: no bar, waveform, or reading head, and no time left, though the processing card has all of these (`docs/design/processing-view.md`).
+- No sense of the wait: no position, no "starts in about 9 min", and no total time left for the whole queue.
+- Its words predate the processing spec ("Transcribing, 40%" against the row's "Transcribing 40%"), and the light-pace reason (UX-30) doesn't show.
+- Blocked and failed rows say "Needs attention" but offer no fix, though UX-13 gives each cause one button.
+- Cancel can't be undone, and finished rows vanish, so you can't see what just completed.
+- A row can't open its recording.
 
 ## Send the request
 
@@ -46,6 +59,29 @@ the close control, the button row, and how it separates from the page behind it
 in light and in dark. Dark mode is the case to solve first: on macOS, a floating
 surface in dark mode is lighter than the window under it, not darker.
 
+Also redesign what the Processing Queue shows (UX-15), as a window onto the
+same states as the processing card (docs/design/processing-view.md section 4):
+- The running job first and most prominent: its title, stage and percent, time
+  left, a compact progress visual that matches the card's waveform language,
+  and the light reason with Use Fast This Time when it runs light (UX-30).
+- Queued jobs in order, each with its position, recording length, and when it
+  should start. Move to Top on every queued job but the next one. Propose
+  whether reordering also needs Move Up and Move Down, or drag, and how the
+  keyboard does it.
+- Blocked and failed jobs with their one-line cause and their one fix button
+  from UX-13, kept apart from the waiting line so they don't look queued.
+- Recently finished jobs (this session) in a quiet section, so the user sees
+  what just completed and can open it.
+- A header with the total: "3 recordings · about 24 min left".
+- Cancel with an Undo toast instead of a confirmation. Choosing a row opens that
+  recording in the main window.
+- An empty state that says what the queue is for, and a sensible width and
+  height: how many rows show before it scrolls.
+- The sidebar row words and the queue words agree. Name any word that changes.
+- VoiceOver: each row reads as one sentence ("Weekly sync, transcribing, 40%,
+  about 4 minutes left, 1 of 3"), and the running job's progress updates
+  without being announced on every percent.
+
 Constraints:
 - GPUI draws everything: flat fills, 1 px borders, rounded rectangles, layered
   box shadows (color, offset, blur, spread), system font, Lucide icons. There is
@@ -68,8 +104,10 @@ Constraints:
   values.
 
 Please deliver:
-- Processing Queue with three jobs and Set Up Summaries in each of its three
-  states, in light and dark at 1100 x 720, plus the queue at 800 x 560 and 200%.
+- Processing Queue states, in light and dark at 1100 x 720: one running job
+  with two queued; a running job in light pace; a blocked job with its fix;
+  just-finished jobs; and empty. Plus the busiest one at 800 x 560 and at 200%.
+- Set Up Summaries in each of its three states, in light and dark.
 - One explainer popover, one menu, and the Undo toast in the same family.
 - A spec table per surface with the tokens, sizes, and shadow layers, and the
   motion for open and close with its Reduce Motion stand-in.

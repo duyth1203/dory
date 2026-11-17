@@ -1,5 +1,8 @@
 //! macOS 26 adapters.
 
+#[cfg(all(target_os = "macos", feature = "apple-intelligence"))]
+pub mod ai;
+
 #[cfg(target_os = "macos")]
 mod capture;
 

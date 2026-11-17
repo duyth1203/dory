@@ -6,14 +6,31 @@
 
 mod common;
 
-use dory_core::search::{Correction, Excerpt, Section, Snippet, Source};
-use dory_gpui::app::{AppState, SEARCH_DEBOUNCE};
-use dory_gpui::library::{
-    StatusFilter, corrected_words, match_words, results_announcement, section_label,
+use std::path::Path;
+use std::sync::Arc;
+
+use dory_core::app::{Dory, Options, Ports};
+use dory_core::domain::{
+    Channel, Ms, Revision, Segment, SpeakerId, Summary, TimeRange, Timestamp, Transcript,
 };
+use dory_core::models::ModelRef;
+use dory_core::ports::{Change, Store as _, Takes as _};
+use dory_core::search::{Correction, Excerpt, Section, Snippet, Source};
+use dory_core::testing::playback::FakePlayback;
+use dory_core::testing::store::MemStore;
+use dory_core::testing::{FakeCapture, ManualClock, MemTakes};
+use dory_gpui::actions::{FindNext, FindPrevious};
+use dory_gpui::app::{AppState, DetailTab, SEARCH_DEBOUNCE};
+use dory_gpui::find::Place;
+use dory_gpui::fixtures::{self, SAMPLES};
+use dory_gpui::library::{
+    Selection, StatusFilter, corrected_words, match_words, results_announcement, section_label,
+};
+use dory_gpui::prefs::Prefs;
+use dory_gpui::transcript_view::PAGED_TURNS;
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, ElementId, Entity, Role, TestAppContext,
-    test::TestWindowExt as _,
+    AnyWindowHandle, AppContext as _, Bounds, ElementId, Entity, Role, TestAppContext,
+    WindowBounds, WindowOptions, px, size, test::TestWindowExt as _,
 };
 
 use common::{id_of, open};
@@ -452,4 +469,597 @@ fn escape_in_the_field_clears_the_search_and_keeps_focus_there(cx: &mut TestAppC
         assert_eq!(window.find("search").focused(), Some(true));
     })
     .unwrap();
+}
+
+/// Timed, with a take and a summary: the roadmap comes up in turns 1 and 3 and in the summary.
+const TALK: &str = "Design review";
+/// Longer than [`PAGED_TURNS`], so its turns virtualize. The roadmap comes up in turns 100 and 140.
+const LONG: &str = "Roadmap review";
+const LONG_TURNS: usize = 150;
+/// Short enough to lay out whole in the page, and long enough that turn 65 is far below the fold.
+const MID: &str = "Customer interview: Ortega";
+const MID_TURNS: usize = 70;
+/// A word that only its summary has.
+const SUMMARY_ONLY: &str = "Hiring debrief";
+/// Imported from the old app: no times and no take.
+const LEGACY: &str = "1:1 with Sam";
+
+fn segment(speaker: u16, channel: Channel, range: Option<(u64, u64)>, text: &str) -> Segment {
+    Segment {
+        range: range.and_then(|(a, b)| TimeRange::new(Ms(a), Ms(b))),
+        speaker: SpeakerId(speaker),
+        channel,
+        text: text.to_owned(),
+    }
+}
+
+fn spoken_transcript(segments: Vec<Segment>) -> Transcript {
+    Transcript {
+        revision: Revision(1),
+        segments,
+        detected_languages: Vec::new(),
+        produced_by: ModelRef::parse("fake/sample").unwrap(),
+    }
+}
+
+fn corpus_transcript(title: &str) -> Option<Transcript> {
+    let segments = match title {
+        TALK => vec![
+            segment(2, Channel::System, Some((0, 5_000)), "Welcome everyone."),
+            segment(
+                3,
+                Channel::System,
+                Some((750_000, 760_000)),
+                "The roadmap slips to Q3.",
+            ),
+            segment(2, Channel::System, Some((760_000, 770_000)), "Fine by me."),
+            segment(
+                3,
+                Channel::System,
+                Some((780_000, 790_000)),
+                "Roadmap items and the roadmap review.",
+            ),
+        ],
+        LEGACY => vec![
+            segment(1, Channel::System, None, "Sam wants a mentoring plan."),
+            segment(0, Channel::Mic, None, "Let's draft one."),
+        ],
+        MID => (0..MID_TURNS)
+            .map(|i| {
+                let start = i as u64 * 10_000;
+                let text = match i {
+                    65 => format!("Line {i} on the roadmap."),
+                    68 => format!("Line {i} on the roadmap, says Ortega."),
+                    _ => format!("Line {i}."),
+                };
+                segment(
+                    1 + (i % 2) as u16,
+                    Channel::System,
+                    Some((start, start + 9_000)),
+                    &text,
+                )
+            })
+            .collect(),
+        LONG => (0..LONG_TURNS)
+            .map(|i| {
+                let start = i as u64 * 10_000;
+                let text = match i {
+                    100 | 140 => format!("Line {i} on the roadmap."),
+                    _ => format!("Line {i}."),
+                };
+                segment(
+                    1 + (i % 2) as u16,
+                    Channel::System,
+                    Some((start, start + 9_000)),
+                    &text,
+                )
+            })
+            .collect(),
+        _ => return SAMPLES.iter().find(|s| s.title == title)?.transcript(),
+    };
+    Some(spoken_transcript(segments))
+}
+
+fn corpus_summary(title: &str) -> Option<Summary> {
+    let markdown = match title {
+        TALK => "## Roadmap notes\n\n- Ship the docked player.\n- The roadmap moves to Q3.\n",
+        SUMMARY_ONLY => "## Notes\n\n- Kilimanjaro came up twice.\n",
+        _ => return None,
+    };
+    Some(Summary {
+        markdown: markdown.to_owned(),
+        language: None,
+        produced_by: ModelRef::parse("fake/sample").unwrap(),
+        transcript_revision: Revision(1),
+    })
+}
+
+/// The samples with the transcripts and summaries above, and takes for [`TALK`] and [`LONG`].
+fn open_corpus(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>, Arc<FakePlayback>) {
+    cx.update(gpui_kit::init);
+    let store = Arc::new(MemStore::new());
+    let mut changes = Vec::new();
+    for sample in &SAMPLES {
+        changes.push(Change::RecordingCreated(sample.recording()));
+        if let Some(transcript) = corpus_transcript(sample.title) {
+            changes.push(Change::TranscriptReplaced {
+                id: sample.id(),
+                transcript,
+            });
+        }
+        if let Some(summary) = corpus_summary(sample.title) {
+            changes.push(Change::SummaryReplaced {
+                id: sample.id(),
+                summary,
+            });
+        }
+    }
+    store.apply(changes).expect("seed the corpus");
+    let takes = Arc::new(MemTakes::new());
+    for title in [TALK, LONG] {
+        takes
+            .import(&id_of(title), Path::new("take.flac"))
+            .expect("a take");
+    }
+    let playback = Arc::new(FakePlayback::new());
+    let dory = Dory::open(
+        Ports {
+            store,
+            takes,
+            capture: Arc::new(FakeCapture::new()),
+            playback: playback.clone(),
+            trash: Arc::new(dory_core::testing::FakeTrash::new(std::env::temp_dir())),
+            clock: Arc::new(ManualClock::new(Timestamp(
+                fixtures::now().timestamp_millis(),
+            ))),
+            stt: Vec::new(),
+            llm: Vec::new(),
+            diar: Vec::new(),
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
+            guard: None,
+        },
+        Options::default(),
+    )
+    .expect("open Dory");
+    let prefs = Prefs {
+        onboarding: Some(dory_gpui::onboarding::OnboardingStep::Done),
+        ..Prefs::default()
+    };
+    let (window, app) = cx.update(|cx| {
+        let mut state = None;
+        let (window, shell) = gpui_kit::open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Default::default(),
+                    size: size(px(1100.), px(900.)),
+                })),
+                ..Default::default()
+            },
+            cx,
+            |window, cx| {
+                let (app, shell) = dory_gpui::build(dory, prefs, window, cx);
+                state = Some(app);
+                shell
+            },
+        )
+        .expect("open the window");
+        SHELL.with(|slot| *slot.borrow_mut() = Some(shell));
+        (window, state.expect("the app state"))
+    });
+    cx.run_until_parked();
+    (window, app, playback)
+}
+
+thread_local! {
+    /// The window root of the corpus window this test opened. Each test runs on its own thread.
+    static SHELL: std::cell::RefCell<Option<Entity<dory_gpui::shell::Shell>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Opens `title` the way a click on its search hit does, once `typed` has settled.
+fn open_hit(
+    title: &str,
+    typed: &str,
+    app: &Entity<AppState>,
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) {
+    search(app, typed, cx);
+    app.update(cx, |app, cx| app.select(Selection::One(id_of(title)), cx));
+    settle(window, cx);
+}
+
+/// Draws frames until a reveal that is a few frames long has finished.
+fn settle(window: AnyWindowHandle, cx: &mut TestAppContext) {
+    for _ in 0..8 {
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+    cx.run_until_parked();
+}
+
+/// The summary's marks as the words they cover in the rendered text.
+fn summary_marks(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<String> {
+    let _ = window;
+    let shell = SHELL
+        .with(|slot| slot.borrow().clone())
+        .expect("the corpus window");
+    let summary = shell
+        .read_with(cx, |shell, cx| {
+            shell.detail().map(|d| d.read(cx).summary().clone())
+        })
+        .expect("a detail pane");
+    summary.read_with(cx, |text, cx| {
+        let rendered = text.rendered(cx);
+        text.marks()
+            .iter()
+            .map(|r| rendered[r.clone()].to_owned())
+            .collect()
+    })
+}
+
+fn current(app: &Entity<AppState>, cx: &mut TestAppContext) -> Option<(usize, usize, Place)> {
+    app.read_with(cx, |app, cx| {
+        let session = app.session()?.read(cx);
+        let found = session.found()?;
+        Some((found.current(), found.len(), found.current_at().place))
+    })
+}
+
+fn readout(window: AnyWindowHandle, cx: &mut TestAppContext) -> Option<String> {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("match-readout")
+            .and_then(|node| node.label().map(str::to_owned))
+    })
+    .unwrap()
+}
+
+fn tab(app: &Entity<AppState>, cx: &mut TestAppContext) -> DetailTab {
+    app.read_with(cx, |app, _| app.tab)
+}
+
+fn described(window: AnyWindowHandle, turn: usize, cx: &mut TestAppContext) -> Option<String> {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .find(format!("turn-{turn}"))
+            .description()
+            .map(str::to_owned)
+    })
+    .unwrap()
+}
+
+/// Whether `id` is drawn inside the window's height.
+fn in_view(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> bool {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id.to_owned()).is_some_and(|element| {
+            let at = element.bounds();
+            at.top() >= px(0.) && at.bottom() <= window.viewport_size().height
+        })
+    })
+    .unwrap()
+}
+
+fn step(window: AnyWindowHandle, forward: bool, cx: &mut TestAppContext) {
+    if forward {
+        cx.dispatch_action(window, FindNext);
+    } else {
+        cx.dispatch_action(window, FindPrevious);
+    }
+    settle(window, cx);
+}
+
+#[gpui_kit::test]
+fn opening_a_hit_reveals_the_first_matching_turn(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    assert_eq!(
+        tab(&app, cx),
+        DetailTab::Transcript,
+        "a transcript match opens the Transcript tab"
+    );
+    assert_eq!(current(&app, cx), Some((0, 5, Place::Turn(1))));
+    assert_eq!(
+        readout(window, cx).as_deref(),
+        Some("1 of 5 matches"),
+        "the tab row counts the matches"
+    );
+    assert!(in_view(window, "turn-1", cx), "the first matching turn");
+    app.read_with(cx, |app, cx| {
+        let turns = app.session().unwrap().read(cx).detail().unwrap();
+        assert!(turns.turns[1].text.contains("roadmap"));
+    });
+}
+
+#[gpui_kit::test]
+fn opening_a_hit_in_a_long_transcript_scrolls_the_list_to_it(cx: &mut TestAppContext) {
+    const { assert!(LONG_TURNS > PAGED_TURNS) };
+    let (window, app, _) = open_corpus(cx);
+    open_hit(LONG, "roadmap", &app, window, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Turn(100)));
+    assert!(in_view(window, "turn-100", cx), "the match is in view");
+    cx.update_window(window, |_, window, _| {
+        assert!(
+            window.try_find("turn-0").is_none(),
+            "the list scrolled away from the top"
+        );
+    })
+    .unwrap();
+
+    step(window, true, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Turn(140)));
+    assert!(in_view(window, "turn-140", cx), "the next match is in view");
+}
+
+#[gpui_kit::test]
+fn marks_are_on_the_matching_turns_and_nowhere_else(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    let said: Vec<Option<String>> = (0..4).map(|ix| described(window, ix, cx)).collect();
+    assert_eq!(
+        said,
+        [
+            None,
+            Some("Search match".to_owned()),
+            None,
+            Some("Search match".to_owned())
+        ]
+    );
+    app.read_with(cx, |app, cx| {
+        let session = app.session().unwrap().read(cx);
+        let found = session.found().unwrap();
+        let turns = session.detail().unwrap();
+        let words: Vec<&str> = found
+            .in_turn(3)
+            .iter()
+            .map(|m| &turns.turns[3].text[m.span.clone()])
+            .collect();
+        assert_eq!(words, ["Roadmap", "roadmap"], "every match in a turn");
+        assert!(found.in_turn(0).is_empty() && found.in_turn(2).is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn find_next_switches_tabs_and_both_directions_wrap(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        step(window, true, cx);
+        seen.push((readout(window, cx).unwrap(), tab(&app, cx)));
+    }
+    let transcript = DetailTab::Transcript;
+    let summary = DetailTab::Summary;
+    assert_eq!(
+        seen,
+        [
+            ("2 of 5 matches".to_owned(), transcript),
+            ("3 of 5 matches".to_owned(), transcript),
+            ("4 of 5 matches".to_owned(), summary),
+            ("5 of 5 matches".to_owned(), summary),
+            ("1 of 5 matches".to_owned(), transcript),
+            ("2 of 5 matches".to_owned(), transcript),
+        ],
+        "past the last transcript match the Summary tab opens, and the end wraps back to the Transcript"
+    );
+    assert_eq!(
+        current(&app, cx).map(|c| c.2),
+        Some(Place::Turn(3)),
+        "after the wrap, the Transcript tab is back"
+    );
+
+    step(window, false, cx);
+    step(window, false, cx);
+    assert_eq!(readout(window, cx).as_deref(), Some("5 of 5 matches"));
+    assert_eq!(
+        tab(&app, cx),
+        DetailTab::Summary,
+        "previous from the first match wraps to the last"
+    );
+}
+
+#[gpui_kit::test]
+fn each_step_is_announced_with_its_speaker_and_time(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    let said = |cx: &mut TestAppContext| app.read_with(cx, |app, _| app.announced.clone());
+    app.update(cx, |app, _| app.announced = None);
+    step(window, true, cx);
+    assert_eq!(
+        said(cx).as_deref(),
+        Some("Match 2 of 5, Speaker 3, 13 minutes")
+    );
+    step(window, true, cx);
+    step(window, true, cx);
+    assert_eq!(
+        said(cx).as_deref(),
+        Some("Match 4 of 5, in the summary"),
+        "a summary match says where it is"
+    );
+}
+
+#[gpui_kit::test]
+fn return_on_the_current_match_plays_from_the_start_of_its_turn(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    step(window, true, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Turn(3)));
+    cx.update_window(window, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let (at, playing) = app.read_with(cx, |app, cx| {
+        let player = app.session().unwrap().read(cx).player().read(cx);
+        (player.position(), player.is_playing())
+    });
+    assert_eq!((at, playing), (Ms(780_000), true));
+}
+
+#[gpui_kit::test]
+fn clearing_search_removes_marks(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    assert_eq!(described(window, 1, cx).as_deref(), Some("Search match"));
+    assert!(readout(window, cx).is_some());
+
+    search(&app, "", cx);
+    settle(window, cx);
+    assert_eq!(current(&app, cx), None, "no match list");
+    assert_eq!(described(window, 1, cx), None, "the turn is unmarked");
+    assert_eq!(readout(window, cx), None, "the counter is gone");
+    assert_eq!(
+        tab(&app, cx),
+        DetailTab::Transcript,
+        "the tab and the page stay where they were"
+    );
+    app.update(cx, |app, cx| {
+        assert!(app.step_match(1, cx).is_none(), "nothing to step through")
+    });
+}
+
+#[gpui_kit::test]
+fn a_summary_only_match_opens_the_summary(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(SUMMARY_ONLY, "kilimanjaro", &app, window, cx);
+    assert_eq!(tab(&app, cx), DetailTab::Summary);
+    assert_eq!(current(&app, cx), Some((0, 1, Place::SummaryBlock(1))));
+    assert_eq!(readout(window, cx).as_deref(), Some("1 of 1 match"));
+    assert_eq!(
+        summary_marks(window, cx),
+        ["Kilimanjaro"],
+        "the word is marked in the rendered Markdown"
+    );
+}
+
+#[gpui_kit::test]
+fn every_match_in_the_summary_is_marked_in_the_rendered_text(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    app.update(cx, |app, cx| app.set_tab(DetailTab::Summary, cx));
+    settle(window, cx);
+    assert_eq!(summary_marks(window, cx), ["Roadmap", "roadmap"]);
+    search(&app, "", cx);
+    settle(window, cx);
+    assert!(
+        summary_marks(window, cx).is_empty(),
+        "clearing removes them"
+    );
+}
+
+#[gpui_kit::test]
+fn a_legacy_turn_without_times_is_marked_and_cannot_seek(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(LEGACY, "mentoring", &app, window, cx);
+    assert_eq!(tab(&app, cx), DetailTab::Transcript);
+    assert_eq!(current(&app, cx), Some((0, 1, Place::Turn(0))));
+    assert!(in_view(window, "turn-0", cx));
+    let said = described(window, 0, cx).unwrap();
+    assert!(
+        said.contains("Search match") && said.contains("No timestamp"),
+        "{said}"
+    );
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find("turn-0-time").is_none(), "no timestamp");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_new_search_while_a_recording_is_open_marks_it_again(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(TALK, "roadmap", &app, window, cx);
+    search(&app, "welcome", cx);
+    settle(window, cx);
+    assert_eq!(current(&app, cx), Some((0, 1, Place::Turn(0))));
+    assert_eq!(described(window, 0, cx).as_deref(), Some("Search match"));
+    assert_eq!(described(window, 1, cx), None);
+    assert_eq!(readout(window, cx).as_deref(), Some("1 of 1 match"));
+}
+
+#[gpui_kit::test]
+fn the_menu_steps_only_while_there_are_matches(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    app.read_with(cx, |app, cx| {
+        assert!(!dory_gpui::menus::menu_state(app, cx).can_step);
+    });
+    open_hit(TALK, "roadmap", &app, window, cx);
+    app.read_with(cx, |app, cx| {
+        assert!(dory_gpui::menus::menu_state(app, cx).can_step);
+    });
+    search(&app, "", cx);
+    app.read_with(cx, |app, cx| {
+        assert!(!dory_gpui::menus::menu_state(app, cx).can_step);
+    });
+}
+
+#[gpui_kit::test]
+fn opening_a_hit_far_down_a_paged_transcript_scrolls_the_page_to_it(cx: &mut TestAppContext) {
+    const { assert!(MID_TURNS <= PAGED_TURNS) };
+    let (window, app, _) = open_corpus(cx);
+    let top_of = |id: &str, cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id.to_owned()).map(|e| e.bounds())
+        })
+        .unwrap()
+    };
+    app.update(cx, |app, cx| {
+        app.select(Selection::One(id_of(MID)), cx);
+        app.set_tab(DetailTab::Transcript, cx);
+    });
+    settle(window, cx);
+    let unsearched = top_of("turn-65", cx).expect("laid out in the page").top();
+    assert!(
+        unsearched > px(900.),
+        "without a search turn 65 sits below the fold: {unsearched:?}"
+    );
+
+    open_hit(MID, "roadmap", &app, window, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Turn(65)));
+    let shown = top_of("turn-65", cx).unwrap();
+    assert!(
+        shown.top() >= px(52.) && shown.bottom() <= px(900.),
+        "the page scrolled so the match is in view: {shown:?}"
+    );
+
+    step(window, true, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Turn(68)));
+    let shown = top_of("turn-68", cx).unwrap();
+    assert!(
+        shown.top() >= px(52.) && shown.bottom() <= px(900.),
+        "the next match is in view: {shown:?}"
+    );
+
+    step(window, true, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Turn(65)));
+    let shown = top_of("turn-65", cx).unwrap();
+    assert!(
+        shown.top() >= px(52.) && shown.bottom() <= px(900.),
+        "wrapping to the first match scrolls back up to it: {shown:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_match_in_the_title_scrolls_the_page_back_to_the_top(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus(cx);
+    open_hit(MID, "ortega roadmap", &app, window, cx);
+    assert_eq!(
+        current(&app, cx),
+        Some((2, 4, Place::Turn(68))),
+        "a hit opens at the first match in the turn that holds both words"
+    );
+    assert!(
+        !in_view(window, "title", cx),
+        "the page is scrolled down to turn 68"
+    );
+    step(window, false, cx);
+    step(window, false, cx);
+    assert_eq!(current(&app, cx).map(|c| c.2), Some(Place::Title));
+    assert!(
+        in_view(window, "title", cx),
+        "a match in the title scrolls the page back to the top"
+    );
 }

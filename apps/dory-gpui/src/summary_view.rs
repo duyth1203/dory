@@ -6,19 +6,32 @@
 //! says why, from the recording's phase. A summary that failed shows here only, with the one
 //! button that fixes it (UX-13), which `detail.rs` builds, while the transcript stays readable.
 //! Copy and Export sit in the tab row, which `detail.rs` draws.
+//!
+//! The Markdown is drawn by [`SummaryText`], one per detail pane, which keeps its text view's
+//! state across tab switches. While a search is active it marks every match in the rendered text
+//! with the `search_match` fill, and scrolls the page to the current one when the session asks.
+//! The text view takes a background per range and nothing else, so unlike the transcript's
+//! marks these are the fill alone.
 
 use dory_core::domain::Stage;
-use gpui_kit::component::text::{TextView, TextViewStyle};
-use gpui_kit::{
-    AnyElement, FontWeight, IntoElement as _, ParentElement as _, Role, Styled as _, div, px,
-    relative, rems,
+use dory_core::search::{self, Query};
+use gpui_kit::component::text::{
+    RangeHighlight, RenderedText, TextView, TextViewState, TextViewStyle,
 };
+use gpui_kit::{
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FontWeight, Hsla, IntoElement as _,
+    ParentElement as _, Render, Role, ScrollHandle, Styled as _, Subscription, Window, div, point,
+    px, relative, rems,
+};
+use std::ops::Range;
 
 use crate::a11y;
-use crate::app::Detail;
+use crate::app::{Detail, Session};
+use crate::find::shift_into_view;
 use crate::icons::{self, Icon};
 use crate::processing::{Fix, Phase};
 use crate::theme::Theme;
+use crate::transcript_view::{DOCK_CLEARANCE, TAB_ROW};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SummaryState<'a> {
@@ -68,10 +81,195 @@ impl<'a> SummaryState<'a> {
     }
 }
 
-/// `fix_button` is the job's fix, shown under a summary that is missing because of it.
+/// What the highlights in the text view were last set for.
+#[derive(Clone, PartialEq)]
+struct Marked {
+    text: RenderedText,
+    query: Option<Query>,
+    fill: Hsla,
+}
+
+/// Emitted once the match the session asked to show is in view, or there was none to show.
+pub struct Revealed;
+
+pub struct SummaryText {
+    session: Entity<Session>,
+    page: ScrollHandle,
+    state: Entity<TextViewState>,
+    markdown: String,
+    /// The session's `reveal` count this view last acted on.
+    seen: u64,
+    /// The current match's place among the summary's matches, until the view has scrolled to it.
+    wanted: Option<usize>,
+    marked: Option<Marked>,
+    ranges: Vec<Range<usize>>,
+    _subscriptions: [Subscription; 2],
+}
+
+impl EventEmitter<Revealed> for SummaryText {}
+
+fn markdown_of(session: &Session) -> String {
+    session
+        .detail()
+        .and_then(|d| d.summary.as_ref().map(|s| s.markdown.clone()))
+        .unwrap_or_default()
+}
+
+fn has_markdown(session: &Session, markdown: &str) -> bool {
+    session.detail().map_or(markdown.is_empty(), |d| {
+        d.summary.as_ref().map_or("", |s| s.markdown.as_str()) == markdown
+    })
+}
+
+impl SummaryText {
+    /// `page` is the scroll area the detail pane sits in, which a match scrolls into view.
+    pub fn new(session: Entity<Session>, page: ScrollHandle, cx: &mut Context<Self>) -> Self {
+        let markdown = markdown_of(session.read(cx));
+        let state = cx.new(|cx| TextViewState::markdown(&markdown, cx));
+        let on_session = cx.observe(&session, |this, _, cx| this.sync(cx));
+        let on_state = cx.observe(&state, |this, _, cx| this.sync(cx));
+        let mut view = Self {
+            session,
+            page,
+            state,
+            markdown,
+            seen: 0,
+            wanted: None,
+            marked: None,
+            ranges: Vec::new(),
+            _subscriptions: [on_session, on_state],
+        };
+        view.sync(cx);
+        view
+    }
+
+    /// The ranges of the rendered text the search marks.
+    pub fn marks(&self) -> &[Range<usize>] {
+        &self.ranges
+    }
+
+    /// The text as drawn, which `marks` index.
+    pub fn rendered(&self, cx: &gpui_kit::App) -> String {
+        self.state.read(cx).rendered_text().as_str().to_owned()
+    }
+
+    /// Brings the text, its highlights, and the wish to scroll in line with the session.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        let session = self.session.read(cx);
+        let markdown = (!has_markdown(session, &self.markdown)).then(|| markdown_of(session));
+        let reveal = session.reveal();
+        let found = session.found();
+        let query = found
+            .filter(|found| !found.in_summary().0.is_empty())
+            .map(|found| found.query().clone());
+        let wanted = found.and_then(|found| found.in_summary().1);
+        if reveal != self.seen {
+            self.seen = reveal;
+            self.wanted = wanted;
+        }
+        if let Some(markdown) = markdown {
+            self.markdown = markdown;
+            self.marked = None;
+            self.state
+                .update(cx, |state, cx| state.set_text(&self.markdown, cx));
+        }
+        let rendered = self.state.read(cx).rendered_text();
+        if rendered.source() != self.markdown {
+            return;
+        }
+        let key = Marked {
+            text: rendered.clone(),
+            query,
+            fill: Theme::get(cx).search_match,
+        };
+        if self.marked.as_ref() == Some(&key) {
+            return;
+        }
+        self.ranges = match &key.query {
+            Some(query) => search::highlights(query, rendered.as_str()),
+            None => Vec::new(),
+        };
+        let fill = key.fill;
+        let ranges = self.ranges.clone();
+        self.state.update(cx, |state, cx| {
+            if ranges.is_empty() {
+                state.clear_range_highlights(cx);
+            } else if let Err(error) = state.set_range_highlights(
+                ranges
+                    .into_iter()
+                    .map(|range| RangeHighlight::new(range, fill)),
+                cx,
+            ) {
+                eprintln!("summary marks failed: {error}");
+            }
+        });
+        self.marked = Some(key);
+    }
+
+    /// Asks the text view to scroll to the `ordinal`th match. Called while the tab is drawn, so
+    /// the line is laid out within the second the request lasts.
+    fn show(&mut self, ordinal: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let range = self
+            .ranges
+            .get(ordinal.min(self.ranges.len().saturating_sub(1)))
+            .cloned();
+        if let Some(range) = range {
+            let revealed = self
+                .state
+                .update(cx, |state, cx| state.reveal_range(range, cx));
+            if let Err(error) = revealed {
+                eprintln!("summary reveal failed: {error}");
+            }
+        }
+        // The text view calls back with the line once it is laid out and not in view, and the
+        // page moves in that frame, so the frame after it paints the match in view.
+        let this = cx.entity().downgrade();
+        window.on_next_frame(move |window, _| {
+            window.on_next_frame(move |_, cx| {
+                let _ = this.update(cx, |_, cx| cx.emit(Revealed));
+            })
+        });
+    }
+}
+
+impl Render for SummaryText {
+    fn render(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        let theme = Theme::get(cx);
+        if self.marked.is_some()
+            && let Some(ordinal) = self.wanted.take()
+        {
+            self.show(ordinal, window, cx);
+        }
+        let heading = theme.text(17.);
+        let style = TextViewStyle::default()
+            .paragraph_gap(rems(0.75))
+            .heading_font_size(move |_, _| heading);
+        let page = self.page.clone();
+        let (top, bottom) = (theme.text(TAB_ROW) + px(8.), px(DOCK_CLEARANCE));
+        TextView::new(&self.state)
+            .style(style)
+            .selectable(true)
+            .text_size(theme.text(15.))
+            .line_height(relative(1.6))
+            .on_reveal(move |line, _, _| {
+                if let Some(dy) = shift_into_view(line, page.bounds(), top, bottom) {
+                    let offset = page.offset();
+                    let y = (offset.y + dy).max(-page.max_offset().y).min(px(0.));
+                    page.set_offset(point(offset.x, y));
+                }
+            })
+    }
+}
+
+/// `text` draws the Markdown. `fix_button` is the job's fix, shown under a summary that is missing because of it.
 pub fn summary(
     detail: &Detail,
     phase: Option<&Phase>,
+    text: &Entity<SummaryText>,
     fix_button: Option<AnyElement>,
     theme: &Theme,
 ) -> AnyElement {
@@ -90,10 +288,6 @@ pub fn summary(
             )
             .into_any_element(),
         SummaryState::Markdown { markdown, stale } => {
-            let heading = theme.text(17.);
-            let style = TextViewStyle::default()
-                .paragraph_gap(rems(0.75))
-                .heading_font_size(move |_, _| heading);
             let body = a11y::with_markdown_children(doc, markdown)
                 .flex()
                 .flex_col()
@@ -119,14 +313,7 @@ pub fn summary(
             } else {
                 body
             };
-            body.child(
-                TextView::markdown("summary-markdown", markdown.to_owned())
-                    .style(style)
-                    .selectable(true)
-                    .text_size(theme.text(15.))
-                    .line_height(relative(1.6)),
-            )
-            .into_any_element()
+            body.child(text.clone()).into_any_element()
         }
     }
 }

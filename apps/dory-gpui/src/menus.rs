@@ -9,6 +9,9 @@
 //! Its **Re-transcribe in…** submenu and the row menu's offer Automatic and the meeting languages,
 //! by `languages::choices` (UX-26), computed when the menu is built or opened.
 //!
+//! Edit > Find holds Find, Find Next, and Find Previous. The last two step through the matches of
+//! the active search in the selected recording and are off when there are none (UX-32).
+//!
 //! Space for `TogglePlayback` is not bound here. A binding without a context would also take
 //! Space from a focused button and from the search field, so the player owns that key.
 
@@ -37,6 +40,9 @@ pub struct MenuState {
     /// The transcript has times for every segment, which SRT needs.
     pub srt: bool,
     pub can_undo: bool,
+    /// A search has matches in the selected recording, which Find Next and Find Previous step
+    /// through.
+    pub can_step: bool,
     pub recorder: Recorder,
     pub text_scale: Scale,
     /// The meeting languages, which Re-transcribe in… offers.
@@ -101,6 +107,9 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
         has_transcript: transcript.is_some(),
         srt: transcript.is_some_and(|t| !t.segments.is_empty() && t.is_timed()),
         can_undo: app.can_undo(),
+        can_step: app
+            .session()
+            .is_some_and(|session| session.read(cx).found().is_some()),
         recorder: Recorder::of(app.recorder()),
         text_scale: Scale::of(app.prefs.text_scale),
         languages: app.settings().meeting_languages.clone(),
@@ -153,7 +162,11 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
             MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
             MenuItem::separator(),
-            MenuItem::action("Find", Find),
+            MenuItem::submenu(Menu::new("Find").items([
+                MenuItem::action("Find", Find),
+                MenuItem::action("Find Next", FindNext).disabled(!state.can_step),
+                MenuItem::action("Find Previous", FindPrevious).disabled(!state.can_step),
+            ])),
         ]),
         Menu::new("View").items([
             MenuItem::action("Show Summary", ShowSummary).disabled(!state.has_selection),
@@ -206,6 +219,8 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("cmd-shift-p", PauseRecording, None),
         KeyBinding::new("cmd-.", StopRecording, None),
         KeyBinding::new("cmd-f", Find, None),
+        KeyBinding::new("cmd-g", FindNext, None),
+        KeyBinding::new("cmd-shift-g", FindPrevious, None),
         KeyBinding::new("cmd-1", ShowSummary, None),
         KeyBinding::new("cmd-2", ShowTranscript, None),
         KeyBinding::new("cmd-e", ExportMarkdown, None),

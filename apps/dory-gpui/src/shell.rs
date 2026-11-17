@@ -10,8 +10,8 @@
 
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
-    IntoElement, ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _, px,
+    IntoElement, ParentElement as _, Render, Role, ScrollHandle, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
 use dory_core::ports::capture::Source;
@@ -21,6 +21,7 @@ use crate::actions::*;
 use crate::app::{AppEvent, AppState, DetailTab};
 use crate::detail::DetailPane;
 use crate::export::{self, CopyWhat, ExportFormat};
+use crate::find::Place;
 use crate::glass;
 use crate::library::StatusFilter;
 use crate::onboarding::{self, Onboarding, OnboardingStep};
@@ -67,6 +68,8 @@ pub struct Shell {
     grant_focus: [FocusHandle; 2],
     /// One per [`Region`], on the landmark's container, to tell which one holds focus.
     regions: [FocusHandle; 3],
+    /// The page's scroll area, which the detail pane scrolls a match into view in.
+    page: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -79,8 +82,8 @@ impl Shell {
         let on_select = cx.subscribe_in(&app, window, |this, app, event: &AppEvent, window, cx| {
             if *event == AppEvent::SelectionChanged {
                 this.detail = app.read(cx).session().cloned().map(|session| {
-                    let app = app.clone();
-                    cx.new(|cx| DetailPane::new(app, session, window, cx))
+                    let (app, page) = (app.clone(), this.page.clone());
+                    cx.new(|cx| DetailPane::new(app, session, page, window, cx))
                 });
                 cx.notify();
             }
@@ -120,6 +123,7 @@ impl Shell {
             undo_stop_focus: cx.focus_handle(),
             grant_focus: [cx.focus_handle(), cx.focus_handle()],
             regions: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
+            page: ScrollHandle::new(),
             _subscriptions: vec![
                 on_select,
                 on_app,
@@ -128,6 +132,10 @@ impl Shell {
                 on_activation,
             ],
         }
+    }
+
+    pub fn detail(&self) -> Option<&Entity<DetailPane>> {
+        self.detail.as_ref()
     }
 
     fn region(&self, region: Region) -> &FocusHandle {
@@ -334,6 +342,10 @@ impl Shell {
                 this.sidebar
                     .update(cx, |sidebar, cx| sidebar.focus_search(window, cx))
             }))
+            .on_action(cx.listener(|this, _: &FindNext, window, cx| this.step_match(1, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &FindPrevious, window, cx| this.step_match(-1, window, cx)),
+            )
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
                 this.app.update(cx, |app, cx| app.select_relative(1, cx))
             }))
@@ -409,6 +421,16 @@ impl Shell {
             .on_action(cx.listener(|this, _: &PreviousRegion, window, cx| {
                 this.move_region(false, window, cx)
             }))
+    }
+
+    /// Find Next and Find Previous. A match in a turn takes the keyboard to the transcript, so
+    /// Return plays from it.
+    fn step_match(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let moved = self.app.update(cx, |app, cx| app.step_match(delta, cx));
+        let on_turn = moved.is_some_and(|moved| matches!(moved.at.place, Place::Turn(_)));
+        if let (true, Some(detail)) = (on_turn, &self.detail) {
+            detail.update(cx, |detail, cx| detail.focus_transcript(window, cx));
+        }
     }
 
     fn selected_detail(&self, cx: &Context<Self>) -> Option<std::sync::Arc<crate::app::Detail>> {
@@ -536,6 +558,7 @@ impl Render for Shell {
                         a11y::node("detail", Role::Main, "Recording")
                             .flex_1()
                             .overflow_y_scroll()
+                            .track_scroll(&self.page)
                             .flex()
                             .justify_center()
                             .items_start()

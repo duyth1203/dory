@@ -10,6 +10,8 @@ gpui_kit::actions!(
         Quit,
         NewRecording,
         Find,
+        FindNext,
+        FindPrevious,
         SelectNext,
         SelectPrevious,
         ShowSummary,

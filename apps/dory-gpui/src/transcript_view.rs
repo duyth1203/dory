@@ -21,23 +21,33 @@
 //!   (`a11y::nested_list`, UX-31): it takes the wheel while it can move and passes the rest to
 //!   the page, and a trackpad gesture stays with whichever of the two it began in.
 //! - Copy Transcript and Export sit in the tab row, which the detail pane draws.
+//! - While a search is active the session holds the recording's matches (`crate::find`). Each
+//!   turn marks its matches the way the sidebar does, and says "Search match" to VoiceOver. When
+//!   the session asks to show the current match and it is in a turn, the cursor moves to that
+//!   turn and the page scrolls until the turn sits in view. A probe laid in the turn, or over
+//!   the list's row, measures it each frame until it does, then emits [`Revealed`].
 //!
 //! The detail pane creates this view once per session and places it under the Transcript tab.
 
+use std::ops::Range;
 use std::sync::Arc;
 
 use dory_core::domain::{Ms, SpeakerId};
+use dory_core::search::Query;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ListAlignment, ListState, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
-    Window, div, list, prelude::FluentBuilder as _, px, relative, transparent_black,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
+    ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window,
+    canvas, div, list, point, prelude::FluentBuilder as _, px, relative, transparent_black,
 };
 
 use crate::a11y;
 use crate::app::{Detail, PlayerHandle, Session, Turn};
+use crate::find::{Place, shift_into_view};
 use crate::icons::Icon;
+use crate::marks::marked;
 use crate::theme::Theme;
 
 /// Past this many turns the transcript virtualizes. A column this short renders in well under a
@@ -47,9 +57,9 @@ pub const PAGED_TURNS: usize = 80;
 /// The toolbar stays on screen above the list, 52 pt, and the sticky tab row under it, 34 pt
 /// scaled with the text.
 const TOOLBAR: f32 = 52.;
-const TAB_ROW: f32 = 34.;
+pub(crate) const TAB_ROW: f32 = 34.;
 /// Keeps the last turn clear of the docked player: 52 pt tall, 14 pt above the edge.
-const DOCK_CLEARANCE: f32 = 80.;
+pub(crate) const DOCK_CLEARANCE: f32 = 80.;
 
 /// The turn under the playhead: the last turn to start at or before `at`, if it has not ended.
 /// Turns run in time order, so this is a binary search.
@@ -89,6 +99,31 @@ struct Rename {
     _events: Subscription,
 }
 
+/// A match turn that is being scrolled into view, and how many frames that has taken.
+#[derive(Clone, Copy, Debug)]
+struct Reveal {
+    turn: usize,
+    frames: u8,
+}
+
+/// Frames to keep nudging the page toward a turn before giving up, so a page that cannot scroll
+/// far enough never loops.
+const REVEAL_FRAMES: u8 = 6;
+
+/// What one frame's measurement of the turn being revealed found.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Probe {
+    /// The turn is in view.
+    Seen,
+    /// The page was moved by this much, and the next frame measures again.
+    Moved(Pixels),
+    /// The list has not laid the turn out yet.
+    Waiting,
+}
+
+/// Emitted once the turn that is the current match is in view, or the page cannot show it better.
+pub struct Revealed;
+
 pub struct TranscriptView {
     session: Entity<Session>,
     player: Entity<PlayerHandle>,
@@ -99,11 +134,25 @@ pub struct TranscriptView {
     focus: FocusHandle,
     rename: Option<Rename>,
     text_scale: f32,
+    page: ScrollHandle,
+    /// The session's `reveal` count this view last acted on.
+    seen: u64,
+    reveal: Option<Reveal>,
+    /// The query the turns are drawn with marks for, so a change measures the rows again.
+    marked: Option<Query>,
     _subscriptions: [Subscription; 2],
 }
 
+impl EventEmitter<Revealed> for TranscriptView {}
+
 impl TranscriptView {
-    pub fn new(session: Entity<Session>, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `page` is the scroll area the detail pane sits in, which a match scrolls into view.
+    pub fn new(
+        session: Entity<Session>,
+        page: ScrollHandle,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let player = session.read(cx).player().clone();
         let on_session = cx.observe(&session, |this, _, cx| this.sync_detail(cx));
         let on_player = cx.observe(&player, |this, _, cx| this.sync_playing(cx));
@@ -117,6 +166,10 @@ impl TranscriptView {
             focus: cx.focus_handle(),
             rename: None,
             text_scale: Theme::get(cx).text_scale,
+            page,
+            seen: 0,
+            reveal: None,
+            marked: None,
             _subscriptions: [on_session, on_player],
         };
         view.sync_detail(cx);
@@ -139,6 +192,7 @@ impl TranscriptView {
             _ => false,
         };
         if same {
+            self.follow_search(cx);
             return;
         }
         let count = detail.as_ref().map_or(0, |d| d.turns.len());
@@ -153,6 +207,115 @@ impl TranscriptView {
             self.rename = None;
         }
         self.playing = playing_turn(self.turns(), self.player.read(cx).position());
+        self.follow_search(cx);
+        cx.notify();
+    }
+
+    /// Measures the rows again when the marks change, and shows the current match when the
+    /// session asks and it is in a turn.
+    fn follow_search(&mut self, cx: &mut Context<Self>) {
+        let session = self.session.read(cx);
+        let query = session.found().map(|found| found.query().clone());
+        let target = match session.found().map(|found| found.current_at().place) {
+            Some(Place::Turn(ix)) if ix < self.turns().len() => Some(ix),
+            _ => None,
+        };
+        let reveal = session.reveal();
+        if query != self.marked {
+            self.marked = query;
+            self.list.remeasure();
+            cx.notify();
+        }
+        if reveal != self.seen {
+            self.seen = reveal;
+            match target {
+                Some(ix) => self.show_turn(ix, cx),
+                None => self.reveal = None,
+            }
+        }
+    }
+
+    /// Puts the cursor on turn `ix` and starts scrolling it into view.
+    fn show_turn(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.cursor = Some(ix);
+        self.reveal = Some(Reveal {
+            turn: ix,
+            frames: 0,
+        });
+        if self.turns().len() > PAGED_TURNS && !self.list_shows(ix) {
+            self.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+        }
+        cx.notify();
+    }
+
+    fn list_shows(&self, ix: usize) -> bool {
+        let viewport = self.list.viewport_bounds();
+        self.list
+            .bounds_for_item(ix)
+            .is_some_and(|row| row.top() >= viewport.top() && row.bottom() <= viewport.bottom())
+    }
+
+    /// A probe for the frame: where the turn being revealed sits, and the page moved toward it.
+    /// A paged turn carries its own probe and is measured by its bounds. For `in_list` the probe
+    /// sits beside the list and reads the row from the list, which has no element for a turn
+    /// until it lays that turn out.
+    fn probe(
+        &self,
+        turn: usize,
+        in_list: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let (page, list) = (self.page.clone(), self.list.clone());
+        let this = cx.entity().downgrade();
+        let (top, bottom) = (Theme::get(cx).text(TAB_ROW) + px(8.), px(DOCK_CLEARANCE));
+        canvas(
+            move |bounds, window, cx: &mut App| {
+                let item = if in_list {
+                    list.bounds_for_item(turn)
+                } else {
+                    Some(bounds)
+                };
+                let found = match item {
+                    None => Probe::Waiting,
+                    Some(item) => {
+                        let visible = window.content_mask().bounds;
+                        match shift_into_view(item, visible, top, bottom) {
+                            None => Probe::Seen,
+                            Some(dy) => {
+                                let offset = page.offset();
+                                let floor = -page.max_offset().y;
+                                let y = (offset.y + dy).max(floor).min(px(0.));
+                                page.set_offset(point(offset.x, y));
+                                Probe::Moved(y - offset.y)
+                            }
+                        }
+                    }
+                };
+                cx.defer(move |cx| {
+                    let _ = this.update(cx, |this, cx| this.measured(turn, found, cx));
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_full()
+    }
+
+    /// Takes one frame's [`Probe`]. A page that did not move, or has moved for [`REVEAL_FRAMES`],
+    /// is as far as it goes.
+    fn measured(&mut self, turn: usize, found: Probe, cx: &mut Context<Self>) {
+        let Some(reveal) = self.reveal.as_mut().filter(|r| r.turn == turn) else {
+            return;
+        };
+        reveal.frames += 1;
+        let stuck = matches!(found, Probe::Moved(by) if by.abs() < px(0.5));
+        if found == Probe::Seen || stuck || reveal.frames >= REVEAL_FRAMES {
+            self.reveal = None;
+            cx.emit(Revealed);
+        }
         cx.notify();
     }
 
@@ -272,6 +435,24 @@ impl TranscriptView {
             ),
             None => format!("{}, {}", turn.label, turn.text),
         };
+        let marks: Vec<Range<usize>> = self
+            .session
+            .read(cx)
+            .found()
+            .map(|found| found.in_turn(ix).iter().map(|m| m.span.clone()).collect())
+            .unwrap_or_default();
+        let mut described = Vec::new();
+        if turn.range.is_none() {
+            described.push("No timestamp, so it cannot play from here");
+        }
+        if sounding {
+            described.push("Playing");
+        }
+        if !marks.is_empty() {
+            described.push("Search match");
+        }
+        let probing =
+            self.reveal.is_some_and(|r| r.turn == ix) && self.turns().len() <= PAGED_TURNS;
 
         let name =
             match self.rename.as_ref().filter(|r| r.turn == ix) {
@@ -340,10 +521,10 @@ impl TranscriptView {
             .aria_position_in_set(ix + 1)
             .aria_size_of_set(detail.turns.len())
             .when(current, |el| el.aria_active_descendant())
-            .when(turn.range.is_none(), |el| {
-                el.aria_description("No timestamp, so it cannot play from here")
+            .when(!described.is_empty(), |el| {
+                el.aria_description(described.join(". "))
             })
-            .when(sounding, |el| el.aria_description("Playing"))
+            .relative()
             .flex()
             .gap(px(12.))
             .px(px(12.))
@@ -410,9 +591,16 @@ impl TranscriptView {
                         div()
                             .text_size(theme.text(15.))
                             .line_height(relative(1.6))
-                            .child(turn.text.clone()),
+                            .child(marked(
+                                turn.text.clone(),
+                                &marks,
+                                FontWeight::SEMIBOLD,
+                                false,
+                                &theme,
+                            )),
                     ),
             )
+            .when(probing, |el| el.child(self.probe(ix, false, cx)))
             .into_any_element()
     }
 }
@@ -459,7 +647,9 @@ impl Render for TranscriptView {
         let height = window.viewport_size().height - px(TOOLBAR) - Theme::get(cx).text(TAB_ROW);
         // The clearance sits outside the list: GPUI's list reports its scroll range without its
         // own padding, and the chaining rule reads that range to find the bottom.
+        let probe = self.reveal.map(|r| self.probe(r.turn, true, cx));
         container
+            .relative()
             .child(
                 div().pb(px(DOCK_CLEARANCE)).child(a11y::nested_list(
                     "transcript-scroll",
@@ -472,6 +662,7 @@ impl Render for TranscriptView {
                     .h(height - px(DOCK_CLEARANCE)),
                 )),
             )
+            .children(probe)
             .into_any_element()
     }
 }

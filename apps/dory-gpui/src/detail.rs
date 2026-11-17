@@ -19,6 +19,12 @@
 //! The tab row reads `app.tab`, which Command-1 and Command-2 set at the window root. Its Copy,
 //! Export, and ⋯ buttons dispatch `crate::actions`, which the shell hands to `export.rs`.
 //!
+//! While a search is active (UX-32) the session holds the recording's matches (`crate::find`).
+//! The pane then marks the title, picks the tab the first match is on when the recording opens,
+//! and shows "2 of 9 matches" with Previous and Next in the tab row. The transcript and summary
+//! views mark their own text and scroll to the current match. `match-revealed ms=` waits for the
+//! first of them to report the match in view.
+//!
 //! The shell creates one `DetailPane` per selection and drops it when the selection changes.
 
 use std::cell::Cell;
@@ -37,21 +43,25 @@ use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
     Anchor, AnchoredPositionMode, AnyElement, App, AppContext as _, Bounds, Context, Entity,
     FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Pixels, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, WeakEntity, Window, anchored, canvas, deferred, div, point,
-    prelude::FluentBuilder as _, px, relative,
+    ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored,
+    canvas, deferred, div, point, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
-use crate::actions::{CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText};
+use crate::actions::{
+    CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText, FindNext, FindPrevious,
+};
 use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
+use crate::find::Place;
 use crate::icons::{self, Icon};
 use crate::library;
+use crate::marks::marked;
 use crate::menus;
 use crate::motion::{self, ease_standard, elapsed};
 use crate::player_view::PlayerView;
 use crate::processing::{self, Fix, Phase};
-use crate::summary_view;
+use crate::summary_view::{self, SummaryText};
 use crate::theme::Theme;
 use crate::transcript_view::TranscriptView;
 use crate::{glyphs, set_up_summaries};
@@ -180,6 +190,8 @@ pub struct DetailPane {
     session: Entity<Session>,
     player: Entity<PlayerView>,
     transcript: Entity<TranscriptView>,
+    summary: Entity<SummaryText>,
+    page: ScrollHandle,
     tab_focus: [FocusHandle; 2],
     title_focus: FocusHandle,
     title_edit: Option<TitleEdit>,
@@ -197,18 +209,28 @@ pub struct DetailPane {
     arrivals: Vec<Instant>,
     /// Set when this recording's stop is saved; the finish card takes focus once it shows.
     focus_finish: bool,
-    /// When the selection made this pane, until its loaded content first paints.
+    /// When the selection made this pane, until its loaded content first paints, or until the
+    /// match it opens at is in view.
     opened: Option<Instant>,
+    /// The session's `reveal` count this pane last acted on.
+    seen: u64,
+    _reveals: [Subscription; 2],
 }
 
 impl DetailPane {
+    /// `page` is the scroll area the pane sits in, which a match scrolls into view.
     pub fn new(
         app: Entity<AppState>,
         session: Entity<Session>,
+        page: ScrollHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&session, |_, _, cx| cx.notify()).detach();
+        cx.observe(&session, |this, _, cx| {
+            this.show_first_match(cx);
+            cx.notify();
+        })
+        .detach();
         cx.observe(&app, |_, _, cx| cx.notify()).detach();
         cx.subscribe(&app, |this, _, Saved(id): &Saved, cx| {
             if this.session.read(cx).id() == id {
@@ -219,12 +241,25 @@ impl DetailPane {
         .detach();
         let handle = session.read(cx).player().clone();
         let player = cx.new(|cx| PlayerView::new(handle, app.clone(), cx));
-        let transcript = cx.new(|cx| TranscriptView::new(session.clone(), window, cx));
+        let transcript =
+            cx.new(|cx| TranscriptView::new(session.clone(), page.clone(), window, cx));
+        let summary = cx.new(|cx| SummaryText::new(session.clone(), page.clone(), cx));
+        let revealed = [
+            cx.subscribe(
+                &transcript,
+                |this, _, _: &crate::transcript_view::Revealed, _| this.reveal_done(),
+            ),
+            cx.subscribe(&summary, |this, _, _: &summary_view::Revealed, _| {
+                this.reveal_done()
+            }),
+        ];
         Self {
             app,
             session,
             player,
             transcript,
+            summary,
+            page,
             tab_focus: [cx.focus_handle(), cx.focus_handle()],
             title_focus: cx.focus_handle(),
             title_edit: None,
@@ -238,11 +273,50 @@ impl DetailPane {
             arrivals: Vec::new(),
             focus_finish: false,
             opened: Some(Instant::now()),
+            seen: 0,
+            _reveals: revealed,
         }
+    }
+
+    /// When the session starts showing a match, shows the tab that match is on. Opening a hit
+    /// and a new search both count, and neither is the user's pick of a tab.
+    fn show_first_match(&mut self, cx: &mut Context<Self>) {
+        let session = self.session.read(cx);
+        if session.reveal() == self.seen {
+            return;
+        }
+        self.seen = session.reveal();
+        let place = session.found().map(|found| found.current_at().place);
+        if let Some(tab) = place.and_then(Place::tab) {
+            self.app.update(cx, |app, cx| app.show_match_tab(tab, cx));
+        }
+        if place == Some(Place::Title) {
+            let offset = self.page.offset();
+            self.page.set_offset(point(offset.x, px(0.)));
+        }
+    }
+
+    /// A view reports the current match in view, which ends the open's `match-revealed` time.
+    fn reveal_done(&mut self) {
+        if let Some(opened) = self.opened.take() {
+            let ms = opened.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("match-revealed ms={ms:.1}");
+        }
+    }
+
+    /// Where Find Next and Find Previous leave the keyboard when they land on a turn, so Return
+    /// plays from it.
+    pub fn focus_transcript(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.transcript.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
     }
 
     pub fn session(&self) -> &Entity<Session> {
         &self.session
+    }
+
+    pub fn summary(&self) -> &Entity<SummaryText> {
+        &self.summary
     }
 
     /// Where F6 lands in the detail pane: the title, the first thing in it.
@@ -353,7 +427,13 @@ impl DetailPane {
         .size_full()
     }
 
-    fn title(&self, detail: &Detail, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+    fn title(
+        &self,
+        detail: &Detail,
+        marks: &[std::ops::Range<usize>],
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         if let Some(edit) = &self.title_edit {
             return a11y::node("title-editor", Role::Group, "Title")
                 .border_2()
@@ -392,7 +472,7 @@ impl DetailPane {
         .text_size(theme.text(30.))
         .font_weight(FontWeight::BOLD)
         .line_height(relative(1.2))
-        .child(title)
+        .child(marked(title, marks, FontWeight::EXTRA_BOLD, false, theme))
         .into_any_element()
     }
 
@@ -402,6 +482,7 @@ impl DetailPane {
         title: Option<String>,
         detail: &Detail,
         summarizing: Option<Option<u64>>,
+        readout: Option<String>,
         theme: &Theme,
     ) -> AnyElement {
         let tab_button = |id: &'static str,
@@ -508,7 +589,46 @@ impl DetailPane {
                     )),
             )
             .child(div().flex_1())
+            .children(readout.map(|readout| self.find_group(readout, &action, theme)))
             .child(actions)
+            .into_any_element()
+    }
+
+    /// "2 of 9 matches" with Previous and Next, in the tab row while a search has matches here.
+    /// The words are not a live region: each step is announced once, by `AppState::step_match`.
+    fn find_group<B: Fn(&'static str, &str) -> Button>(
+        &self,
+        readout: String,
+        action: &B,
+        theme: &Theme,
+    ) -> AnyElement {
+        let step = |id: &'static str,
+                    label: &'static str,
+                    spoken: &'static str,
+                    go: Box<dyn gpui_kit::Action>| {
+            action(id, label)
+                .accessibility_label(spoken)
+                .on_click(move |_, window, cx| window.dispatch_action(go.boxed_clone(), cx))
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.))
+            .child(
+                a11y::node("match-readout", Role::Label, readout.clone())
+                    .font_features(crate::theme::tabular())
+                    .text_size(theme.text(13.))
+                    .text_color(theme.text_secondary)
+                    .whitespace_nowrap()
+                    .child(readout),
+            )
+            .child(step(
+                "find-previous",
+                "Previous",
+                "Previous match",
+                Box::new(FindPrevious),
+            ))
+            .child(step("find-next", "Next", "Next match", Box::new(FindNext)))
             .into_any_element()
     }
 }
@@ -835,18 +955,32 @@ impl Render for DetailPane {
                 }
             }
         };
-        if let Some(opened) = self.opened.take() {
-            window.on_next_frame(move |_, _| {
-                let ms = opened.elapsed().as_secs_f64() * 1000.0;
-                eprintln!("match-revealed ms={ms:.1}");
-            });
-        }
+        let (title_marks, readout, opens_at_title) = match self.session.read(cx).found() {
+            Some(found) => (
+                found
+                    .in_title()
+                    .iter()
+                    .map(|m| m.span.clone())
+                    .collect::<Vec<_>>(),
+                Some(found.readout()),
+                found.current_at().place == Place::Title,
+            ),
+            None => (Vec::new(), None, false),
+        };
         let (tab, phase, lines) = {
             let app = self.app.read(cx);
             let id = &detail.recording.id;
             (app.tab, app.phase_of(id), app.drafts(id).to_vec())
         };
         let body = Body::derive(&detail, phase.as_ref());
+        // With a match to show on a tab, the transcript or summary view ends the time instead.
+        if self.opened.is_some() && (readout.is_none() || opens_at_title || body != Body::Tabs) {
+            let opened = self.opened.take().expect("checked above");
+            window.on_next_frame(move |_, _| {
+                let ms = opened.elapsed().as_secs_f64() * 1000.0;
+                eprintln!("match-revealed ms={ms:.1}");
+            });
+        }
         match body {
             Body::Finish if self.focus_finish => {
                 self.focus_finish = false;
@@ -889,7 +1023,14 @@ impl Render for DetailPane {
                     window.request_animation_frame();
                 }
                 let dots = summarizing.then(|| motion::looping(window, cx).then(motion::clock_ms));
-                let row = self.tab_row(tab, stuck.then_some(shown), &detail, dots, &theme);
+                let row = self.tab_row(
+                    tab,
+                    stuck.then_some(shown),
+                    &detail,
+                    dots,
+                    readout.clone(),
+                    &theme,
+                );
                 let (in_flow, pinned) = if stuck {
                     (None, Some(row))
                 } else {
@@ -913,6 +1054,7 @@ impl Render for DetailPane {
                         summary_view::summary(
                             &detail,
                             phase.as_ref(),
+                            &self.summary,
                             fix.map(IntoElement::into_any_element),
                             &theme,
                         )
@@ -1005,7 +1147,7 @@ impl Render for DetailPane {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
-                    .child(self.title(&detail, &theme, cx))
+                    .child(self.title(&detail, &title_marks, &theme, cx))
                     .child(
                         a11y::node("detail-meta", Role::Label, meta.clone())
                             .text_size(theme.text(14.))

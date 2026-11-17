@@ -24,11 +24,11 @@ use dory_core::app::{Dory, Event, RecorderStatus, Trashed};
 use dory_core::domain::{Job, JobId, RecordingId, RecordingQuery, RecordingRow, Segment, Settings};
 use dory_core::models::ModelRef;
 use dory_core::ports::capture::{Access, Source};
-use dory_core::search::{Excerpt, SearchResults, Section};
+use dory_core::search::{Excerpt, Query, SearchResults, Section};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 pub use player::PlayerHandle;
-pub use session::{Detail, Loadable, Session, Turn, speaker_label, turns};
+pub use session::{Detail, Loadable, Moved, Session, Turn, speaker_label, turns};
 
 use self::core::Core;
 pub use self::models::{Originals, count};
@@ -124,7 +124,8 @@ pub struct AppState {
     /// Where each conversation hit matched, as far as they have loaded. A hit with no entry
     /// shows no snippet.
     pub snippets: HashMap<RecordingId, Excerpt>,
-    /// The words last spoken about the results when a search settled.
+    /// The words last spoken about the search: the result count when it settled, or the match
+    /// the user last stepped to.
     pub announced: Option<String>,
     pub filter: StatusFilter,
     pub prefs: Prefs,
@@ -371,12 +372,40 @@ impl AppState {
             Selection::None
         };
         let core = self.core.clone();
-        self.session = row.map(|row| cx.new(|cx| Session::new(core, &row, cx)));
+        let query = self.query();
+        self.session = row.map(|row| cx.new(|cx| Session::new(core, &row, query, cx)));
         self.tab_chosen = false;
         self.tab = self.chosen_tab;
         self.follow_card();
         cx.emit(AppEvent::SelectionChanged);
         cx.notify();
+    }
+
+    /// The query that found the settled results, which is what marks matches in the detail pane.
+    fn query(&self) -> Option<Query> {
+        self.search.as_ref().map(|results| results.query.clone())
+    }
+
+    /// Shows `tab` because a match is there, which does not count as the user's pick.
+    pub fn show_match_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
+        if self.tab != tab {
+            self.tab = tab;
+            cx.notify();
+        }
+    }
+
+    /// Find Next and Find Previous: moves to the neighbouring match of the selected recording,
+    /// shows its tab, and says where it is. `None` when there is no match list.
+    pub fn step_match(&mut self, delta: isize, cx: &mut Context<Self>) -> Option<Moved> {
+        let session = self.session.clone()?;
+        let moved = session.update(cx, |session, cx| session.step_match(delta, cx))?;
+        if let Some(tab) = moved.at.place.tab() {
+            self.show_match_tab(tab, cx);
+        }
+        crate::a11y::announce(&moved.spoken);
+        self.announced = Some(moved.spoken.clone());
+        cx.notify();
+        Some(moved)
     }
 
     /// Moves the selection `delta` rows through the visible list: the sidebar's arrow keys.
@@ -581,6 +610,7 @@ impl AppState {
                         state.track_finished(&queued_before);
                         state.error = None;
                         state.set_results(search, first);
+                        state.follow_query(cx);
                         state.on_rows(&before, cx);
                         if let Some(started) = state.settling.take() {
                             state.announce_results();
@@ -619,6 +649,14 @@ impl AppState {
         }
         self.search = search;
         self.keep_snippets(first);
+    }
+
+    /// Hands the selected recording the settled query, or none once the search is cleared.
+    fn follow_query(&mut self, cx: &mut Context<Self>) {
+        let query = self.query();
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.set_query(query, cx));
+        }
     }
 
     fn keep_snippets(&mut self, found: Vec<(RecordingId, Option<Excerpt>)>) {

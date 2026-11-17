@@ -8,7 +8,7 @@ use std::time::Duration;
 use dory_core::app::{Dory, Event, Options, Ports};
 use dory_core::domain::{
     Blocker, Channel, ChannelLayout, FailureCause, Goal, JobEvent, JobState, LanguagePref, Ms,
-    Recording, RecordingId, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
+    Recording, RecordingId, Recovery, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
 };
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, KindTag, Llm, Mismatch, ModelEntry, ModelId, Stt,
@@ -955,4 +955,180 @@ fn a_summary_instruction_reaches_the_final_pass_and_the_old_summary_is_kept() {
         prompts[1].system
     );
     assert!(rig.store.previous_summary(&id).unwrap().is_some());
+}
+
+/// A mic-only take whose windows each hold a Tagalog turn and then an English one.
+fn switching_turns(
+    windows: &[u64],
+    engine: FakeTranscriber,
+    settings: Settings,
+) -> (Rig, RecordingId) {
+    let mut lines = Vec::new();
+    let mut activity = Vec::new();
+    for (n, start) in windows.iter().enumerate() {
+        let (tl, en) = if n == 0 {
+            ("isa", "one")
+        } else {
+            ("dalawa", "two")
+        };
+        lines.push((*start, start + 8_000, 0, tl));
+        lines.push((start + 11_000, start + 18_000, 0, en));
+        activity.push((*start, start + 8_000));
+        activity.push((start + 11_000, start + 18_000));
+    }
+    let mut entry = stt(STT, DiarizationSupport::None, WINDOW);
+    entry.caps.sentence_times = true;
+    let rig = Rig::new(
+        engine.with_segments(Channel::Mic, &lines),
+        vec![entry],
+        llm(8_192),
+    );
+    let id = rig.seed("switching", ChannelLayout::MicOnly, 70);
+    rig.takes.set_activity(&id, Channel::Mic, &activity);
+    rig.store
+        .apply(vec![Change::SettingsReplaced(settings)])
+        .unwrap();
+    (rig, id)
+}
+
+fn two_languages() -> Settings {
+    Settings {
+        meeting_languages: tags(&["tl", "en"]),
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn a_dropped_tail_is_decoded_again() {
+    let engine = FakeTranscriber::new()
+        .dropping_second_half()
+        .detecting_each(&["tl", "en"]);
+    let (rig, id) = switching_turns(&[0], engine, two_languages());
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let calls = rig.transcriber.calls();
+    assert_eq!(
+        spans(&calls),
+        vec![
+            (Channel::Mic, r(0, 18_000)),
+            (Channel::Mic, r(11_000, 18_000))
+        ],
+        "the English turn the first pass left without text goes again on its own"
+    );
+    assert!(calls.iter().all(|c| c.sentence_times));
+    assert!(calls.iter().all(|c| c.language == LanguagePref::Auto));
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(texts(&transcript.segments), ["isa", "one"]);
+    assert_eq!(transcript.detected_languages, tags(&["tl", "en"]));
+}
+
+#[test]
+fn an_off_list_language_is_redone_pinned() {
+    let engine = FakeTranscriber::new().detecting_each(&["es"]);
+    let (rig, id) = switching_turns(&[0], engine, two_languages());
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    let languages: Vec<LanguagePref> = rig
+        .transcriber
+        .calls()
+        .into_iter()
+        .map(|c| c.language)
+        .collect();
+    assert_eq!(
+        languages,
+        [
+            LanguagePref::Auto,
+            LanguagePref::Pinned(tags(&["tl"]).remove(0))
+        ],
+        "heard as es in a tl and en meeting, the window goes again pinned to tl"
+    );
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(texts(&transcript.segments), ["isa", "one"]);
+    assert_eq!(transcript.detected_languages, tags(&["tl"]));
+}
+
+#[test]
+fn recovery_off_sends_no_sentence_times() {
+    let off = Settings {
+        switch_recovery: Recovery::Off,
+        ..two_languages()
+    };
+    let one_language = Settings {
+        meeting_languages: tags(&["en"]),
+        ..Settings::default()
+    };
+    for settings in [off, one_language] {
+        let engine = FakeTranscriber::new()
+            .dropping_second_half()
+            .detecting("es");
+        let (rig, id) = switching_turns(&[0], engine, settings.clone());
+        let dory = rig.open();
+        process(&dory, &id, Goal::TRANSCRIBE);
+        let calls = rig.transcriber.calls();
+        assert_eq!(
+            spans(&calls),
+            vec![(Channel::Mic, r(0, 18_000))],
+            "{settings:?}"
+        );
+        assert!(!calls[0].sentence_times, "{settings:?}");
+        let transcript = dory.library().transcript(&id).unwrap().unwrap();
+        assert_eq!(texts(&transcript.segments), ["isa"], "dropped as before");
+        assert_eq!(
+            transcript.detected_languages,
+            tags(&["es"]),
+            "kept as heard"
+        );
+    }
+}
+
+#[test]
+fn resume_does_not_repeat_a_recovered_stretch() {
+    let engine = FakeTranscriber::new()
+        .dropping_second_half()
+        .detecting("tl");
+    let (rig, id) = switching_turns(&[0, 40_000], engine, two_languages());
+    rig.transcriber.hold_from(2);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    eventually("the second window to run", || {
+        rig.transcriber.calls().len() == 3 && rig.transcriber.is_running()
+    });
+    drop(dory);
+    rig.transcriber.hold_from(usize::MAX);
+    let saved = rig
+        .store
+        .checkpoints(&rig.key(&id, STT, Channel::Mic))
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(
+        saved[0]
+            .segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>(),
+        ["isa", "one"],
+        "the first window's checkpoint holds its recovered stretch"
+    );
+    let job = rig.store.jobs_for(&id).unwrap().remove(0);
+    rig.store
+        .apply(vec![Change::Job {
+            job: job.id,
+            event: JobEvent::Started {
+                stage: Stage::Transcribe,
+            },
+        }])
+        .unwrap();
+
+    let dory = rig.open();
+    wait_for(&dory, &id, JobState::Succeeded);
+    assert_eq!(
+        spans(&rig.transcriber.calls()[3..]),
+        vec![
+            (Channel::Mic, r(40_000, 58_000)),
+            (Channel::Mic, r(51_000, 58_000)),
+        ],
+        "neither the first window nor its stretch runs again"
+    );
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(texts(&transcript.segments), ["isa", "one", "dalawa", "two"]);
 }

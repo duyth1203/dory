@@ -48,6 +48,8 @@ pub(super) struct Model {
     /// Pairs of a BCP-47 tag and the code the engine expects for it. Aliases repeat the code.
     pub languages: &'static [(&'static str, &'static str)],
     pub window_secs: u64,
+    /// The model can time each sentence it returns.
+    pub sentence_times: bool,
     pub recommended: bool,
     pub rank: i16,
     pub summary: &'static str,
@@ -72,6 +74,7 @@ pub(super) fn models() -> Vec<Model> {
             // The encoder attends over the whole window, and two minutes keeps that cheap on CPU
             // while giving the model whole conversational turns; word timestamps split it after.
             window_secs: 120,
+            sentence_times: false,
             recommended: true,
             rank: 30,
             summary: "NVIDIA's fast speech model for English and 24 other European languages.",
@@ -97,8 +100,10 @@ pub(super) fn models() -> Vec<Model> {
             layout: Layout::WhisperTurbo,
             disk_bytes: 1_036_613_791,
             languages: WHISPER,
-            // Whisper's encoder takes exactly 30 seconds of audio, and sherpa-onnx drops the rest.
-            window_secs: 30,
+            // Whisper's encoder takes 30 seconds of audio. sherpa-onnx pads the tail and drops
+            // what passes 30 seconds, so a full 30-second window lost its last word.
+            window_secs: 28,
+            sentence_times: true,
             recommended: false,
             rank: 10,
             summary: "OpenAI's Whisper, with the broadest language list at 100 languages.",
@@ -111,7 +116,7 @@ pub(super) fn models() -> Vec<Model> {
             cons: &[
                 "About 3 times faster than real time on an M3 Pro, five times slower than Parakeet",
                 "Can repeat text over long silence",
-                "No timestamps inside a window, so each window is one block of text",
+                "Times each sentence only in meetings held in more than one language, so most windows are one block of text",
             ],
         },
     ]

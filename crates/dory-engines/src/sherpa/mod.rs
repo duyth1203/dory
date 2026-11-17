@@ -76,6 +76,7 @@ fn entry(model: &Model) -> ModelEntry<Stt> {
             diarization: DiarizationSupport::None,
             max_input: None,
             window: Some(Ms(model.window_secs * 1000)),
+            sentence_times: model.sentence_times,
         },
         recommended: model.recommended,
         rank: model.rank,

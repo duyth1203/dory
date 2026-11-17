@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use dory_core::domain::{ChannelLayout, LangTag, Ms, Processing, RecordingId};
+use dory_core::domain::{ChannelLayout, LangTag, Ms, Processing, RecordingId, Recovery};
 use dory_core::ports::capture::MicSelection;
 
 #[derive(Debug, PartialEq)]
@@ -334,6 +334,31 @@ impl LanguagesArgs {
     }
 }
 
+/// `switch-recovery [on|off|auto]` prints whether transcription recovers speech lost when the
+/// language changes, or sets it.
+#[derive(Debug, PartialEq)]
+pub enum SwitchRecoveryArgs {
+    Show,
+    Set(Recovery),
+}
+
+impl SwitchRecoveryArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [] => Ok(Self::Show),
+            [word] => match word.as_str() {
+                "on" => Ok(Self::Set(Recovery::On)),
+                "off" => Ok(Self::Set(Recovery::Off)),
+                "auto" => Ok(Self::Set(Recovery::Auto)),
+                _ => Err(format!(
+                    "switch-recovery takes on, off, or auto, not {word:?}"
+                )),
+            },
+            _ => Err("switch-recovery takes one of on, off, or auto".into()),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct RecordArgs {
     pub layout: ChannelLayout,
@@ -547,5 +572,25 @@ mod tests {
             LanguagesArgs::Set(Vec::new())
         );
         assert!(LanguagesArgs::parse(&words("not_a_tag!")).is_err());
+    }
+
+    #[test]
+    fn switch_recovery_parses() {
+        assert_eq!(
+            SwitchRecoveryArgs::parse(&[]).unwrap(),
+            SwitchRecoveryArgs::Show
+        );
+        for (word, want) in [
+            ("on", Recovery::On),
+            ("off", Recovery::Off),
+            ("auto", Recovery::Auto),
+        ] {
+            assert_eq!(
+                SwitchRecoveryArgs::parse(&words(word)).unwrap(),
+                SwitchRecoveryArgs::Set(want)
+            );
+        }
+        assert!(SwitchRecoveryArgs::parse(&words("maybe")).is_err());
+        assert!(SwitchRecoveryArgs::parse(&words("on off")).is_err());
     }
 }

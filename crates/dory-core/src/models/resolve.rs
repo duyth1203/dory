@@ -199,6 +199,7 @@ mod tests {
                             diarization: DiarizationSupport::None,
                             max_input: None,
                             window: None,
+                            sentence_times: false,
                         },
                         recommended: r.recommended,
                         rank: r.rank,

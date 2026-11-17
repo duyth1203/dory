@@ -528,8 +528,8 @@ mod contract {
     use super::*;
     use crate::domain::{
         Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobError, LangTag,
-        LanguagePref, Ms, Processing, Revision, Segment, SpeakerId, Stage, TakeContainer, TakeInfo,
-        TimeRange,
+        LanguagePref, Ms, Processing, Recovery, Revision, Segment, SpeakerId, Stage, TakeContainer,
+        TakeInfo, TimeRange,
     };
     use crate::models::{Choice, KindTag, ModelRef};
     use crate::ports::{Checkpoint, CheckpointKey, RawSegment};
@@ -1134,6 +1134,7 @@ mod contract {
             meeting_languages: vec![LangTag::parse("tl").unwrap(), LangTag::parse("en").unwrap()],
             auto_process: false,
             processing: Processing::Light,
+            switch_recovery: Recovery::Off,
         };
         let off = Settings {
             stt: Choice::Auto,
@@ -1143,6 +1144,7 @@ mod contract {
             meeting_languages: Vec::new(),
             auto_process: true,
             processing: Processing::Fast,
+            switch_recovery: Recovery::On,
         };
         for settings in [pinned, off, Settings::default()] {
             store

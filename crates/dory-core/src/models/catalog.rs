@@ -66,6 +66,7 @@ mod tests {
                 diarization: DiarizationSupport::None,
                 max_input: Some(Ms(1)),
                 window: None,
+                sentence_times: false,
             },
             recommended: false,
             rank: 0,

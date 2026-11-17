@@ -28,7 +28,7 @@ pub use media::{Channel, ChannelLayout, Ms};
 pub use recording::{
     Recording, RecordingEdit, RecordingQuery, RecordingRow, SummaryFlag, TakeContainer, TakeInfo,
 };
-pub use settings::{Processing, Settings};
+pub use settings::{Processing, Recovery, Settings};
 pub use summary_sections::{Sections, list_items, sections};
 pub use time::{Fraction, TimeRange, Timestamp};
 pub use transcript::{Segment, SpeakerId, SpeakerNames, Summary, Transcript};

@@ -1,7 +1,12 @@
 //! Which stretches of a clip go to the speech engine, one call each.
 
-use crate::domain::{Ms, TimeRange};
+use crate::domain::{LangTag, LanguagePref, Ms, Recovery, TimeRange};
+use crate::models::SttCaps;
 use crate::ports::Activity;
+
+/// The least speech an uncovered stretch must hold before it is decoded again. Shorter gaps are
+/// the edges of sentences, and a decode of a silent tail writes words that were never said.
+pub const MIN_UNCOVERED: Ms = Ms(1_500);
 
 /// Windows over a clip of `duration`, on the clip's time axis, earliest first.
 ///
@@ -54,6 +59,81 @@ pub(crate) fn speech_time(activity: &Activity, window: TimeRange) -> Ms {
     match activity {
         Activity::Unmeasured => window.len(),
         Activity::Speech(spans) => Ms(spans.iter().map(|s| s.overlap(&window).0).sum()),
+    }
+}
+
+/// Whether a transcription run decodes again the speech its windows leave without text.
+///
+/// `Auto` recovers only for a recording on Automatic in a meeting held in two or more languages,
+/// because a model keeps one language per window and a pinned or one-language meeting has no
+/// switch to drop. Neither switch recovers without sentence times, which show what was dropped.
+pub fn recovers(
+    caps: &SttCaps,
+    recording: &LanguagePref,
+    meeting: &[LangTag],
+    switch: Recovery,
+) -> bool {
+    caps.sentence_times
+        && match switch {
+            Recovery::Off => false,
+            Recovery::On => true,
+            Recovery::Auto => *recording == LanguagePref::Auto && meeting.len() >= 2,
+        }
+}
+
+/// The stretches of `speech` that no range in `said` overlaps, earliest first.
+///
+/// Speech left between two sentences that only a pause separates joins one stretch, which runs
+/// from its first uncovered speech to its last. A stretch is kept when it holds at least `min` of
+/// speech, so a sentence's ragged edge or a silent tail is never decoded again.
+pub fn uncovered(speech: &[TimeRange], said: &[TimeRange], min: Ms) -> Vec<TimeRange> {
+    let mut said: Vec<TimeRange> = said.iter().copied().filter(|s| !s.is_empty()).collect();
+    said.sort_by_key(|s| s.start());
+    let mut pieces: Vec<TimeRange> = Vec::new();
+    for span in speech {
+        let mut at = span.start();
+        for s in said.iter().filter(|s| s.overlap(span) > Ms(0)) {
+            pieces.extend(TimeRange::new(at, s.start()).filter(|p| !p.is_empty()));
+            at = at.max(s.end());
+        }
+        pieces.extend(TimeRange::new(at, span.end()).filter(|p| !p.is_empty()));
+    }
+    pieces.sort_by_key(|p| p.start());
+
+    let mut stretches = Vec::new();
+    let mut open: Option<(TimeRange, Ms)> = None;
+    for piece in pieces {
+        open = match open {
+            Some((stretch, held))
+                if !said
+                    .iter()
+                    .any(|s| s.start() < piece.start() && s.end() > stretch.end()) =>
+            {
+                let grown = TimeRange::new(stretch.start(), piece.end().max(stretch.end()))
+                    .expect("pieces run forward");
+                Some((grown, Ms(held.0 + piece.len().0)))
+            }
+            closed => {
+                stretches.extend(closed.filter(|(_, held)| *held >= min).map(|(s, _)| s));
+                Some((piece, piece.len()))
+            }
+        };
+    }
+    stretches.extend(open.filter(|(_, held)| *held >= min).map(|(s, _)| s));
+    stretches
+}
+
+/// The speech inside `window`, on the same axis. An unmeasured clip is speech throughout.
+pub(crate) fn speech_spans(activity: &Activity, window: TimeRange) -> Vec<TimeRange> {
+    match activity {
+        Activity::Unmeasured => vec![window],
+        Activity::Speech(spans) => spans
+            .iter()
+            .filter_map(|s| {
+                TimeRange::new(s.start().max(window.start()), s.end().min(window.end()))
+            })
+            .filter(|s| !s.is_empty())
+            .collect(),
     }
 }
 
@@ -186,5 +266,132 @@ mod tests {
         assert_eq!(speech_time(&activity, r(0, 10_000)), Ms(6_000));
         assert_eq!(speech_time(&activity, r(20_000, 30_000)), Ms(0));
         assert_eq!(speech_time(&Activity::Unmeasured, r(0, 10_000)), Ms(10_000));
+    }
+
+    fn caps(sentence_times: bool) -> SttCaps {
+        SttCaps {
+            languages: crate::models::LangSupport::Multilingual {
+                auto_detect: true,
+                tags: crate::domain::LangSet::Any,
+            },
+            diarization: crate::models::DiarizationSupport::None,
+            max_input: None,
+            window: CAP,
+            sentence_times,
+        }
+    }
+
+    #[test]
+    fn recovers_needs_sentence_times_and_follows_the_switch() {
+        let tag = |t: &str| LangTag::parse(t).unwrap();
+        let meetings: [&[LangTag]; 3] = [&[], &[tag("en")], &[tag("tl"), tag("en")]];
+        let recordings = [LanguagePref::Auto, LanguagePref::Pinned(tag("tl"))];
+        for switch in [Recovery::Off, Recovery::On, Recovery::Auto] {
+            for recording in &recordings {
+                for meeting in meetings {
+                    for capable in [false, true] {
+                        let want = capable
+                            && match switch {
+                                Recovery::Off => false,
+                                Recovery::On => true,
+                                Recovery::Auto => {
+                                    *recording == LanguagePref::Auto && meeting.len() == 2
+                                }
+                            };
+                        assert_eq!(
+                            recovers(&caps(capable), recording, meeting, switch),
+                            want,
+                            "{switch:?} {recording:?} {} meeting languages, sentence times {capable}",
+                            meeting.len()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    const MIN: Ms = MIN_UNCOVERED;
+
+    #[test]
+    fn speech_a_sentence_covers_is_not_uncovered() {
+        assert_eq!(
+            uncovered(&[r(0, 20_000)], &[r(0, 9_000), r(9_200, 20_000)], MIN),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn a_dropped_tail_is_uncovered_from_its_first_speech() {
+        assert_eq!(
+            uncovered(&[r(0, 9_000), r(9_400, 20_000)], &[r(0, 8_800)], MIN),
+            vec![r(8_800, 20_000)],
+            "the speech the sentence left at its end joins the turn after the pause"
+        );
+    }
+
+    #[test]
+    fn a_dropped_head_is_uncovered() {
+        assert_eq!(
+            uncovered(&[r(1_000, 20_000)], &[r(12_000, 20_000)], MIN),
+            vec![r(1_000, 12_000)]
+        );
+    }
+
+    #[test]
+    fn speech_across_pauses_with_no_sentence_between_is_one_stretch() {
+        assert_eq!(
+            uncovered(
+                &[r(0, 5_000), r(6_000, 7_000), r(9_000, 10_000)],
+                &[r(0, 5_000)],
+                MIN
+            ),
+            vec![r(6_000, 10_000)]
+        );
+    }
+
+    #[test]
+    fn a_gap_with_less_speech_than_min_is_left_alone() {
+        assert_eq!(
+            uncovered(&[r(0, 20_000)], &[r(0, 10_000), r(11_400, 20_000)], MIN),
+            vec![]
+        );
+        assert_eq!(
+            uncovered(&[r(0, 20_000)], &[r(0, 10_000), r(11_500, 20_000)], MIN),
+            vec![r(10_000, 11_500)]
+        );
+    }
+
+    #[test]
+    fn silence_between_sentences_is_never_uncovered() {
+        assert_eq!(
+            uncovered(
+                &[r(0, 5_000), r(15_000, 20_000)],
+                &[r(0, 5_000), r(15_000, 20_000)],
+                MIN
+            ),
+            vec![],
+            "ten seconds between the sentences that the VAD heard as silence"
+        );
+    }
+
+    #[test]
+    fn a_sentence_between_two_gaps_keeps_them_apart() {
+        assert_eq!(
+            uncovered(&[r(0, 30_000)], &[r(2_000, 10_000), r(12_000, 20_000)], MIN),
+            vec![r(0, 2_000), r(10_000, 12_000), r(20_000, 30_000)]
+        );
+    }
+
+    #[test]
+    fn speech_spans_are_cut_to_the_window() {
+        let activity = speech(&[(1_000, 5_000), (8_000, 12_000), (40_000, 50_000)]);
+        assert_eq!(
+            speech_spans(&activity, r(2_000, 10_000)),
+            vec![r(2_000, 5_000), r(8_000, 10_000)]
+        );
+        assert_eq!(
+            speech_spans(&Activity::Unmeasured, r(2_000, 10_000)),
+            vec![r(2_000, 10_000)]
+        );
     }
 }

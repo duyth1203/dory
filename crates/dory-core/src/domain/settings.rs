@@ -16,6 +16,8 @@ pub struct Settings {
     /// Start processing after the undo grace ends.
     pub auto_process: bool,
     pub processing: Processing,
+    /// Whether transcription decodes again the speech a window's first pass left without text.
+    pub switch_recovery: Recovery,
 }
 
 /// How hard processing may work (UX-30). Automatic follows the Mac's power, heat, and the
@@ -28,6 +30,17 @@ pub enum Processing {
     Light,
 }
 
+/// Recovering the speech a speech model drops when a window switches language. `Auto` recovers
+/// only where it helps: a recording on Automatic, two or more meeting languages, and a model that
+/// reports sentence times.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Recovery {
+    Off,
+    On,
+    #[default]
+    Auto,
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -38,6 +51,7 @@ impl Default for Settings {
             meeting_languages: Vec::new(),
             auto_process: true,
             processing: Processing::Auto,
+            switch_recovery: Recovery::default(),
         }
     }
 }

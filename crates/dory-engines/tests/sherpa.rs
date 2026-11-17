@@ -33,7 +33,7 @@ fn the_catalog_is_valid_and_explains_every_model() {
         assert!(!entry.about.pros.is_empty(), "{}", entry.id);
         assert!(!entry.about.cons.is_empty(), "{}", entry.id);
         assert!(
-            entry.caps.window.is_some_and(|w| w >= Ms(30_000)),
+            entry.caps.window.is_some_and(|w| w >= Ms(28_000)),
             "{}",
             entry.id
         );

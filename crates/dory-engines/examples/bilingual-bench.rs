@@ -1,13 +1,20 @@
-//! Scores speech recognition on Tagalog and English audio, whole windows and 6-second chunks.
+//! Scores speech recognition on Tagalog and English audio: whole windows, 6-second chunks, and
+//! whole windows with the speech they leave without text decoded again.
 //!
 //! `cargo run --release -p dory-engines --example bilingual-bench -- score <folders...>
-//!  [--modes auto,tl,en,chunks] [--model whisper-turbo] [--models DIR] [--threads 4]
+//!  [--modes auto,tl,en,chunks,covered] [--model whisper-turbo] [--models DIR] [--threads 4]
 //!  [--languages tl,en] [--dict /usr/share/dict/words] [--verbose]`
 //!
 //! A folder holds 16-bit mono WAVs, a `refs.tsv` of `file<TAB>reference text`, and for clips that
 //! switch language between turns a `langs.tsv` of `file<TAB>part part ...`. A part is
 //! `<tag>:<start ms>-<end ms>:<reference words>`, and the parts' word counts split the clip's
 //! reference text in order. Every mode goes through the `Transcriber` port, one clip per call.
+//!
+//! `covered` is the app's recovery rule. The clip goes through the takes adapter, which measures
+//! its speech the way the app does, then to the engine with sentence times. The stretches that
+//! `windows::uncovered` finds go again on Auto, and `stages::settle_language` redoes a window or
+//! stretch heard outside `--languages` pinned to the first of them. After the table it prints how
+//! many clips needed a re-decode.
 //!
 //! The scoring rules port `docs/plans/bilingual-spike/score.py`. A reference and an output are
 //! lowercased and split at anything that is not a letter, digit, or apostrophe, so hyphens split
@@ -32,13 +39,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use dory_core::domain::{Channel, Fraction, LangTag, LanguagePref, Ms, TimeRange};
+use dory_core::app::stages::windows::{MIN_UNCOVERED, uncovered};
+use dory_core::app::stages::{Settle, settle_language};
+use dory_core::domain::{Channel, Fraction, LangTag, LanguagePref, Ms, RecordingId, TimeRange};
 use dory_core::models::Availability;
 use dory_core::ports::{
     Activity, CancelToken, Clip as EngineClip, EngineError, ModelProvider, RawSegment, SegmentSink,
-    TranscribeRequest, Transcriber,
+    Takes, TranscribeRequest, Transcriber,
 };
 use dory_engines::Sherpa;
+use dory_store::FsTakes;
 
 const TAGALOG_FUNCTION_WORDS: &str = "
 ang ng mga sa na ay at si ni kay ko mo niya namin natin nila ako ikaw siya kami tayo kayo sila
@@ -101,12 +111,15 @@ enum Mode {
     Pinned(LangTag),
     /// Cuts of at most this long at the quietest frame, each decoded on Auto.
     Chunks(Ms),
+    /// The whole clip on Auto with sentence times, then each uncovered stretch of speech on Auto.
+    Covered,
 }
 
 impl Mode {
     fn parse(text: &str) -> Result<Mode, String> {
         match text {
             "auto" => Ok(Mode::Auto),
+            "covered" => Ok(Mode::Covered),
             "chunks" => Ok(Mode::Chunks(Ms(CHUNK_MS))),
             other => match other.strip_prefix("chunks=") {
                 Some(secs) => secs
@@ -115,9 +128,9 @@ impl Mode {
                     .filter(|s| *s >= 1.0)
                     .map(|s| Mode::Chunks(Ms((s * 1000.0) as u64)))
                     .ok_or_else(|| format!("chunks=<seconds> wants at least 1, got {secs:?}")),
-                None => LangTag::parse(other)
-                    .map(Mode::Pinned)
-                    .map_err(|_| format!("{other:?} is not auto, chunks, or a language tag")),
+                None => LangTag::parse(other).map(Mode::Pinned).map_err(|_| {
+                    format!("{other:?} is not auto, covered, chunks, or a language tag")
+                }),
             },
         }
     }
@@ -127,6 +140,7 @@ impl Mode {
             Mode::Auto => "auto".into(),
             Mode::Pinned(tag) => format!("pinned {tag}"),
             Mode::Chunks(ms) => format!("chunks {} s", ms.0 as f32 / 1000.0),
+            Mode::Covered => "covered".into(),
         }
     }
 }
@@ -142,6 +156,8 @@ struct Unit {
 struct Output {
     units: Vec<Unit>,
     busy: Duration,
+    /// Stretches decoded again, in `covered`.
+    stretches: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -161,6 +177,8 @@ struct Score {
     wrong_language: usize,
     audio_ms: u64,
     busy_ms: u64,
+    clips_redone: usize,
+    stretches: usize,
 }
 
 impl Score {
@@ -180,6 +198,8 @@ impl Score {
         self.wrong_language += other.wrong_language;
         self.audio_ms += other.audio_ms;
         self.busy_ms += other.busy_ms;
+        self.clips_redone += other.clips_redone;
+        self.stretches += other.stretches;
     }
 }
 
@@ -397,6 +417,8 @@ fn score_clip(
         wrong_language,
         audio_ms: audio.0,
         busy_ms: output.busy.as_millis() as u64,
+        clips_redone: usize::from(output.stretches > 0),
+        stretches: output.stretches,
     }
 }
 
@@ -637,33 +659,61 @@ impl SegmentSink for Collect {
 }
 
 struct Call {
-    text: String,
+    /// On the clip's time axis.
+    segments: Vec<RawSegment>,
     heard: Option<LangTag>,
     busy: Duration,
 }
 
-fn call(
-    engine: &dyn Transcriber,
-    path: &Path,
-    duration: Ms,
-    language: &LanguagePref,
-    threads: u8,
-    cancel: &CancelToken,
-) -> Result<Call, EngineError> {
-    let clip = EngineClip::new(
+impl Call {
+    fn text(&self) -> String {
+        joined(&self.segments)
+    }
+}
+
+fn joined(segments: &[RawSegment]) -> String {
+    segments
+        .iter()
+        .map(|s| s.text.trim())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn other(error: impl std::fmt::Display) -> EngineError {
+    EngineError::Other {
+        message: error.to_string(),
+        source: None,
+    }
+}
+
+/// A WAV on disk as one clip with no speech measured.
+fn wav_clip(path: &Path, duration: Ms) -> EngineClip {
+    EngineClip::new(
         path.to_owned(),
         Channel::Mixed,
         duration,
         Ms(0),
         Activity::Unmeasured,
         None,
-    );
+    )
+}
+
+fn call(
+    engine: &dyn Transcriber,
+    clip: &EngineClip,
+    language: &LanguagePref,
+    threads: u8,
+    sentence_times: bool,
+    cancel: &CancelToken,
+) -> Result<Call, EngineError> {
     let request = TranscribeRequest {
-        clip: &clip,
+        clip,
         language: language.clone(),
         diarize: false,
         hint: None,
         threads,
+        sentence_times,
     };
     let mut sink = Collect::default();
     let started = Instant::now();
@@ -672,14 +722,53 @@ fn call(
     let heard = outcome
         .detected_language
         .or_else(|| sink.0.iter().find_map(|s| s.language.clone()));
-    let text = sink
-        .0
+    Ok(Call {
+        segments: sink.0,
+        heard,
+        busy,
+    })
+}
+
+/// The segments of every call, each call starting at its offset into the clip, as units in time
+/// order. Neighbouring segments of one call stay one unit, so a first pass that a recovered
+/// stretch splits becomes two units around it.
+fn in_time_order(calls: &[(Ms, Call)]) -> Vec<Unit> {
+    let mut timed: Vec<(usize, TimeRange, &RawSegment)> = calls
         .iter()
-        .map(|s| s.text.trim())
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok(Call { text, heard, busy })
+        .enumerate()
+        .flat_map(|(n, (offset, call))| {
+            call.segments
+                .iter()
+                .map(move |s| (n, s.range.shifted(*offset), s))
+        })
+        .collect();
+    timed.sort_by_key(|(_, range, _)| range.start());
+    let mut units: Vec<(usize, Unit, Vec<RawSegment>)> = Vec::new();
+    for (n, range, segment) in timed {
+        match units.last_mut() {
+            Some((last, unit, segments)) if *last == n => {
+                unit.span = TimeRange::new(unit.span.start(), range.end().max(unit.span.end()))
+                    .expect("sorted by start");
+                segments.push(segment.clone());
+            }
+            _ => units.push((
+                n,
+                Unit {
+                    span: range,
+                    text: String::new(),
+                    heard: calls[n].1.heard.clone(),
+                },
+                vec![segment.clone()],
+            )),
+        }
+    }
+    units
+        .into_iter()
+        .map(|(_, unit, segments)| Unit {
+            text: joined(&segments),
+            ..unit
+        })
+        .collect()
 }
 
 struct Run<'a> {
@@ -687,27 +776,92 @@ struct Run<'a> {
     threads: u8,
     cancel: &'a CancelToken,
     scratch: &'a Path,
+    meeting: &'a [LangTag],
+    /// Names each clip `covered` imports into the takes adapter.
+    covered_runs: std::cell::Cell<u32>,
 }
 
 impl Run<'_> {
     fn language(mode: &Mode) -> LanguagePref {
         match mode {
             Mode::Pinned(tag) => LanguagePref::Pinned(tag.clone()),
-            Mode::Auto | Mode::Chunks(_) => LanguagePref::Auto,
+            Mode::Auto | Mode::Chunks(_) | Mode::Covered => LanguagePref::Auto,
         }
+    }
+
+    fn call(
+        &self,
+        clip: &EngineClip,
+        language: &LanguagePref,
+        timed: bool,
+    ) -> Result<Call, EngineError> {
+        call(
+            self.engine,
+            clip,
+            language,
+            self.threads,
+            timed,
+            self.cancel,
+        )
+    }
+
+    /// The same call again pinned to a meeting language when it was heard outside them, as the
+    /// transcribe stage does.
+    fn settled(&self, clip: &EngineClip, first: Call) -> Result<Call, EngineError> {
+        match settle_language(first.heard.as_ref(), self.meeting) {
+            Settle::Keep => Ok(first),
+            Settle::Redo(tag) => {
+                let again = self.call(clip, &LanguagePref::Pinned(tag.clone()), true)?;
+                Ok(Call {
+                    heard: Some(tag),
+                    busy: first.busy + again.busy,
+                    ..again
+                })
+            }
+        }
+    }
+
+    fn covered(&self, clip: &Clip) -> Result<Output, EngineError> {
+        let takes = FsTakes::new(self.scratch.join("takes"));
+        let id =
+            RecordingId::parse(&format!("bench-{}", self.covered_runs.get())).map_err(other)?;
+        self.covered_runs.set(self.covered_runs.get() + 1);
+        takes.import(&id, &clip.path).map_err(other)?;
+        let whole = takes.clip(&id, Channel::Mixed, None).map_err(other)?;
+        let range = TimeRange::new(Ms(0), whole.duration).expect("0 is first");
+        let speech = match &whole.activity {
+            Activity::Unmeasured => vec![range],
+            Activity::Speech(spans) => spans.clone(),
+        };
+        let first = self.call(&whole, &LanguagePref::Auto, true)?;
+        let first = self.settled(&whole, first)?;
+        let said: Vec<TimeRange> = first.segments.iter().map(|s| s.range).collect();
+        let stretches = uncovered(&speech, &said, MIN_UNCOVERED);
+        let mut busy = first.busy;
+        let mut calls = vec![(Ms(0), first)];
+        for stretch in &stretches {
+            let piece = takes.slice(&whole, *stretch).map_err(other)?;
+            let again = self.call(&piece, &LanguagePref::Auto, true)?;
+            let again = self.settled(&piece, again)?;
+            busy += again.busy;
+            calls.push((stretch.start(), again));
+        }
+        takes.delete(&id).map_err(other)?;
+        Ok(Output {
+            units: in_time_order(&calls),
+            busy,
+            stretches: stretches.len(),
+        })
     }
 
     /// Builds the recognizer outside the timed calls.
     fn warm_up(&self, mode: &Mode) -> Result<(), EngineError> {
         let path = self.scratch.join("warm-up.wav");
         std::fs::write(&path, Wav::encode(16_000, &[0; 16_000])).expect("scratch is writable");
-        call(
-            self.engine,
-            &path,
-            Ms(1000),
+        self.call(
+            &wav_clip(&path, Ms(1000)),
             &Self::language(mode),
-            self.threads,
-            self.cancel,
+            *mode == Mode::Covered,
         )
         .map(|_| ())
     }
@@ -718,19 +872,13 @@ impl Run<'_> {
         let mut units = Vec::new();
         let mut busy = Duration::ZERO;
         match mode {
+            Mode::Covered => return self.covered(clip),
             Mode::Auto | Mode::Pinned(_) => {
-                let c = call(
-                    self.engine,
-                    &clip.path,
-                    whole.end(),
-                    &language,
-                    self.threads,
-                    self.cancel,
-                )?;
+                let c = self.call(&wav_clip(&clip.path, whole.end()), &language, false)?;
                 busy += c.busy;
                 units.push(Unit {
                     span: whole,
-                    text: c.text,
+                    text: c.text(),
                     heard: c.heard,
                 });
             }
@@ -743,24 +891,21 @@ impl Run<'_> {
                     std::fs::write(&path, Wav::encode(wav.rate, &wav.samples[a..b]))
                         .expect("scratch is writable");
                     let span = TimeRange::new(wav.ms(a), wav.ms(b)).expect("cuts run forward");
-                    let c = call(
-                        self.engine,
-                        &path,
-                        span.len(),
-                        &language,
-                        self.threads,
-                        self.cancel,
-                    )?;
+                    let c = self.call(&wav_clip(&path, span.len()), &language, false)?;
                     busy += c.busy;
                     units.push(Unit {
                         span,
-                        text: c.text,
+                        text: c.text(),
                         heard: c.heard,
                     });
                 }
             }
         }
-        Ok(Output { units, busy })
+        Ok(Output {
+            units,
+            busy,
+            stretches: 0,
+        })
     }
 }
 
@@ -775,7 +920,8 @@ struct Options {
     verbose: bool,
 }
 
-const USAGE: &str = "usage: bilingual-bench score <folders...> [--modes auto,tl,en,chunks] \
+const USAGE: &str =
+    "usage: bilingual-bench score <folders...> [--modes auto,tl,en,chunks,covered] \
 [--model whisper-turbo] [--models DIR] [--threads 4] [--languages tl,en] [--dict FILE] [--verbose]
 Each folder holds WAVs, refs.tsv, and optionally langs.tsv. --models defaults to \
 $DORY_DATA_DIR/models/sherpa.";
@@ -878,11 +1024,14 @@ fn score(options: &Options) -> Result<(), String> {
         threads: options.threads,
         cancel: &cancel,
         scratch: scratch.path(),
+        meeting: &options.meeting,
+        covered_runs: std::cell::Cell::new(0),
     };
 
     println!("{} clips, {audio:.0} s of audio, {}", clips.len(), entry.id);
     println!("{HEADER}");
     println!("--- | --- | --- | --- | --- | --- | --- | --- | ---");
+    let mut redone = Vec::new();
     for mode in &options.modes {
         match run.warm_up(mode) {
             Ok(()) => {}
@@ -921,6 +1070,15 @@ fn score(options: &Options) -> Result<(), String> {
             total.add(&one);
         }
         println!("{}", row(mode, &total));
+        if *mode == Mode::Covered {
+            redone.push(format!(
+                "covered decoded {} stretches again, in {} of {} clips",
+                total.stretches, total.clips_redone, total.clips
+            ));
+        }
+    }
+    for line in redone {
+        println!("{line}");
     }
     Ok(())
 }

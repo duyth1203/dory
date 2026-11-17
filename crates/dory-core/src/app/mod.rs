@@ -20,7 +20,7 @@ mod models;
 mod pace;
 mod pipeline;
 mod recorder;
-mod stages;
+pub mod stages;
 mod writer;
 
 use std::any::Any;

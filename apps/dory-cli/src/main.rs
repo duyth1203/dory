@@ -34,6 +34,7 @@ const USAGE: &str = "usage:
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID
   dory-cli models provision stt|llm|diar MODEL_ID
   dory-cli languages [TAG...|--clear]
+  dory-cli switch-recovery [on|off|auto]
   dory-cli assistants on|off|list
   dory-cli assistants add NAME --exposure titles|summaries|transcripts [--edits never|ask]
   dory-cli assistants exposure NAME titles|summaries|transcripts
@@ -79,6 +80,8 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| settings::add(&c, &a))),
             Some("languages") => args::LanguagesArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| settings::languages(&c, &a))),
+            Some("switch-recovery") => args::SwitchRecoveryArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::switch_recovery(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
             Some("play") => {

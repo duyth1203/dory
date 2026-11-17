@@ -69,6 +69,7 @@ fn model(archive: &[u8], sha256: &str) -> Model {
         disk_bytes: 300_100,
         languages: &[("en", "en")],
         window_secs: 30,
+        sentence_times: false,
         recommended: false,
         rank: 0,
         summary: "",
@@ -371,7 +372,43 @@ fn recipe(whisper_language: Option<&'static str>, threads: u8) -> Recipe {
     Recipe {
         whisper_language,
         threads,
+        sentence_times: false,
     }
+}
+
+#[test]
+fn sentence_times_turn_on_segment_timestamps_and_leave_token_timestamps_off() {
+    let dir = PathBuf::from("/m");
+    for sentence_times in [false, true] {
+        let config = recognizer_config(
+            Layout::WhisperTurbo,
+            &dir,
+            Recipe {
+                sentence_times,
+                ..recipe(None, 4)
+            },
+        );
+        let whisper = &config.model_config.whisper;
+        assert_eq!(whisper.enable_segment_timestamps, sentence_times);
+        assert!(!whisper.enable_token_timestamps);
+    }
+}
+
+#[test]
+fn whisper_times_sentences_in_28_second_windows() {
+    let sherpa = Sherpa::new("/m", Sherpa::RELEASES);
+    let caps = |name: &str| {
+        sherpa
+            .catalog()
+            .into_iter()
+            .find(|e| e.id.name() == name)
+            .unwrap()
+            .caps
+    };
+    let whisper = caps("whisper-turbo");
+    assert_eq!(whisper.window, Some(Ms(28_000)));
+    assert!(whisper.sentence_times);
+    assert!(!caps("parakeet-tdt-0.6b-v3").sentence_times);
 }
 
 fn configured_paths(layout: Layout, dir: &Path) -> HashMap<&'static str, Option<String>> {
@@ -601,6 +638,36 @@ fn sentence_times_parse_when_the_recognizer_reports_them() {
     assert_eq!(result.segment_texts, ["One.", "Two."]);
 }
 
+/// A Whisper turbo window with segment timestamps on, in `AsJsonString`'s shape: a Tagalog
+/// sentence and an English one, the second running past the 20-second clip.
+const SENTENCES_JSON: &str = r#"{"lang": "tl", "emotion": "", "event": "", "text": " Ang trapiko ay hindi madali. The beta build is ready.", "timestamps": [], "durations": [], "tokens": [" Ang", " tr", "ap", "iko"], "words": [], "segment_timestamps": [0.00, 9.40, 19.80], "segment_durations": [8.80, 11.00, 0.00], "segment_texts": [" Ang trapiko ay hindi madali.", " The beta build is ready.", " "]}"#;
+
+#[test]
+fn each_sentence_becomes_a_segment_with_its_own_time() {
+    assert_eq!(
+        ms_segments(&parsed(SENTENCES_JSON), 20_000),
+        [
+            (0, 8_800, "Ang trapiko ay hindi madali.".to_owned()),
+            (9_400, 20_000, "The beta build is ready.".to_owned()),
+        ],
+        "a blank sentence is dropped, and none runs past the clip"
+    );
+}
+
+#[test]
+fn sentence_times_that_do_not_line_up_fall_back_to_one_segment() {
+    let mut result = parsed(SENTENCES_JSON);
+    result.segment_durations.pop();
+    assert_eq!(
+        ms_segments(&result, 20_000),
+        [(
+            0,
+            20_000,
+            "Ang trapiko ay hindi madali. The beta build is ready.".to_owned()
+        )]
+    );
+}
+
 #[test]
 fn opening_a_missing_model_fails_without_loading() {
     let dir = tempfile::tempdir().unwrap();
@@ -610,9 +677,13 @@ fn opening_a_missing_model_fails_without_loading() {
 }
 
 #[test]
-fn the_recognizer_is_rebuilt_only_when_threads_or_the_whisper_language_change() {
+fn the_recognizer_is_rebuilt_only_when_threads_the_whisper_language_or_sentence_times_change() {
     let mut built = Built::empty();
     let mut builds = Vec::new();
+    let timed = Recipe {
+        sentence_times: true,
+        ..recipe(Some("vi"), 4)
+    };
     let windows = [
         recipe(None, 4),
         recipe(None, 4),
@@ -621,6 +692,8 @@ fn the_recognizer_is_rebuilt_only_when_threads_or_the_whisper_language_change() 
         recipe(Some("vi"), 2),
         recipe(Some("vi"), 4),
         recipe(Some("vi"), 4),
+        timed,
+        timed,
     ];
     for want in windows {
         let got: &mut Recipe = built
@@ -637,7 +710,8 @@ fn the_recognizer_is_rebuilt_only_when_threads_or_the_whisper_language_change() 
             recipe(None, 4),
             recipe(None, 2),
             recipe(Some("vi"), 2),
-            recipe(Some("vi"), 4)
+            recipe(Some("vi"), 4),
+            timed
         ]
     );
 }

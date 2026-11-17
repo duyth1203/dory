@@ -44,6 +44,7 @@ pub(super) fn recognizer_config(
                 language: language.map(str::to_owned),
                 task: Some("transcribe".into()),
                 tail_paddings: -1,
+                enable_segment_timestamps: recipe.sentence_times,
                 ..Default::default()
             };
             model.tokens = path("turbo-tokens.txt");
@@ -55,11 +56,14 @@ pub(super) fn recognizer_config(
 }
 
 /// What a recognizer is built for. onnxruntime sizes its thread pool when the recognizer is
-/// built, and only Whisper takes the language at load time.
+/// built, and only Whisper takes the language and sentence times at load time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Recipe {
     pub whisper_language: Option<&'static str>,
     pub threads: u8,
+    /// Whisper's segment timestamps. Token timestamps stay off, because the turbo export has no
+    /// cross-attention outputs to compute them from.
+    pub sentence_times: bool,
 }
 
 /// One built recognizer and its recipe. A request with another recipe drops it before building
@@ -155,6 +159,7 @@ impl Transcriber for SherpaEngine {
         let recipe = Recipe {
             whisper_language: code.filter(|_| self.model.layout == Layout::WhisperTurbo),
             threads: req.threads.max(1),
+            sentence_times: req.sentence_times && self.model.sentence_times,
         };
         let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
         let recognizer = built.get(recipe, |r| load(&self.model, &self.dir, r))?;
@@ -197,9 +202,28 @@ pub(super) fn detected_language(
     }
 }
 
-/// Splits at sentence punctuation and long pauses when the model gave token times. Otherwise the
-/// whole clip is one segment.
+/// One segment per sentence when the model gave sentence times. Otherwise splits at sentence
+/// punctuation and long pauses when it gave token times, and otherwise the whole clip is one
+/// segment.
 pub(super) fn segments(result: &OfflineRecognizerResult, clip_len: Ms) -> Vec<(TimeRange, String)> {
+    let ms = |secs: f32| Ms((secs.max(0.0) * 1000.0).round() as u64).min(clip_len);
+    let sentences = result.segment_texts.len();
+    if sentences > 0
+        && result.segment_timestamps.len() == sentences
+        && result.segment_durations.len() == sentences
+    {
+        return result
+            .segment_texts
+            .iter()
+            .zip(&result.segment_timestamps)
+            .zip(&result.segment_durations)
+            .filter(|((text, _), _)| !text.trim().is_empty())
+            .filter_map(|((text, start), length)| {
+                let (a, b) = (ms(*start), ms(start + length.max(0.0)));
+                Some((TimeRange::new(a, b.max(a))?, text.trim().to_owned()))
+            })
+            .collect();
+    }
     let whole = || {
         let text = result.text.trim();
         let range = TimeRange::new(Ms(0), clip_len).expect("0 is never after the clip end");
@@ -221,7 +245,6 @@ pub(super) fn segments(result: &OfflineRecognizerResult, clip_len: Ms) -> Vec<(T
         .as_deref()
         .filter(|d| d.len() == tokens.len());
     let word_start = |t: &str| t.starts_with(['▁', ' ']);
-    let ms = |secs: f32| Ms((secs.max(0.0) * 1000.0).round() as u64).min(clip_len);
 
     let mut out = Vec::new();
     let mut text = String::new();

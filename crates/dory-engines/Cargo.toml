@@ -20,6 +20,7 @@ tempfile.workspace = true
 
 [dev-dependencies]
 dory-core = { workspace = true, features = ["testing"] }
+dory-store.workspace = true
 
 [lints]
 workspace = true

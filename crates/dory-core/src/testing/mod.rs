@@ -850,6 +850,9 @@ pub struct FakeTranscriber {
     detected: Option<LangTag>,
     /// The language call `i` reports, which wins over `detected`.
     detected_per_call: Vec<LangTag>,
+    /// A call on Auto keeps only the segments that start in the first half of its clip, the way
+    /// Whisper keeps one language and drops a turn in the other.
+    drops_second_half: bool,
     /// Calls from this index on wait until they are cancelled.
     hold_from: AtomicUsize,
     running: AtomicBool,
@@ -862,6 +865,7 @@ impl Default for FakeTranscriber {
             segments: HashMap::new(),
             detected: None,
             detected_per_call: Vec::new(),
+            drops_second_half: false,
             hold_from: AtomicUsize::new(usize::MAX),
             running: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
@@ -878,6 +882,7 @@ pub struct TranscribeCall {
     pub language: LanguagePref,
     pub diarize: bool,
     pub threads: u8,
+    pub sentence_times: bool,
 }
 
 impl FakeTranscriber {
@@ -910,6 +915,12 @@ impl FakeTranscriber {
             .iter()
             .map(|l| LangTag::parse(l).expect("a valid language tag"))
             .collect();
+        self
+    }
+
+    /// A call on Auto drops the segments that start in the second half of its clip.
+    pub fn dropping_second_half(mut self) -> Self {
+        self.drops_second_half = true;
         self
     }
 
@@ -949,6 +960,7 @@ impl Transcriber for FakeTranscriber {
                 language: req.language.clone(),
                 diarize: req.diarize,
                 threads: req.threads,
+                sentence_times: req.sentence_times,
             });
             calls.len() - 1
         };
@@ -956,6 +968,11 @@ impl Transcriber for FakeTranscriber {
         while index >= self.hold_from.load(Ordering::SeqCst) && !cancel.is_cancelled() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let heard_until = if self.drops_second_half && req.language == LanguagePref::Auto {
+            Ms(origin.0 + req.clip.duration.0 / 2)
+        } else {
+            end
+        };
         let result = if cancel.is_cancelled() {
             Err(EngineError::Cancelled)
         } else {
@@ -964,7 +981,7 @@ impl Transcriber for FakeTranscriber {
                 .get(&req.clip.channel)
                 .into_iter()
                 .flatten()
-                .filter(|s| s.range.start() >= origin && s.range.start() < end)
+                .filter(|s| s.range.start() >= origin && s.range.start() < heard_until)
                 .map(|s| RawSegment {
                     range: TimeRange::new(
                         Ms(s.range.start().0 - origin.0),
@@ -1119,6 +1136,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
             diarization,
             max_input: None,
             window: None,
+            sentence_times: false,
         },
         recommended: false,
         rank: 0,

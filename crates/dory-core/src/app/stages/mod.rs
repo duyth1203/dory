@@ -6,7 +6,7 @@
 
 mod merge;
 mod summary;
-mod windows;
+pub mod windows;
 
 use super::events::{Db, Event};
 use super::models::{Engines, Registries};
@@ -147,6 +147,9 @@ struct WindowCx<'a> {
     model: &'a ModelRef,
     language: &'a LanguagePref,
     hint: Option<&'a str>,
+    /// Decode again the speech a window leaves without text, per `windows::recovers`.
+    recover: bool,
+    meeting: &'a [LangTag],
 }
 
 fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
@@ -241,6 +244,13 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         model: &model,
         language: &recording.language,
         hint: recording.title.as_deref(),
+        recover: windows::recovers(
+            &caps,
+            &recording.language,
+            &cx.settings.meeting_languages,
+            cx.settings.switch_recovery,
+        ),
+        meeting: &cx.settings.meeting_languages,
     };
     let total = runs
         .iter()
@@ -323,13 +333,102 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     ])
 }
 
-/// Runs one window through the engine and checkpoints what it produced.
+/// Runs one window through the engine and checkpoints what it produced. With recovery on, the
+/// window's checkpoint also holds every stretch decoded again, so a resume never repeats one.
 fn transcribe_window(
     wx: &WindowCx<'_>,
     run: &ClipRun,
     span: TimeRange,
     progress: &mut Progress<'_>,
 ) -> Result<Checkpoint, StageError> {
+    let started = std::time::Instant::now();
+    let first = decode(wx, run, span, wx.language, progress, Call::First)?;
+    let heard = first.heard.clone();
+    let (checkpoint, recovered) = if wx.recover {
+        let first = settled(wx, run, span, first, progress)?;
+        let speech = windows::speech_spans(&run.whole.activity, span);
+        let said: Vec<TimeRange> = first.segments.iter().map(|s| s.range).collect();
+        let stretches = windows::uncovered(&speech, &said, windows::MIN_UNCOVERED);
+        let chose = first.heard.clone();
+        let mut segments = first.tagged();
+        for stretch in &stretches {
+            let again = decode(wx, run, *stretch, wx.language, progress, Call::Again)?;
+            segments.extend(settled(wx, run, *stretch, again, progress)?.tagged());
+        }
+        segments.sort_by_key(|s| s.range.start());
+        for segment in &segments {
+            publish_draft(wx.db, progress.job, run.plan, segment.clone());
+        }
+        let checkpoint = Checkpoint {
+            span,
+            segments,
+            detected_language: chose,
+        };
+        (checkpoint, stretches.len())
+    } else {
+        let checkpoint = Checkpoint {
+            span,
+            segments: first.segments,
+            detected_language: first.heard,
+        };
+        (checkpoint, 0)
+    };
+    log_window(
+        wx.language,
+        heard.as_ref(),
+        &checkpoint,
+        recovered,
+        started.elapsed(),
+    );
+    wx.db
+        .apply(vec![Change::CheckpointSaved {
+            key: run.key.clone(),
+            checkpoint: checkpoint.clone(),
+        }])
+        .map_err(failed)?;
+    Ok(checkpoint)
+}
+
+/// What one engine call produced, on the take's time axis.
+struct Decoded {
+    segments: Vec<RawSegment>,
+    heard: Option<LangTag>,
+}
+
+impl Decoded {
+    /// Each segment carries the language its call was heard in, so a window that holds recovered
+    /// stretches keeps the language of each.
+    fn tagged(self) -> Vec<RawSegment> {
+        let heard = self.heard;
+        self.segments
+            .into_iter()
+            .map(|s| RawSegment {
+                language: s.language.or_else(|| heard.clone()),
+                ..s
+            })
+            .collect()
+    }
+}
+
+/// Which call of a window this is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Call {
+    /// The window's first pass. It reports progress through the window, and publishes drafts as
+    /// they come unless the window may still be decoded again.
+    First,
+    /// A redo or a recovered stretch, whose drafts wait until the window settles.
+    Again,
+}
+
+/// Sends `span` of the clip to the engine.
+fn decode(
+    wx: &WindowCx<'_>,
+    run: &ClipRun,
+    span: TimeRange,
+    language: &LanguagePref,
+    progress: &mut Progress<'_>,
+    call: Call,
+) -> Result<Decoded, StageError> {
     let fetched;
     let clip = if span.start() == Ms(0) && span.end() == run.whole.duration {
         &run.whole
@@ -341,55 +440,94 @@ fn transcribe_window(
     let mut sink = Drafts {
         plan: run.plan,
         origin: clip.origin,
-        window: span.len(),
+        window: (call == Call::First).then_some(span.len()),
+        live: call == Call::First && !wx.recover,
         progress,
         raw: Vec::new(),
     };
     let request = TranscribeRequest {
         clip,
-        language: wx.language.clone(),
+        language: language.clone(),
         diarize: run.diarize,
         hint: wx.hint,
         threads,
+        sentence_times: wx.recover,
     };
-    let started = std::time::Instant::now();
     let outcome = wx
         .stt
         .transcribe(&request, &mut sink, wx.cancel)
         .map_err(engine_failed(wx.model.clone()))?;
-    let checkpoint = Checkpoint {
-        span,
+    Ok(Decoded {
         segments: sink.raw,
-        detected_language: outcome.detected_language,
-    };
-    log_window(wx.language, &checkpoint, started.elapsed());
-    wx.db
-        .apply(vec![Change::CheckpointSaved {
-            key: run.key.clone(),
-            checkpoint: checkpoint.clone(),
-        }])
-        .map_err(failed)?;
-    Ok(checkpoint)
+        heard: outcome.detected_language,
+    })
 }
 
-/// Two stderr lines per window, like `search ms=`, so a live run shows how long each window took
-/// and which language the engine reported for it.
-fn log_window(language: &LanguagePref, checkpoint: &Checkpoint, elapsed: std::time::Duration) {
+/// Decodes `span` again pinned to a meeting language when the engine heard one outside them.
+fn settled(
+    wx: &WindowCx<'_>,
+    run: &ClipRun,
+    span: TimeRange,
+    decoded: Decoded,
+    progress: &mut Progress<'_>,
+) -> Result<Decoded, StageError> {
+    match settle_language(decoded.heard.as_ref(), wx.meeting) {
+        Settle::Keep => Ok(decoded),
+        Settle::Redo(tag) => {
+            let pinned = LanguagePref::Pinned(tag.clone());
+            let again = decode(wx, run, span, &pinned, progress, Call::Again)?;
+            Ok(Decoded {
+                heard: Some(tag),
+                ..again
+            })
+        }
+    }
+}
+
+/// What to do with the language a window or stretch was heard in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Settle {
+    Keep,
+    /// Decode it again pinned to this meeting language.
+    Redo(LangTag),
+}
+
+/// A language heard outside a non-empty list of meeting languages is a misheard window, so it is
+/// decoded again pinned to the first meeting language. No language heard, or no meeting
+/// languages, keeps what the engine wrote.
+pub fn settle_language(heard: Option<&LangTag>, meeting: &[LangTag]) -> Settle {
+    match (heard, meeting.first()) {
+        (Some(heard), Some(first)) if !meeting.iter().any(|m| m.covers(heard)) => {
+            Settle::Redo(first.clone())
+        }
+        _ => Settle::Keep,
+    }
+}
+
+/// Three stderr lines per window, like `search ms=`, so a live run shows how long each window
+/// took, which language the engine reported for it, and which language its text was kept in.
+fn log_window(
+    language: &LanguagePref,
+    heard: Option<&LangTag>,
+    checkpoint: &Checkpoint,
+    recovered: usize,
+    elapsed: std::time::Duration,
+) {
     let wanted = match language {
         LanguagePref::Auto => "auto",
         LanguagePref::Pinned(tag) => tag.as_str(),
     };
-    let heard = checkpoint
-        .detected_language
-        .as_ref()
+    let heard = heard
         .or_else(|| checkpoint.segments.iter().find_map(|s| s.language.as_ref()))
         .map_or("none", LangTag::as_str);
+    let chose = checkpoint
+        .detected_language
+        .as_ref()
+        .map_or(heard, LangTag::as_str);
+    let (start, end) = (checkpoint.span.start().0, checkpoint.span.end().0);
     eprintln!("window ms={} lang={wanted}", elapsed.as_millis());
-    eprintln!(
-        "language heard={heard} window={}-{}",
-        checkpoint.span.start().0,
-        checkpoint.span.end().0
-    );
+    eprintln!("language heard={heard} window={start}-{end}");
+    eprintln!("language chose={chose} heard={heard} window={start}-{end} recovered={recovered}");
 }
 
 /// Turns one clip's raw segments, already on the take's time axis, into transcript segments.
@@ -517,7 +655,10 @@ fn publish_draft(db: &Db, job: &Job, plan: ClipPlan, segment: RawSegment) {
 struct Drafts<'p, 'a> {
     plan: ClipPlan,
     origin: Ms,
-    window: Ms,
+    /// The window this call reports progress through, if any.
+    window: Option<Ms>,
+    /// Publish each segment as a draft as it comes.
+    live: bool,
     progress: &'p mut Progress<'a>,
     /// On the take's time axis.
     raw: Vec<RawSegment>,
@@ -525,7 +666,9 @@ struct Drafts<'p, 'a> {
 
 impl SegmentSink for Drafts<'_, '_> {
     fn progress(&mut self, fraction: Fraction) {
-        self.progress.within(self.window, fraction);
+        if let Some(window) = self.window {
+            self.progress.within(window, fraction);
+        }
     }
 
     fn segment(&mut self, segment: RawSegment) {
@@ -533,12 +676,14 @@ impl SegmentSink for Drafts<'_, '_> {
             range: segment.range.shifted(self.origin),
             ..segment
         };
-        publish_draft(
-            self.progress.db,
-            self.progress.job,
-            self.plan,
-            segment.clone(),
-        );
+        if self.live {
+            publish_draft(
+                self.progress.db,
+                self.progress.job,
+                self.plan,
+                segment.clone(),
+            );
+        }
         self.raw.push(segment);
     }
 }
@@ -818,6 +963,20 @@ mod tests {
             heard_languages(&window),
             vec![(t("en"), Ms(4_000)), (t("vi"), Ms(6_000))]
         );
+    }
+
+    #[test]
+    fn a_language_outside_the_meeting_languages_is_redone_in_the_first() {
+        let meeting = [t("tl"), t("en")];
+        assert_eq!(settle_language(Some(&t("en")), &meeting), Settle::Keep);
+        assert_eq!(settle_language(Some(&t("en-US")), &meeting), Settle::Keep);
+        assert_eq!(
+            settle_language(Some(&t("es")), &meeting),
+            Settle::Redo(t("tl"))
+        );
+        assert_eq!(settle_language(None, &meeting), Settle::Keep);
+        assert_eq!(settle_language(Some(&t("es")), &[]), Settle::Keep);
+        assert_eq!(settle_language(None, &[]), Settle::Keep);
     }
 
     #[test]

@@ -20,8 +20,8 @@ use std::time::Duration;
 use dory_core::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
     Job, JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
-    RecordingQuery, RecordingRow, Revision, Segment, Settings, SpeakerId, SpeakerNames, Summary,
-    SummaryFlag, TakeInfo, Timestamp, Transcript, Writes,
+    RecordingQuery, RecordingRow, Recovery, Revision, Segment, Settings, SpeakerId, SpeakerNames,
+    Summary, SummaryFlag, TakeInfo, Timestamp, Transcript, Writes,
 };
 use dory_core::models::{Diar, Llm, Stt};
 use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
@@ -709,6 +709,14 @@ impl StoreRead for $t {
                     "fast" => Processing::Fast,
                     "light" => Processing::Light,
                     other => return Err(corrupt(format!("processing is {other:?}"))),
+                };
+            }
+            if let Some(v) = rows.get("switch_recovery") {
+                settings.switch_recovery = match v.as_str() {
+                    "off" => Recovery::Off,
+                    "on" => Recovery::On,
+                    "auto" => Recovery::Auto,
+                    other => return Err(corrupt(format!("switch_recovery is {other:?}"))),
                 };
             }
             Ok(settings)
@@ -1490,6 +1498,15 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                         Processing::Auto => "auto",
                         Processing::Fast => "fast",
                         Processing::Light => "light",
+                    }
+                    .to_owned(),
+                ),
+                (
+                    "switch_recovery",
+                    match settings.switch_recovery {
+                        Recovery::Off => "off",
+                        Recovery::On => "on",
+                        Recovery::Auto => "auto",
                     }
                     .to_owned(),
                 ),

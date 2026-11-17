@@ -1,11 +1,13 @@
 //! The commands that write outside recording and processing: `add`, `models choose`,
-//! `models provision`, and `languages`. Each opens Dory with the data folder locked.
+//! `models provision`, `languages`, and `switch-recovery`. Each opens Dory with the data folder
+//! locked.
 
 use dory::Config;
 use dory_core::app::{AppKind, Event};
+use dory_core::domain::Recovery;
 use dory_core::models::{Choice, Diar, Llm, ModelId, Stt};
 
-use crate::args::{AddArgs, ChooseArgs, KindArg, LanguagesArgs, ProvisionArgs};
+use crate::args::{AddArgs, ChooseArgs, KindArg, LanguagesArgs, ProvisionArgs, SwitchRecoveryArgs};
 use crate::open;
 use crate::wait::block_on;
 
@@ -90,6 +92,21 @@ pub fn languages(config: &Config, args: &LanguagesArgs) -> Result<(), String> {
             .collect();
         println!("meeting languages: {}", tags.join(", "));
     }
+    Ok(())
+}
+
+pub fn switch_recovery(config: &Config, args: &SwitchRecoveryArgs) -> Result<(), String> {
+    let dory = open(config, false)?;
+    if let SwitchRecoveryArgs::Set(switch) = *args {
+        dory.update_settings(|s| s.switch_recovery = switch)
+            .map_err(crate::chain)?;
+    }
+    let word = match dory.settings().map_err(crate::chain)?.switch_recovery {
+        Recovery::On => "on",
+        Recovery::Off => "off",
+        Recovery::Auto => "auto, for meetings in two or more languages",
+    };
+    println!("switch recovery: {word}");
     Ok(())
 }
 

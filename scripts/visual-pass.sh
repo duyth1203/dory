@@ -12,6 +12,7 @@
 #   VISUAL_LIBRARY       the library to copy (default: ~/Library/Application Support/dory-dev/live-data)
 #   VISUAL_THEMES        themes to run (default: "light dark contrast")
 #   VISUAL_SETTLE        seconds to wait after the view is ready (default: 1.5)
+#   VISUAL_SMALL         1 adds the 800 x 560, 200% pass (default: 1 for the whole set, else 0)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -25,9 +26,9 @@ themes=${VISUAL_THEMES:-"light dark contrast"}
 [ -d "$library" ] || { echo "visual-pass: no library at $library" >&2; exit 1; }
 
 views=("$@")
-small=0
+small=${VISUAL_SMALL:-0}
 if [ ${#views[@]} -eq 0 ]; then
-  small=1
+  small=${VISUAL_SMALL:-1}
   views=(
     settings:general settings:recording settings:transcription settings:summaries settings:storage
     settings:transcription:languages-open explainer about queue

@@ -30,7 +30,7 @@ use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::menus;
 use crate::prefs;
 use crate::theme::Theme;
-use crate::{glyphs, motion};
+use crate::{glass, glyphs, motion};
 
 pub struct Sidebar {
     app: Entity<AppState>,
@@ -280,6 +280,7 @@ impl Render for Sidebar {
             }
         }
         let list_ring = theme.focus_ring(false);
+        let fill = glass::sidebar_panel(&theme, cx);
         div()
             .flex()
             .flex_none()
@@ -294,10 +295,11 @@ impl Render for Sidebar {
                     .pt(px(44.))
                     .px(px(8.))
                     .rounded(px(12.))
-                    .bg(theme.sidebar_bg)
+                    .bg(fill)
                     .border_1()
                     .border_color(theme.panel_border)
-                    .when(theme.shadows, |panel| panel.shadow_sm())
+                    // A shadow would show through a translucent panel and muddy it.
+                    .when(theme.shadows && fill.a >= 1.0, |panel| panel.shadow_sm())
                     .child(
                         div()
                             .flex()

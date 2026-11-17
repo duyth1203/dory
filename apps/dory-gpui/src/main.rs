@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use dory_gpui::{menus, notify, prefs, status_item, system_prefs};
+use dory_gpui::{glass, menus, notify, prefs, status_item, system_prefs};
 use gpui_kit::{Bounds, TitlebarOptions, WindowBounds, WindowOptions, point, px, size};
 
 fn main() -> ExitCode {
@@ -40,6 +40,7 @@ fn main() -> ExitCode {
                 size(px(width), px(height)),
                 cx,
             ))),
+            window_background: glass::window_background(cx),
             window_min_size: Some(size(
                 px(dory_gpui::prefs::MIN_WINDOW_SIZE.0),
                 px(dory_gpui::prefs::MIN_WINDOW_SIZE.1),
@@ -51,6 +52,7 @@ fn main() -> ExitCode {
         let config = config.clone();
         let opened = gpui_kit::open_window(options, cx, move |window, cx| {
             let (state, shell) = dory_gpui::build(core, prefs, window, cx);
+            glass::follow(window, cx);
             prefs::watch(&state, &config, window, cx);
             menus::watch(&state, cx);
             status_item::install(&state, cx);

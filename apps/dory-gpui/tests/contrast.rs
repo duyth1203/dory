@@ -2,7 +2,7 @@
 //! text, 3 to 1 for focus rings and graphics) for all eight macOS accent colors, in light and
 //! dark, with and without Increase Contrast (A11Y-6).
 
-use dory_gpui::theme::{Display, MIN_CONTRAST, Theme, contrast};
+use dory_gpui::theme::{Display, MIN_CONTRAST, Theme, blend, contrast};
 use gpui_kit::{Hsla, rgb};
 
 /// The system accents in sRGB, light then dark: blue, purple, pink, red, orange, yellow, green,
@@ -116,5 +116,92 @@ fn increase_contrast_makes_secondary_text_and_borders_stronger() {
             "dark={dark}"
         );
         assert!(!high.shadows && normal.shadows);
+    }
+}
+
+/// The wallpapers behind the blurred window that are hardest on sidebar text: plain white, plain
+/// black, and a saturated photo color, a sunset orange (#E8590C, HSL 22°, 90%, 48%).
+const WALLPAPERS: [(&str, u32); 3] = [
+    ("white", 0xFFFFFF),
+    ("black", 0x000000),
+    ("photo", 0xE8590C),
+];
+
+/// `top`, with its own alpha, over an opaque `under`.
+fn over(top: Hsla, under: Hsla) -> Hsla {
+    blend(top, under, top.a)
+}
+
+/// Every text color the sidebar paints straight on the panel: titles, the date and duration,
+/// group headers, and the status words and glyphs in each tone.
+fn sidebar_text(theme: &Theme) -> [(&'static str, Hsla); 5] {
+    [
+        ("text", theme.text),
+        ("text_secondary", theme.text_secondary),
+        ("accent_text", theme.accent_text),
+        ("attention", theme.attention),
+        ("record_glyph", theme.record_glyph),
+    ]
+}
+
+/// The themes that draw glass: Increase Contrast turns it off.
+fn glass_themes() -> Vec<(String, Theme)> {
+    every_theme()
+        .into_iter()
+        .filter(|(_, theme)| !theme.high_contrast)
+        .collect()
+}
+
+/// The lowest ratio any sidebar text reaches over any wallpaper, with the sidebar tint at
+/// `alpha`, and where.
+fn worst_on_glass(dark: bool, alpha: f32) -> (f32, String) {
+    let mut worst = (f32::INFINITY, String::new());
+    for (variant, theme) in glass_themes().into_iter().filter(|(_, t)| t.dark == dark) {
+        let panel = Hsla {
+            a: alpha,
+            ..theme.sidebar_tint
+        };
+        for (wallpaper, hex) in WALLPAPERS {
+            let bg = over(panel, over(theme.glass_tint, c(hex)));
+            for (name, fg) in sidebar_text(&theme) {
+                let ratio = contrast(fg, bg);
+                if ratio < worst.0 {
+                    worst = (ratio, format!("{variant}: {name} over {wallpaper}"));
+                }
+            }
+        }
+    }
+    worst
+}
+
+#[test]
+fn sidebar_text_passes_on_glass_over_white_black_and_a_photo() {
+    for dark in [false, true] {
+        let alpha = if dark {
+            Theme::dark(c(0x0A84FF))
+        } else {
+            Theme::light(c(0x007AFF))
+        }
+        .sidebar_tint
+        .a;
+        let (ratio, at) = worst_on_glass(dark, alpha);
+        let lowest_passing = (0..=100)
+            .map(|step| step as f32 / 100.)
+            .find(|alpha| worst_on_glass(dark, *alpha).0 >= MIN_CONTRAST);
+        eprintln!(
+            "glass dark={dark}: sidebar_tint alpha {alpha:.2}, worst {ratio:.2} ({at}); the lowest passing alpha is {lowest_passing:?}"
+        );
+        assert!(
+            ratio >= MIN_CONTRAST,
+            "dark={dark}: {at} is {ratio:.2}; raise sidebar_tint to {lowest_passing:?}"
+        );
+    }
+}
+
+#[test]
+fn the_glass_behind_sidebar_text_is_at_least_seventy_percent_opaque() {
+    for theme in [Theme::light(c(0x007AFF)), Theme::dark(c(0x0A84FF))] {
+        let opacity = 1. - (1. - theme.glass_tint.a) * (1. - theme.sidebar_tint.a);
+        assert!(opacity >= 0.7, "dark={}: {opacity:.2}", theme.dark);
     }
 }

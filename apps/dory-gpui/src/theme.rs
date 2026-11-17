@@ -21,6 +21,11 @@ pub struct Theme {
     pub shadows: bool,
     pub window_bg: Hsla,
     pub sidebar_bg: Hsla,
+    /// The sidebar column over the blurred desktop, its 8 pt margins included (UX-25).
+    pub glass_tint: Hsla,
+    /// The sidebar panel, layered on [`Theme::glass_tint`]. `tests/contrast.rs` holds sidebar
+    /// text over the pair on white, black, and photo wallpapers.
+    pub sidebar_tint: Hsla,
     pub panel_border: Hsla,
     pub text: Hsla,
     pub text_secondary: Hsla,
@@ -221,6 +226,19 @@ const DARK: Base = Base {
     playing_alpha: 0.12,
 };
 
+/// The glass tints of `docs/design/settings-icons-blur.md` section 5, as color and alpha, light
+/// then dark. The brief's sidebar tint, white at 0.28 and 0.05, fails 4.5 to 1 for secondary text
+/// on a black wallpaper in light and a white one in dark. The sidebar tint is raised to the
+/// lowest alpha at which every sidebar text color passes for all eight accents, which the pink
+/// and blue accent text set, and in dark it takes the solid sidebar's color: white could only
+/// lighten it.
+const GLASS_TINT: [(u32, f32); 2] = [(0xECEFF5, 0.55), (0x1E1F24, 0.55)];
+const SIDEBAR_TINT: [(u32, f32); 2] = [(0xFFFFFF, 0.73), (0x25262C, 0.79)];
+
+fn tint((hex, alpha): (u32, f32)) -> Hsla {
+    Hsla { a: alpha, ..c(hex) }
+}
+
 /// Increase Contrast's secondary text, which also draws every border (handoff section 8).
 const HIGH_CONTRAST_SECONDARY: (u32, u32) = (0x3C3E44, 0xC8CAD0);
 
@@ -279,6 +297,8 @@ impl Theme {
             shadows: !high,
             window_bg,
             sidebar_bg,
+            glass_tint: tint(GLASS_TINT[dark as usize]),
+            sidebar_tint: tint(SIDEBAR_TINT[dark as usize]),
             panel_border: border(base.panel_border),
             text: c(base.text),
             text_secondary,

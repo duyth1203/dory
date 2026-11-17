@@ -1,27 +1,31 @@
-//! The three macOS display settings Dory follows (A11Y-5, A11Y-6): Reduce motion, Increase
-//! contrast, and Differentiate without color, from `NSWorkspace`, read at launch and again on
-//! every `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`.
+//! The four macOS display settings Dory follows (A11Y-5, A11Y-6): Reduce motion, Reduce
+//! transparency, Increase contrast, and Differentiate without color, from `NSWorkspace`, read at
+//! launch and again on every `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`.
 //!
 //! Reduce motion goes to GPUI's `set_reduce_motion`, which the level meter, the docked player's
-//! fade, and Kit's own transitions read. The other two rebuild the theme through
-//! `theme::set_display`. All of the app's AppKit observation lives here.
+//! fade, and Kit's own transitions read. Reduce transparency goes to `glass`, which turns the
+//! windows opaque. The other two rebuild the theme through `theme::set_display`. All of the
+//! app's AppKit observation lives here.
 
 use gpui_kit::{App, AsyncApp};
 
-use crate::theme;
+use crate::{glass, theme};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SystemPrefs {
     pub reduce_motion: bool,
+    pub reduce_transparency: bool,
     pub increase_contrast: bool,
     pub differentiate_without_color: bool,
 }
 
-/// Applies `prefs` to GPUI and the theme.
+/// Applies `prefs` to GPUI, the window glass, and the theme. Tests call it to stand in for a
+/// change in System Settings.
 pub fn apply(prefs: SystemPrefs, cx: &mut App) {
     if cx.reduce_motion() != prefs.reduce_motion {
         cx.set_reduce_motion(prefs.reduce_motion);
     }
+    glass::set_reduce_transparency(prefs.reduce_transparency, cx);
     theme::set_display(
         |display| {
             display.increase_contrast = prefs.increase_contrast;
@@ -30,8 +34,11 @@ pub fn apply(prefs: SystemPrefs, cx: &mut App) {
         cx,
     );
     eprintln!(
-        "system-prefs: reduce motion {}, increase contrast {}, differentiate without color {}",
-        prefs.reduce_motion, prefs.increase_contrast, prefs.differentiate_without_color
+        "system-prefs: reduce motion {}, reduce transparency {}, increase contrast {}, differentiate without color {}",
+        prefs.reduce_motion,
+        prefs.reduce_transparency,
+        prefs.increase_contrast,
+        prefs.differentiate_without_color
     );
 }
 
@@ -53,6 +60,7 @@ pub fn read() -> SystemPrefs {
     let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
     SystemPrefs {
         reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
+        reduce_transparency: workspace.accessibilityDisplayShouldReduceTransparency(),
         increase_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
         differentiate_without_color: workspace
             .accessibilityDisplayShouldDifferentiateWithoutColor(),

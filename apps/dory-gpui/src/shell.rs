@@ -5,7 +5,8 @@
 //! Layout: the sidebar is a panel inset 8 pt from the top, left, and bottom edges. To its right,
 //! a 52 pt toolbar holds only the record control, and below it the page scrolls one centered
 //! column at most 720 pt wide, with 48 pt side padding (24 pt below a 900 pt window). The Undo
-//! toast for a stopped recording floats 28 pt above the bottom of that column (UX-9).
+//! toast for a stopped recording floats 28 pt above the bottom of that column (UX-9). The sidebar
+//! column is glass over the blurred desktop and the column to its right is opaque (`glass`).
 
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement,
@@ -20,6 +21,7 @@ use crate::actions::*;
 use crate::app::{AppEvent, AppState, DetailTab};
 use crate::detail::DetailPane;
 use crate::export::{self, CopyWhat, ExportFormat};
+use crate::glass;
 use crate::library::StatusFilter;
 use crate::onboarding::{self, Onboarding, OnboardingStep};
 use crate::record_control::{self, RecordControl};
@@ -507,12 +509,12 @@ impl Render for Shell {
             .id("dory")
             .size_full()
             .flex()
-            .bg(theme.window_bg)
             .text_color(theme.text)
             .font_family(".SystemUIFont")
             .child(
                 div()
                     .track_focus(self.region(Region::Sidebar))
+                    .bg(glass::sidebar_column(&theme, cx))
                     .h_full()
                     .flex_none()
                     .pl(px(8.))
@@ -528,6 +530,7 @@ impl Render for Shell {
                     .h_full()
                     .flex()
                     .flex_col()
+                    .bg(theme.window_bg)
                     .child(self.toolbar())
                     .child(
                         a11y::node("detail", Role::Main, "Recording")

@@ -44,6 +44,7 @@ macro_rules! icons {
 
 icons! {
     BatteryMedium => "battery-medium.svg",
+    Bot => "bot.svg",
     Captions => "captions.svg",
     Check => "check.svg",
     ChevronDown => "chevron-down.svg",
@@ -55,6 +56,7 @@ icons! {
     CircleStop => "circle-stop.svg",
     CircleX => "circle-x.svg",
     Clock => "clock.svg",
+    Copy => "copy.svg",
     Ellipsis => "ellipsis.svg",
     FileText => "file-text.svg",
     GripVertical => "grip-vertical.svg",

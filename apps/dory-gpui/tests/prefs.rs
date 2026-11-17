@@ -5,6 +5,7 @@ use dory_gpui::prefs::{
     DEFAULT_SIDEBAR_WIDTH, DEFAULT_WINDOW_SIZE, Prefs, RESTORE_WITHIN, clamp_sidebar_width,
     restore_selection,
 };
+use dory_gpui::theme::ThemeName;
 
 fn scratch(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("dory-gpui-prefs-{}-{name}", std::process::id()));
@@ -30,9 +31,33 @@ fn prefs_round_trip_through_the_file() {
             notes.set(dory_gpui::notify::NoteKind::Download, false);
             notes
         },
+        book_offered: true,
+        theme: ThemeName::Book,
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_theme_is_remembered_and_book_shows_only_while_offered() {
+    let dir = scratch("theme");
+    std::fs::create_dir_all(&dir).unwrap();
+    let read = |json: &str| {
+        std::fs::write(Prefs::path(&dir), json).unwrap();
+        Prefs::read(&dir)
+    };
+    let old = read(r#"{"version":1}"#);
+    assert_eq!((old.book_offered, old.theme), (false, ThemeName::Modern));
+    assert_eq!(old.shown_theme(), ThemeName::Modern);
+    let book = read(r#"{"version":1,"book_offered":true,"theme":"book"}"#);
+    assert_eq!(book.shown_theme(), ThemeName::Book);
+    let withdrawn = read(r#"{"version":1,"book_offered":false,"theme":"book"}"#);
+    assert_eq!(withdrawn.shown_theme(), ThemeName::Modern);
+    assert_eq!(
+        read(r#"{"version":1,"theme":"sepia"}"#).theme,
+        ThemeName::Modern
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 

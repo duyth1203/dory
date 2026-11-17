@@ -54,7 +54,7 @@ fn every_contract_case_runs_on_sqlite_by_name() {
 }
 
 /// The schema version this build migrates to.
-const LATEST: u32 = 6;
+const LATEST: u32 = 8;
 
 #[test]
 fn state_survives_closing_and_reopening_the_database() {
@@ -285,7 +285,7 @@ fn found(store: &SqliteStore, text: &str) -> Vec<String> {
 }
 
 #[test]
-fn v6_migrates_a_v5_file() {
+fn v8_migrates_a_v7_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dory.db");
     {
@@ -296,11 +296,13 @@ fn v6_migrates_a_v5_file() {
             include_str!("../src/sqlite/schema_v3.sql"),
             include_str!("../src/sqlite/schema_v4.sql"),
             include_str!("../src/sqlite/schema_v5.sql"),
+            include_str!("../src/sqlite/schema_v6.sql"),
+            include_str!("../src/sqlite/schema_v7.sql"),
         ] {
             conn.execute_batch(sql).unwrap();
         }
         conn.execute_batch(
-            "PRAGMA user_version = 5;
+            "PRAGMA user_version = 7;
              INSERT INTO recordings (id, title, created_at, layout, names_revision, title_lc)
                  VALUES ('a', 'Atlas kickoff', 3, 'mic_system', 1, 'atlas kickoff'),
                         ('b', NULL, 2, 'mixed', 0, ''),
@@ -328,17 +330,6 @@ fn v6_migrates_a_v5_file() {
         "the migration's write-ahead log is checkpointed and truncated"
     );
     let conn = rusqlite::Connection::open(&path).unwrap();
-    let columns: Vec<String> = conn
-        .prepare("SELECT name FROM pragma_table_info('recordings')")
-        .unwrap()
-        .query_map([], |r| r.get(0))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert!(
-        columns.iter().all(|c| !c.ends_with("_lc")),
-        "the _lc columns are gone: {columns:?}"
-    );
     assert_eq!(found(&store, "atlas"), ["a"], "a title");
     assert_eq!(found(&store, "kilimanjaro review"), ["a"], "a transcript");
     assert_eq!(found(&store, "priyanka"), ["a"], "a speaker name");

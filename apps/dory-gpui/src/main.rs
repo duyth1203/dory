@@ -2,7 +2,9 @@ use std::cell::RefCell;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use dory_gpui::{icons, menus, notify, platform, prefs, quit, show, status_item, system_prefs};
+use dory_gpui::{
+    consent, icons, menus, notify, platform, prefs, quit, show, status_item, system_prefs,
+};
 
 fn main() -> ExitCode {
     let config = match dory::Config::from_env() {
@@ -33,6 +35,14 @@ fn main() -> ExitCode {
     {
         eprintln!("dory: could not set the meeting languages: {error}");
     }
+    let (asker, consent_requests) = dory_core::app::consent_channel();
+    let assistants = match dory::serve_assistants(&config, &dory, std::sync::Arc::new(asker)) {
+        Ok(server) => Some(server),
+        Err(error) => {
+            eprintln!("dory: {error}");
+            None
+        }
+    };
     let prefs = prefs::load(&config);
     let dory = Rc::new(RefCell::new(Some(dory)));
     let application = gpui_kit::application().with_assets(icons::Assets);
@@ -41,6 +51,7 @@ fn main() -> ExitCode {
         dory_gpui::show_main_window(cx);
     });
     application.run(move |cx| {
+        consent::install(assistants, consent_requests, cx);
         if let Some(appearance) = launch.appearance {
             platform::force_appearance(appearance);
         }

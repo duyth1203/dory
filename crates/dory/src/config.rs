@@ -123,6 +123,11 @@ impl Config {
     pub fn models_dir(&self) -> PathBuf {
         self.data_dir.join("models")
     }
+
+    /// Where assistant access is logged, one folder per day.
+    pub fn audit_dir(&self) -> PathBuf {
+        self.data_dir.join("assistants").join("audit")
+    }
 }
 
 /// Ollama's rules for `OLLAMA_HOST`: an empty value or a bare `0.0.0.0` means the local default,

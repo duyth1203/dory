@@ -517,7 +517,7 @@ impl Render for Shell {
                     .child(
                         div()
                             .w_full()
-                            .max_w(px(720. + 2. * side_padding))
+                            .max_w(px(theme.column() + 2. * side_padding))
                             .px(px(side_padding))
                             .child(self.onboarding.read(cx).actions(cx)),
                     )
@@ -529,6 +529,7 @@ impl Render for Shell {
         };
         let root = div()
             .id("dory")
+            .relative()
             .size_full()
             .flex()
             .text_color(theme.text)
@@ -565,7 +566,7 @@ impl Render for Shell {
                             .child(
                                 div()
                                     .w_full()
-                                    .max_w(px(720. + 2. * side_padding))
+                                    .max_w(px(theme.column() + 2. * side_padding))
                                     .px(px(side_padding))
                                     .pb(px(32.))
                                     .child(page),
@@ -575,7 +576,8 @@ impl Render for Shell {
                     .children(status)
                     .children(toast),
             )
-            .children(crate::surface::dialog_layer(window, cx));
+            .children(crate::surface::dialog_layer(window, cx))
+            .children(theme::fade_veil(window, cx));
         self.with_actions(root, cx)
     }
 }

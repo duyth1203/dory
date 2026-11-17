@@ -7,7 +7,10 @@
 //! `PRAGMA user_version` and grown by appending to [`MIGRATIONS`].
 
 pub(crate) mod codec;
+mod reader;
 mod search;
+
+pub use reader::SqliteReader;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -15,9 +18,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use dory_core::domain::{
-    Job, JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Job,
+    JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
     RecordingQuery, RecordingRow, Revision, Segment, Settings, SpeakerId, SpeakerNames, Summary,
-    SummaryFlag, TakeInfo, Timestamp, Transcript,
+    SummaryFlag, TakeInfo, Timestamp, Transcript, Writes,
 };
 use dory_core::models::{Diar, Llm, Stt};
 use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
@@ -57,8 +61,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(include_str!("schema_v3.sql")),
     Migration::sql(include_str!("schema_v4.sql")),
     Migration::sql(include_str!("schema_v5.sql")),
+    Migration::sql(include_str!("schema_v6.sql")),
+    Migration::sql(include_str!("schema_v7.sql")),
     Migration {
-        sql: include_str!("schema_v6.sql"),
+        sql: include_str!("schema_v8.sql"),
         then: Some(search::rebuild),
     },
 ];
@@ -81,8 +87,11 @@ fn io(e: std::io::Error) -> StoreError {
 }
 
 pub struct SqliteStore {
-    writer: Mutex<Connection>,
+    /// Declared before `writer`, so it closes first. The last connection to close checkpoints the
+    /// WAL and deletes it, which a read-only connection cannot do, and this one has read the
+    /// schema for its vocabulary view.
     reader: Mutex<Connection>,
+    writer: Mutex<Connection>,
     /// The index's terms as of the generation they carry. Rebuilt by [`StoreRead::vocabulary`]
     /// when a write has moved the index's generation on.
     vocabulary: Mutex<Option<Arc<Vocabulary>>>,
@@ -517,7 +526,11 @@ fn decode_row(raw: RawRow) -> Result<RecordingRow, StoreError> {
 
 // ---- reads --------------------------------------------------------------------------------
 
-impl StoreRead for SqliteStore {
+/// One implementation of every read, shared by the store and the read-only reader. Each type
+/// supplies `read`, which runs a closure in one read transaction.
+macro_rules! store_reads {
+    ($t:ty) => {
+impl StoreRead for $t {
     fn recording(&self, id: &RecordingId) -> Result<Option<Recording>, StoreError> {
         self.read(|conn| {
             let raw = conn
@@ -768,6 +781,152 @@ impl StoreRead for SqliteStore {
                 .collect()
         })
     }
+
+    fn assistant_access(&self) -> Result<AssistantAccess, StoreError> {
+        self.read(|conn| {
+            let enabled = conn
+                .prepare_cached("SELECT enabled FROM assistant_access WHERE id = 1")
+                .map_err(db)?
+                .query_row([], |row| row.get::<_, bool>(0))
+                .optional()
+                .map_err(db)?
+                .unwrap_or(false);
+            let clients = conn
+                .prepare_cached(
+                    "SELECT label, exposure, writes, added_at FROM assistant_clients
+                     ORDER BY added_at, label",
+                )
+                .map_err(db)?
+                .query_map([], raw_client)
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?
+                .into_iter()
+                .map(decode_client)
+                .collect::<Result<_, _>>()?;
+            Ok(AssistantAccess { enabled, clients })
+        })
+    }
+
+    fn assistant_client(&self, key: &ClientKey) -> Result<Option<AssistantClient>, StoreError> {
+        let digest = key_digest(key);
+        self.read(|conn| {
+            conn.prepare_cached(
+                "SELECT label, exposure, writes, added_at FROM assistant_clients
+                 WHERE key_digest = ?1",
+            )
+            .map_err(db)?
+            .query_row([digest], raw_client)
+            .optional()
+            .map_err(db)?
+            .map(decode_client)
+            .transpose()
+        })
+    }
+
+    fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError> {
+        self.read(|conn| {
+            Ok(conn
+                .prepare_cached("SELECT hidden FROM recordings WHERE id = ?1")
+                .map_err(db)?
+                .query_row([id.as_str()], |row| row.get::<_, bool>(0))
+                .optional()
+                .map_err(db)?
+                .unwrap_or(false))
+        })
+    }
+
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
+        self.read(|conn| load_summary_from(conn, "previous_summaries", id))
+    }
+
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError> {
+        self.read(|conn| {
+            conn.prepare_cached(
+                "SELECT instruction FROM summary_instructions WHERE recording_id = ?1",
+            )
+            .map_err(db)?
+            .query_row([id.as_str()], |row| row.get(0))
+            .optional()
+            .map_err(db)
+        })
+    }
+
+    fn assistant_recordings(
+        &self,
+        query: &AssistantQuery,
+    ) -> Result<Vec<RecordingRow>, StoreError> {
+        let needle = query
+            .text
+            .as_deref()
+            .map(|t| t.trim().to_lowercase())
+            .unwrap_or_default();
+        let haystack = [
+            (query.fields.title, "r.title_lc"),
+            (query.fields.summary, "r.summary_lc"),
+            (query.fields.transcript, "r.transcript_lc"),
+        ]
+        .into_iter()
+        .filter_map(|(on, column)| on.then_some(column))
+        .collect::<Vec<_>>()
+        .join(" || char(10) || ");
+        let text = if haystack.is_empty() {
+            "?1 = ''".to_owned()
+        } else {
+            format!("(?1 = '' OR instr({haystack}, ?1) > 0)")
+        };
+        let filter = format!(
+            "r.hidden = 0 AND {text}
+             AND (?3 IS NULL OR r.created_at >= ?3)
+             AND (?4 IS NULL OR r.created_at < ?4)
+             AND (?5 IS NULL OR r.created_at < ?5 OR (r.created_at = ?5 AND r.id > ?6))"
+        );
+        let (after_at, after_id) = match &query.after {
+            Some((at, id)) => (Some(at.0), Some(id.as_str().to_owned())),
+            None => (None, None),
+        };
+        self.read(|conn| {
+            rows_where(
+                conn,
+                &filter,
+                params![
+                    needle,
+                    i64::from(query.limit),
+                    query.since.map(|t| t.0),
+                    query.until.map(|t| t.0),
+                    after_at,
+                    after_id,
+                ],
+            )
+        })
+    }
+}
+    };
+}
+
+store_reads!(SqliteStore);
+store_reads!(reader::SqliteReader);
+
+/// Recording rows matching `filter`, newest first, at most `?2` of them. `filter` is SQL over the
+/// `recordings r` row whose first parameter is `?1`.
+fn rows_where(
+    conn: &Connection,
+    filter: &str,
+    params: &[&dyn rusqlite::ToSql],
+) -> Result<Vec<RecordingRow>, StoreError> {
+    let raws = conn
+        .prepare_cached(&format!(
+            "SELECT {ROW_COLUMNS} FROM recordings r {ROW_JOINS}
+             WHERE {filter}
+             ORDER BY r.created_at DESC, r.id ASC
+             LIMIT ?2"
+        ))
+        .map_err(db)?
+        .query_map(params, raw_row)
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    raws.into_iter().map(decode_row).collect()
 }
 
 pub(crate) fn load_transcript(
@@ -835,11 +994,19 @@ pub(crate) fn load_summary(
     conn: &Connection,
     id: &RecordingId,
 ) -> Result<Option<Summary>, StoreError> {
+    load_summary_from(conn, "summaries", id)
+}
+
+fn load_summary_from(
+    conn: &Connection,
+    table: &'static str,
+    id: &RecordingId,
+) -> Result<Option<Summary>, StoreError> {
     let raw = conn
-        .prepare_cached(
+        .prepare_cached(&format!(
             "SELECT markdown, language, produced_by, transcript_revision
-                 FROM summaries WHERE recording_id = ?1",
-        )
+                 FROM {table} WHERE recording_id = ?1"
+        ))
         .map_err(db)?
         .query_row([id.as_str()], |row| {
             Ok((
@@ -878,6 +1045,129 @@ impl Store for SqliteStore {
             Ok(())
         })
     }
+}
+
+fn write_summary(
+    tx: &Connection,
+    table: &'static str,
+    id: &RecordingId,
+    summary: &Summary,
+) -> Result<(), StoreError> {
+    tx.prepare_cached(&format!(
+        "INSERT OR REPLACE INTO {table}
+           (recording_id, markdown, language, produced_by, transcript_revision)
+         VALUES (?1, ?2, ?3, ?4, ?5)"
+    ))
+    .map_err(db)?
+    .execute(params![
+        id.as_str(),
+        summary.markdown,
+        summary.language.as_ref().map(|l| l.to_string()),
+        summary.produced_by.as_str(),
+        i64::from(summary.transcript_revision.0),
+    ])
+    .map_err(db)?;
+    Ok(())
+}
+
+fn key_digest(key: &ClientKey) -> String {
+    crate::sha256::sha256_hex(key.as_str().as_bytes())
+}
+
+type RawClient = (String, String, String, i64);
+
+fn raw_client(row: &Row<'_>) -> rusqlite::Result<RawClient> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+}
+
+fn decode_client(
+    (label, exposure, writes, added_at): RawClient,
+) -> Result<AssistantClient, StoreError> {
+    Ok(AssistantClient {
+        exposure: Exposure::parse(&exposure)
+            .ok_or_else(|| corrupt("unknown assistant exposure"))?,
+        writes: Writes::parse(&writes).ok_or_else(|| corrupt("unknown assistant writes"))?,
+        added_at: Timestamp(added_at),
+        label,
+    })
+}
+
+fn apply_assistant(tx: &Connection, change: &AssistantChange) -> Result<(), StoreError> {
+    match change {
+        AssistantChange::Enabled(on) => {
+            tx.prepare_cached(
+                "INSERT INTO assistant_access (id, enabled) VALUES (1, ?1)
+                 ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled",
+            )
+            .map_err(db)?
+            .execute([on])
+            .map_err(db)?;
+        }
+        AssistantChange::ClientAdded { client, key } => {
+            let digest = key_digest(key);
+            let taken: bool = tx
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM assistant_clients
+                     WHERE label = ?1 OR key_digest = ?2)",
+                )
+                .map_err(db)?
+                .query_row(params![client.label, digest], |row| row.get(0))
+                .map_err(db)?;
+            if taken {
+                return Err(corrupt(format!(
+                    "an assistant named {} or with that key exists",
+                    client.label
+                )));
+            }
+            tx.prepare_cached(
+                "INSERT INTO assistant_clients (label, key_digest, exposure, writes, added_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(db)?
+            .execute(params![
+                client.label,
+                digest,
+                client.exposure.as_str(),
+                client.writes.as_str(),
+                client.added_at.0
+            ])
+            .map_err(db)?;
+        }
+        AssistantChange::ClientChanged(client) => {
+            let changed = tx
+                .prepare_cached(
+                    "UPDATE assistant_clients SET exposure = ?2, writes = ?3 WHERE label = ?1",
+                )
+                .map_err(db)?
+                .execute(params![
+                    client.label,
+                    client.exposure.as_str(),
+                    client.writes.as_str()
+                ])
+                .map_err(db)?;
+            if changed == 0 {
+                return Err(not_found("assistant", &client.label));
+            }
+        }
+        AssistantChange::ClientRemoved { label } => {
+            let removed = tx
+                .prepare_cached("DELETE FROM assistant_clients WHERE label = ?1")
+                .map_err(db)?
+                .execute([label])
+                .map_err(db)?;
+            if removed == 0 {
+                return Err(not_found("assistant", label));
+            }
+        }
+        AssistantChange::RecordingHidden { id, hidden } => {
+            require_recording(tx, id)?;
+            tx.prepare_cached("UPDATE recordings SET hidden = ?2 WHERE id = ?1")
+                .map_err(db)?
+                .execute(params![id.as_str(), hidden])
+                .map_err(db)?;
+        }
+    }
+    Ok(())
 }
 
 fn not_found(what: &str, id: impl std::fmt::Display) -> StoreError {
@@ -1006,6 +1296,15 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
         Change::SummaryReplaced { id, summary } => {
             require_recording(tx, id)?;
             tx.prepare_cached(
+                "INSERT OR REPLACE INTO previous_summaries
+                   (recording_id, markdown, language, produced_by, transcript_revision)
+                 SELECT recording_id, markdown, language, produced_by, transcript_revision
+                 FROM summaries WHERE recording_id = ?1",
+            )
+            .map_err(db)?
+            .execute([id.as_str()])
+            .map_err(db)?;
+            tx.prepare_cached(
                 "INSERT OR REPLACE INTO summaries
                    (recording_id, markdown, language, produced_by, transcript_revision)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1097,6 +1396,46 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 .map_err(db)?
                 .execute([id.as_str()])
                 .map_err(db)?;
+            Ok(None)
+        }
+        Change::Assistant(change) => {
+            apply_assistant(tx, change)?;
+            Ok(None)
+        }
+        Change::SummaryRestored(id) => {
+            require_recording(tx, id)?;
+            let previous = load_summary_from(tx, "previous_summaries", id)?
+                .ok_or_else(|| not_found("previous summary of", id))?;
+            let current = load_summary(tx, id)?;
+            write_summary(tx, "summaries", id, &previous)?;
+            match current {
+                Some(current) => write_summary(tx, "previous_summaries", id, &current)?,
+                None => {
+                    tx.prepare_cached("DELETE FROM previous_summaries WHERE recording_id = ?1")
+                        .map_err(db)?
+                        .execute([id.as_str()])
+                        .map_err(db)?;
+                }
+            }
+            search::reindex(tx, id)?;
+            Ok(None)
+        }
+        Change::SummaryInstructionSet { id, instruction } => {
+            require_recording(tx, id)?;
+            match instruction {
+                Some(text) => tx
+                    .prepare_cached(
+                        "INSERT OR REPLACE INTO summary_instructions (recording_id, instruction)
+                         VALUES (?1, ?2)",
+                    )
+                    .map_err(db)?
+                    .execute(params![id.as_str(), text]),
+                None => tx
+                    .prepare_cached("DELETE FROM summary_instructions WHERE recording_id = ?1")
+                    .map_err(db)?
+                    .execute([id.as_str()]),
+            }
+            .map_err(db)?;
             Ok(None)
         }
         Change::SettingsReplaced(settings) => {

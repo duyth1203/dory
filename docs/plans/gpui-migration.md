@@ -145,7 +145,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 **Files.**
 
 - [ ] Create the root `Cargo.toml` workspace with `src-tauri` excluded, so the Tauri app keeps building on its own until P8.
-- [ ] Create `crates/dory-core/**` per `docs/architecture/hexagonal.md`. The pure layer (domain, `Job::on`, `recorder::step`, model `fit` and `resolve`, `Catalog`, port traits, frame ring, fakes) exists on branch `refactor/hexagonal-core`. P1 adds the actors and the `Dory` facade.
+- [ ] Create `crates/dory-core/**` per `docs/architecture/hexagonal.md`. The pure layer (domain, `Job::on`, `recorder::step`, model `fit` and `resolve`, `Catalog`, port traits, frame ring, fakes) exists on branch `feat/gpui-rewrite`. P1 adds the actors and the `Dory` facade.
 - [ ] Create `crates/dory-store/**` with `SqliteStore`, `FsTakes`, and the legacy importer.
 - [ ] Create `crates/dory/**`, the composition root.
 - [ ] Create `apps/dory-cli/**` with `import`, `list`, and `show`.
@@ -208,7 +208,7 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 **Files.**
 
-- [ ] Create `crates/dory-macos/**` with `CoreAudioCapture`. A first version exists on branch `refactor/hexagonal-core`.
+- [ ] Create `crates/dory-macos/**` with `CoreAudioCapture`. A first version exists on branch `feat/gpui-rewrite`.
 - [ ] Create `crates/dory-macos/Info.plist` for the CLI bundle, with `NSMicrophoneUsageDescription` and `NSAudioCaptureUsageDescription`.
 - [ ] Edit `crates/dory/src/lib.rs` to use `CoreAudioCapture` on macOS 26 and later.
 - [ ] Edit `apps/dory-cli/**` to add `record` and the `capture` harness.

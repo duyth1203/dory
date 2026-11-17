@@ -382,6 +382,28 @@ where
     }
 }
 
+/// [`row_meta`] split for Book's contents line, where the length moves up beside the title after
+/// its leaders: the start time alone, and the length if there is a take.
+pub fn row_meta_parts<Tz: TimeZone>(
+    row: &RecordingRow,
+    group: DateGroup,
+    now: &DateTime<Tz>,
+) -> (String, Option<String>)
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let length = row.recording.take.map(|take| short_duration(take.duration));
+    let meta = row_meta(row, group, now);
+    let when = match &length {
+        Some(length) => meta
+            .strip_suffix(&format!(" · {length}"))
+            .unwrap_or(&meta)
+            .to_owned(),
+        None => meta,
+    };
+    (when, length)
+}
+
 /// The title the user gave, trimmed. `None` for an untitled recording, which the views show by
 /// its date. The index holds only this text, so it is the only title text a search matches.
 pub fn given_title(recording: &Recording) -> Option<&str> {

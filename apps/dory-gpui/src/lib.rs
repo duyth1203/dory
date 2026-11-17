@@ -38,11 +38,13 @@ pub mod about;
 pub mod actions;
 pub mod app;
 pub mod combobox;
+pub mod consent;
 pub mod detail;
 pub mod estimate;
 pub mod export;
 pub mod find;
 pub mod fixtures;
+pub mod fonts;
 pub mod glass;
 pub mod glyphs;
 pub mod icons;
@@ -64,6 +66,7 @@ pub mod processing_window;
 pub mod quit;
 pub mod radio;
 pub mod record_control;
+pub mod search_field;
 pub mod set_up_summaries;
 pub mod settings_window;
 pub mod shell;
@@ -118,7 +121,14 @@ pub fn new_state(
     prefs: prefs::Prefs,
     cx: &mut App,
 ) -> Entity<app::AppState> {
-    theme::set_display(|display| display.text_scale = prefs.text_scale, cx);
+    let shown = prefs.shown_theme();
+    theme::set_display(
+        |display| {
+            display.text_scale = prefs.text_scale;
+            display.theme = shown;
+        },
+        cx,
+    );
     let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
     models_view::install(&state, cx);
     cx.set_global(Main {

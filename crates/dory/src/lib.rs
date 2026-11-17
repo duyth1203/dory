@@ -9,18 +9,30 @@ mod config;
 #[cfg(feature = "fake-engines")]
 mod fake;
 mod lock;
+#[cfg(feature = "app")]
 mod machine;
+#[cfg(feature = "app")]
 mod platform;
 
 use std::path::Path;
 use std::sync::Arc;
 
+use dory_assistants::{ControlServer, SocketRemote};
+#[cfg(feature = "app")]
 use dory_core::app::{Options, Ports, ReadPorts};
-use dory_core::models::{CatalogError, Llm, Stt};
+use dory_core::assistant::Assistant;
+use dory_core::domain::{Actor, ClientKey};
+use dory_core::models::CatalogError;
+#[cfg(feature = "app")]
+use dory_core::models::{Llm, Stt};
+#[cfg(feature = "app")]
+use dory_core::ports::ModelProvider;
+#[cfg(feature = "app")]
 use dory_core::ports::capture::CaptureBackend;
-use dory_core::ports::{ModelProvider, StoreError};
+use dory_core::ports::{Clock, StoreError};
+#[cfg(feature = "app")]
 use dory_engines::{Ollama, Sherpa};
-use dory_store::{FsTakes, SqliteStore};
+use dory_store::{FsTakes, JsonlAudit, SqliteReader, SqliteStore};
 use thiserror::Error;
 
 pub use clock::SystemClock;
@@ -28,6 +40,7 @@ pub use config::{
     Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
     legacy_data_dir, machine_override,
 };
+pub use dory_assistants::ControlError;
 pub use dory_core::app::{Dory, LibraryReader};
 pub use dory_store::{ImportReport, Skipped};
 #[cfg(feature = "fake-engines")]
@@ -70,12 +83,14 @@ pub enum ImportError {
     Legacy(#[from] dory_store::ImportError),
 }
 
+#[cfg(feature = "app")]
 /// Speech and summary providers.
 struct Providers {
     stt: Vec<Arc<dyn ModelProvider<Stt>>>,
     llm: Vec<Arc<dyn ModelProvider<Llm>>>,
 }
 
+#[cfg(feature = "app")]
 /// The real engines. To add one, push its provider here.
 fn providers(config: &Config) -> Providers {
     let sherpa = Sherpa::new(config.models_dir().join("sherpa"), Sherpa::RELEASES);
@@ -111,6 +126,7 @@ fn create_data_dir(config: &Config) -> Result<(), OpenError> {
     })
 }
 
+#[cfg(feature = "app")]
 fn open_with(
     config: &Config,
     capture: Arc<dyn CaptureBackend>,
@@ -124,6 +140,7 @@ fn open_with(
     create_data_dir(config)?;
     // Before anything reads the folder: recovery must never see another process's live take.
     let lock = lock::DataLock::acquire(&config.data_dir)?;
+    keep_audit(config);
     let Storage { store, takes } = storage(config)?;
     let ports = Ports {
         store,
@@ -141,8 +158,9 @@ fn open_with(
     Ok(Dory::open(ports, options)?)
 }
 
+#[cfg(feature = "app")]
 fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryReader, OpenError> {
-    let Storage { store, .. } = storage(config)?;
+    let store = Arc::new(SqliteReader::open(config.db_path())?);
     Ok(LibraryReader::open(ReadPorts {
         store,
         stt: providers.stt,
@@ -151,6 +169,7 @@ fn open_library_with(config: &Config, providers: Providers) -> Result<LibraryRea
     })?)
 }
 
+#[cfg(feature = "app")]
 /// Opens Dory on `config.data_dir`: SQLite at `dory.sqlite`, takes under `takes/`, the platform's
 /// capture backend, and the system clock. Holds an exclusive lock on `.lock` in that folder until
 /// the returned `Dory` is dropped, so a second open of the same folder, in this process or
@@ -164,8 +183,95 @@ pub fn open(config: &Config) -> Result<Dory, OpenError> {
     )
 }
 
-/// Opens the library under `config.data_dir` for reading only. It takes no lock and repairs
-/// nothing, so it works while another process records into the same folder.
+/// Creates the audit folder and deletes days past the kept window. Only the lock holder runs it.
+/// A failure here never stops Dory opening, so it is reported and skipped.
+fn keep_audit(config: &Config) -> usize {
+    let root = config.audit_dir();
+    let pruned = JsonlAudit::create_root(&root)
+        .and_then(|()| JsonlAudit::prune(&root, SystemClock::new().now()));
+    pruned.unwrap_or_else(|e| {
+        eprintln!("audit: cannot keep {}: {e}", root.display());
+        0
+    })
+}
+
+/// Deletes audit days past the kept window, holding the data folder's lock while it does.
+/// Returns how many days went. Fails with [`OpenError::InUse`] while Dory runs, which prunes
+/// on its own at every start.
+pub fn prune_audit(config: &Config) -> Result<usize, OpenError> {
+    create_data_dir(config)?;
+    let _lock = lock::DataLock::acquire(&config.data_dir)?;
+    Ok(keep_audit(config))
+}
+
+/// The audit log of assistant access, for reading. Works while Dory runs.
+pub fn audit_reader(config: &Config) -> Arc<dyn dory_core::ports::AuditRead> {
+    Arc::new(JsonlAudit::reader(config.audit_dir()))
+}
+
+/// The read path for one assistant, as the `dory-mcp` helper runs it: a read-only view of the
+/// library, the audit log this process appends to, and the key the assistant presented. It takes
+/// no lock, so it works while Dory runs, and it never writes the library.
+pub fn open_assistant(config: &Config, key: Option<ClientKey>) -> Result<Assistant, OpenError> {
+    let store = Arc::new(SqliteReader::open(config.db_path())?);
+    let clock = Arc::new(SystemClock::new());
+    let audit = Arc::new(JsonlAudit::writer(
+        config.audit_dir(),
+        Actor::Helper,
+        clock.now(),
+    ));
+    Ok(Assistant::new(store, audit, clock, key)
+        .with_remote(Arc::new(SocketRemote::new(&config.data_dir))))
+}
+
+/// Serves assistants' change requests for as long as the returned value lives. Each request is
+/// checked and put to the user through `consent` before anything changes. Only the process that
+/// opened `dory` with [`open`] calls this.
+pub fn serve_assistants(
+    config: &Config,
+    dory: &dory_core::app::Dory,
+    consent: Arc<dyn dory_core::ports::Consent>,
+) -> Result<AssistantServer, ControlError> {
+    let clock = SystemClock::new();
+    let host = dory.assistant_host(
+        consent,
+        Arc::new(JsonlAudit::writer(
+            config.audit_dir(),
+            Actor::App,
+            clock.now(),
+        )),
+        audit_reader(config),
+    );
+    let server = ControlServer::serve(
+        &config.data_dir,
+        Arc::new(move |request| host.handle(&request)),
+    )?;
+    Ok(AssistantServer(server))
+}
+
+/// Keeps the control socket served; dropping it removes the socket.
+pub struct AssistantServer(ControlServer);
+
+impl AssistantServer {
+    pub fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+/// A new key for an assistant, from the system's random source. Show it once and keep it nowhere:
+/// the store keeps only its digest.
+pub fn new_client_key() -> std::io::Result<dory_core::domain::ClientKey> {
+    use std::io::Read;
+    let mut bytes = [0u8; 32];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(dory_core::domain::ClientKey::from_bytes(bytes))
+}
+
+#[cfg(feature = "app")]
+/// Opens the library under `config.data_dir` for reading only. It takes no lock, repairs nothing,
+/// and never writes: it creates no file, sets no journal mode, and never migrates, so it works
+/// while another process records into the same folder and cannot change that process's schema.
+/// A library that does not exist yet, or was written by another build, is refused.
 pub fn open_library(config: &Config) -> Result<LibraryReader, OpenError> {
     open_library_with(config, providers(config))
 }
@@ -219,6 +325,7 @@ pub fn with_store<T>(
     Ok(write(&*store))
 }
 
+#[cfg(feature = "app")]
 /// Removes the audio devices the old app left behind and puts the system default devices
 /// back, once. Reads the old app's restore files from its data folder and writes only a marker
 /// under `config.data_dir`. A no-op off macOS and when `HOME` is unset. It is also skipped when

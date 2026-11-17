@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use super::{RawSegment, StoreError};
 use crate::domain::{
-    Channel, Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
-    RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange,
-    Timestamp, Transcript,
+    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Goal,
+    Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit, RecordingId,
+    RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange, Timestamp,
+    Transcript,
 };
 use crate::models::ModelRef;
 use crate::search::{Found, Query, Vocabulary};
@@ -43,6 +44,19 @@ pub trait StoreRead: Send + Sync {
     fn settings(&self) -> Result<Settings, StoreError>;
     /// The finished windows of one transcription run, earliest first.
     fn checkpoints(&self, key: &CheckpointKey) -> Result<Vec<Checkpoint>, StoreError>;
+    /// Whether assistants may read, and the assistants the user added.
+    fn assistant_access(&self) -> Result<AssistantAccess, StoreError>;
+    /// The assistant that holds `key`, if any.
+    fn assistant_client(&self, key: &ClientKey) -> Result<Option<AssistantClient>, StoreError>;
+    /// Whether the user hid this recording from every assistant. False for an unknown id.
+    fn hidden_from_assistants(&self, id: &RecordingId) -> Result<bool, StoreError>;
+    /// Newest first, matching only inside the query's fields and never a hidden recording.
+    fn assistant_recordings(&self, query: &AssistantQuery)
+    -> Result<Vec<RecordingRow>, StoreError>;
+    /// The summary the last replacement pushed aside, kept so the user can restore it.
+    fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
+    /// What the user asked the summary to focus on, if anything.
+    fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError>;
 }
 
 pub trait Store: StoreRead {
@@ -68,9 +82,17 @@ pub enum Change {
         id: RecordingId,
         names: SpeakerNames,
     },
+    /// Keeps the summary it replaces as the one previous summary.
     SummaryReplaced {
         id: RecordingId,
         summary: Summary,
+    },
+    /// Swaps the current and the previous summary, so restoring twice undoes itself.
+    SummaryRestored(RecordingId),
+    /// `None` clears it. Used by every later summary of the recording.
+    SummaryInstructionSet {
+        id: RecordingId,
+        instruction: Option<String>,
     },
     /// The store assigns the job id.
     JobEnqueued {
@@ -92,6 +114,7 @@ pub enum Change {
     /// Every checkpoint of the recording, whatever run made it. Committed with the transcript
     /// they built.
     CheckpointsCleared(RecordingId),
+    Assistant(AssistantChange),
 }
 
 /// The transcription run a checkpoint belongs to. A rerun reuses a checkpoint only when every

@@ -23,7 +23,7 @@ use std::ops::Range;
 use chrono::Local;
 use dory_core::search::Section;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
+use gpui_kit::component::input::{Escape, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, HighlightStyle, Hsla,
@@ -35,11 +35,12 @@ use gpui_kit::{
 use crate::a11y;
 use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
 use crate::app::AppState;
-use crate::icons::Icon;
+use crate::fonts;
 use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::marks::marked;
 use crate::menus;
 use crate::prefs;
+use crate::search_field;
 use crate::theme::Theme;
 use crate::{glass, glyphs, motion};
 
@@ -76,23 +77,6 @@ impl Sidebar {
             scrolled_to: None,
             _subscriptions: vec![on_type, on_app],
         }
-    }
-
-    /// The ✕ at the end of the search field, shown while it holds text. Kit's own clear button
-    /// is smaller than the 24 pt minimum target (A11Y-9), so the sidebar draws this one.
-    fn clear_search_button(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
-        let hover = theme.control_bg;
-        a11y::node("search-clear", Role::Button, "Clear search")
-            .size(px(24.))
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .cursor_pointer()
-            .hover(move |button| button.bg(hover))
-            .child(Icon::X.view(12., theme.text_secondary))
-            .on_click(cx.listener(|this, _, window, cx| this.clear_search(window, cx)))
     }
 
     /// Empties the field, keeps focus in it, and brings the date groups back.
@@ -145,6 +129,10 @@ impl Sidebar {
         let now = Local::now();
         let today = now.date_naive();
         let list_focused = self.list_focus.is_focused(window);
+        let leaders = theme
+            .presentation(f32::from(window.viewport_size().width))
+            .toc_leaders;
+        let outline = theme.highlight_outline();
         let selected = app.selection.id().cloned();
         let visible = app.visible();
         if visible.is_empty() {
@@ -224,7 +212,11 @@ impl Sidebar {
                     library::local(row.recording.created_at, &now.timezone()).date_naive(),
                     today,
                 );
-                let meta = library::row_meta(row, group, &now);
+                let (meta, length) = if leaders {
+                    library::row_meta_parts(row, group, &now)
+                } else {
+                    (library::row_meta(row, group, &now), None)
+                };
                 let spoken_time = library::local(row.recording.created_at, &now.timezone())
                     .format("%H:%M")
                     .to_string();
@@ -286,7 +278,25 @@ impl Sidebar {
                         window.focus(&focus, cx);
                         app.update(cx, |app, cx| app.select(Selection::One(id.clone()), cx));
                     })
-                    .child(
+                    .when_some(
+                        outline.filter(|_| is_selected && !list_focused),
+                        |row, color| {
+                            row.relative().child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .size_full()
+                                    .rounded(px(8.))
+                                    .border_1()
+                                    .border_color(color),
+                            )
+                        },
+                    )
+                    .child(if theme.serif() {
+                        let title = marked(title, &title_marks, FontWeight::BOLD, filled, &theme);
+                        contents_line(title, length, fg, fg2, &theme)
+                    } else {
                         div()
                             .text_size(theme.text(14.))
                             .line_height(relative(1.25))
@@ -299,8 +309,9 @@ impl Sidebar {
                                 FontWeight::BOLD,
                                 filled,
                                 &theme,
-                            )),
-                    )
+                            ))
+                            .into_any_element()
+                    })
                     .child(
                         div()
                             .flex()
@@ -385,21 +396,74 @@ fn marked_words(text: String, words: Range<usize>, color: Hsla) -> AnyElement {
 }
 
 fn heading(id: &str, label: &str, theme: &Theme) -> impl IntoElement {
-    a11y::node(id.to_owned(), Role::Heading, label.to_owned())
+    let header = a11y::node(id.to_owned(), Role::Heading, label.to_owned())
         .aria_level(3)
         .px(px(12.))
         .pt(px(12.))
         .pb(px(4.))
-        .text_size(theme.text(12.))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(theme.text_secondary)
-        .child(label.to_owned())
+        .text_color(theme.text_secondary);
+    // Book sets the group in serif italic, as a part title in a table of contents.
+    if theme.serif() {
+        theme
+            .reading(header)
+            .italic()
+            .text_size(theme.text(13.))
+            .child(label.to_owned())
+    } else {
+        header
+            .text_size(theme.text(12.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(label.to_owned())
+    }
 }
+
+/// Book's entry title (serif 15). With leaders it reads "Title ...... 48 min": the title on one
+/// line, dotted leaders of at least 12 pt, and the length in oldstyle figures. Without them the
+/// title wraps and the length stays in the meta line. The leaders are drawing only.
+fn contents_line(
+    title: AnyElement,
+    length: Option<String>,
+    fg: Hsla,
+    fg2: Hsla,
+    theme: &Theme,
+) -> AnyElement {
+    let line = theme
+        .reading(div())
+        .text_size(theme.text(15.))
+        .line_height(gpui_kit::relative(1.3))
+        .text_color(fg);
+    let Some(length) = length else {
+        return line.child(title).into_any_element();
+    };
+    line.flex()
+        .items_baseline()
+        .gap(px(6.))
+        .child(div().min_w_0().truncate().child(title))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(12.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_color(theme.leader)
+                .child(LEADER_DOTS),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(fg2)
+                .font_features(fonts::oldstyle())
+                .child(length),
+        )
+        .into_any_element()
+}
+
+/// More dots than any sidebar is wide; the leader's box clips them.
+const LEADER_DOTS: &str = ". . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .";
 
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
-        let searching = !self.search.read(cx).value().is_empty();
         let (filter, width, nothing_selected) = {
             let app = self.app.read(cx);
             (
@@ -454,15 +518,19 @@ impl Render for Sidebar {
                                             this.clear_search(window, cx);
                                         }
                                     }))
-                                    .child(
-                                        Input::new(&self.search)
-                                            .id("search")
-                                            .aria_label("Search recordings")
-                                            .prefix(Icon::Search.view(14., theme.text_secondary))
-                                            .when(searching, |input| {
-                                                input.suffix(self.clear_search_button(&theme, cx))
-                                            }),
-                                    ),
+                                    .child(search_field::view(
+                                        &self.search,
+                                        "search",
+                                        "Search recordings",
+                                        &theme,
+                                        cx,
+                                        {
+                                            let app = self.app.clone();
+                                            move |_, cx| {
+                                                app.update(cx, |app, cx| app.set_search("", cx))
+                                            }
+                                        },
+                                    )),
                             )
                             .child(self.filter_button(filter)),
                     )

@@ -113,7 +113,43 @@ pub(super) fn reindex(tx: &Connection, id: &RecordingId) -> Result<(), StoreErro
         .execute([key])
         .map_err(db)?;
     write_row(tx, key, id.as_str())?;
+    lowercase_copies(tx, id)?;
     bump_generation(tx)
+}
+
+/// Keeps the lowercase columns the assistant search reads up to date.
+fn lowercase_copies(tx: &Connection, id: &RecordingId) -> Result<(), StoreError> {
+    let (title, summary): (Option<String>, Option<String>) = tx
+        .prepare_cached(
+            "SELECT r.title, s.markdown FROM recordings r
+             LEFT JOIN summaries s ON s.recording_id = r.id WHERE r.id = ?1",
+        )
+        .map_err(db)?
+        .query_row([id.as_str()], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(db)?;
+    let mut transcript = String::new();
+    {
+        let mut stmt = tx
+            .prepare_cached("SELECT text FROM segments WHERE recording_id = ?1 ORDER BY idx")
+            .map_err(db)?;
+        let mut rows = stmt.query([id.as_str()]).map_err(db)?;
+        while let Some(row) = rows.next().map_err(db)? {
+            transcript.push_str(&row.get::<_, String>(0).map_err(db)?);
+            transcript.push('\n');
+        }
+    }
+    tx.prepare_cached(
+        "UPDATE recordings SET title_lc = ?2, summary_lc = ?3, transcript_lc = ?4 WHERE id = ?1",
+    )
+    .map_err(db)?
+    .execute(params![
+        id.as_str(),
+        title.unwrap_or_default().to_lowercase(),
+        summary.unwrap_or_default().to_lowercase(),
+        transcript.to_lowercase(),
+    ])
+    .map_err(db)?;
+    Ok(())
 }
 
 /// Drops the recording's index row. Runs before the recording row goes, which takes its key with
@@ -129,7 +165,7 @@ pub(super) fn forget(tx: &Connection, id: &RecordingId) -> Result<(), StoreError
 }
 
 /// Indexes every recording from scratch with this build's tokens, in the caller's transaction.
-/// The v6 migration runs it, and so does an open that finds an index built by another
+/// The v8 migration runs it, and so does an open that finds an index built by another
 /// [`TOKENS_VERSION`]. A crash before the commit leaves the old state, so the next open runs it
 /// again.
 pub(super) fn rebuild(tx: &Connection) -> Result<(), StoreError> {

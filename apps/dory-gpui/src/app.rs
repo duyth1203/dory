@@ -8,6 +8,7 @@
 //! `record` adds the record flow and processing (P5): recorder commands, the recorder's events,
 //! progress and estimates, finish and fix actions.
 
+mod assistants;
 mod core;
 mod lifecycle;
 mod models;
@@ -30,6 +31,10 @@ use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Tas
 pub use player::PlayerHandle;
 pub use session::{Detail, Loadable, Moved, Session, Turn, speaker_label, turns};
 
+pub use self::assistants::{
+    ACTIVITY_LINES, Assistants, AssistantsView, COPIED_FOR, Connected, Target, helper_path,
+    setup_text, shorten_key,
+};
 use self::core::Core;
 pub use self::models::{Originals, count};
 use crate::estimate::{Estimate, Rates};
@@ -200,6 +205,16 @@ pub struct AppState {
     originals: Originals,
     /// The core was shut down for a quit, so nothing may start again.
     shut_down: bool,
+    /// Settings > Assistants: access, the connected assistants, and their latest reads.
+    assistants: Assistants,
+    /// The last Connect in Settings > Assistants.
+    connected: Option<Connected>,
+    /// `dory-mcp`, which Connect points assistants at.
+    assistant_helper: Option<std::path::PathBuf>,
+    /// Copy Setup just copied: its icon shows a check until this clears.
+    copied: bool,
+    /// Counts copies, so only the latest one's timer clears `copied`.
+    copy_flash: u64,
     epoch: Instant,
     _pump: Task<()>,
 }
@@ -287,6 +302,11 @@ impl AppState {
             asking: HashSet::new(),
             originals: Originals::Unread,
             shut_down: false,
+            assistants: Assistants::Unread,
+            connected: None,
+            assistant_helper: helper_path(),
+            copied: false,
+            copy_flash: 0,
             epoch: Instant::now(),
             _pump: pump,
         };
@@ -464,6 +484,33 @@ impl AppState {
         self.prefs.text_scale = scale;
         crate::theme::set_display(|display| display.text_scale = scale, cx);
         crate::a11y::announce(&format!("Text size {}%", (scale * 100.).round() as u32));
+        cx.notify();
+    }
+
+    /// Settings › General › Theme and View › Theme (UX-20): remembered in the UI prefs, and shown
+    /// with a cross-fade. Book is chosen only while it is offered.
+    pub fn set_theme(&mut self, name: crate::theme::ThemeName, cx: &mut Context<Self>) {
+        if name == crate::theme::ThemeName::Book && !self.prefs.book_offered {
+            return;
+        }
+        self.prefs.theme = name;
+        self.show_theme(cx);
+    }
+
+    /// Settings › General › Theme › Try the Book theme. Turning it off returns to Modern.
+    pub fn set_book_offered(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.prefs.book_offered = on;
+        if !on {
+            self.prefs.theme = crate::theme::ThemeName::Modern;
+        }
+        self.show_theme(cx);
+    }
+
+    fn show_theme(&mut self, cx: &mut Context<Self>) {
+        let shown = self.prefs.shown_theme();
+        if cx.try_global::<crate::theme::Display>().map(|d| d.theme) != Some(shown) {
+            crate::theme::switch_to(shown, cx);
+        }
         cx.notify();
     }
 

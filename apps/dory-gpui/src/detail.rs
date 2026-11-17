@@ -44,8 +44,8 @@ use gpui_kit::{
     Anchor, AnchoredPositionMode, AnyElement, App, AppContext as _, Bounds, Context, Entity,
     FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, anchored,
-    canvas, deferred, div, point, prelude::FluentBuilder as _, px, relative,
+    StatefulInteractiveElement as _, Styled, Subscription, TestSupportExt as _, WeakEntity, Window,
+    anchored, canvas, deferred, div, point, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
@@ -54,6 +54,7 @@ use crate::actions::{
 };
 use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
 use crate::find::Place;
+use crate::fonts;
 use crate::icons::{self, Icon};
 use crate::library;
 use crate::marks::marked;
@@ -63,7 +64,7 @@ use crate::player_view::PlayerView;
 use crate::processing::{self, Fix, Phase};
 use crate::summary_view::{self, SummaryText};
 use crate::theme::Theme;
-use crate::transcript_view::TranscriptView;
+use crate::transcript_view::{self, TranscriptView};
 use crate::{glyphs, set_up_summaries};
 
 /// What the page shows under the card.
@@ -389,6 +390,9 @@ impl DetailPane {
                 .update(cx, |player, cx| player.set_docked(next.docked, cx));
         }
         self.pinning = next;
+        let gutter = f32::from(next.column_x - next.visible.left());
+        self.transcript
+            .update(cx, |transcript, cx| transcript.set_gutter(gutter, cx));
         cx.notify();
     }
 
@@ -451,9 +455,7 @@ impl DetailPane {
                     Input::new(&edit.field)
                         .aria_label("Title")
                         .appearance(false)
-                        .text_size(theme.text(30.))
-                        .font_weight(FontWeight::BOLD)
-                        .line_height(relative(1.2))
+                        .map(|el| title_type(el, theme))
                         .h_auto(),
                 )
                 .into_any_element();
@@ -469,9 +471,7 @@ impl DetailPane {
         .aria_description("Press Return to rename")
         .on_click(cx.listener(|this, _, window, cx| this.edit_title(window, cx)))
         .rounded(px(6.))
-        .text_size(theme.text(30.))
-        .font_weight(FontWeight::BOLD)
-        .line_height(relative(1.2))
+        .map(|el| title_type(el, theme))
         .child(marked(title, marks, FontWeight::EXTRA_BOLD, false, theme))
         .into_any_element()
     }
@@ -491,7 +491,7 @@ impl DetailPane {
                           ix: usize,
                           leading: Option<AnyElement>| {
             let app = self.app.clone();
-            a11y::tab_with(
+            let tab_el = a11y::tab_with(
                 id,
                 label,
                 leading,
@@ -500,7 +500,21 @@ impl DetailPane {
                 theme,
                 move |_, cx| app.update(cx, |app, cx| app.set_tab(which, cx)),
             )
-            .min_h(theme.text(34.))
+            .min_h(theme.text(34.));
+            // Book: serif small caps, the selected tab in ink and the other in secondary.
+            if theme.serif() {
+                theme
+                    .reading(tab_el)
+                    .font_features(fonts::small_caps())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if tab == which {
+                        theme.text
+                    } else {
+                        theme.text_secondary
+                    })
+            } else {
+                tab_el
+            }
         };
         let dots =
             summarizing.map(|at| glyphs::dots(theme.accent_text, 14., at).into_any_element());
@@ -634,6 +648,64 @@ impl DetailPane {
 }
 
 /// A one- or two-line state in place of the tabs. Its label is its text, for VoiceOver.
+/// The recording title: 30 bold in Modern, a serif chapter title (38, weight 500) in Book.
+fn title_type<E: Styled>(el: E, theme: &Theme) -> E {
+    if theme.serif() {
+        theme
+            .reading(el)
+            .text_size(theme.text(38.))
+            .font_weight(FontWeight::MEDIUM)
+            .line_height(relative(1.15))
+    } else {
+        el.text_size(theme.text(30.))
+            .font_weight(FontWeight::BOLD)
+            .line_height(relative(1.2))
+    }
+}
+
+/// The metadata line: 14 secondary in Modern, a serif italic 16 byline in Book. Same words.
+fn byline_type<E: Styled>(el: E, theme: &Theme) -> E {
+    let el = el.text_color(theme.text_secondary);
+    if theme.serif() {
+        theme
+            .reading(el)
+            .italic()
+            .text_size(theme.text(16.))
+            .line_height(relative(1.5))
+    } else {
+        el.text_size(theme.text(14.)).line_height(relative(1.4))
+    }
+}
+
+/// Book's running head: the recording's name and date in small caps over a hairline. Decorative,
+/// so it is no accessibility node; the title and byline say the same.
+fn running_head(recording: &Recording, theme: &Theme) -> impl IntoElement {
+    let date = library::local(recording.created_at, &Local)
+        .format("%A, %-d %B")
+        .to_string();
+    theme
+        .reading(div())
+        .id("running-head")
+        .test_support()
+        .flex()
+        .justify_between()
+        .gap(px(16.))
+        .mb(px(22.))
+        .pb(px(8.))
+        .border_b_1()
+        .border_color(theme.divider)
+        .text_size(theme.text(13.))
+        .font_features(fonts::small_caps())
+        .text_color(theme.text_secondary)
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .child(shown_title(recording, &Local)),
+        )
+        .child(div().flex_none().child(date))
+}
+
 fn state(
     id: &'static str,
     role: Role,
@@ -766,7 +838,21 @@ impl DetailPane {
                 .child(placeholder)
                 .into_any_element();
         }
-        let stamp_w = px(42. + 12. * (theme.text_scale - 1.).max(0.));
+        let script = theme.presentation(f32::from(window.viewport_size().width));
+        let hang = transcript_view::hangs(
+            script,
+            f32::from(self.pinning.column_x - self.pinning.visible.left()),
+        );
+        let stamp_w = if hang {
+            px(transcript_view::MARGIN)
+        } else {
+            px(42. + 12. * (theme.text_scale - 1.).max(0.))
+        };
+        let (body_size, body_line) = if script.script_transcript {
+            (17., 1.7)
+        } else {
+            (15., 1.6)
+        };
         let arriving = self
             .arrivals
             .iter()
@@ -787,7 +873,11 @@ impl DetailPane {
                 };
                 a11y::node(format!("draft-{ix}"), Role::ListItem, spoken)
                     .flex()
-                    .gap(px(8.))
+                    .gap(px(if hang {
+                        transcript_view::MARGIN_GAP
+                    } else {
+                        8.
+                    }))
                     .opacity(shown)
                     .relative()
                     .top(px(4. * (1. - shown)))
@@ -795,18 +885,26 @@ impl DetailPane {
                         div()
                             .flex_none()
                             .w(stamp_w)
-                            .pt(px(2.))
+                            .when(hang, |stamp| {
+                                stamp
+                                    .h(theme.text(body_size) * body_line)
+                                    .flex()
+                                    .items_center()
+                                    .justify_end()
+                            })
+                            .when(!hang, |stamp| stamp.pt(px(2.)))
                             .font_features(crate::theme::tabular())
                             .text_size(theme.text(12.))
                             .text_color(theme.text_secondary)
                             .child(start.map(a11y::clock).unwrap_or_default()),
                     )
                     .child(
-                        div()
+                        theme
+                            .reading(div())
                             .flex_1()
                             .min_w_0()
-                            .text_size(theme.text(15.))
-                            .line_height(relative(1.6))
+                            .text_size(theme.text(body_size))
+                            .line_height(relative(body_line))
                             .child(line.text.clone()),
                     )
             });
@@ -817,6 +915,9 @@ impl DetailPane {
             .pt(px(8.))
             .child(
                 a11y::node("transcript-drafts", Role::List, "Transcript so far")
+                    .when(hang, |list| {
+                        list.ml(px(-(transcript_view::MARGIN + transcript_view::MARGIN_GAP)))
+                    })
                     .flex()
                     .flex_col()
                     .gap(px(12.))
@@ -1057,6 +1158,7 @@ impl Render for DetailPane {
                             &self.summary,
                             fix.map(IntoElement::into_any_element),
                             &theme,
+                            theme.presentation(f32::from(window.viewport_size().width)),
                         )
                     }
                     DetailTab::Transcript => match &phase {
@@ -1147,12 +1249,15 @@ impl Render for DetailPane {
                     .flex()
                     .flex_col()
                     .gap(px(4.))
+                    .children(
+                        theme
+                            .presentation(f32::from(window.viewport_size().width))
+                            .running_head
+                            .then(|| running_head(&detail.recording, &theme)),
+                    )
                     .child(self.title(&detail, &title_marks, &theme, cx))
                     .child(
-                        a11y::node("detail-meta", Role::Label, meta.clone())
-                            .text_size(theme.text(14.))
-                            .line_height(relative(1.4))
-                            .text_color(theme.text_secondary)
+                        byline_type(a11y::node("detail-meta", Role::Label, meta.clone()), &theme)
                             .child(meta),
                     )
                     .children(write_error.map(|error| {

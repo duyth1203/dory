@@ -321,3 +321,22 @@ mod fakes {
         );
     }
 }
+
+#[test]
+fn open_library_leaves_the_library_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path().join("data"));
+    drop(dory::open(&config).unwrap());
+    let before = std::fs::read(config.db_path()).unwrap();
+    let reader = dory::open_library(&config).unwrap();
+    assert!(reader.list(&RecordingQuery::default()).unwrap().is_empty());
+    drop(reader);
+    assert_eq!(std::fs::read(config.db_path()).unwrap(), before);
+
+    let absent = Config::new(dir.path().join("absent"));
+    assert!(matches!(
+        dory::open_library(&absent),
+        Err(OpenError::Store(dory_core::ports::StoreError::Missing(_)))
+    ));
+    assert!(!absent.data_dir.exists(), "a reader creates no folder");
+}

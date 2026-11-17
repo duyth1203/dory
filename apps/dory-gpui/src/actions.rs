@@ -42,6 +42,8 @@ gpui_kit::actions!(
         Bigger,
         Smaller,
         ActualSize,
+        UseModernTheme,
+        UseBookTheme,
         NextRegion,
         PreviousRegion,
     ]

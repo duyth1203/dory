@@ -1,8 +1,9 @@
 //! A11Y-8: every color pair the views paint, `Theme::pairs`, meets WCAG 2.2 AA (4.5 to 1 for
 //! text, 3 to 1 for focus rings and graphics) for all eight macOS accent colors, in light and
-//! dark, with and without Increase Contrast (A11Y-6).
+//! dark, with and without Increase Contrast (A11Y-6), in both themes. Book keeps its own accent,
+//! so it is checked once per appearance and setting rather than once per accent.
 
-use dory_gpui::theme::{Display, MIN_CONTRAST, Theme, blend, contrast};
+use dory_gpui::theme::{Display, MIN_CONTRAST, Theme, ThemeName, blend, contrast};
 use gpui_kit::{Hsla, rgb};
 
 /// The system accents in sRGB, light then dark: blue, purple, pink, red, orange, yellow, green,
@@ -25,35 +26,45 @@ fn c(hex: u32) -> Hsla {
 /// Every theme the app can build from the system settings.
 fn every_theme() -> Vec<(String, Theme)> {
     let mut themes = Vec::new();
-    for (name, light, dark) in ACCENTS {
-        for increase_contrast in [false, true] {
-            for differentiate_without_color in [false, true] {
-                let display = Display {
-                    increase_contrast,
-                    differentiate_without_color,
-                    text_scale: 1.0,
-                };
-                let variant = format!(
-                    "{name}{}{}",
-                    if increase_contrast {
-                        ", increase contrast"
-                    } else {
-                        ""
-                    },
-                    if differentiate_without_color {
-                        ", differentiate without color"
-                    } else {
-                        ""
-                    }
-                );
-                themes.push((
-                    format!("light {variant}"),
-                    Theme::new(false, c(light), display),
-                ));
-                themes.push((
-                    format!("dark {variant}"),
-                    Theme::new(true, c(dark), display),
-                ));
+    for (theme, accents) in [
+        (ThemeName::Modern, &ACCENTS[..]),
+        (ThemeName::Book, &ACCENTS[..1]),
+    ] {
+        for &(name, light, dark) in accents {
+            let name = match theme {
+                ThemeName::Modern => name.to_owned(),
+                ThemeName::Book => "Book".to_owned(),
+            };
+            for increase_contrast in [false, true] {
+                for differentiate_without_color in [false, true] {
+                    let display = Display {
+                        theme,
+                        increase_contrast,
+                        differentiate_without_color,
+                        text_scale: 1.0,
+                    };
+                    let variant = format!(
+                        "{name}{}{}",
+                        if increase_contrast {
+                            ", increase contrast"
+                        } else {
+                            ""
+                        },
+                        if differentiate_without_color {
+                            ", differentiate without color"
+                        } else {
+                            ""
+                        }
+                    );
+                    themes.push((
+                        format!("light {variant}"),
+                        Theme::new(false, c(light), display),
+                    ));
+                    themes.push((
+                        format!("dark {variant}"),
+                        Theme::new(true, c(dark), display),
+                    ));
+                }
             }
         }
     }

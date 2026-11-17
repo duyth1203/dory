@@ -36,19 +36,21 @@ use dory_core::domain::{Ms, SpeakerId};
 use dory_core::search::Query;
 use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset, ListState,
-    ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window,
-    canvas, div, list, point, prelude::FluentBuilder as _, px, relative, transparent_black,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Font, FontStyle,
+    FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent, ListAlignment, ListOffset,
+    ListState, ParentElement as _, Pixels, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, TestSupportExt as _,
+    TextRun, Window, canvas, div, list, point, prelude::FluentBuilder as _, px, relative,
+    transparent_black,
 };
 
 use crate::a11y;
 use crate::app::{Detail, PlayerHandle, Session, Turn};
 use crate::find::{Place, shift_into_view};
+use crate::fonts;
 use crate::icons::Icon;
 use crate::marks::marked;
-use crate::theme::Theme;
+use crate::theme::{self, Presentation, Theme};
 
 /// Past this many turns the transcript virtualizes. A column this short renders in well under a
 /// frame, and keeping it in the page keeps the page one scrolling surface.
@@ -133,13 +135,16 @@ pub struct TranscriptView {
     cursor: Option<usize>,
     focus: FocusHandle,
     rename: Option<Rename>,
-    text_scale: f32,
     page: ScrollHandle,
     /// The session's `reveal` count this view last acted on.
     seen: u64,
     reveal: Option<Reveal>,
     /// The query the turns are drawn with marks for, so a change measures the rows again.
     marked: Option<Query>,
+    /// What the list last measured its rows for.
+    measured_for: Measured,
+    /// The page's left margin beside the column, as the detail pane last measured it.
+    gutter: f32,
     _subscriptions: [Subscription; 2],
 }
 
@@ -165,11 +170,12 @@ impl TranscriptView {
             cursor: None,
             focus: cx.focus_handle(),
             rename: None,
-            text_scale: Theme::get(cx).text_scale,
             page,
             seen: 0,
             reveal: None,
             marked: None,
+            measured_for: Measured::of(&Theme::get(cx), false),
+            gutter: 0.,
             _subscriptions: [on_session, on_player],
         };
         view.sync_detail(cx);
@@ -517,6 +523,19 @@ impl TranscriptView {
             .child(at)
         });
 
+        let presentation = theme.presentation(f32::from(window.viewport_size().width));
+        if presentation.script_transcript && self.rename.as_ref().is_none_or(|r| r.turn != ix) {
+            let script = Script {
+                spoken,
+                described,
+                timestamp,
+                marks: &marks,
+                probing,
+                presentation,
+            };
+            return self.script_turn(ix, turn, script, window, cx);
+        }
+
         a11y::node(format!("turn-{ix}"), Role::ListItem, spoken)
             .aria_position_in_set(ix + 1)
             .aria_size_of_set(detail.turns.len())
@@ -605,11 +624,246 @@ impl TranscriptView {
     }
 }
 
+impl TranscriptView {
+    /// Book's play-script turn (`book-theme.md` section 4): "SAM. Okay, …" as one serif
+    /// paragraph, the timestamp hanging in the left margin or, below 900 pt, before it. The name
+    /// is still the Rename button, laid over the name's run at its measured width, and the turn
+    /// reads to VoiceOver exactly as in Modern.
+    fn script_turn(
+        &self,
+        ix: usize,
+        turn: &Turn,
+        script: Script,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Script {
+            spoken,
+            described,
+            timestamp,
+            marks,
+            probing,
+            presentation,
+        } = script;
+        let theme = Theme::get(cx);
+        let count = self.turns().len();
+        let playing = self.playing == Some(ix);
+        let sounding = playing && self.player.read(cx).is_playing();
+        let current = self.cursor == Some(ix);
+        let ring = current && self.focus.is_focused(window);
+        let size = theme.text(17.);
+        let line_height = size * 1.7;
+        let family = SharedString::from(theme.reading_font.family().unwrap_or_default());
+        let font = |weight, features| Font {
+            family: family.clone(),
+            features,
+            fallbacks: None,
+            weight,
+            style: FontStyle::Normal,
+        };
+        let name_font = font(FontWeight::MEDIUM, fonts::small_caps());
+        let run = |len, font| TextRun {
+            len,
+            font,
+            color: theme.text,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let name = format!("{}.", turn.label);
+        let name_width = window
+            .text_system()
+            .shape_line(
+                name.clone().into(),
+                size,
+                &[run(name.len(), name_font.clone())],
+                None,
+            )
+            .width;
+        let text = format!("{name} {}", turn.text);
+        let body_font = font(FontWeight::NORMAL, Default::default());
+        let mut runs = vec![run(name.len(), name_font)];
+        let mut at = name.len();
+        for mark in marks {
+            let (start, end) = (name.len() + 1 + mark.start, name.len() + 1 + mark.end);
+            if start < at || end > text.len() {
+                continue;
+            }
+            if start > at {
+                runs.push(run(start - at, body_font.clone()));
+            }
+            runs.push(TextRun {
+                background_color: Some(theme.search_match),
+                ..run(end - start, font(FontWeight::SEMIBOLD, Default::default()))
+            });
+            at = end;
+        }
+        if text.len() > at {
+            runs.push(run(text.len() - at, body_font));
+        }
+        let paragraph = StyledText::new(text).with_runs(runs);
+        let speaker = a11y::node(
+            format!("turn-{ix}-speaker"),
+            Role::Button,
+            format!("Rename {}", turn.label),
+        )
+        .aria_keyshortcuts("Shift+Return")
+        .absolute()
+        .top_0()
+        .left_0()
+        .w(name_width)
+        .min_w(px(24.))
+        .h(line_height)
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.start_rename(ix, window, cx);
+        }));
+        let playing_word = sounding.then(|| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .text_size(theme.text(12.))
+                .text_color(theme.accent_text)
+                .child(Icon::Play.view(12., theme.accent_text))
+                .child("Playing")
+        });
+        let hang = hangs(presentation, self.gutter);
+        let timestamp = timestamp.map(|t| t.font_features(theme::tabular()));
+        let stamp = if hang {
+            div()
+                .flex_none()
+                .w(px(MARGIN))
+                .flex()
+                .flex_col()
+                .items_end()
+                .children(timestamp.map(|t| t.h(line_height)))
+                .children(playing_word)
+        } else {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .children(timestamp)
+                .children(playing_word)
+        };
+        let body = div()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .text_size(size)
+            .line_height(relative(1.7))
+            .child(theme.reading(div()).child(paragraph))
+            .child(speaker);
+        let outline = playing.then(|| theme.highlight_outline()).flatten();
+        a11y::node(format!("turn-{ix}"), Role::ListItem, spoken)
+            .aria_position_in_set(ix + 1)
+            .aria_size_of_set(count)
+            .when(current, |el| el.aria_active_descendant())
+            .when(!described.is_empty(), |el| {
+                el.aria_description(described.join(". "))
+            })
+            .flex()
+            .when(hang, |el| el.gap(px(MARGIN_GAP)))
+            .when(!hang, |el| el.flex_col().gap(px(2.)))
+            .pl(px(if hang { 0. } else { 12. }))
+            .pr(px(12.))
+            .py(px(6.))
+            .rounded(px(6.))
+            .border_2()
+            .border_color(if ring {
+                theme.focus_ring(false)
+            } else {
+                transparent_black()
+            })
+            .when(playing, |el| el.bg(theme.playing_bg))
+            .when_some(outline, |el, color| {
+                el.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(color),
+                )
+            })
+            .relative()
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.cursor = Some(ix);
+                window.focus(&this.focus, cx);
+                cx.notify();
+            }))
+            .child(stamp)
+            .child(body)
+            .when(probing, |el| el.child(self.probe(ix, false, cx)))
+            .into_any_element()
+    }
+}
+
+/// What a Book script turn shows besides the turn itself.
+struct Script<'a> {
+    spoken: String,
+    described: Vec<&'static str>,
+    timestamp: Option<a11y::Node>,
+    marks: &'a [Range<usize>],
+    probing: bool,
+    presentation: Presentation,
+}
+
+/// What changes a turn's height besides its text: the text scale and the theme's type.
+#[derive(Clone, Copy, PartialEq)]
+struct Measured {
+    text_scale: f32,
+    theme: theme::ThemeName,
+    hang: bool,
+}
+
+impl Measured {
+    fn of(theme: &Theme, hang: bool) -> Measured {
+        Measured {
+            text_scale: theme.text_scale,
+            theme: theme.name,
+            hang,
+        }
+    }
+}
+
+/// Whether the script's times hang left of the column: the flag says so at this width, and the
+/// page's margin is wide enough to hold them. Otherwise they sit above the turn.
+pub fn hangs(presentation: Presentation, gutter: f32) -> bool {
+    presentation.hanging_timestamps && gutter >= MARGIN + MARGIN_GAP
+}
+
+impl TranscriptView {
+    /// The detail pane reports the margin beside its column after each layout that moves it.
+    pub fn set_gutter(&mut self, gutter: f32, cx: &mut Context<Self>) {
+        if self.gutter != gutter {
+            self.gutter = gutter;
+            cx.notify();
+        }
+    }
+}
+
+/// The script's timestamp column and the gap after it. The transcript moves left by both so the
+/// text keeps the page's measure while the times hang in the margin.
+pub const MARGIN: f32 = 56.;
+pub const MARGIN_GAP: f32 = 16.;
+
 impl Render for TranscriptView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
-        if theme.text_scale != self.text_scale {
-            self.text_scale = theme.text_scale;
+        let measured_for = Measured::of(
+            &theme,
+            hangs(
+                theme.presentation(f32::from(window.viewport_size().width)),
+                self.gutter,
+            ),
+        );
+        if measured_for != self.measured_for {
+            self.measured_for = measured_for;
             self.list.remeasure();
         }
         let count = self.turns().len();
@@ -630,10 +884,22 @@ impl Render for TranscriptView {
                 .child(empty)
                 .into_any_element();
         }
+        let hang = hangs(
+            theme.presentation(f32::from(window.viewport_size().width)),
+            self.gutter,
+        );
         let container = a11y::node("transcript", Role::List, "Transcript")
             .track_focus(&self.focus.clone().tab_stop(true))
             .on_key_down(cx.listener(Self::on_key))
-            .w_full();
+            // The script's timestamps hang left of the page; stretched with a negative margin,
+            // the list grows by the margin instead of narrowing the text.
+            .map(|el| {
+                if hang {
+                    el.ml(px(-(MARGIN + MARGIN_GAP)))
+                } else {
+                    el.w_full()
+                }
+            });
         if count <= PAGED_TURNS {
             let turns: Vec<AnyElement> = (0..count)
                 .map(|ix| self.render_turn(ix, window, cx))
@@ -680,6 +946,25 @@ mod tests {
             range: range.and_then(|(a, b)| TimeRange::new(Ms(a), Ms(b))),
             text: String::new(),
         }
+    }
+
+    #[test]
+    fn script_times_hang_only_where_the_margin_holds_them() {
+        let script = Presentation {
+            script_transcript: true,
+            hanging_timestamps: true,
+            ..Presentation::default()
+        };
+        assert!(hangs(script, 72.));
+        assert!(
+            !hangs(script, 71.),
+            "a narrower margin keeps the times above the turn"
+        );
+        let narrow = Presentation {
+            hanging_timestamps: false,
+            ..script
+        };
+        assert!(!hangs(narrow, 400.), "below 900 pt they never hang");
     }
 
     #[test]

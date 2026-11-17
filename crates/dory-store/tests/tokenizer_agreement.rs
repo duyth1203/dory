@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use dory_core::search::tokens;
 use rusqlite::Connection;
 
-/// The tokenizer options of `schema_v6.sql`.
+/// The tokenizer options of `schema_v8.sql`.
 const TOKENIZER: &str = "unicode61 remove_diacritics 0";
 
 /// What SQLite reads from `core` joined by spaces, one list per code point, which must be `core`

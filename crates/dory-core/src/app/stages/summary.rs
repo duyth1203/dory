@@ -46,6 +46,9 @@ enum Prompt {
 
 fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
     let language = match language {
+        Some(tag) if crate::domain::languages::find(tag.primary()).is_some() => {
+            format!("{} (BCP 47 tag {tag})", crate::domain::languages::name(tag))
+        }
         Some(tag) => format!("the language with BCP 47 tag {tag}"),
         None => "the language the meeting was held in".to_owned(),
     };
@@ -349,6 +352,37 @@ mod tests {
         }
         let summary = system_prompt(Prompt::SummaryOfNotes, Some(&vi));
         assert!(summary.contains("key points, decisions, and action items"));
+    }
+
+    /// A small model does not know what a bare tag means: told "the language with BCP 47 tag
+    /// tl", Gemma wrote an English summary under a stray "tl" line. The prompt names the language
+    /// in words, and keeps the tag only as a disambiguator.
+    #[test]
+    fn the_prompt_names_the_language_in_words() {
+        let tag = |t: &str| LangTag::parse(t).unwrap();
+        for (lang, name) in [
+            ("tl", "Tagalog (BCP 47 tag tl)"),
+            ("vi", "Vietnamese (BCP 47 tag vi)"),
+            ("en-US", "English (US) (BCP 47 tag en-US)"),
+        ] {
+            for prompt in [
+                Prompt::SummaryOfTranscript,
+                Prompt::SummaryOfNotes,
+                Prompt::NotesOfTranscript,
+                Prompt::NotesOfNotes,
+            ] {
+                let system = system_prompt(prompt, Some(&tag(lang)));
+                assert!(
+                    system.contains(&format!("in {name}")),
+                    "{prompt:?}: {system}"
+                );
+            }
+        }
+        let unknown = system_prompt(Prompt::SummaryOfTranscript, Some(&tag("xq")));
+        assert!(
+            unknown.contains("in the language with BCP 47 tag xq"),
+            "{unknown}"
+        );
     }
 
     #[test]

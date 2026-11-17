@@ -26,6 +26,7 @@ use gpui_kit::{
 use crate::a11y;
 use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
 use crate::app::AppState;
+use crate::icons::Icon;
 use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::menus;
 use crate::prefs;
@@ -65,6 +66,29 @@ impl Sidebar {
             scrolled_to: None,
             _subscriptions: vec![on_type, on_app],
         }
+    }
+
+    /// The ✕ at the end of the search field, shown while it holds text. Kit's own clear button
+    /// is smaller than the 24 pt minimum target (A11Y-9), so the sidebar draws this one.
+    fn clear_search_button(&self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+        let hover = theme.control_bg;
+        a11y::node("search-clear", Role::Button, "Clear search")
+            .size(px(24.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(move |button| button.bg(hover))
+            .child(Icon::X.view(12., theme.text_secondary))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.set_value("", window, cx);
+                    search.focus(window, cx);
+                });
+                this.app.update(cx, |app, cx| app.set_search("", cx));
+            }))
     }
 
     pub fn focus_search(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -262,6 +286,7 @@ fn group_header(group: DateGroup, today: chrono::NaiveDate, theme: &Theme) -> im
 impl Render for Sidebar {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
+        let searching = !self.search.read(cx).value().is_empty();
         let (filter, width, nothing_selected) = {
             let app = self.app.read(cx);
             (
@@ -311,7 +336,10 @@ impl Render for Sidebar {
                                     Input::new(&self.search)
                                         .id("search")
                                         .aria_label("Search recordings")
-                                        .cleanable(true),
+                                        .prefix(Icon::Search.view(14., theme.text_secondary))
+                                        .when(searching, |input| {
+                                            input.suffix(self.clear_search_button(&theme, cx))
+                                        }),
                                 ),
                             )
                             .child(self.filter_button(filter)),

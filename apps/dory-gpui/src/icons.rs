@@ -62,6 +62,7 @@ icons! {
     Pause => "pause.svg",
     Play => "play.svg",
     Plus => "plus.svg",
+    Search => "search.svg",
     Settings2 => "settings-2.svg",
     Square => "square.svg",
     TransportPause => "transport-pause.svg",

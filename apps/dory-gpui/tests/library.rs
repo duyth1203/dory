@@ -435,4 +435,39 @@ mod window {
         })
         .unwrap();
     }
+
+    /// The search field shows a search icon, and a "Clear search" button at its end while it holds
+    /// text. The button empties the field, keeps focus in it, and brings every recording back.
+    #[gpui_kit::test]
+    fn the_clear_button_empties_the_search_and_shows_every_recording(cx: &mut TestAppContext) {
+        let (window, app) = open(cx);
+        let all = titles(&app, cx).len();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("search-clear").is_none(),
+                "no clear button while the field is empty"
+            );
+            window.click("search", cx);
+            window.input("Design", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.executor().advance_clock(SEARCH_DEBOUNCE);
+        cx.run_until_parked();
+        assert!(titles(&app, cx).len() < all, "typing filters the list");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let clear = window.find("search-clear");
+            assert_eq!(clear.label(), Some("Clear search"));
+            assert_eq!(clear.role(), Some(Role::Button));
+            window.click("search-clear", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("search-clear").is_none(), "gone once empty");
+        })
+        .unwrap();
+        cx.executor().advance_clock(SEARCH_DEBOUNCE);
+        cx.run_until_parked();
+        assert_eq!(titles(&app, cx).len(), all, "every recording is back");
+    }
 }

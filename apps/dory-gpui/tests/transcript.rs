@@ -214,6 +214,26 @@ fn turns_read_as_speaker_time_then_text(cx: &mut TestAppContext) {
     });
 }
 
+/// Handoff section 4: each turn has a 30 pt initial circle, however tall its text runs.
+#[gpui_kit::test]
+fn the_speaker_initial_is_a_30_pt_circle(cx: &mut TestAppContext) {
+    let (window, app, _) = open(cx);
+    show(TIMED, &app, cx);
+    with_window(window, cx, |window, _| {
+        let turn = window.find("turn-0").bounds();
+        let avatar = window.find("turn-0-avatar").bounds();
+        assert!(
+            turn.size.height > px(30.),
+            "the turn is taller than the circle: {turn:?}"
+        );
+        assert_eq!(
+            (avatar.size.width, avatar.size.height),
+            (px(30.), px(30.)),
+            "a circle, not a pill the height of the turn"
+        );
+    });
+}
+
 #[gpui_kit::test]
 fn a_timestamp_plays_from_its_turn_and_the_turn_shows_playing(cx: &mut TestAppContext) {
     let (window, app, playback) = open(cx);

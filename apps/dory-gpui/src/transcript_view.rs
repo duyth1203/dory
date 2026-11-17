@@ -31,8 +31,8 @@ use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
     IntoElement, KeyDownEvent, ListAlignment, ListState, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div, list,
-    prelude::FluentBuilder as _, px, relative, transparent_black,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
+    Window, div, list, prelude::FluentBuilder as _, px, relative, transparent_black,
 };
 
 use crate::a11y;
@@ -362,9 +362,12 @@ impl TranscriptView {
             }))
             .child(
                 div()
+                    .id(format!("turn-{ix}-avatar"))
+                    .test_support()
                     .min_w(px(30.))
                     .min_h(px(30.))
                     .flex_none()
+                    .self_start()
                     .flex()
                     .items_center()
                     .justify_center()

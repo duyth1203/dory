@@ -49,7 +49,7 @@ impl AppState {
     /// finished jobs, and the estimates. A pinned preview wins.
     pub fn processing_queue(&self) -> Queue {
         if let Some(preview) = &self.queue_preview {
-            return preview.clone();
+            return self.on_listed_recordings(preview.clone());
         }
         let mut queue = Queue {
             finished: self.finished.clone(),
@@ -103,6 +103,33 @@ impl AppState {
                     problem,
                 });
             }
+        }
+        queue
+    }
+
+    /// A preview names sample recordings. Where the library lists one by that title, the row
+    /// points at it instead, so its waveform and Choose act on a real recording.
+    fn on_listed_recordings(&self, mut queue: Queue) -> Queue {
+        let listed = |title: &str, id: &mut RecordingId| {
+            if let Some(row) = self
+                .recordings
+                .iter()
+                .find(|r| r.recording.title.as_deref() == Some(title))
+            {
+                *id = row.recording.id.clone();
+            }
+        };
+        if let Some(now) = &mut queue.now {
+            listed(&now.title, &mut now.recording);
+        }
+        for w in &mut queue.next {
+            listed(&w.title, &mut w.recording);
+        }
+        for b in &mut queue.attention {
+            listed(&b.title, &mut b.recording);
+        }
+        for f in &mut queue.finished {
+            listed(&f.title, &mut f.recording);
         }
         queue
     }

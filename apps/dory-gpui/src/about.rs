@@ -15,7 +15,8 @@ pub const WIDTH: f32 = 440.;
 pub const HEIGHT: f32 = 640.;
 
 const LUCIDE_VERSION: &str = include_str!("../assets/icons/VERSION");
-/// The app icon at 128 pt, drawn at 2x from `icon/source.png` (the file `Dory.icns` is made from).
+/// The app icon at 128 pt, rendered at 2x from `Dory.icns`, so it keeps the icon grid and the
+/// transparent corners that `scripts/make-icon.sh` cuts from `icon/source.png`.
 pub const ICON_PNG: &[u8] = include_bytes!("../assets/about/dory-icon.png");
 pub const ICON_SIZE: f32 = 128.;
 const LUCIDE_LICENSE: &str = include_str!("../assets/icons/LICENSE");

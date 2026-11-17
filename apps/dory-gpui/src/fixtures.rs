@@ -389,7 +389,10 @@ pub fn queue_state(name: &str) -> Option<crate::processing_queue::Queue> {
             ..Queue::default()
         },
         "finished" => Queue {
-            next: vec![waiting(3, "1:1 with Sam", 0)],
+            next: vec![Waiting {
+                starts_in: None,
+                ..waiting(3, "1:1 with Sam", 0)
+            }],
             finished: finished(),
             left: Some(Ms(9 * MIN)),
             ..Queue::default()

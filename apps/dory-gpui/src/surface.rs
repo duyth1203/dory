@@ -183,9 +183,7 @@ pub fn button(
         .map(|b| match look {
             Look::Primary => b.bg(theme.accent).text_color(theme.on_accent),
             Look::Secondary => b.bg(theme.control_bg).text_color(theme.text).child(
-                div()
-                    .absolute()
-                    .inset_0()
+                edge()
                     .rounded(px(7.))
                     .border_1()
                     .border_color(theme.control_border),
@@ -195,6 +193,17 @@ pub fn button(
         })
         .relative()
         .child(text.into())
+}
+
+/// A 1 pt edge over a focusable button. The focus ring's transparent 2 pt border sits outside
+/// the padding box an absolute child fills, so the edge reaches back over it to the outside.
+fn edge() -> Div {
+    div()
+        .absolute()
+        .top(px(-2.))
+        .left(px(-2.))
+        .right(px(-2.))
+        .bottom(px(-2.))
 }
 
 /// The 28 by 28 close button with Lucide `x`, named "Close".
@@ -222,9 +231,7 @@ pub fn close_button(
         .bg(theme.close_bg)
         .when(theme.high_contrast, |b| {
             b.child(
-                div()
-                    .absolute()
-                    .inset_0()
+                edge()
                     .rounded_full()
                     .border_1()
                     .border_color(theme.text_secondary),

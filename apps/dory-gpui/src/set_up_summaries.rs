@@ -511,17 +511,24 @@ impl Render for SetUp {
             Step::Downloading { download, .. } => {
                 let (shown, spoken) = progress_words(*download);
                 let percent = download.percent().map(|p| p.get());
-                let cancel = self.models.clone().zip(match &step {
-                    Step::Downloading { .. } => {
-                        self.models
-                            .as_ref()
-                            .and_then(|m| match readiness(m.read(cx)) {
-                                Readiness::Missing { model, .. } => Some(model.erase()),
-                                _ => None,
-                            })
-                    }
+                let models = self.models.clone();
+                let key = models.as_ref().and_then(|m| match readiness(m.read(cx)) {
+                    Readiness::Missing { model, .. } => Some(model.erase()),
                     _ => None,
                 });
+                let cancel = surface::button(
+                    "set-up-cancel",
+                    "Cancel Download",
+                    "Cancel Download",
+                    Look::Secondary,
+                    &self.cancel,
+                    &theme,
+                    move |_, cx| {
+                        if let (Some(models), Some(key)) = (&models, &key) {
+                            models.update(cx, |m, cx| m.cancel(key, cx));
+                        }
+                    },
+                );
                 body = body
                     .child(
                         Self::card(
@@ -549,27 +556,18 @@ impl Render for SetUp {
                         .child(
                             div()
                                 .flex()
+                                .flex_wrap()
                                 .items_center()
                                 .gap(px(8.))
                                 .child(
                                     div()
-                                        .flex_1()
+                                        .flex_grow(1.)
                                         .text_size(theme.text(12.))
                                         .text_color(theme.text_secondary)
                                         .font_features(crate::theme::tabular())
                                         .child(shown),
                                 )
-                                .children(cancel.map(|(models, key)| {
-                                    surface::button(
-                                        "set-up-cancel",
-                                        "Cancel Download",
-                                        "Cancel Download",
-                                        Look::Secondary,
-                                        &self.cancel,
-                                        &theme,
-                                        move |_, cx| models.update(cx, |m, cx| m.cancel(&key, cx)),
-                                    )
-                                })),
+                                .child(cancel),
                         ),
                     )
                     .child(note(

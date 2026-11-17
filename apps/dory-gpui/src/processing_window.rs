@@ -414,7 +414,11 @@ impl ProcessingWindow {
                                     .text_size(theme.text(12.))
                                     .text_color(theme.text_secondary)
                                     .font_features(crate::theme::tabular())
-                                    .child(glyphs::dots(theme.accent_text, 12., at))
+                                    .child(glyphs::dots(
+                                        theme.accent_text,
+                                        12. * theme.text_scale,
+                                        at,
+                                    ))
                                     .child(running.stage_line()),
                             ),
                     )

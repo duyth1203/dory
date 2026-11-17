@@ -32,6 +32,8 @@ if [ ${#views[@]} -eq 0 ]; then
   views=(
     settings:general settings:recording settings:transcription settings:summaries settings:storage
     settings:transcription:languages-open explainer about queue
+    queue:running queue:light queue:blocked queue:finished queue:empty queue:busy
+    summaries:U1 summaries:U2 summaries:U3
     "recording:Weekly sync" "recording:Weekly sync:transcript"
     "recording:Pulong sa Tagalog" "recording:Pulong sa Tagalog:transcript"
     "recording:Two hour planning" "recording:Two hour planning:transcript"

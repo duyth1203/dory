@@ -11,7 +11,7 @@
 mod core;
 mod models;
 mod player;
-mod queue;
+pub mod queue;
 mod record;
 mod session;
 mod setup;
@@ -132,6 +132,15 @@ pub struct AppState {
     queue: Vec<Job>,
     /// Lines the engine wrote for each running job, before the transcript commits (UX-12).
     drafts: HashMap<JobId, Vec<Segment>>,
+    /// Jobs that finished or were cancelled since launch, newest first (the Processing window).
+    finished: Vec<crate::processing_queue::Finished>,
+    /// The last Cancel, while its Undo is offered.
+    cancelled: Option<queue::Cancelled>,
+    cancel_generation: u64,
+    /// Levels of recordings the Processing window draws, `None` while being read.
+    waveforms: HashMap<RecordingId, Option<std::sync::Arc<dory_core::domain::Waveform>>>,
+    /// The Processing window pinned for design previews and the layout checks.
+    queue_preview: Option<crate::processing_queue::Queue>,
     /// Phases and lines pinned for design previews and the layout checks (`preview_phase`).
     previews: HashMap<RecordingId, (Phase, Vec<Segment>)>,
     downloads: HashMap<ModelRef, Download>,
@@ -216,6 +225,11 @@ impl AppState {
             estimates: HashMap::new(),
             rates: Rates::default(),
             queue: Vec::new(),
+            finished: Vec::new(),
+            cancelled: None,
+            cancel_generation: 0,
+            waveforms: HashMap::new(),
+            queue_preview: None,
             drafts: HashMap::new(),
             previews: HashMap::new(),
             downloads: HashMap::new(),
@@ -476,7 +490,8 @@ impl AppState {
                 match rows {
                     Ok((rows, queue)) => {
                         let before = std::mem::replace(&mut state.recordings, rows);
-                        state.queue = queue;
+                        let queued_before = std::mem::replace(&mut state.queue, queue);
+                        state.track_finished(&queued_before);
                         state.error = None;
                         state.on_rows(&before, cx);
                     }

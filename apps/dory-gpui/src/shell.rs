@@ -327,8 +327,8 @@ impl Shell {
             .on_action(cx.listener(|this, _: &UndoStop, _, cx| {
                 this.app.update(cx, |app, cx| app.undo_stop(cx))
             }))
-            .on_action(cx.listener(|this, _: &ShowProcessingQueue, window, cx| {
-                crate::queue_popover::open(&this.app, window, cx)
+            .on_action(cx.listener(|this, _: &ShowProcessingQueue, _, cx| {
+                crate::processing_window::open(&this.app, cx)
             }))
             .on_action(cx.listener(|this, _: &Find, window, cx| {
                 this.sidebar

@@ -12,7 +12,9 @@
 //! - `phase:<P1, P2, P3a, P3b, P4, P5, P6, P7, or P8>[:<title>]`, on that recording or the
 //!   newest
 //! - `explainer`, the first speech model's info popover in Settings › Transcription
-//! - `queue`, the Processing Queue dialog
+//! - `queue`, the Processing window, and `queue:<state>` pinned to one of
+//!   [`fixtures::QUEUE_STATES`] (running, light, blocked, finished, empty, busy)
+//! - `summaries:<U1, U2, or U3>`, Set Up Summaries pinned to that step
 //!
 //! The app prints `show: ready` once the view is in place.
 
@@ -26,7 +28,7 @@ use crate::app::{AppEvent, AppState, DetailTab};
 use crate::library::Selection;
 use crate::settings_window::{self, Pane};
 use crate::system_prefs::SystemPrefs;
-use crate::{about, fixtures, models_view, queue_popover};
+use crate::{about, fixtures, models_view, processing_window, set_up_summaries};
 
 pub const SHOW_VAR: &str = "DORY_SHOW";
 pub const APPEARANCE_VAR: &str = "DORY_APPEARANCE";
@@ -51,7 +53,10 @@ pub enum View {
         title: Option<String>,
     },
     Explainer,
-    Queue,
+    /// `None` shows the live queue.
+    Queue(Option<String>),
+    /// U1, U2, or U3.
+    Summaries(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +89,7 @@ impl fmt::Display for LaunchError {
             ),
             LaunchError::View(value) => write!(
                 f,
-                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer, or queue, not {value:?}"
+                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer, queue[:<running|light|blocked|finished|empty|busy>], or summaries:<U1|U2|U3>, not {value:?}"
             ),
             LaunchError::Appearance(value) => {
                 write!(f, "{APPEARANCE_VAR} takes light or dark, not {value:?}")
@@ -141,8 +146,18 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
     match trimmed {
         "about" => return Ok(View::About),
         "explainer" => return Ok(View::Explainer),
-        "queue" => return Ok(View::Queue),
+        "queue" => return Ok(View::Queue(None)),
         _ => {}
+    }
+    if let Some(state) = trimmed.strip_prefix("queue:") {
+        return fixtures::queue_state(state)
+            .map(|_| View::Queue(Some(state.to_owned())))
+            .ok_or_else(bad);
+    }
+    if let Some(step) = trimmed.strip_prefix("summaries:") {
+        return fixtures::summaries_step(step)
+            .map(|_| View::Summaries(step.to_ascii_uppercase()))
+            .ok_or_else(bad);
     }
     if let Some(rest) = trimmed.strip_prefix("settings:") {
         let (rest, min_height) = match rest.strip_suffix(":min-height") {
@@ -228,11 +243,19 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
             about::open(cx);
             ready(&view);
         }
-        View::Queue => {
-            // Deferred: a dialog needs the window's root view, which the caller is still building.
-            let app = app.clone();
+        View::Queue(state) => {
+            if let Some(queue) = state.as_deref().and_then(fixtures::queue_state) {
+                app.update(cx, |app, cx| app.preview_queue(Some(queue), cx));
+            }
+            processing_window::open(app, cx);
+            ready(&view);
+        }
+        View::Summaries(step) => {
+            // Deferred: the dialog layer is the main window's root view, still being built.
             window.defer(cx, move |window, cx| {
-                queue_popover::open(&app, window, cx);
+                if let Some(step) = fixtures::summaries_step(&step) {
+                    set_up_summaries::preview(step, window, cx);
+                }
                 ready(&view);
             });
         }
@@ -366,7 +389,19 @@ mod tests {
         );
         assert_eq!(view("about"), Ok(Some(View::About)));
         assert_eq!(view("explainer"), Ok(Some(View::Explainer)));
-        assert_eq!(view("queue"), Ok(Some(View::Queue)));
+        assert_eq!(view("queue"), Ok(Some(View::Queue(None))));
+        for state in fixtures::QUEUE_STATES {
+            assert_eq!(
+                view(&format!("queue:{state}")),
+                Ok(Some(View::Queue(Some(state.into()))))
+            );
+        }
+        for step in ["U1", "U2", "U3", "u2"] {
+            assert_eq!(
+                view(&format!("summaries:{step}")),
+                Ok(Some(View::Summaries(step.to_ascii_uppercase())))
+            );
+        }
         assert_eq!(
             view("recording:1:1 with Sam"),
             Ok(Some(View::Recording {
@@ -417,6 +452,8 @@ mod tests {
             "phase:",
             "phase:P4:",
             "queue:open",
+            "summaries:U4",
+            "summaries",
         ] {
             assert_eq!(view(bad), Err(LaunchError::View(bad.into())), "{bad:?}");
         }

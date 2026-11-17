@@ -219,6 +219,7 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("f6", NextRegion, None),
         KeyBinding::new("shift-f6", PreviousRegion, None),
     ]);
+    crate::processing_window::install(cx);
     cx.on_action(|_: &ShowAbout, cx| crate::about::open(cx));
     cx.on_action(|_: &Minimize, cx| {
         if let Some(window) = cx.active_window() {

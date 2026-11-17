@@ -23,6 +23,7 @@ fn prefs_round_trip_through_the_file() {
         onboarding: Some(dory_gpui::onboarding::OnboardingStep::Models),
         text_scale: 1.5,
         settings_pane: dory_gpui::settings_window::Pane::Storage,
+        processing_origin: Some((120., 64.)),
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);

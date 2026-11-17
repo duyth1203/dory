@@ -1087,9 +1087,16 @@ fn a_queued_recording_says_how_many_are_ahead_and_moves_to_top(cx: &mut TestAppC
     );
 
     click(window, "card-move-to-top", cx);
-    until(cx, "the job to move to the top", |_| {
-        rig.jobs(&id)[0].priority == Priority::Front
-    });
+    settle(cx);
+    assert_eq!(
+        rig.jobs(&id)[0].state,
+        JobState::Queued,
+        "Move to Top makes a job next; it never interrupts the running one"
+    );
+    assert!(matches!(
+        rig.jobs(&first)[0].state,
+        JobState::Running { .. }
+    ));
     stt.load.release();
 }
 

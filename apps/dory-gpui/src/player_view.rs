@@ -46,6 +46,86 @@ use crate::motion::{self, ease_standard, elapsed, mix};
 use crate::processing::{Fix, Phase, Problem, Step, StepGlyph, light_chip};
 use crate::theme::Theme;
 
+/// One bar per [`BAR_PITCH`], at most [`MAX_BARS`], [`GAP`] apart: `paint_bar` gives each bar's
+/// color and whether it is an outline, from its center as a fraction of the width, and `head`
+/// draws the 2 pt reading head at a fraction. The processing card, the player, and the
+/// Processing window's mini waveform all paint through it. Returns each bar's height, 0..=1.
+pub(crate) fn paint_bars(
+    bounds: Bounds<Pixels>,
+    waveform: &Waveform,
+    arrive: Option<Instant>,
+    paint_bar: &dyn Fn(f32) -> (Hsla, bool),
+    head: Option<(f32, Hsla)>,
+    window: &mut Window,
+) -> Vec<f32> {
+    let width = f32::from(bounds.size.width);
+    let count = ((width / BAR_PITCH).floor() as usize).clamp(1, MAX_BARS);
+    let bar_w = ((width - GAP * (count as f32 - 1.)) / count as f32).max(1.);
+    let heights = waveform.bars(count);
+    for (i, fraction) in heights.iter().enumerate() {
+        let height = (bounds.size.height * *fraction).max(px(2.));
+        let top = bounds.origin.y + (bounds.size.height - height) * 0.5;
+        let x = bounds.origin.x + px(i as f32 * (bar_w + GAP));
+        let center = (i as f32 + 0.5) / count as f32;
+        let (mut color, outline) = paint_bar(center);
+        if let Some(at) = arrive {
+            let since = at.elapsed().saturating_sub(motion::STAGGER * i as u32);
+            color.a *= ease_standard(since.as_secs_f32() / motion::FAST.as_secs_f32());
+        }
+        let rect = Bounds::new(point(x, top), size(px(bar_w), height));
+        if outline {
+            window.paint_quad(quad(
+                rect,
+                px(2.),
+                gpui_kit::transparent_black(),
+                px(1.),
+                color,
+                Default::default(),
+            ));
+        } else {
+            window.paint_quad(fill(rect, color).corner_radii(px(2.)));
+        }
+    }
+    if let Some((at, color)) = head {
+        let overhang = (f32::from(bounds.size.height) / 12.).min(HEAD_OVERHANG);
+        let x = bounds.origin.x + bounds.size.width * at;
+        window.paint_quad(fill(
+            Bounds::new(
+                point(x - px(1.), bounds.origin.y - px(overhang)),
+                size(px(2.), bounds.size.height + px(overhang * 2.)),
+            ),
+            color,
+        ));
+    }
+    heights
+}
+
+/// Runs a stopped job's one fix (UX-13), from the card or the Processing window. Set Up
+/// Summaries opens over the main window, which holds the dialog layer.
+pub(crate) fn run_fix(
+    app: &Entity<AppState>,
+    id: &RecordingId,
+    fix: &Fix,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match fix {
+        Fix::Download(model) => {
+            let model = model.clone();
+            app.update(cx, |app, cx| app.download(model, cx));
+        }
+        Fix::ChooseSpeechModel => {
+            crate::settings_window::open_at(app, crate::settings_window::Pane::Transcription, cx)
+        }
+        Fix::FreeUpSpace => {
+            crate::settings_window::open_at(app, crate::settings_window::Pane::Storage, cx)
+        }
+        Fix::SetUpSummaries => crate::set_up_summaries::sheet(window, cx),
+        Fix::TryAgain => app.update(cx, |app, cx| app.try_again(id.clone(), cx)),
+        Fix::ShowInFinder => app.update(cx, |app, cx| app.show_in_finder(id.clone(), cx)),
+    }
+}
+
 /// Back and Forward move as far as the slider's arrows (A11Y-3).
 pub const SKIP_MS: i64 = 5_000;
 /// The transport icons' size, which their 1.5-stroke copies are drawn for.
@@ -272,8 +352,8 @@ impl PlayerView {
         }
     }
 
-    /// The bars, painted in one canvas: `paint_bar` gives each bar's color and whether it is an
-    /// outline, from its center as a fraction of the width.
+    /// The bars, painted in one canvas by [`paint_bars`], remembering where they sit (for
+    /// seeking) and how tall each one was (for the tests).
     fn bars(
         &self,
         waveform: Arc<Waveform>,
@@ -286,45 +366,8 @@ impl PlayerView {
         canvas(
             move |bounds, _, _| wave.set(bounds),
             move |bounds, _, window, _| {
-                let width = f32::from(bounds.size.width);
-                let count = ((width / BAR_PITCH).floor() as usize).clamp(1, MAX_BARS);
-                let bar_w = ((width - GAP * (count as f32 - 1.)) / count as f32).max(1.);
-                let heights = waveform.bars(count);
-                for (i, fraction) in heights.iter().enumerate() {
-                    let height = (bounds.size.height * *fraction).max(px(2.));
-                    let top = bounds.origin.y + (bounds.size.height - height) * 0.5;
-                    let x = bounds.origin.x + px(i as f32 * (bar_w + GAP));
-                    let center = (i as f32 + 0.5) / count as f32;
-                    let (mut color, outline) = paint_bar(center);
-                    if let Some(at) = arrive {
-                        let since = at.elapsed().saturating_sub(motion::STAGGER * i as u32);
-                        color.a *= ease_standard(since.as_secs_f32() / motion::FAST.as_secs_f32());
-                    }
-                    let rect = Bounds::new(point(x, top), size(px(bar_w), height));
-                    if outline {
-                        window.paint_quad(quad(
-                            rect,
-                            px(2.),
-                            gpui_kit::transparent_black(),
-                            px(1.),
-                            color,
-                            Default::default(),
-                        ));
-                    } else {
-                        window.paint_quad(fill(rect, color).corner_radii(px(2.)));
-                    }
-                }
-                *painted.borrow_mut() = heights;
-                if let Some((at, color)) = head {
-                    let x = bounds.origin.x + bounds.size.width * at;
-                    window.paint_quad(fill(
-                        Bounds::new(
-                            point(x - px(1.), bounds.origin.y - px(HEAD_OVERHANG)),
-                            size(px(2.), bounds.size.height + px(HEAD_OVERHANG * 2.)),
-                        ),
-                        color,
-                    ));
-                }
+                *painted.borrow_mut() =
+                    paint_bars(bounds, &waveform, arrive, &paint_bar, head, window);
             },
         )
         .size_full()
@@ -564,23 +607,7 @@ impl PlayerView {
         let (visible, spoken) = problem.button()?;
         let app = self.app.clone();
         let id = id.clone();
-        let press = move |window: &mut Window, cx: &mut App| match &fix {
-            Fix::Download(model) => {
-                let model = model.clone();
-                app.update(cx, |app, cx| app.download(model, cx));
-            }
-            Fix::ChooseSpeechModel => crate::settings_window::open_at(
-                &app,
-                crate::settings_window::Pane::Transcription,
-                cx,
-            ),
-            Fix::FreeUpSpace => {
-                crate::settings_window::open_at(&app, crate::settings_window::Pane::Storage, cx)
-            }
-            Fix::SetUpSummaries => crate::set_up_summaries::sheet(window, cx),
-            Fix::TryAgain => app.update(cx, |app, cx| app.try_again(id.clone(), cx)),
-            Fix::ShowInFinder => app.update(cx, |app, cx| app.show_in_finder(id.clone(), cx)),
-        };
+        let press = move |window: &mut Window, cx: &mut App| run_fix(&app, &id, &fix, window, cx);
         Some(
             spoken_button(
                 "card-fix",

@@ -521,7 +521,9 @@ fn a_download_shows_progress_and_cancel_stops_it(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_summaries_sheet_shows_the_steps_while_ollama_is_not_running(cx: &mut TestAppContext) {
+fn the_summaries_sheet_starts_at_install_and_moves_on_when_ollama_is_found(
+    cx: &mut TestAppContext,
+) {
     let rig = rig(&[]);
     let gemma: ModelId<Llm> = GEMMA.parse().unwrap();
     rig.llm.set_availability(
@@ -536,15 +538,21 @@ fn the_summaries_sheet_shows_the_steps_while_ollama_is_not_running(cx: &mut Test
     let (main, _) = open(&rig, cx);
     cx.update_window(main, |_, window, cx| set_up_summaries::sheet(window, cx))
         .unwrap();
-    until(cx, "the steps", |cx| has(main, "set-up-check-again", cx));
-    for command in set_up_summaries::COMMANDS {
-        assert!(has(main, &format!("copy-{command}"), cx));
-    }
-    assert!(!has(main, "set-up-download", cx));
+    until(cx, "step 1", |cx| has(main, "set-up-get-ollama", cx));
+    assert_eq!(
+        label(main, "set-up-step-2", cx).as_deref(),
+        Some("Step 2, Download the summary model · Gemma 4 E4B · 9.5 GB"),
+        "the catalog's model and size"
+    );
+    assert_eq!(
+        label(main, "set-up-download", cx).as_deref(),
+        Some("Download Model, available after Ollama is installed")
+    );
     rig.llm.set_availability(&gemma, Availability::Ready);
-    click(main, "set-up-check-again", cx);
-    until(cx, "ready after Check again", |cx| {
-        label(main, "set-up-status", cx).is_some_and(|l| l.starts_with("Summaries are ready"))
+    let models = cx.update(|cx| models_view::shared(cx)).expect("the models");
+    models.update(cx, |m, cx| m.refresh(cx));
+    until(cx, "ready once Ollama answers", |cx| {
+        has(main, "set-up-ready", cx)
     });
 }
 
@@ -562,16 +570,16 @@ fn the_summaries_sheet_downloads_a_missing_model_in_one_click(cx: &mut TestAppCo
     cx.update_window(main, |_, window, cx| set_up_summaries::sheet(window, cx))
         .unwrap();
     until(cx, "the Download button", |cx| {
-        has(main, "set-up-download", cx)
+        label(main, "set-up-download", cx).as_deref() == Some("Download Model")
     });
     assert_eq!(
-        label(main, "set-up-download", cx).as_deref(),
-        Some("Download Gemma 4 E4B, 9.5 GB")
+        label(main, "set-up-step-1", cx).as_deref(),
+        Some("Step 1, Ollama is installed")
     );
-    assert!(!has(main, "set-up-check-again", cx));
+    assert!(!has(main, "set-up-get-ollama", cx));
     click(main, "set-up-download", cx);
     until(cx, "ready after the download", |cx| {
-        label(main, "set-up-status", cx).is_some_and(|l| l.starts_with("Summaries are ready"))
+        has(main, "set-up-ready", cx)
     });
     assert_eq!(rig.llm.provisions(), 1);
 }
@@ -582,12 +590,20 @@ fn the_summaries_sheet_says_when_summaries_are_ready(cx: &mut TestAppContext) {
     let (main, _) = open(&rig, cx);
     cx.update_window(main, |_, window, cx| set_up_summaries::sheet(window, cx))
         .unwrap();
-    until(cx, "the ready line", |cx| {
-        label(main, "set-up-status", cx).as_deref()
-            == Some("Summaries are ready. Dory writes them with Gemma 4 E4B through Ollama.")
-    });
+    until(cx, "the ready state", |cx| has(main, "set-up-ready", cx));
+    assert_eq!(
+        label(main, "set-up-ready", cx).as_deref(),
+        Some("Summaries are ready")
+    );
     assert!(!has(main, "set-up-download", cx));
-    assert!(!has(main, "set-up-check-again", cx));
+    assert!(!has(main, "set-up-subtitle", cx), "U3 has no subtitle");
+    click(main, "set-up-done", cx);
+    let open = cx
+        .update_window(main, |_, window, cx| {
+            dory_gpui::surface::has_dialog(window, cx)
+        })
+        .unwrap();
+    assert!(!open, "Done closes it");
 }
 
 struct Onboarding(Entity<AppState>);

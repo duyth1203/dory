@@ -601,12 +601,15 @@ pub(crate) fn progress_bar(
         .h(px(6.))
         .w_full()
         .rounded(px(3.))
-        .bg(theme.field_bg)
+        .bg(theme.track)
+        .when(theme.high_contrast, |bar| {
+            bar.border_1().border_color(theme.text_secondary)
+        })
         .child(
             div()
                 .h_full()
                 .rounded(px(3.))
-                .bg(theme.accent)
+                .bg(theme.progress_fill())
                 .w(gpui_kit::relative(fill)),
         )
 }

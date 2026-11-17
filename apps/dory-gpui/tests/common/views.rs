@@ -14,7 +14,7 @@ use dory_core::testing::{FakeCapture, FakeTrash, ManualClock, MemTakes, Step};
 use dory_gpui::app::{AppState, DetailTab};
 use dory_gpui::library::Selection;
 use dory_gpui::prefs::Prefs;
-use dory_gpui::{about, fixtures, queue_popover, settings_window};
+use dory_gpui::{about, fixtures, processing_window, set_up_summaries, settings_window};
 use gpui_kit::base::test_support::ElementSnapshot;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, InputEvent as _, TestAppContext,
@@ -220,11 +220,55 @@ fn library(views: &mut Vec<View>, scale: f32, window_size: (f32, f32), cx: &mut 
     views.push(frame("needs attention", window, cx));
     select("Weekly sync", &app, cx);
     views.push(frame("processing", window, cx));
-    cx.update_window(window, |_, window, cx| {
-        queue_popover::open(&app, window, cx)
-    })
-    .unwrap();
-    views.push(frame("processing queue", window, cx));
+    for step in ["U1", "U2", "U3"] {
+        cx.update_window(window, |_, window, cx| {
+            set_up_summaries::preview(fixtures::summaries_step(step).unwrap(), window, cx)
+        })
+        .unwrap();
+        views.push(frame(&format!("set up summaries {step}"), window, cx));
+        cx.update_window(window, |_, window, cx| {
+            dory_gpui::surface::close_dialog(window, cx)
+        })
+        .unwrap();
+    }
+    processing_queue(views, &app, at, cx);
+}
+
+/// The Processing window in each preview state, then the busiest one at its shortest.
+fn processing_queue(
+    views: &mut Vec<View>,
+    app: &Entity<AppState>,
+    at: &str,
+    cx: &mut TestAppContext,
+) {
+    let before = cx.update(|cx| cx.windows());
+    cx.update(|cx| processing_window::open(app, cx));
+    let window = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .expect("the Processing window opened");
+    for state in fixtures::QUEUE_STATES {
+        let queue = fixtures::queue_state(state);
+        app.update(cx, |app, cx| app.preview_queue(queue, cx));
+        views.push(frame(format!("processing window {state}{at}"), window, cx));
+    }
+    cx.simulate_window_resize(
+        window,
+        gpui_kit::size(
+            gpui_kit::px(processing_window::WIDTH),
+            gpui_kit::px(processing_window::MIN_HEIGHT),
+        ),
+    );
+    views.push(frame(
+        format!("processing window busy, shortest{at}"),
+        window,
+        cx,
+    ));
+    app.update(cx, |app, cx| app.preview_queue(None, cx));
+    cx.update_window(window, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
 }
 
 fn settings(views: &mut Vec<View>, scale: f32, cx: &mut TestAppContext) {

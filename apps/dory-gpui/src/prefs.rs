@@ -60,6 +60,8 @@ pub struct Prefs {
     pub text_scale: f32,
     /// The Settings pane ⌘, opens on.
     pub settings_pane: Pane,
+    /// Where the Processing window last sat, its top-left corner in points.
+    pub processing_origin: Option<(f32, f32)>,
 }
 
 impl Default for Prefs {
@@ -72,6 +74,7 @@ impl Default for Prefs {
             onboarding: None,
             text_scale: 1.0,
             settings_pane: Pane::General,
+            processing_origin: None,
         }
     }
 }
@@ -88,6 +91,7 @@ struct Disk {
     onboarding: Option<String>,
     text_scale: f32,
     settings_pane: Option<String>,
+    processing_origin: Option<(f32, f32)>,
 }
 
 impl Default for Disk {
@@ -108,6 +112,7 @@ impl From<&Prefs> for Disk {
             onboarding: prefs.onboarding.map(|step| step.as_str().to_owned()),
             text_scale: prefs.text_scale,
             settings_pane: Some(prefs.settings_pane.slug().to_owned()),
+            processing_origin: prefs.processing_origin,
         }
     }
 }
@@ -151,6 +156,9 @@ impl Prefs {
                 .as_deref()
                 .and_then(Pane::parse)
                 .unwrap_or(Pane::General),
+            processing_origin: disk
+                .processing_origin
+                .filter(|(x, y)| x.is_finite() && y.is_finite()),
         }
     }
 
@@ -172,6 +180,7 @@ impl Prefs {
             && self.onboarding == other.onboarding
             && self.text_scale == other.text_scale
             && self.settings_pane == other.settings_pane
+            && self.processing_origin == other.processing_origin
     }
 }
 

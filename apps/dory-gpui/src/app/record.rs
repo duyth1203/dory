@@ -256,7 +256,7 @@ impl AppState {
             sealing: self.sealing.contains(id),
             progress: self.progress.get(id).copied(),
             done: job.map_or(&[], |j| j.done.as_slice()),
-            spot: self.spot(id),
+            spot: self.spot_of(id),
             left: self
                 .estimates
                 .get(id)
@@ -298,29 +298,16 @@ impl AppState {
     }
 
     /// The jobs running or waiting before `id`'s, and when it starts once each has an estimate.
-    fn spot(&self, id: &RecordingId) -> Option<Spot> {
+    pub(super) fn spot_of(&self, id: &RecordingId) -> Option<Spot> {
         let active: Vec<_> = self
             .queue
             .iter()
             .filter(|j| matches!(j.state, JobState::Queued | JobState::Running { .. }))
             .collect();
         let ahead = active.iter().position(|j| &j.recording == id)?;
-        let mut starts_in = Some(Ms(0));
-        for job in &active[..ahead] {
-            let takes = match job.state {
-                JobState::Running { .. } => {
-                    match self.estimates.get(&job.recording).map(Estimate::left) {
-                        Some(Left::About(ms)) => Some(ms),
-                        _ => None,
-                    }
-                }
-                _ => self
-                    .audio_of(&job.recording)
-                    .zip(self.rates.any())
-                    .map(|(audio, rate)| rate.time_for(audio)),
-            };
-            starts_in = starts_in.zip(takes).map(|(sum, more)| Ms(sum.0 + more.0));
-        }
+        let starts_in = active[..ahead]
+            .iter()
+            .try_fold(Ms(0), |sum, job| self.takes(job).map(|t| Ms(sum.0 + t.0)));
         Some(Spot {
             ahead,
             starts_in: starts_in.filter(|_| ahead > 0),
@@ -421,11 +408,6 @@ impl AppState {
         self.previews.insert(id, (phase, lines));
         self.follow_card();
         cx.notify();
-    }
-
-    /// Move to Top (UX-15) from the card.
-    pub fn move_to_top(&mut self, id: RecordingId, cx: &mut Context<Self>) {
-        self.on_active_job(id, cx, |dory, job| dory.pipeline().promote(job));
     }
 
     /// Use Fast This Time (UX-30): this one job runs fast, the setting stays.

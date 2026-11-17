@@ -299,3 +299,141 @@ pub fn card_phases() -> Vec<(&'static str, Phase, Vec<Segment>)> {
         ),
     ]
 }
+
+/// The Processing window's states for the visual pass and the layout checks, as frames Q1 to Q5
+/// of `docs/design/floating-surfaces.md` show them, on the sample recordings. `busy` holds
+/// every section at once, for the 800 × 560 and 200% checks (Q6, Q7).
+pub const QUEUE_STATES: [&str; 6] = ["running", "light", "blocked", "finished", "empty", "busy"];
+
+pub fn queue_state(name: &str) -> Option<crate::processing_queue::Queue> {
+    use crate::estimate::Left;
+    use crate::processing::Problem;
+    use crate::processing_queue::{Blocked, Ended, Finished, Queue, Running, Waiting};
+    use dory_core::app::LightReason;
+    use dory_core::domain::{Fraction, JobId};
+    const MIN: u64 = 60_000;
+    let sample = |title: &str| {
+        SAMPLES
+            .iter()
+            .find(|s| s.title == title)
+            .expect("a sample recording")
+    };
+    let running = |light: bool| Running {
+        job: JobId(1),
+        recording: sample("Weekly sync").id(),
+        title: "Weekly sync".into(),
+        audio: Some(Ms(62 * MIN)),
+        phase: Phase::Transcribing {
+            done: Fraction::new(0.4),
+            left: Left::About(Ms(if light { 9 } else { 4 } * MIN)),
+            light: light.then_some(LightReason::Battery),
+        },
+    };
+    let waiting = |job, title: &str, starts| {
+        let s = sample(title);
+        Waiting {
+            job: JobId(job),
+            recording: s.id(),
+            title: title.into(),
+            audio: Some(Ms(s.minutes * MIN)),
+            starts_in: Some(Ms(starts * MIN)),
+        }
+    };
+    let next = || {
+        vec![
+            waiting(2, "Design review", 4),
+            waiting(3, "1:1 with Sam", 15),
+        ]
+    };
+    let blocked = || Blocked {
+        recording: sample("Hiring debrief").id(),
+        title: "Hiring debrief".into(),
+        problem: Problem::SummaryModelMissing,
+    };
+    let finished = || {
+        vec![
+            Finished {
+                job: JobId(7),
+                recording: sample("Kundengespräch Müller GmbH").id(),
+                title: "Kundengespräch Müller GmbH".into(),
+                ended: Ended::Done,
+                at: (14, 32),
+            },
+            Finished {
+                job: JobId(8),
+                recording: sample("Partner call, Lyon office").id(),
+                title: "Partner call, Lyon office".into(),
+                ended: Ended::Cancelled,
+                at: (14, 5),
+            },
+        ]
+    };
+    Some(match name {
+        "running" => Queue {
+            now: Some(running(false)),
+            next: next(),
+            left: Some(Ms(24 * MIN)),
+            ..Queue::default()
+        },
+        "light" => Queue {
+            now: Some(running(true)),
+            next: next(),
+            left: Some(Ms(41 * MIN)),
+            ..Queue::default()
+        },
+        "blocked" => Queue {
+            now: Some(running(false)),
+            next: next(),
+            attention: vec![blocked()],
+            left: Some(Ms(24 * MIN)),
+            ..Queue::default()
+        },
+        "finished" => Queue {
+            next: vec![waiting(3, "1:1 with Sam", 0)],
+            finished: finished(),
+            left: Some(Ms(9 * MIN)),
+            ..Queue::default()
+        },
+        "empty" => Queue::default(),
+        "busy" => Queue {
+            now: Some(running(true)),
+            next: vec![
+                waiting(2, "Design review", 9),
+                waiting(3, "1:1 with Sam", 31),
+                waiting(4, "Customer interview: Ortega", 45),
+                waiting(5, "Roadmap review", 80),
+            ],
+            attention: vec![blocked()],
+            finished: finished(),
+            left: Some(Ms(118 * MIN)),
+        },
+        _ => return None,
+    })
+}
+
+/// Set Up Summaries' states U1 to U3, with the catalog's summary model (`gemma4:e4b`, as
+/// `dory-engines` lists it) and a download a third of the way.
+pub fn summaries_step(name: &str) -> Option<crate::set_up_summaries::Step> {
+    use crate::processing::Download;
+    use crate::set_up_summaries::{Model, Step};
+    let gemma = || Model {
+        name: "Gemma 4 E4B".into(),
+        bytes: Some(9_461_576_343),
+    };
+    Some(match name.to_ascii_uppercase().as_str() {
+        "U1" => Step::Install {
+            model: Some(gemma()),
+        },
+        "U2" => Step::Downloading {
+            name: gemma().name,
+            download: Download {
+                done: 3_400_000_000,
+                total: gemma().bytes,
+            },
+        },
+        "U3" => Step::Ready {
+            waiting: Some("Hiring debrief".into()),
+        },
+        _ => return None,
+    })
+}

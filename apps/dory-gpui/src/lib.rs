@@ -9,7 +9,7 @@
 //! - Agent 2: `transcript_view`, `player_view`.
 //! - Agent 3: `export`, `menus`, `prefs`.
 //! - P5 record flow: `record_control`, `processing`, and the record and processing parts of the
-//!   shell files above. P5's other agents: `notify`, `queue_popover`, `status_item`, and
+//!   shell files above. P5's other agents: `notify`, `processing_window`, `status_item`, and
 //!   `set_up_summaries`.
 //! - P6 (onboarding and configuration): `onboarding` and the shell files above; a parallel agent
 //!   owns `settings_window`, `models_view`, and `set_up_summaries`, wired only through
@@ -53,7 +53,8 @@ pub mod platform;
 pub mod player_view;
 pub mod prefs;
 pub mod processing;
-pub mod queue_popover;
+pub mod processing_queue;
+pub mod processing_window;
 pub mod radio;
 pub mod record_control;
 pub mod set_up_summaries;
@@ -95,6 +96,7 @@ pub fn build(
     cx: &mut App,
 ) -> (Entity<app::AppState>, Entity<shell::Shell>) {
     theme::set_display(|display| display.text_scale = prefs.text_scale, cx);
+    set_up_summaries::set_main_window(window, cx);
     let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
     models_view::install(&state, cx);
     let shell = cx.new(|cx| shell::Shell::new(state.clone(), window, cx));

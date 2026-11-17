@@ -26,6 +26,7 @@ gpui_kit::actions!(
         StopRecording,
         UndoStop,
         ShowProcessingQueue,
+        CloseWindow,
         Minimize,
         Zoom,
         ShowHelp,
@@ -65,4 +66,21 @@ impl RetranscribeIn {
             _ => false,
         }
     }
+}
+
+/// What a Processing window row's ⋯ menu does to its job (UX-15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueueVerb {
+    MoveToTop,
+    MoveUp,
+    MoveDown,
+    Cancel,
+}
+
+/// A ⋯ menu item in the Processing window, aimed at one job.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct QueueCommand {
+    pub job: u64,
+    pub verb: QueueVerb,
 }

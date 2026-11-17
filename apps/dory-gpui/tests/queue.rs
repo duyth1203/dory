@@ -6,8 +6,8 @@ use std::rc::Rc;
 use dory_core::domain::{Goal, Job, JobEvent, JobId, JobState, Priority, Stage, Timestamp};
 use dory_core::ports::{Change, Store as _};
 use dory_gpui::app::AppState;
-use dory_gpui::{notify, queue_popover, set_up_summaries};
-use gpui_kit::component::WindowExt as _;
+use dory_gpui::library::Selection;
+use dory_gpui::{fixtures, notify, processing_window, set_up_summaries, surface};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, ElementId, Entity, Role, TestAppContext,
     test::TestWindowExt as _,
@@ -50,20 +50,29 @@ fn queued_store() -> std::sync::Arc<dory_core::testing::store::MemStore> {
     store
 }
 
-fn open_queue(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
-    let (window, app) = open_with(cx, dory_on(queued_store()));
-    cx.update_window(window, |_, window, cx| {
-        queue_popover::open(&app, window, cx)
-    })
-    .unwrap();
+/// Opens the Processing window over the app and returns it.
+fn open_window(app: &Entity<AppState>, cx: &mut TestAppContext) -> AnyWindowHandle {
+    cx.update(processing_window::install);
+    let before = cx.update(|cx| cx.windows());
+    cx.update(|cx| processing_window::open(app, cx));
+    let window = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .expect("the Processing window opened");
     settle(window, cx);
+    window
+}
+
+fn open_queue(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
+    let (_, app) = open_with(cx, dory_on(queued_store()));
+    let window = open_window(&app, cx);
     (window, app)
 }
 
 fn settle(window: AnyWindowHandle, cx: &mut TestAppContext) {
     cx.run_until_parked();
-    cx.update_window(window, |_, window, cx| window.render_frame(cx))
-        .unwrap();
+    let _ = cx.update_window(window, |_, window, cx| window.render_frame(cx));
 }
 
 fn queue(app: &Entity<AppState>, cx: &mut TestAppContext) -> Vec<Job> {
@@ -89,6 +98,27 @@ fn click(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
     settle(window, cx);
 }
 
+fn press(window: AnyWindowHandle, keys: &str, cx: &mut TestAppContext) {
+    cx.update_window(window, |_, window, cx| window.press(keys, cx))
+        .unwrap();
+    settle(window, cx);
+}
+
+fn focus_row(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
+    for _ in 0..60 {
+        let focused = cx
+            .update_window(window, |_, window, _| {
+                window.find(id.to_owned()).focused() == Some(true)
+            })
+            .unwrap();
+        if focused {
+            return;
+        }
+        press(window, "tab", cx);
+    }
+    panic!("{id} never took focus");
+}
+
 fn has(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> bool {
     cx.update_window(window, |_, window, _| {
         window.try_find(ElementId::from(id.to_owned())).is_some()
@@ -96,127 +126,245 @@ fn has(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> bool {
     .unwrap()
 }
 
+fn label(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) -> Option<String> {
+    cx.update_window(window, |_, window, _| {
+        window.find(id.to_owned()).label().map(str::to_owned)
+    })
+    .unwrap()
+}
+
 #[gpui_kit::test]
 fn the_queue_lists_jobs_in_the_order_the_worker_takes_them(cx: &mut TestAppContext) {
-    let (_, app) = open_queue(cx);
+    let (window, app) = open_queue(cx);
     assert_eq!(order(&app, cx), [1, 2, 3]);
+    assert_eq!(
+        label(window, "queue-job-2", cx).as_deref(),
+        Some("Design review, queued, 2 of 3, 48 minutes.")
+    );
+    assert_eq!(
+        label(window, "queue-subtitle", cx).as_deref(),
+        Some("3 recordings")
+    );
     assert!(
-        queue(&app, cx)
-            .iter()
-            .all(|job| job.state == JobState::Queued)
+        !has(window, "queue-promote-1", cx),
+        "the next job to run has nothing to move past"
+    );
+    assert_eq!(
+        label(window, "queue-promote-3", cx).as_deref(),
+        Some("Move 1:1 with Sam to top")
     );
 }
 
 #[gpui_kit::test]
-fn the_popover_labels_each_job_and_its_buttons(cx: &mut TestAppContext) {
-    let (window, _) = open_queue(cx);
+fn every_section_shows_with_one_sentence_per_row(cx: &mut TestAppContext) {
+    let (_, app) = open_with(cx, dory_on(sample_store()));
+    let busy = fixtures::queue_state("busy").unwrap();
+    app.update(cx, |app, cx| app.preview_queue(Some(busy), cx));
+    let window = open_window(&app, cx);
+    for section in [
+        "queue-now",
+        "queue-next",
+        "queue-attention",
+        "queue-finished",
+    ] {
+        assert!(has(window, section, cx), "{section}");
+    }
+    assert_eq!(
+        label(window, "queue-subtitle", cx).as_deref(),
+        Some("5 recordings · about 118 min left · 1 needs attention")
+    );
+    assert_eq!(
+        label(window, "queue-job-1", cx).as_deref(),
+        Some(
+            "Weekly sync, transcribing, 40%, about 9 minutes left, running light because the Mac is on battery."
+        )
+    );
+    assert!(has(window, "queue-light", cx), "the light chip");
+    assert!(has(window, "queue-run-fast", cx), "Use Fast This Time");
+    let hiring = id_of("Hiring debrief").to_string();
+    assert_eq!(
+        label(window, &format!("queue-attention-{hiring}"), cx).as_deref(),
+        Some(
+            "Hiring debrief, needs attention. The transcript is ready, but summaries aren't set up."
+        )
+    );
+    assert_eq!(
+        label(window, &format!("queue-fix-{hiring}"), cx).as_deref(),
+        Some("Set Up Summaries")
+    );
+    assert_eq!(
+        label(window, "queue-finished-7", cx).as_deref(),
+        Some("Kundengespräch Müller GmbH, done at 14:32.")
+    );
+    assert_eq!(
+        label(window, "queue-finished-act-8", cx).as_deref(),
+        Some("Process Again Partner call, Lyon office")
+    );
+    let finished = fixtures::queue_state("finished").unwrap();
+    app.update(cx, |app, cx| app.preview_queue(Some(finished), cx));
+    settle(window, cx);
+    click(window, "queue-clear", cx);
+    assert!(!has(window, "queue-finished", cx), "Clear empties the list");
+}
+
+#[gpui_kit::test]
+fn an_empty_queue_says_nothing_is_waiting_and_focuses_close(cx: &mut TestAppContext) {
+    let (_, app) = open_with(cx, dory_on(sample_store()));
+    let window = open_window(&app, cx);
+    assert!(order(&app, cx).is_empty());
+    assert_eq!(
+        label(window, "queue-empty-title", cx).as_deref(),
+        Some(processing_window::EMPTY_TITLE)
+    );
+    assert!(has(window, "queue-settings", cx));
     cx.update_window(window, |_, window, _| {
-        let list = window.find("queue");
-        assert_eq!(list.role(), Some(Role::List));
-        assert_eq!(list.label(), Some("Processing Queue"));
-        let second = window.find("queue-job-2");
-        assert_eq!(second.role(), Some(Role::ListItem));
-        assert_eq!(second.label(), Some("Design review, Queued"));
-        let promote = window.find("queue-promote-3");
-        assert_eq!(promote.role(), Some(Role::Button));
-        assert_eq!(promote.label(), Some("Move 1:1 with Sam to top"));
-        assert_eq!(
-            window.find("queue-cancel-1").label(),
-            Some("Cancel Weekly sync")
-        );
-        assert!(
-            window.try_find("queue-promote-1").is_none(),
-            "the next job to run has nothing to move past"
-        );
+        assert_eq!(window.find("queue-close").focused(), Some(true));
+        assert_eq!(window.find("queue-title").label(), Some("Processing Queue"));
     })
     .unwrap();
 }
 
 #[gpui_kit::test]
-fn move_to_top_makes_that_job_run_next(cx: &mut TestAppContext) {
+fn move_to_top_works_twice_in_a_row(cx: &mut TestAppContext) {
     let (window, app) = open_queue(cx);
     click(window, "queue-promote-3", cx);
     assert_eq!(order(&app, cx), [3, 1, 2]);
-    assert!(
-        !has(window, "queue-promote-3", cx),
-        "it is first now, so it offers no Move to top"
+    click(window, "queue-promote-2", cx);
+    assert_eq!(order(&app, cx), [2, 3, 1]);
+    assert!(!has(window, "queue-promote-2", cx), "it is first now");
+}
+
+#[gpui_kit::test]
+fn the_keyboard_moves_the_focused_row(cx: &mut TestAppContext) {
+    let (window, app) = open_queue(cx);
+    focus_row(window, "queue-job-3", cx);
+    press(window, "alt-up", cx);
+    assert_eq!(order(&app, cx), [1, 3, 2], "Option-Up");
+    focus_row(window, "queue-job-1", cx);
+    press(window, "alt-down", cx);
+    assert_eq!(order(&app, cx), [3, 1, 2], "Option-Down");
+    focus_row(window, "queue-job-2", cx);
+    press(window, "alt-cmd-up", cx);
+    assert_eq!(order(&app, cx), [2, 3, 1], "Option-Command-Up");
+}
+
+#[gpui_kit::test]
+fn cancel_acts_at_once_and_undo_restores_the_old_position(cx: &mut TestAppContext) {
+    let (window, app) = open_queue(cx);
+    focus_row(window, "queue-job-2", cx);
+    press(window, "backspace", cx);
+    assert_eq!(order(&app, cx), [1, 3], "Delete cancels without asking");
+    assert_eq!(
+        label(window, "queue-toast", cx).as_deref(),
+        Some("Cancelled Design review. Undo, 5 seconds left")
     );
-    assert!(has(window, "queue-promote-1", cx));
+    assert!(
+        has(window, "queue-finished", cx),
+        "the cancelled job is listed as finished this session"
+    );
+    click(window, "queue-undo", cx);
+    // Undo retries the job with no backoff, so the worker takes it at once ahead of the held
+    // jobs; the facade's tests hold the worker and check the exact spot it returns to.
+    assert!(back(&app, 2, cx), "Undo takes the cancel back");
+    assert!(!has(window, "queue-toast", cx));
+    assert!(
+        !has(window, "queue-finished-2", cx),
+        "an undone cancel leaves Finished"
+    );
+
+    focus_row(window, "queue-job-3", cx);
+    press(window, "delete", cx);
+    assert!(!order(&app, cx).contains(&3), "forward Delete cancels too");
+    press(window, "cmd-z", cx);
+    assert!(back(&app, 3, cx), "Command-Z also undoes");
+}
+
+fn back(app: &Entity<AppState>, job: u64, cx: &mut TestAppContext) -> bool {
+    queue(app, cx)
+        .iter()
+        .any(|j| j.id.0 == job && j.state != JobState::Cancelled)
 }
 
 #[gpui_kit::test]
-fn cancel_removes_the_job_without_asking(cx: &mut TestAppContext) {
+fn choosing_a_row_selects_the_recording_and_keeps_the_window(cx: &mut TestAppContext) {
     let (window, app) = open_queue(cx);
-    click(window, "queue-cancel-2", cx);
-    assert_eq!(order(&app, cx), [1, 3]);
-    assert!(!has(window, "queue-job-2", cx));
-    assert!(has(window, "queue-job-1", cx));
+    click(window, "queue-job-2", cx);
+    let selection = app.read_with(cx, |app, _| app.selection.clone());
+    assert_eq!(selection, Selection::One(id_of(SECOND)));
+    assert!(
+        cx.update(|cx| cx.windows()).contains(&window),
+        "the Processing window stays open"
+    );
 }
 
 #[gpui_kit::test]
-fn the_buttons_work_from_the_keyboard(cx: &mut TestAppContext) {
+fn command_w_and_close_shut_the_window_and_open_brings_it_back(cx: &mut TestAppContext) {
     let (window, app) = open_queue(cx);
-    for _ in 0..12 {
-        let focused = cx
-            .update_window(window, |_, window, _| {
-                window.find("queue-promote-3").focused() == Some(true)
-            })
-            .unwrap();
-        if focused {
-            break;
-        }
-        cx.update_window(window, |_, window, cx| window.press("tab", cx))
-            .unwrap();
-        settle(window, cx);
-    }
-    cx.update_window(window, |_, window, cx| {
-        assert_eq!(window.find("queue-promote-3").focused(), Some(true));
-        window.press("enter", cx);
-    })
-    .unwrap();
-    settle(window, cx);
-    assert_eq!(order(&app, cx), [3, 1, 2]);
+    cx.update(|cx| processing_window::open(&app, cx));
+    let count = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .filter(|w| *w == window)
+        .count();
+    assert_eq!(count, 1, "opening again brings the same window forward");
+    press(window, "cmd-w", cx);
+    assert!(!cx.update(|cx| cx.windows()).contains(&window), "Command-W");
+    let again = open_window(&app, cx);
+    click(again, "queue-close", cx);
+    assert!(!cx.update(|cx| cx.windows()).contains(&again), "Close");
 }
 
 #[gpui_kit::test]
-fn an_empty_queue_says_so(cx: &mut TestAppContext) {
-    let (window, app) = open_with(cx, dory_on(sample_store()));
-    cx.update_window(window, |_, window, cx| {
-        queue_popover::open(&app, window, cx)
-    })
-    .unwrap();
-    settle(window, cx);
-    assert!(order(&app, cx).is_empty());
-    assert!(has(window, "queue", cx));
-    assert!(!has(window, "queue-job-1", cx));
-}
-
-#[gpui_kit::test]
-fn the_summary_sheet_copies_each_command_and_closes_on_done(cx: &mut TestAppContext) {
+fn set_up_summaries_is_named_by_its_title_and_starts_on_get_ollama(cx: &mut TestAppContext) {
     let (window, _) = open_with(cx, dory_on(sample_store()));
     cx.update_window(window, |_, window, cx| set_up_summaries::sheet(window, cx))
         .unwrap();
     settle(window, cx);
-    for command in set_up_summaries::COMMANDS {
-        let copy = format!("copy-{command}");
-        cx.update_window(window, |_, window, _| {
-            assert_eq!(
-                window.find(ElementId::from(copy.clone())).label(),
-                Some(format!("Copy {command}").as_str())
-            );
+    cx.update_window(window, |_, window, cx| {
+        assert!(surface::has_dialog(window, cx));
+        let dialog = gpui_kit::base::test_support::snapshots(window)
+            .into_iter()
+            .find(|e| e.role() == Some(Role::Dialog))
+            .expect("a dialog node");
+        assert_eq!(dialog.label(), Some(set_up_summaries::TITLE));
+        assert_eq!(window.find("set-up-get-ollama").focused(), Some(true));
+        assert_eq!(
+            window.find("set-up-subtitle").label(),
+            Some("2 short steps. Everything stays on this Mac.")
+        );
+        assert_eq!(window.find("set-up-close").label(), Some("Close"));
+    })
+    .unwrap();
+    click(window, "set-up-not-now", cx);
+    let open = cx
+        .update_window(window, |_, window, cx| surface::has_dialog(window, cx))
+        .unwrap();
+    assert!(!open, "Not Now closes the dialog");
+}
+
+#[gpui_kit::test]
+fn each_summaries_step_focuses_its_action(cx: &mut TestAppContext) {
+    let (window, _) = open_with(cx, dory_on(sample_store()));
+    for (step, first) in [
+        ("U1", "set-up-get-ollama"),
+        ("U2", "set-up-background"),
+        ("U3", "set-up-done"),
+    ] {
+        cx.update_window(window, |_, window, cx| {
+            set_up_summaries::preview(fixtures::summaries_step(step).unwrap(), window, cx)
         })
         .unwrap();
-        click(window, &copy, cx);
-        assert_eq!(
-            cx.read_from_clipboard().and_then(|item| item.text()),
-            Some(command.to_owned())
-        );
-    }
-    click(window, "set-up-done", cx);
-    let open = cx
-        .update_window(window, |_, window, cx| window.has_active_dialog(cx))
+        settle(window, cx);
+        cx.update_window(window, |_, window, _| {
+            assert_eq!(window.find(first).focused(), Some(true), "{step}");
+        })
         .unwrap();
-    assert!(!open, "Done closes the sheet");
+        press(window, "escape", cx);
+        let open = cx
+            .update_window(window, |_, window, cx| surface::has_dialog(window, cx))
+            .unwrap();
+        assert!(!open, "{step}: Escape closes it");
+    }
 }
 
 #[gpui_kit::test]
@@ -229,4 +377,14 @@ fn notifications_are_a_no_op_without_a_bundle(cx: &mut TestAppContext) {
         notify::cap_reached(cx);
     });
     cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_first_in_line_cannot_move_up(cx: &mut TestAppContext) {
+    let (window, app) = open_queue(cx);
+    let first = queue(&app, cx)[0].clone();
+    assert_eq!(first.state, JobState::Queued);
+    focus_row(window, "queue-job-1", cx);
+    press(window, "alt-up", cx);
+    assert_eq!(order(&app, cx), [1, 2, 3], "the first in line stays first");
 }

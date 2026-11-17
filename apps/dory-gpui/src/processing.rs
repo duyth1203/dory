@@ -648,7 +648,7 @@ impl Problem {
             Problem::Crashed => "Stopped",
             Problem::AudioUnreadable => "Can't read audio",
             Problem::Transcription { started: false, .. } => "Didn't start",
-            Problem::Transcription { .. } => "Failed",
+            Problem::Transcription { .. } => "Needs attention",
             Problem::SummaryModelMissing | Problem::Summary(_) => "Waiting",
         }
     }
@@ -758,7 +758,7 @@ fn minutes_of_audio(audio: Ms) -> String {
     }
 }
 
-fn spoken_start(at: Ms) -> String {
+pub(crate) fn spoken_start(at: Ms) -> String {
     if at.0 < 60_000 {
         "in less than 1 minute".into()
     } else {
@@ -804,7 +804,7 @@ pub fn light_chip(reason: LightReason) -> &'static str {
     }
 }
 
-fn because(reason: LightReason) -> &'static str {
+pub(crate) fn because(reason: LightReason) -> &'static str {
     match reason {
         LightReason::Chosen => "Light is chosen in Settings",
         LightReason::Battery => "the Mac is on battery",

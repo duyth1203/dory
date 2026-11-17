@@ -34,24 +34,15 @@ const ACTIONABLE: [Role; 12] = [
     Role::ListItem,
 ];
 
-/// GPUI Kit 0.9.1 leaves a component `Dialog` unnamed whatever its title:
-/// `docs/plans/upstream/kit-dialog-has-no-accessible-name.md`. Its first child carries the name
-/// instead. This is the one exception, and it must keep occurring, so the day Kit names its
-/// dialogs this test fails and the exception goes.
-fn kit_unnamed_dialog(element: &gpui_kit::base::test_support::ElementSnapshot) -> bool {
-    element.role() == Some(Role::Dialog) && element.label().is_none()
-}
-
 #[gpui_kit::test]
 fn every_focusable_or_actionable_element_has_a_role_and_a_label(cx: &mut TestAppContext) {
     let mut problems = Vec::new();
     let mut checked = 0;
-    let mut kit_dialogs = 0;
+    let mut dialogs = Vec::new();
     for view in every_view(1.0, cx) {
         for element in &view.elements {
-            if kit_unnamed_dialog(element) {
-                kit_dialogs += 1;
-                continue;
+            if element.role() == Some(Role::Dialog) {
+                dialogs.push((view.name.clone(), element.label().map(str::to_owned)));
             }
             let focusable = element.focused().is_some();
             let actionable = element.role().is_some_and(|r| ACTIONABLE.contains(&r));
@@ -72,10 +63,18 @@ fn every_focusable_or_actionable_element_has_a_role_and_a_label(cx: &mut TestApp
         }
     }
     assert!(checked > 100, "only {checked} elements were checked");
-    assert_eq!(
-        kit_dialogs, 4,
-        "the queue and the summaries sheet, each at both window sizes; if Kit now names dialogs, drop the exception"
-    );
+    // Set Up Summaries opens on Dory's own dialog host, which names the dialog by its title
+    // where Kit 0.9.1 could not (`docs/plans/upstream/kit-dialog-has-no-accessible-name.md`).
+    let summaries = dialogs
+        .iter()
+        .filter(|(_, label)| label.as_deref() == Some("Set Up Summaries"))
+        .count();
+    assert!(summaries >= 4, "{dialogs:?}");
+    let unnamed: Vec<_> = dialogs
+        .iter()
+        .filter(|(_, label)| label.is_none())
+        .collect();
+    assert!(unnamed.is_empty(), "unnamed dialogs: {unnamed:?}");
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
@@ -95,7 +94,16 @@ fn every_view_is_covered(cx: &mut TestAppContext) {
         "transcript tab",
         "needs attention",
         "processing",
-        "processing queue",
+        "set up summaries U1",
+        "set up summaries U2",
+        "set up summaries U3",
+        "processing window running",
+        "processing window light",
+        "processing window blocked",
+        "processing window finished",
+        "processing window empty",
+        "processing window busy",
+        "processing window busy, shortest",
         "settings General",
         "settings Recording",
         "settings Transcription",

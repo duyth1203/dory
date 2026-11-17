@@ -397,6 +397,8 @@ impl SetUp {
             })
             .child(
                 div()
+                    .flex_1()
+                    .min_w_0()
                     .text_size(theme.text(13.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(text),

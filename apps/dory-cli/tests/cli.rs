@@ -518,6 +518,13 @@ fn assistants_are_added_listed_and_hidden_recordings_marked() {
 
     let listed = env.ok(&["assistants", "list"]);
     assert!(listed.contains("assistant access is off"), "{listed}");
+    let activity = env.ok(&["assistants", "activity"]);
+    assert!(
+        activity.contains("No assistant activity yet."),
+        "{activity}"
+    );
+    let pruned = env.ok(&["assistants", "prune"]);
+    assert!(pruned.contains("deleted 0 day(s)"), "{pruned}");
     let on = env.ok(&["assistants", "on"]);
     assert!(on.contains("sent to that assistant's provider"), "{on}");
 

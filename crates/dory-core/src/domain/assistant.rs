@@ -267,3 +267,111 @@ mod tests {
         assert_eq!(ClientKey::parse(&upper), None);
     }
 }
+
+/// Who wrote an audit entry: a `dory-mcp` helper, or the app handling a change request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Actor {
+    Helper,
+    App,
+}
+
+impl Actor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Actor::Helper => "mcp",
+            Actor::App => "app",
+        }
+    }
+}
+
+/// What an assistant asked for. It names recordings and counts, never meeting text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Access {
+    Search {
+        text: String,
+        hits: u32,
+    },
+    Recording(RecordingId),
+    Summary(RecordingId),
+    Transcript {
+        id: RecordingId,
+        turns: (u32, u32),
+    },
+    ActionItems {
+        ids: Vec<RecordingId>,
+    },
+    ResourceList,
+    Prompt {
+        name: String,
+    },
+    Write {
+        what: String,
+        id: Option<RecordingId>,
+    },
+}
+
+impl Access {
+    /// How much of a search's text the log keeps.
+    pub const SEARCH_TEXT_CHARS: usize = 200;
+
+    pub fn search(text: &str, hits: u32) -> Access {
+        Access::Search {
+            text: text.chars().take(Self::SEARCH_TEXT_CHARS).collect(),
+            hits,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditOutcome {
+    Served { items: u32 },
+    Refused(Refusal),
+}
+
+/// One line of the audit log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditEntry {
+    pub at: Timestamp,
+    pub actor: Actor,
+    /// The label of the assistant whose key was presented, when the key was known.
+    pub client: Option<String>,
+    /// The name the client gave itself. Self-reported, so a label only, never a credential.
+    pub reported_name: Option<String>,
+    pub access: Access,
+    pub outcome: AuditOutcome,
+}
+
+/// Days of audit kept. Older day folders are deleted by the process that owns the library.
+pub const AUDIT_KEEP_DAYS: i64 = 30;
+
+/// Whether the day starting at `day_start` is still within the kept window as of `now`.
+pub fn keep_audit_day(day_start: Timestamp, now: Timestamp) -> bool {
+    const DAY_MS: i64 = 86_400_000;
+    let today_start = now.0.div_euclid(DAY_MS) * DAY_MS;
+    today_start - day_start.0 < AUDIT_KEEP_DAYS * DAY_MS
+}
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+
+    #[test]
+    fn search_text_is_cut_on_a_char_boundary() {
+        let long = "é".repeat(500);
+        let Access::Search { text, hits } = Access::search(&long, 3) else {
+            unreachable!()
+        };
+        assert_eq!(text.chars().count(), Access::SEARCH_TEXT_CHARS);
+        assert_eq!(hits, 3);
+    }
+
+    #[test]
+    fn keep_day_keeps_thirty_days() {
+        let day = 86_400_000;
+        let now = Timestamp(100 * day + 5);
+        assert!(keep_audit_day(Timestamp(100 * day), now), "today");
+        assert!(keep_audit_day(Timestamp(71 * day), now), "29 days ago");
+        assert!(!keep_audit_day(Timestamp(70 * day), now), "30 days ago");
+        assert!(!keep_audit_day(Timestamp(69 * day), now));
+    }
+}

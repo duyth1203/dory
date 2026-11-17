@@ -62,3 +62,23 @@ fn the_owner_adds_changes_and_removes_assistants() {
             .is_err()
     );
 }
+
+#[test]
+fn opening_creates_a_private_audit_folder() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    drop(dory::open(&config).unwrap());
+    let mode = std::fs::metadata(config.audit_dir())
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+    assert!(
+        dory::audit_reader(&config)
+            .since(dory_core::domain::Timestamp(0), 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(dory::prune_audit(&config).unwrap(), 0);
+}

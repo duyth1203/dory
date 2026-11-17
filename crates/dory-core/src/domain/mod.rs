@@ -11,8 +11,9 @@ mod transcript;
 mod waveform;
 
 pub use assistant::{
-    AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
-    Refusal, Writes,
+    AUDIT_KEEP_DAYS, Access, Actor, AssistantAccess, AssistantChange, AssistantClient,
+    AssistantQuery, AuditEntry, AuditOutcome, ClientKey, Exposure, Fields, Refusal, Writes,
+    keep_audit_day,
 };
 pub use error::{FailureCause, FailureClass, InvalidInput};
 pub use ids::{JobId, RecordingId, Revision};

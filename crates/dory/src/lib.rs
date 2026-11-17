@@ -18,9 +18,9 @@ use std::sync::Arc;
 use dory_core::app::{Options, Ports, ReadPorts};
 use dory_core::models::{CatalogError, Llm, Stt};
 use dory_core::ports::capture::CaptureBackend;
-use dory_core::ports::{ModelProvider, StoreError};
+use dory_core::ports::{Clock, ModelProvider, StoreError};
 use dory_engines::{Ollama, Sherpa};
-use dory_store::{FsTakes, SqliteReader, SqliteStore};
+use dory_store::{FsTakes, JsonlAudit, SqliteReader, SqliteStore};
 use thiserror::Error;
 
 pub use clock::SystemClock;
@@ -124,6 +124,7 @@ fn open_with(
     create_data_dir(config)?;
     // Before anything reads the folder: recovery must never see another process's live take.
     let lock = lock::DataLock::acquire(&config.data_dir)?;
+    keep_audit(config);
     let Storage { store, takes } = storage(config)?;
     let ports = Ports {
         store,
@@ -162,6 +163,32 @@ pub fn open(config: &Config) -> Result<Dory, OpenError> {
         Options::default(),
         providers(config),
     )
+}
+
+/// Creates the audit folder and deletes days past the kept window. Only the lock holder runs it.
+/// A failure here never stops Dory opening, so it is reported and skipped.
+fn keep_audit(config: &Config) -> usize {
+    let root = config.audit_dir();
+    let pruned = JsonlAudit::create_root(&root)
+        .and_then(|()| JsonlAudit::prune(&root, SystemClock::new().now()));
+    pruned.unwrap_or_else(|e| {
+        eprintln!("audit: cannot keep {}: {e}", root.display());
+        0
+    })
+}
+
+/// Deletes audit days past the kept window, holding the data folder's lock while it does.
+/// Returns how many days went. Fails with [`OpenError::InUse`] while Dory runs, which prunes
+/// on its own at every start.
+pub fn prune_audit(config: &Config) -> Result<usize, OpenError> {
+    create_data_dir(config)?;
+    let _lock = lock::DataLock::acquire(&config.data_dir)?;
+    Ok(keep_audit(config))
+}
+
+/// The audit log of assistant access, for reading. Works while Dory runs.
+pub fn audit_reader(config: &Config) -> Arc<dyn dory_core::ports::AuditRead> {
+    Arc::new(JsonlAudit::reader(config.audit_dir()))
 }
 
 /// A new key for an assistant, from the system's random source. Show it once and keep it nowhere:

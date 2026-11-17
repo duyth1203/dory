@@ -2,9 +2,11 @@
 //! no assistant ever sees. Every change takes the data folder's lock; `list` only reads.
 
 use dory::Config;
-use dory_core::domain::{Exposure, RecordingId, Writes};
+use dory_core::domain::{
+    Access, AuditEntry, AuditOutcome, Exposure, RecordingId, Timestamp, Writes,
+};
 
-use crate::{chain, open, open_library};
+use crate::{chain, open, open_library, view};
 
 /// What leaves the Mac once an assistant reads. Printed before access is turned on.
 pub const WHAT_LEAVES: &str = "Anything an assistant reads from Dory is sent to that assistant's \
@@ -30,11 +32,16 @@ pub enum AssistantsArgs {
     Remove {
         label: String,
     },
+    Activity {
+        days: u32,
+    },
+    Prune,
 }
 
 const USAGE: &str = "assistants takes one of: on, off, list, \
 add NAME --exposure titles|summaries|transcripts [--edits never|ask], \
-exposure NAME titles|summaries|transcripts, edits NAME never|ask, remove NAME";
+exposure NAME titles|summaries|transcripts, edits NAME never|ask, remove NAME, \
+activity [--days N], prune";
 
 fn exposure(s: &str) -> Result<Exposure, String> {
     Exposure::parse(s)
@@ -83,19 +90,35 @@ impl AssistantsArgs {
             ["remove", label] => Ok(Self::Remove {
                 label: (*label).to_owned(),
             }),
+            ["activity"] => Ok(Self::Activity { days: 30 }),
+            ["activity", "--days", n] => Ok(Self::Activity {
+                days: n
+                    .parse()
+                    .map_err(|_| format!("--days takes a whole number, not {n}"))?,
+            }),
+            ["prune"] => Ok(Self::Prune),
             _ => Err(USAGE.into()),
         }
     }
 }
 
 pub fn run(config: &Config, args: &AssistantsArgs) -> Result<(), String> {
-    if let AssistantsArgs::List = args {
-        return list(config);
+    match args {
+        AssistantsArgs::List => return list(config),
+        AssistantsArgs::Activity { days } => return activity(config, *days),
+        AssistantsArgs::Prune => {
+            let days = dory::prune_audit(config).map_err(chain)?;
+            println!("deleted {days} day(s) of assistant activity older than 30 days");
+            return Ok(());
+        }
+        _ => {}
     }
     let dory = open(config, false)?;
     let assistants = dory.assistants();
     match args {
-        AssistantsArgs::List => unreachable!("listed above"),
+        AssistantsArgs::List | AssistantsArgs::Activity { .. } | AssistantsArgs::Prune => {
+            unreachable!("handled above")
+        }
         AssistantsArgs::On => {
             println!("{WHAT_LEAVES}");
             assistants.set_enabled(true).map_err(chain)?;
@@ -159,6 +182,51 @@ fn list(config: &Config) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+fn activity(config: &Config, days: u32) -> Result<(), String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let since = Timestamp(now - i64::from(days) * 86_400_000);
+    let entries = dory::audit_reader(config)
+        .since(since, 10_000)
+        .map_err(chain)?;
+    if entries.is_empty() {
+        println!("No assistant activity yet.");
+    }
+    for e in &entries {
+        println!("{}", describe(e));
+    }
+    Ok(())
+}
+
+fn describe(e: &AuditEntry) -> String {
+    let who = match (&e.client, &e.reported_name) {
+        (Some(label), _) => label.clone(),
+        (None, Some(name)) => format!("unknown assistant calling itself {name}"),
+        (None, None) => "unknown assistant".to_owned(),
+    };
+    let what = match &e.access {
+        Access::Search { text, hits } => format!("searched {text:?} ({hits} hits)"),
+        Access::Recording(id) => format!("read recording {id}"),
+        Access::Summary(id) => format!("read the summary of {id}"),
+        Access::Transcript { id, turns } => {
+            format!("read turns {}-{} of {id}'s transcript", turns.0, turns.1)
+        }
+        Access::ActionItems { ids } => format!("read action items of {} meeting(s)", ids.len()),
+        Access::ResourceList => "listed meetings".to_owned(),
+        Access::Prompt { name } => format!("used the {name} prompt"),
+        Access::Write { what, id } => match id {
+            Some(id) => format!("asked to {what} on {id}"),
+            None => format!("asked to {what}"),
+        },
+    };
+    let outcome = match &e.outcome {
+        AuditOutcome::Served { .. } => "served".to_owned(),
+        AuditOutcome::Refused(why) => format!("refused: {why}"),
+    };
+    format!("{}  {who}  {what}  {outcome}", view::utc(e.at))
 }
 
 pub struct PrivateArgs {

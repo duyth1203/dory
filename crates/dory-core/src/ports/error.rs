@@ -329,3 +329,12 @@ mod tests {
         }
     }
 }
+
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum AuditError {
+    #[error("the audit log at {} does not exist; open Dory once to create it", .0.display())]
+    Missing(std::path::PathBuf),
+    #[error("cannot write the audit log")]
+    Io(#[source] std::io::Error),
+}

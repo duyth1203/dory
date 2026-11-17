@@ -36,6 +36,8 @@ const USAGE: &str = "usage:
   dory-cli assistants exposure NAME titles|summaries|transcripts
   dory-cli assistants edits NAME never|ask
   dory-cli assistants remove NAME
+  dory-cli assistants activity [--days N]
+  dory-cli assistants prune
   dory-cli private ID on|off
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.

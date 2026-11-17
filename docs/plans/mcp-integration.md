@@ -228,11 +228,11 @@ Live lanes run on the operator's Mac, an Apple Silicon machine on macOS 26 or la
 
 - [ ] Add `AuditEntry { at, actor, client: Option<ClientId>, reported_name, access, outcome }`. `Access` is `Search { text, hits }`, `Recording(id)`, `Summary(id)`, `Transcript { id, turns }`, `ActionItems { ids }`, `ResourceList`, `Prompt { name }`, or `Write(command)`. `outcome` is `Served { items }` or `Refused(Refusal)`. No entry holds meeting text, and a search text is cut at 200 characters.
 - [ ] Add ports `AuditSink::append(&AuditEntry) -> Result<(), AuditError>` and `AuditRead::since(at, limit) -> Vec<AuditEntry>`.
-- [ ] Implement `dory_store::JsonlAudit`. Each process writes its own file at `<data>/assistants/audit/<YYYY-MM-DD>/<actor>-<pid>-<start_ms>.jsonl`, opened `O_CREAT | O_EXCL | O_APPEND` with mode 0600 in 0700 folders. Each entry is one `write_all` of one line with a `v: 1` field. The DTO lives in `dory-store`.
+- [x] Implement `dory_store::JsonlAudit` on `feat/assistant-audit`. Each process writes its own file at `<data>/assistants/audit/<YYYY-MM-DD>/<actor>-<pid>-<start_ms>.jsonl`, opened `O_CREAT | O_EXCL | O_APPEND` with mode 0600 in 0700 folders. Each entry is one `write_all` of one line with a `v: 1` field. The DTO lives in `dory-store`.
 - [ ] Only the lock holder creates `assistants/audit/`, when access is first enabled. A helper may create a day folder inside it and never the folder itself.
 - [ ] `AuditRead::since` merges the files by time, newest first, skips a torn last line, and skips unknown versions.
-- [ ] Retention is the pure `policy::keep_day(day, today, 30)`. `dory::open` prunes whole day folders older than 30 days right after it takes the lock, so the app and every lock-holding CLI command keep the log trimmed with no Settings screen. `dory-cli assistants prune` does it on demand. A helper never deletes.
-- [ ] Add `dory-cli assistants activity [--since DATE]`, which reads without the lock.
+- [x] Retention is the pure `keep_audit_day(day_start, now)` with `AUDIT_KEEP_DAYS = 30`. `dory::open` prunes whole day folders older than 30 days right after it takes the lock, so the app and every lock-holding CLI command keep the log trimmed with no Settings screen. `dory-cli assistants prune` does it on demand. A helper never deletes.
+- [x] Add `dory-cli assistants activity [--days N]`, which reads without the lock. Appends do not fsync, which measured 3.2 ms each, so an OS crash may lose the last lines.
 
 **You see.**
 

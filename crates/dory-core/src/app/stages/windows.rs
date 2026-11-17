@@ -123,18 +123,55 @@ pub fn uncovered(speech: &[TimeRange], said: &[TimeRange], min: Ms) -> Vec<TimeR
     stretches
 }
 
+/// How many rounds of stretches a window decodes again after its first pass. A stretch decoded
+/// again can itself drop the turn after a switch, so its own leftover goes in the next round.
+pub const RECOVERY_DEPTH: usize = 3;
+
+/// Decodes again the stretches of `speech` that `said` leaves without text, then the stretches
+/// each of those calls leaves, for at most [`RECOVERY_DEPTH`] rounds. Returns how many stretches
+/// went to `decode`.
+///
+/// `decode` takes a stretch and returns the ranges its sentences cover, on the axis of `speech`.
+/// A stretch whose call covers none of its speech is not decoded again, because the same audio
+/// decodes the same way.
+pub fn recover<E>(
+    speech: &[TimeRange],
+    said: &[TimeRange],
+    mut decode: impl FnMut(TimeRange) -> Result<Vec<TimeRange>, E>,
+) -> Result<usize, E> {
+    let mut round = uncovered(speech, said, MIN_UNCOVERED);
+    let mut decoded = 0;
+    for _ in 0..RECOVERY_DEPTH {
+        let mut next = Vec::new();
+        for stretch in round {
+            let said = decode(stretch)?;
+            decoded += 1;
+            next.extend(
+                uncovered(&cut(speech, stretch), &said, MIN_UNCOVERED)
+                    .into_iter()
+                    .filter(|left| *left != stretch),
+            );
+        }
+        round = next;
+    }
+    Ok(decoded)
+}
+
 /// The speech inside `window`, on the same axis. An unmeasured clip is speech throughout.
 pub(crate) fn speech_spans(activity: &Activity, window: TimeRange) -> Vec<TimeRange> {
     match activity {
         Activity::Unmeasured => vec![window],
-        Activity::Speech(spans) => spans
-            .iter()
-            .filter_map(|s| {
-                TimeRange::new(s.start().max(window.start()), s.end().min(window.end()))
-            })
-            .filter(|s| !s.is_empty())
-            .collect(),
+        Activity::Speech(spans) => cut(spans, window),
     }
+}
+
+/// The parts of `spans` inside `window`.
+fn cut(spans: &[TimeRange], window: TimeRange) -> Vec<TimeRange> {
+    spans
+        .iter()
+        .filter_map(|s| TimeRange::new(s.start().max(window.start()), s.end().min(window.end())))
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn equal_pieces(span: TimeRange, cap: Ms) -> impl Iterator<Item = TimeRange> {
@@ -380,6 +417,85 @@ mod tests {
             uncovered(&[r(0, 30_000)], &[r(2_000, 10_000), r(12_000, 20_000)], MIN),
             vec![r(0, 2_000), r(10_000, 12_000), r(20_000, 30_000)]
         );
+    }
+
+    /// Turns two seconds apart, each its own run of speech.
+    fn turns(n: u64) -> Vec<TimeRange> {
+        (0..n).map(|i| r(i * 6_000, i * 6_000 + 4_000)).collect()
+    }
+
+    /// Recovers a window of `turns` with an engine that writes only the first turn starting in
+    /// each call, the way Whisper keeps the first language and drops the turns after a switch.
+    /// Returns the stretches decoded and the turns said.
+    fn recover_dropping_tails(turns: &[TimeRange]) -> (Vec<TimeRange>, Vec<TimeRange>) {
+        let first_turn = |span: TimeRange| {
+            turns
+                .iter()
+                .copied()
+                .find(|t| t.start() >= span.start() && t.start() < span.end())
+        };
+        let mut said: Vec<TimeRange> = first_turn(r(0, 60_000)).into_iter().collect();
+        let mut calls = Vec::new();
+        let first = said.clone();
+        let decoded = recover(turns, &first, |stretch| {
+            calls.push(stretch);
+            let heard: Vec<TimeRange> = first_turn(stretch).into_iter().collect();
+            said.extend(&heard);
+            Ok::<_, ()>(heard)
+        })
+        .unwrap();
+        assert_eq!(decoded, calls.len());
+        (calls, said)
+    }
+
+    #[test]
+    fn a_stretch_that_drops_its_own_tail_is_decoded_again_within_the_depth() {
+        let turns = turns(4);
+        let (calls, said) = recover_dropping_tails(&turns);
+        assert_eq!(said, turns, "every turn is said");
+        assert_eq!(
+            calls,
+            vec![r(6_000, 22_000), r(12_000, 22_000), r(18_000, 22_000)]
+        );
+    }
+
+    #[test]
+    fn recovery_stops_after_the_depth() {
+        let turns = turns(6);
+        let (calls, said) = recover_dropping_tails(&turns);
+        assert_eq!(calls.len(), RECOVERY_DEPTH);
+        assert_eq!(
+            said,
+            turns[..=RECOVERY_DEPTH],
+            "the turns after the last round stay unsaid"
+        );
+    }
+
+    #[test]
+    fn a_stretch_that_comes_back_empty_is_not_decoded_again() {
+        let mut calls = Vec::new();
+        let decoded = recover(
+            &[r(0, 4_000), r(6_000, 10_000)],
+            &[r(0, 4_000)],
+            |stretch| {
+                calls.push(stretch);
+                Ok::<_, ()>(Vec::new())
+            },
+        )
+        .unwrap();
+        assert_eq!(decoded, 1);
+        assert_eq!(calls, vec![r(6_000, 10_000)]);
+    }
+
+    #[test]
+    fn a_failed_decode_stops_recovery() {
+        let mut calls = 0;
+        let result = recover(&turns(4), &[r(0, 4_000)], |_| {
+            calls += 1;
+            Err("engine failed")
+        });
+        assert_eq!(result, Err("engine failed"));
+        assert_eq!(calls, 1);
     }
 
     #[test]

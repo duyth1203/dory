@@ -348,13 +348,15 @@ fn transcribe_window(
         let first = settled(wx, run, span, first, progress)?;
         let speech = windows::speech_spans(&run.whole.activity, span);
         let said: Vec<TimeRange> = first.segments.iter().map(|s| s.range).collect();
-        let stretches = windows::uncovered(&speech, &said, windows::MIN_UNCOVERED);
         let chose = first.heard.clone();
         let mut segments = first.tagged();
-        for stretch in &stretches {
-            let again = decode(wx, run, *stretch, wx.language, progress, Call::Again)?;
-            segments.extend(settled(wx, run, *stretch, again, progress)?.tagged());
-        }
+        let recovered = windows::recover(&speech, &said, |stretch| {
+            let again = decode(wx, run, stretch, wx.language, progress, Call::Again)?;
+            let again = settled(wx, run, stretch, again, progress)?;
+            let said = again.segments.iter().map(|s| s.range).collect();
+            segments.extend(again.tagged());
+            Ok(said)
+        })?;
         segments.sort_by_key(|s| s.range.start());
         for segment in &segments {
             publish_draft(wx.db, progress.job, run.plan, segment.clone());
@@ -364,7 +366,7 @@ fn transcribe_window(
             segments,
             detected_language: chose,
         };
-        (checkpoint, stretches.len())
+        (checkpoint, recovered)
     } else {
         let checkpoint = Checkpoint {
             span,

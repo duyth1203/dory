@@ -1194,26 +1194,26 @@ fn language_follows_the_meeting_languages(cx: &mut TestAppContext) {
 const RECOVERY: &str = "setting-switch-recovery";
 
 #[gpui_kit::test]
-fn the_recovery_switch_reads_on_and_flips_the_stored_setting(cx: &mut TestAppContext) {
+fn the_recovery_switch_starts_off_and_flips_the_stored_setting(cx: &mut TestAppContext) {
     let rig = rig(&["tl", "en"]);
-    assert_eq!(settings(&rig).switch_recovery, Recovery::Auto);
+    assert_eq!(settings(&rig).switch_recovery, Recovery::Off);
     let (main, app) = open(&rig, cx);
     let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
     until(cx, "the switch", |cx| has(window, RECOVERY, cx));
-    assert_eq!(checked(window, RECOVERY, cx), Some(true));
+    assert_eq!(checked(window, RECOVERY, cx), Some(false));
     click(window, RECOVERY, cx);
-    until(cx, "recovery off", |_| {
-        settings(&rig).switch_recovery == Recovery::Off
-    });
-    until(cx, "the switch reads off", |cx| {
-        checked(window, RECOVERY, cx) == Some(false)
-    });
-    click(window, RECOVERY, cx);
-    until(cx, "recovery back on Automatic", |_| {
+    until(cx, "recovery on Automatic", |_| {
         settings(&rig).switch_recovery == Recovery::Auto
     });
     until(cx, "the switch reads on", |cx| {
         checked(window, RECOVERY, cx) == Some(true)
+    });
+    click(window, RECOVERY, cx);
+    until(cx, "recovery back off", |_| {
+        settings(&rig).switch_recovery == Recovery::Off
+    });
+    until(cx, "the switch reads off", |cx| {
+        checked(window, RECOVERY, cx) == Some(false)
     });
 }
 
@@ -1259,8 +1259,8 @@ fn the_recovery_switch_is_dimmed_below_two_languages_and_wakes_with_the_second(
     );
     click(window, RECOVERY, cx);
     render(window, cx);
-    assert_eq!(settings(&rig).switch_recovery, Recovery::Auto);
-    assert_eq!(checked(window, RECOVERY, cx), Some(true));
+    assert_eq!(settings(&rig).switch_recovery, Recovery::Off);
+    assert_eq!(checked(window, RECOVERY, cx), Some(false));
 
     focus_by_tab(window, "meeting-languages", cx);
     press(window, "down", cx);
@@ -1275,8 +1275,8 @@ fn the_recovery_switch_is_dimmed_below_two_languages_and_wakes_with_the_second(
             == Some("Recover speech lost when the language changes")
     });
     click(window, RECOVERY, cx);
-    until(cx, "recovery off", |_| {
-        settings(&rig).switch_recovery == Recovery::Off
+    until(cx, "recovery on", |_| {
+        settings(&rig).switch_recovery == Recovery::Auto
     });
 }
 

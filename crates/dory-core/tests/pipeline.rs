@@ -994,6 +994,7 @@ fn switching_turns(
 fn two_languages() -> Settings {
     Settings {
         meeting_languages: tags(&["tl", "en"]),
+        switch_recovery: Recovery::Auto,
         ..Settings::default()
     }
 }
@@ -1055,6 +1056,7 @@ fn recovery_off_sends_no_sentence_times() {
     };
     let one_language = Settings {
         meeting_languages: tags(&["en"]),
+        switch_recovery: Recovery::Auto,
         ..Settings::default()
     };
     for settings in [off, one_language] {
@@ -1131,4 +1133,44 @@ fn resume_does_not_repeat_a_recovered_stretch() {
     );
     let transcript = dory.library().transcript(&id).unwrap().unwrap();
     assert_eq!(texts(&transcript.segments), ["isa", "one", "dalawa", "two"]);
+}
+
+#[test]
+fn a_recovered_stretch_that_drops_its_own_tail_is_decoded_again() {
+    let mut entry = stt(STT, DiarizationSupport::None, WINDOW);
+    entry.caps.sentence_times = true;
+    let lines = [
+        (0, 3_000, 0, "isa"),
+        (10_000, 13_000, 0, "dalawa"),
+        (16_000, 19_000, 0, "tatlo"),
+    ];
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .dropping_second_half()
+            .with_segments(Channel::Mic, &lines),
+        vec![entry],
+        llm(8_192),
+    );
+    let id = rig.seed("three-turns", ChannelLayout::MicOnly, 70);
+    rig.takes.set_activity(
+        &id,
+        Channel::Mic,
+        &[(0, 3_000), (10_000, 13_000), (16_000, 19_000)],
+    );
+    rig.store
+        .apply(vec![Change::SettingsReplaced(two_languages())])
+        .unwrap();
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    assert_eq!(
+        spans(&rig.transcriber.calls()),
+        vec![
+            (Channel::Mic, r(0, 19_000)),
+            (Channel::Mic, r(10_000, 19_000)),
+            (Channel::Mic, r(16_000, 19_000)),
+        ],
+        "each call keeps its first turn, so what it leaves goes again in the next round"
+    );
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(texts(&transcript.segments), ["isa", "dalawa", "tatlo"]);
 }

@@ -12,8 +12,8 @@
 //!
 //! `covered` is the app's recovery rule. The clip goes through the takes adapter, which measures
 //! its speech the way the app does, then to the engine with sentence times. The stretches that
-//! `windows::uncovered` finds go again on Auto, and `stages::settle_language` redoes a window or
-//! stretch heard outside `--languages` pinned to the first of them. After the table it prints how
+//! `windows::recover` finds go again on Auto, round after round, and `stages::settle_language`
+//! redoes a window or stretch heard outside `--languages` pinned to the first of them. After the table it prints how
 //! many clips needed a re-decode.
 //!
 //! The scoring rules port `docs/plans/bilingual-spike/score.py`. A reference and an output are
@@ -39,7 +39,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use dory_core::app::stages::windows::{MIN_UNCOVERED, uncovered};
+use dory_core::app::stages::windows::recover;
 use dory_core::app::stages::{Settle, settle_language};
 use dory_core::domain::{Channel, Fraction, LangTag, LanguagePref, Ms, RecordingId, TimeRange};
 use dory_core::models::Availability;
@@ -836,21 +836,26 @@ impl Run<'_> {
         let first = self.call(&whole, &LanguagePref::Auto, true)?;
         let first = self.settled(&whole, first)?;
         let said: Vec<TimeRange> = first.segments.iter().map(|s| s.range).collect();
-        let stretches = uncovered(&speech, &said, MIN_UNCOVERED);
         let mut busy = first.busy;
         let mut calls = vec![(Ms(0), first)];
-        for stretch in &stretches {
-            let piece = takes.slice(&whole, *stretch).map_err(other)?;
+        let stretches = recover(&speech, &said, |stretch| {
+            let piece = takes.slice(&whole, stretch).map_err(other)?;
             let again = self.call(&piece, &LanguagePref::Auto, true)?;
             let again = self.settled(&piece, again)?;
             busy += again.busy;
+            let said = again
+                .segments
+                .iter()
+                .map(|s| s.range.shifted(stretch.start()))
+                .collect();
             calls.push((stretch.start(), again));
-        }
+            Ok(said)
+        })?;
         takes.delete(&id).map_err(other)?;
         Ok(Output {
             units: in_time_order(&calls),
             busy,
-            stretches: stretches.len(),
+            stretches,
         })
     }
 

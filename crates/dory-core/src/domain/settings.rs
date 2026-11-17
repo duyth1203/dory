@@ -32,12 +32,13 @@ pub enum Processing {
 
 /// Recovering the speech a speech model drops when a window switches language. `Auto` recovers
 /// only where it helps: a recording on Automatic, two or more meeting languages, and a model that
-/// reports sentence times.
+/// reports sentence times. It is `Off` by default because it missed the public-audio rule in
+/// `docs/plans/bilingual.md` Appendix F (see `docs/plans/decisions.tsv`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Recovery {
+    #[default]
     Off,
     On,
-    #[default]
     Auto,
 }
 

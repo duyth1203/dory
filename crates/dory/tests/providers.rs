@@ -1,0 +1,122 @@
+//! The summary providers the composition root registers, seen through the public facade.
+#![cfg(target_os = "macos")]
+
+use dory::{Config, PretendApple};
+use dory_core::domain::{Blocker, LangSet};
+use dory_core::models::{
+    Availability, Choice, Llm, LlmNeeds, ModelStatus, Resolution, Unavailable, UnavailableReason,
+    resolve,
+};
+use dory_core::testing::block_on;
+
+/// A library on a throwaway folder, with Ollama unreachable and Apple's state pretended, so no
+/// row depends on what this Mac runs.
+fn summary_rows(apple: PretendApple) -> Vec<ModelStatus<Llm>> {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        ollama_url: "http://127.0.0.1:1".into(),
+        apple: Some(apple),
+        ..Config::new(dir.path())
+    };
+    drop(dory::open(&config).expect("creates the library"));
+    let reader = dory::open_library(&config).unwrap();
+    block_on(reader.models::<Llm>())
+        .unwrap()
+        .into_iter()
+        .map(|row| row.status)
+        .collect()
+}
+
+fn with(rows: &[ModelStatus<Llm>], ready: &[&str]) -> Vec<ModelStatus<Llm>> {
+    rows.iter()
+        .map(|row| ModelStatus {
+            entry: row.entry.clone(),
+            availability: if ready.contains(&row.entry.id.to_string().as_str()) {
+                Availability::Ready
+            } else {
+                row.availability.clone()
+            },
+        })
+        .collect()
+}
+
+fn auto(rows: &[ModelStatus<Llm>]) -> Resolution<Llm> {
+    let needs = LlmNeeds {
+        main: None,
+        all: Vec::new(),
+    };
+    resolve(&Choice::Auto, rows, &needs)
+}
+
+/// The `app` feature registers Apple Intelligence on macOS; `dory-mcp` builds `dory` without
+/// it, and lane 9's `otool -L` shows that binary links no Swift.
+#[test]
+fn apple_rows_appear_only_with_the_app_feature() {
+    let rows = summary_rows(PretendApple::Off);
+    let apple = rows
+        .iter()
+        .find(|row| row.entry.id.to_string() == "apple/foundation-model")
+        .expect("the app feature registers Apple Intelligence");
+    assert_eq!(apple.entry.display_name, "Apple Intelligence");
+    assert_eq!(
+        apple.availability,
+        Availability::Unavailable(Unavailable {
+            reason: UnavailableReason::NotEligible {
+                detail: "Apple Intelligence is turned off".into(),
+            },
+            fix: Some("Turn it on in System Settings, Apple Intelligence & Siri".into()),
+        })
+    );
+    assert_eq!(apple.entry.caps.languages, LangSet::Any);
+}
+
+#[test]
+fn every_pretended_state_reaches_the_row() {
+    let reason = |apple| {
+        let rows = summary_rows(apple);
+        let row = rows
+            .iter()
+            .find(|row| row.entry.id.to_string() == "apple/foundation-model")
+            .unwrap();
+        match &row.availability {
+            Availability::Unavailable(why) => why.reason.clone(),
+            other => panic!("{apple:?} reads as {other:?}"),
+        }
+    };
+    assert!(matches!(
+        reason(PretendApple::Ineligible),
+        UnavailableReason::NotEligible { detail } if detail == "This Mac can't run Apple Intelligence"
+    ));
+    assert!(matches!(
+        reason(PretendApple::Preparing),
+        UnavailableReason::Preparing { .. }
+    ));
+    assert_eq!(
+        reason(PretendApple::OldOs),
+        UnavailableReason::OsTooOld {
+            required: "macOS 26.4".into()
+        }
+    );
+}
+
+#[test]
+fn auto_prefers_a_ready_gemma_and_falls_back_to_apple() {
+    let rows = summary_rows(PretendApple::Off);
+    let pick = |ready: &[&str]| match auto(&with(&rows, ready)) {
+        Resolution::Use(id) => id.to_string(),
+        other => panic!("{ready:?} resolves to {other:?}"),
+    };
+    assert_eq!(
+        pick(&["ollama/gemma4:e4b", "apple/foundation-model"]),
+        "ollama/gemma4:e4b"
+    );
+    assert_eq!(
+        pick(&["ollama/gemma4:12b", "apple/foundation-model"]),
+        "ollama/gemma4:12b"
+    );
+    assert_eq!(pick(&["apple/foundation-model"]), "apple/foundation-model");
+    assert!(matches!(
+        auto(&rows),
+        Resolution::Blocked(Blocker::Unavailable { model, .. }) if model.as_str() == "ollama/gemma4:e4b"
+    ));
+}

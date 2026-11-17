@@ -37,8 +37,8 @@ use thiserror::Error;
 
 pub use clock::SystemClock;
 pub use config::{
-    Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
-    legacy_data_dir, machine_override,
+    APPLE_VAR, Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
+    PretendApple, apple_override, legacy_data_dir, machine_override,
 };
 pub use dory_assistants::ControlError;
 pub use dory_core::app::{Dory, LibraryReader};
@@ -104,7 +104,27 @@ fn providers(config: &Config) -> Providers {
     };
     Providers {
         stt: vec![Arc::new(sherpa)],
-        llm: vec![Arc::new(ollama)],
+        llm: vec![
+            Arc::new(ollama),
+            #[cfg(target_os = "macos")]
+            Arc::new(apple(config)),
+        ],
+    }
+}
+
+#[cfg(all(feature = "app", target_os = "macos"))]
+/// Apple Intelligence, or the state `DORY_APPLE` pretends.
+fn apple(config: &Config) -> dory_macos::FoundationModels {
+    use dory_macos::FoundationModels;
+    use dory_macos::ai::foundation_models::Availability;
+    match config.apple {
+        None => FoundationModels::from_this_mac(),
+        Some(state) => FoundationModels::pretending(match state {
+            PretendApple::Off => Availability::NotEnabled,
+            PretendApple::Ineligible => Availability::NotEligible,
+            PretendApple::Preparing => Availability::NotReady,
+            PretendApple::OldOs => Availability::OsTooOld,
+        }),
     }
 }
 

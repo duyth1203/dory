@@ -190,7 +190,7 @@ mod fakes {
     }
 
     #[test]
-    fn plain_open_registers_sherpa_and_ollama_with_models_under_the_data_folder() {
+    fn plain_open_registers_sherpa_ollama_and_apple_with_models_under_the_data_folder() {
         let dir = tempfile::tempdir().unwrap();
         let dory = dory::open(&Config::new(dir.path())).unwrap();
         let stt: Vec<String> = block_on(dory.models().list::<Stt>())
@@ -204,7 +204,11 @@ mod fakes {
             .iter()
             .map(|r| r.status.entry.id.to_string())
             .collect();
-        assert_eq!(llm, ["ollama/gemma4:e4b", "ollama/gemma4:12b"]);
+        let mut want = vec!["ollama/gemma4:e4b", "ollama/gemma4:12b"];
+        if cfg!(target_os = "macos") {
+            want.push("apple/foundation-model");
+        }
+        assert_eq!(llm, want);
         assert_eq!(
             Config::new(dir.path()).models_dir(),
             dir.path().join("models")

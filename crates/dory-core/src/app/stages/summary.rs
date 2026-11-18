@@ -136,10 +136,14 @@ pub(crate) fn transcript_lines(
         .collect()
 }
 
-/// The summary may take a quarter of the context, up to what a long meeting's summary needs: a
-/// 2-hour meeting with 40 action items runs past 2,000 tokens.
+/// What a long meeting's summary needs: a 2-hour meeting with 40 action items runs past 2,000
+/// tokens.
+pub(crate) const SUMMARY_OUTPUT_MAX: u32 = 4096;
+
+/// The room set aside for the summary when sizing its input: a quarter of the context, up to
+/// [`SUMMARY_OUTPUT_MAX`]. The pass itself may write into whatever room its input leaves.
 pub(crate) fn summary_output(context: u32) -> u32 {
-    (context / 4).min(4096)
+    (context / 4).min(SUMMARY_OUTPUT_MAX)
 }
 
 /// Notes stay small enough that two of them normally fit one merge pass. The cap is in the
@@ -325,7 +329,17 @@ impl<E> Passes<'_, E> {
             Prompt::NotesOfTranscript | Prompt::NotesOfNotes => Pass::Notes,
         };
         let system = self.system(prompt);
-        let max_output_tokens = self.output(prompt);
+        let max_output_tokens = match pass {
+            Pass::Notes => self.output(prompt),
+            Pass::Summary => self
+                .context
+                .saturating_sub(
+                    (self.count)(&system)
+                        .saturating_add((self.count)(user))
+                        .saturating_add(PROMPT_OVERHEAD),
+                )
+                .clamp(self.output(prompt), SUMMARY_OUTPUT_MAX),
+        };
         let text = (self.call)(Call {
             pass,
             system: &system,
@@ -513,6 +527,41 @@ mod tests {
         }
     }
 
+    /// Apple's 4096-token window reserves 1,024 tokens for a summary, and a 45-minute summary
+    /// that listed its 35 tasks under both decisions and action items stopped mid-list there,
+    /// with 2,200 tokens of the window unused.
+    #[test]
+    fn a_summary_pass_writes_into_the_room_its_input_leaves() {
+        let lines: Vec<String> = (0..20).map(|n| line(n, 10)).collect();
+        let context = 4096;
+        let one = run(&lines, context, "notes");
+        let (pass, system, user, max) = &one.calls[0];
+        assert_eq!(*pass, Pass::Summary);
+        assert_eq!(
+            *max,
+            context - words(system) - words(user) - PROMPT_OVERHEAD
+        );
+        assert!(*max > summary_output(context), "{max}");
+        assert_every_call_fits(&one, context);
+
+        let long: Vec<String> = (0..120).map(|n| line(n, 10)).collect();
+        let reduced = run(&long, 400, "a short note");
+        for (pass, system, user, max) in &reduced.calls {
+            let room = 400 - words(system) - words(user) - PROMPT_OVERHEAD;
+            match pass {
+                Pass::Summary => assert_eq!(*max, room),
+                Pass::Notes => assert_eq!(*max, notes_output(400), "notes keep their cap"),
+            }
+        }
+        assert_every_call_fits(&reduced, 400);
+
+        let large = run(&lines, 131_072, "notes");
+        assert_eq!(
+            large.calls[0].3, SUMMARY_OUTPUT_MAX,
+            "a large window stays capped"
+        );
+    }
+
     /// Given three notes that held all 18 action items, Apple's summary listed only the last
     /// note's 4. Told to take them from every part, it listed 17 or 18 in 3 of 4 runs.
     #[test]
@@ -663,7 +712,7 @@ mod tests {
         let (pass, system, user, max) = &run.calls[0];
         assert_eq!(
             (*pass, user.as_str(), *max),
-            (Pass::Summary, lines.concat().as_str(), 2048)
+            (Pass::Summary, lines.concat().as_str(), SUMMARY_OUTPUT_MAX)
         );
         assert_eq!(
             system,

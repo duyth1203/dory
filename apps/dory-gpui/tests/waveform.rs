@@ -5,7 +5,7 @@ mod common;
 
 use std::sync::Arc;
 
-use dory_core::app::{Dory, Options, Ports};
+use dory_core::app::{Dory, Ports};
 use dory_core::domain::{ChannelLayout, RecordingId, Timestamp, Waveform};
 use dory_core::ports::Takes as _;
 use dory_core::testing::playback::FakePlayback;
@@ -42,7 +42,7 @@ fn dory(takes: Arc<MemTakes>) -> Dory {
             machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         },
-        Options::default(),
+        common::options(),
     )
     .expect("open Dory")
 }

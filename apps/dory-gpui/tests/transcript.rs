@@ -121,7 +121,11 @@ fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>, Arc<Fake
             machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         },
-        Options::default(),
+        // Probes answer on this thread: GPUI's test scheduler fails a test woken from another.
+        Options {
+            probes: dory_core::Probes::Caller,
+            ..Options::default()
+        },
     )
     .expect("open Dory");
     let (window, app) = cx.update(|cx| {

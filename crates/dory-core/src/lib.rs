@@ -14,4 +14,4 @@ pub mod search;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
-pub use app::{Dory, Event, Options, Ports};
+pub use app::{Dory, Event, Options, Ports, Probes};

@@ -112,7 +112,7 @@ impl Rig {
                 clock_poll: Duration::from_millis(2),
                 level_every: Duration::from_millis(10),
                 retry_base_ms: 1,
-                ..Options::default()
+                ..common::options()
             },
         )
         .unwrap();

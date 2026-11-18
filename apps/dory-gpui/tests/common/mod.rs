@@ -118,9 +118,18 @@ pub fn dory_with(
             machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         },
-        Options::default(),
+        options(),
     )
     .expect("open Dory on the samples")
+}
+
+/// Dory's options for a UI test: probes answer on the asking thread, since GPUI's test scheduler
+/// fails a test that is woken from a thread it does not run.
+pub fn options() -> Options {
+    Options {
+        probes: dory_core::Probes::Caller,
+        ..Options::default()
+    }
 }
 
 /// The samples, past first run.
@@ -211,7 +220,7 @@ pub fn recordable(store: Arc<MemStore>) -> Dory {
             },
             clock_poll: std::time::Duration::from_millis(2),
             level_every: std::time::Duration::from_millis(10),
-            ..Options::default()
+            ..options()
         },
     )
     .expect("open a recordable Dory")

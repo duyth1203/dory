@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use dory_core::app::{Dory, Options, Ports};
+use dory_core::app::{Dory, Ports};
 use dory_core::domain::{
     ChannelLayout, Goal, LangSet, LangTag, LanguagePref, Ms, Priority, Processing, Recording,
     RecordingId, Settings, Timestamp,
@@ -188,7 +188,7 @@ fn open(rig: &Rig, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState
             machine: rig.machine.clone(),
             guard: None,
         },
-        Options::default(),
+        common::options(),
     )
     .unwrap();
     cx.executor().allow_parking();
@@ -789,7 +789,7 @@ fn upgraded(cx: &mut TestAppContext) -> (Upgraded, AnyWindowHandle, Entity<AppSt
             machine: Arc::new(FakeMachine::default()),
             guard: None,
         },
-        Options::default(),
+        common::options(),
     )
     .unwrap();
     cx.executor().allow_parking();

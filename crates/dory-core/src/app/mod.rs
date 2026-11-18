@@ -106,6 +106,20 @@ pub struct Options {
     pub event_capacity: usize,
     /// Overrides `Settings::processing` for this process, for benches.
     pub processing: Option<Processing>,
+    /// Where device, access, and model-list probes run.
+    pub probes: Probes,
+}
+
+/// Where a probe runs. A real probe can block for seconds (an OS permission prompt, a model
+/// server that does not answer), so the app gives each one its own thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Probes {
+    #[default]
+    OwnThread,
+    /// On the thread that asks, so the answer is ready when the future is first polled. Only for
+    /// fakes that answer at once: a deterministic UI test scheduler fails a test when a wake-up
+    /// comes from a thread it does not run.
+    Caller,
 }
 
 impl Default for Options {
@@ -121,6 +135,7 @@ impl Default for Options {
             retry_base_ms: 10_000,
             event_capacity: 256,
             processing: None,
+            probes: Probes::default(),
         }
     }
 }
@@ -255,6 +270,7 @@ pub struct Dory {
     recovery: Recovery,
     /// Serializes settings read-modify-write, so two edits never lose one another.
     settings_edit: Mutex<()>,
+    probes: Probes,
     /// Dropped after `Drop::drop` has shut everything down.
     _guard: Option<Box<dyn Any + Send + Sync>>,
 }
@@ -324,6 +340,7 @@ impl Dory {
             reader: LibraryReader {
                 store: db.store.clone(),
                 models: Arc::clone(&models),
+                probes: options.probes,
             },
             db,
             takes: ports.takes,
@@ -337,6 +354,7 @@ impl Dory {
             pipeline,
             recovery,
             settings_edit: Mutex::new(()),
+            probes: options.probes,
             _guard: ports.guard,
         })
     }
@@ -426,18 +444,26 @@ impl Drop for Dory {
     }
 }
 
-/// Runs `work` on its own thread and resolves with its result, so a probe never blocks the
-/// caller's executor. If the thread cannot start or panics, it resolves with `lost()` instead.
+/// Runs `work` where `probes` says and resolves with its result. On its own thread, a probe never
+/// blocks the caller's executor; if that thread cannot start or panics, it resolves with `lost()`.
 fn off_thread<T: Send + 'static>(
+    probes: Probes,
     work: impl FnOnce() -> T + Send + 'static,
     lost: impl FnOnce() -> T + Send + 'static,
 ) -> impl Future<Output = T> + Send + 'static {
     let (tx, rx) = async_channel::bounded(1);
-    let _ = std::thread::Builder::new()
-        .name("dory-probe".into())
-        .spawn(move || {
-            let _ = tx.send_blocking(work());
-        });
+    let answer = move || {
+        // The channel holds one value and nothing else sends, so this never waits.
+        let _ = tx.send_blocking(work());
+    };
+    match probes {
+        Probes::OwnThread => {
+            let _ = std::thread::Builder::new()
+                .name("dory-probe".into())
+                .spawn(answer);
+        }
+        Probes::Caller => answer(),
+    }
     async move { rx.recv().await.unwrap_or_else(|_| lost()) }
 }
 
@@ -484,14 +510,22 @@ impl Recorder<'_> {
         &self,
     ) -> impl Future<Output = Result<CaptureCaps, CaptureError>> + Send + 'static {
         let capture = Arc::clone(&self.dory.capture);
-        off_thread(move || Ok(capture.probe()), || Err(capture_lost()))
+        off_thread(
+            self.dory.probes,
+            move || Ok(capture.probe()),
+            || Err(capture_lost()),
+        )
     }
 
     pub fn input_devices(
         &self,
     ) -> impl Future<Output = Result<Vec<InputDevice>, CaptureError>> + Send + 'static {
         let capture = Arc::clone(&self.dory.capture);
-        off_thread(move || capture.input_devices(), || Err(capture_lost()))
+        off_thread(
+            self.dory.probes,
+            move || capture.input_devices(),
+            || Err(capture_lost()),
+        )
     }
 
     /// Shows the OS prompt if needed and resolves once the user answers.
@@ -501,6 +535,7 @@ impl Recorder<'_> {
     ) -> impl Future<Output = Result<Access, CaptureError>> + Send + 'static {
         let capture = Arc::clone(&self.dory.capture);
         off_thread(
+            self.dory.probes,
             move || capture.request_access(source),
             || Err(capture_lost()),
         )
@@ -1087,6 +1122,7 @@ fn turn_texts(transcript: &Transcript) -> Vec<String> {
 pub struct LibraryReader {
     store: Arc<dyn StoreRead>,
     models: Arc<Registries>,
+    probes: Probes,
 }
 
 impl LibraryReader {
@@ -1094,6 +1130,7 @@ impl LibraryReader {
         Ok(LibraryReader {
             store: ports.store,
             models: Arc::new(Registries::new(ports.stt, ports.llm, ports.diar)?),
+            probes: Probes::default(),
         })
     }
 
@@ -1189,6 +1226,7 @@ impl LibraryReader {
         let models = Arc::clone(&self.models);
         let store = Arc::clone(&self.store);
         off_thread(
+            self.probes,
             move || {
                 let settings = store.settings()?;
                 Ok(models
@@ -1250,4 +1288,57 @@ fn recover(
         report.interrupted.push(job.id);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    use super::{Probes, off_thread};
+
+    #[test]
+    fn a_caller_probe_answers_on_the_asking_thread_before_the_first_poll() {
+        let asking = std::thread::current().id();
+        let probe = off_thread(
+            Probes::Caller,
+            move || std::thread::current().id() == asking,
+            || false,
+        );
+        let mut probe = pin!(probe);
+        assert_eq!(
+            probe.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(true)
+        );
+    }
+
+    #[test]
+    fn an_own_thread_probe_answers_from_another_thread() {
+        let asking = std::thread::current().id();
+        let probe = off_thread(
+            Probes::OwnThread,
+            move || std::thread::current().id() != asking,
+            || false,
+        );
+        assert!(block_on(probe));
+    }
+
+    struct Unpark(std::thread::Thread);
+
+    impl std::task::Wake for Unpark {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    fn block_on<T>(future: impl Future<Output = T>) -> T {
+        let waker = Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
+        let mut future = pin!(future);
+        loop {
+            if let Poll::Ready(value) = future.as_mut().poll(&mut Context::from_waker(&waker)) {
+                return value;
+            }
+            std::thread::park();
+        }
+    }
 }

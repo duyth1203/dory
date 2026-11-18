@@ -9,7 +9,7 @@ mod common;
 use std::path::Path;
 use std::sync::Arc;
 
-use dory_core::app::{Dory, Options, Ports};
+use dory_core::app::{Dory, Ports};
 use dory_core::domain::{
     Channel, ChannelLayout, LanguagePref, Ms, Recording, RecordingId, Revision, Segment, SpeakerId,
     SpeakerNames, Summary, TimeRange, Timestamp, Transcript,
@@ -685,7 +685,7 @@ fn open_corpus_with(
             machine: Arc::new(dory_core::testing::FakeMachine::default()),
             guard: None,
         },
-        Options::default(),
+        common::options(),
     )
     .expect("open Dory");
     let prefs = Prefs {

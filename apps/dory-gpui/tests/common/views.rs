@@ -456,7 +456,7 @@ fn recording(views: &mut Vec<View>, cx: &mut TestAppContext) {
             },
             clock_poll: Duration::from_millis(2),
             level_every: Duration::from_millis(10),
-            ..Options::default()
+            ..super::options()
         },
     )
     .unwrap();

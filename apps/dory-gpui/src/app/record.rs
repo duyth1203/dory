@@ -10,7 +10,7 @@ use dory_core::app::{AppKind, Dory, Event, RecorderStatus, StartOptions};
 use dory_core::domain::{
     Goal, JobId, JobState, Ms, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
 };
-use dory_core::models::{Availability, Diar, KindTag, ModelId, ModelRef, Stt};
+use dory_core::models::{Availability, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use dory_core::ports::ProvisionError;
 use dory_core::ports::capture::CaptureIssue;
 use dory_core::recorder::{FinalizeReason, Limits};
@@ -25,10 +25,11 @@ use crate::notify::{self, Note, NoteKind};
 use crate::processing::{self, Facts, Outcome, Phase, Run, Spot};
 use crate::record_control::Live;
 
-/// Fills the model names the Download button shows.
+/// Fills the model names the Download button and the stopped-job sentences show.
 pub(super) fn load_models(core: &Core, cx: &mut Context<AppState>) {
     let stt = core.dory().models().list::<Stt>();
     let diar = core.dory().models().list::<Diar>();
+    let llm = core.dory().models().list::<Llm>();
     cx.spawn(async move |this, cx| {
         let mut models = HashMap::new();
         let left_to_download = |availability: &Availability| match availability {
@@ -54,6 +55,18 @@ pub(super) fn load_models(core: &Core, cx: &mut Context<AppState>) {
                 entry.id.erase(),
                 ModelInfo {
                     kind: KindTag::Diar,
+                    name: entry.display_name,
+                    bytes,
+                },
+            );
+        }
+        for row in llm.await.into_iter().flatten() {
+            let bytes = left_to_download(&row.status.availability);
+            let entry = row.status.entry;
+            models.insert(
+                entry.id.erase(),
+                ModelInfo {
+                    kind: KindTag::Llm,
                     name: entry.display_name,
                     bytes,
                 },
@@ -209,7 +222,8 @@ impl AppState {
         let kind = self.models.get(&model).map_or(KindTag::Stt, |m| m.kind);
         let done = match kind {
             KindTag::Diar => provision::<Diar>(self.core.dory(), &model),
-            _ => provision::<Stt>(self.core.dory(), &model),
+            KindTag::Llm => provision::<Llm>(self.core.dory(), &model),
+            KindTag::Stt => provision::<Stt>(self.core.dory(), &model),
         };
         self.downloads.insert(
             model.clone(),

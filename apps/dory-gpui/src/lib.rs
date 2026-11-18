@@ -84,9 +84,10 @@ use gpui_kit::{
     WindowBounds, WindowOptions, point, px, size,
 };
 
-/// Gives a library with no meeting languages the system's, as onboarding would. A library
-/// that skipped onboarding, such as an import, never had them chosen. `main` calls it once
-/// before any window opens, so the list is set before the first frame reads it.
+/// Gives a library with no meeting languages the system's, marked as a guess. A library that
+/// skipped onboarding, such as an import, never had them chosen, so speech follows the guess but
+/// a summary model for only some languages does not trust it. `main` calls it once before any
+/// window opens, so the list is set before the first frame reads it.
 pub fn seed_meeting_languages(
     dory: &dory_core::app::Dory,
     language: Option<dory_core::domain::LangTag>,
@@ -97,6 +98,7 @@ pub fn seed_meeting_languages(
     dory.update_settings(move |settings| {
         if settings.meeting_languages.is_empty() {
             settings.meeting_languages = vec![language];
+            settings.meeting_languages_guessed = true;
         }
     })
 }

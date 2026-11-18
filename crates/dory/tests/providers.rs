@@ -52,7 +52,7 @@ fn auto(rows: &[ModelStatus<Llm>]) -> Resolution<Llm> {
     let en = LangTag::parse("en").unwrap();
     let needs = LlmNeeds {
         main: Some(en.clone()),
-        all: vec![en],
+        spoken: vec![en],
     };
     resolve(&Choice::Auto, rows, &needs)
 }

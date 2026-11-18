@@ -597,7 +597,7 @@ mod tests {
     fn a_row_built_with_no_languages_fits_no_meeting() {
         let needs = |langs: &[&str]| LlmNeeds {
             main: None,
-            all: langs.iter().map(|t| LangTag::parse(t).unwrap()).collect(),
+            spoken: langs.iter().map(|t| LangTag::parse(t).unwrap()).collect(),
         };
         for state in [
             Availability::Available,

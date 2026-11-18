@@ -162,17 +162,25 @@ pub enum Edit {
     },
     /// The list keeps at least one language, so the last one stays.
     KeptLast,
+    /// The last language was only guessed from the Mac's, and picking it chose it.
+    Confirmed,
 }
 
 /// Adds `tag` at the end of the meeting languages, or removes it. Removing the language that
-/// Language is set to puts Language back on Automatic and returns the note that says so.
+/// Language is set to puts Language back on Automatic and returns the note that says so. Any edit
+/// makes the list the user's choice, so picking the one guessed language confirms it.
 pub fn toggle(settings: &mut Settings, tag: &LangTag) -> Edit {
+    let guessed = std::mem::take(&mut settings.meeting_languages_guessed);
     let Some(ix) = settings.meeting_languages.iter().position(|t| t == tag) else {
         settings.meeting_languages.push(tag.clone());
         return Edit::Added;
     };
     if settings.meeting_languages.len() <= 1 {
-        return Edit::KeptLast;
+        return if guessed {
+            Edit::Confirmed
+        } else {
+            Edit::KeptLast
+        };
     }
     settings.meeting_languages.remove(ix);
     let after = choices(&settings.meeting_languages, &settings.language);
@@ -547,5 +555,27 @@ mod tests {
         for lang in LANGUAGES {
             assert!(LangTag::parse(lang.code).is_ok(), "{}", lang.code);
         }
+    }
+
+    #[test]
+    fn any_pick_chooses_a_guessed_list_and_picking_its_one_language_confirms_it() {
+        let guessed = Settings {
+            meeting_languages: tags(&["en"]),
+            meeting_languages_guessed: true,
+            ..Settings::default()
+        };
+        let mut settings = guessed.clone();
+        assert_eq!(toggle(&mut settings, &tag("en")), Edit::Confirmed);
+        assert_eq!(settings.meeting_languages, tags(&["en"]));
+        assert!(!settings.meeting_languages_guessed);
+        assert_eq!(
+            toggle(&mut settings, &tag("en")),
+            Edit::KeptLast,
+            "once chosen, the last language just stays"
+        );
+        let mut settings = guessed;
+        assert_eq!(toggle(&mut settings, &tag("tl")), Edit::Added);
+        assert_eq!(settings.meeting_languages, tags(&["en", "tl"]));
+        assert!(!settings.meeting_languages_guessed);
     }
 }

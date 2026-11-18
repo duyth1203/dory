@@ -91,10 +91,10 @@ pub fn resolve<K: ModelKind>(
             let best = ranked
                 .clone()
                 .filter(|(_, fit)| !matches!(fit, Fit::No(_)))
-                .min_by_key(|(s, fit)| preference(s, *fit));
+                .min_by_key(|(s, fit)| preference(s, fit));
             match best {
                 Some((status, _)) => settle(status),
-                None => match ranked.min_by_key(|(s, fit)| preference(s, *fit)) {
+                None => match ranked.min_by_key(|(s, fit)| preference(s, fit)) {
                     Some((status, Fit::No(why))) => Resolution::Blocked(Blocker::Incompatible {
                         model: status.entry.id.erase(),
                         why,
@@ -113,7 +113,7 @@ fn no_model(kind: KindTag) -> Blocker {
 
 fn preference<K: ModelKind>(
     status: &ModelStatus<K>,
-    fit: Fit,
+    fit: &Fit,
 ) -> (u8, u8, bool, Reverse<i16>, ModelId<K>) {
     (
         status.availability.rank(),
@@ -441,7 +441,7 @@ mod tests {
                 &[],
                 &LlmNeeds {
                     main: None,
-                    all: Vec::new()
+                    spoken: Vec::new()
                 }
             ),
             Resolution::Skip
@@ -476,7 +476,7 @@ mod tests {
         }
         let vi = LlmNeeds {
             main: Some(tag("vi")),
-            all: vec![tag("vi")],
+            spoken: vec![tag("vi")],
         };
         let en_only = || LangSet::Only(vec![tag("en")]);
 
@@ -494,7 +494,7 @@ mod tests {
                 vec![llm("a/en", en_only(), Availability::Ready)],
                 Resolution::Blocked(Blocker::Incompatible {
                     model: mref("a/en"),
-                    why: Mismatch::LanguageUnsupported,
+                    why: Mismatch::LanguageUnsupported(vec![tag("vi")]),
                 }),
             ),
             (
@@ -541,7 +541,7 @@ mod tests {
                 vec![llm("a/en", en_only(), Availability::Ready)],
                 Resolution::Blocked(Blocker::Incompatible {
                     model: mref("a/en"),
-                    why: Mismatch::LanguageUnsupported,
+                    why: Mismatch::LanguageUnsupported(vec![tag("vi")]),
                 }),
             ),
         ];
@@ -607,9 +607,9 @@ mod tests {
             false,
             Availability::Ready,
         );
-        let needs = |all: &[&str]| LlmNeeds {
+        let needs = |spoken: &[&str]| LlmNeeds {
             main: None,
-            all: all.iter().map(|t| tag(t)).collect(),
+            spoken: spoken.iter().map(|t| tag(t)).collect(),
         };
         let statuses = [gemma, apple];
         assert_eq!(

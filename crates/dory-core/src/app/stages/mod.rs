@@ -53,6 +53,15 @@ fn permanent(message: &str) -> StageError {
     })
 }
 
+/// The language an engine refused, unless it could not name it.
+fn named(tag: LangTag) -> Vec<LangTag> {
+    if tag.as_str() == UNDETERMINED {
+        Vec::new()
+    } else {
+        vec![tag]
+    }
+}
+
 /// An engine error with the model it came from, so a missing model or language becomes a
 /// blocker the user can act on.
 fn engine_failed(model: ModelRef) -> impl FnOnce(EngineError) -> StageError {
@@ -60,9 +69,9 @@ fn engine_failed(model: ModelRef) -> impl FnOnce(EngineError) -> StageError {
         EngineError::ModelMissing(_) => {
             StageError::Blocked(Blocker::NeedsProvision { model, bytes: None })
         }
-        EngineError::UnsupportedLanguage(_) => StageError::Blocked(Blocker::Incompatible {
+        EngineError::UnsupportedLanguage(tag) => StageError::Blocked(Blocker::Incompatible {
             model,
-            why: Mismatch::LanguageUnsupported,
+            why: Mismatch::LanguageUnsupported(named(tag)),
         }),
         other => failed(other),
     }
@@ -715,7 +724,7 @@ fn translate(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let needs = LlmNeeds::new(
         Some(target.clone()),
         &recording.language,
-        &cx.settings.meeting_languages,
+        cx.settings.chosen_meeting_languages(),
         &transcript.detected_languages,
     );
     let Some(llm_id) = settle(
@@ -871,7 +880,7 @@ fn translate_summary(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let needs = LlmNeeds::new(
         Some(target.clone()),
         &recording.language,
-        &cx.settings.meeting_languages,
+        cx.settings.chosen_meeting_languages(),
         &read,
     );
     // Turning summaries off or having no model is not a quiet skip here: the user asked for this.
@@ -978,7 +987,7 @@ fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let mut needs = LlmNeeds::new(
         target.or_else(|| transcript.main_language().cloned()),
         &recording.language,
-        &cx.settings.meeting_languages,
+        cx.settings.chosen_meeting_languages(),
         &transcript.detected_languages,
     );
     let names = store.speaker_names(id).map_err(failed)?;
@@ -1034,9 +1043,9 @@ fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
                 // A refusal that names the language rules out every other model that cannot read it.
                 if let EngineError::UnsupportedLanguage(tag) = &error
                     && tag.as_str() != UNDETERMINED
-                    && !needs.all.contains(tag)
+                    && !needs.spoken.contains(tag)
                 {
-                    needs.all.push(tag.clone());
+                    needs.spoken.push(tag.clone());
                 }
                 last_refusal = Some((llm_id.erase(), error));
                 refused.push(llm_id);

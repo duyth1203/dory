@@ -56,7 +56,7 @@ fn a_tagalog_and_english_meeting_fits_whisper_but_not_parakeet() {
     assert_eq!(Stt::fit(caps("whisper-turbo"), &mixed), Fit::Yes);
     assert_eq!(
         Stt::fit(caps("parakeet-tdt-0.6b-v3"), &mixed),
-        Fit::No(Mismatch::LanguageUnsupported)
+        Fit::No(Mismatch::LanguageUnsupported(vec![tag("tl")]))
     );
 
     for pinned in ["tl", "fil"] {

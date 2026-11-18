@@ -55,7 +55,12 @@ impl AppKind for Llm {
             LanguagePref::Auto => None,
         };
         let main = settings.output_language.clone().or(main);
-        LlmNeeds::new(main, &settings.language, &settings.meeting_languages, &[])
+        LlmNeeds::new(
+            main,
+            &settings.language,
+            settings.chosen_meeting_languages(),
+            &[],
+        )
     }
 }
 

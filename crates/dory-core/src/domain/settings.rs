@@ -13,6 +13,10 @@ pub struct Settings {
     /// The languages meetings are held in. With `language` on Auto, speech models must cover all
     /// of them. Empty means any.
     pub meeting_languages: Vec<LangTag>,
+    /// The app filled `meeting_languages` from the Mac's language and nobody has chosen them yet.
+    /// Speech still follows the guess, but summary models do not trust it: an English Mac says
+    /// nothing about a meeting held half in Tagalog.
+    pub meeting_languages_guessed: bool,
     /// The language transcripts and summaries are written in. `None` is Same as spoken: nothing
     /// is translated and each summary follows the meeting's own language. Applies to recordings
     /// processed after it is set.
@@ -54,6 +58,7 @@ impl Default for Settings {
             diar: Choice::Auto,
             language: LanguagePref::Auto,
             meeting_languages: Vec::new(),
+            meeting_languages_guessed: false,
             output_language: None,
             auto_process: true,
             processing: Processing::Auto,
@@ -63,6 +68,15 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// The meeting languages the user chose, or none while they are only a guess.
+    pub fn chosen_meeting_languages(&self) -> &[LangTag] {
+        if self.meeting_languages_guessed {
+            &[]
+        } else {
+            &self.meeting_languages
+        }
+    }
+
     /// The goal a new job gets: `goal`, plus the translate stage when an output language is set.
     /// This is the one place the setting reaches the job, so Same as spoken queues exactly the
     /// jobs it always did.
@@ -98,6 +112,27 @@ mod tests {
         assert!(english.goal_for(Goal::ALL).wants(Stage::Translate));
         assert!(english.goal_for(Goal::TRANSCRIBE).wants(Stage::Translate));
         assert_eq!(english.goal_for(Goal::SUMMARIZE), Goal::SUMMARIZE);
+    }
+
+    #[test]
+    fn a_guessed_meeting_language_is_unknown_to_summaries_but_still_guides_speech() {
+        use crate::app::AppKind;
+        use crate::models::{Llm, Stt};
+        let english = vec![LangTag::parse("en").unwrap()];
+        let guessed = Settings {
+            meeting_languages: english.clone(),
+            meeting_languages_guessed: true,
+            ..Settings::default()
+        };
+        assert_eq!(guessed.chosen_meeting_languages(), &[] as &[LangTag]);
+        assert_eq!(Llm::listing_needs(&guessed).spoken, Vec::<LangTag>::new());
+        assert_eq!(Stt::listing_needs(&guessed).expected, english);
+        let chosen = Settings {
+            meeting_languages_guessed: false,
+            ..guessed
+        };
+        assert_eq!(chosen.chosen_meeting_languages(), english.as_slice());
+        assert_eq!(Llm::listing_needs(&chosen).spoken, english);
     }
 
     #[test]

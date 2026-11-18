@@ -2263,7 +2263,7 @@ fn a_pinned_summary_does_not_fall_back() {
             stage: Stage::Summarize,
             blocker: Blocker::Incompatible {
                 model: first.erase(),
-                why: Mismatch::LanguageUnsupported,
+                why: Mismatch::LanguageUnsupported(Vec::new()),
             },
         },
     );
@@ -2306,7 +2306,7 @@ fn a_summary_no_model_can_read_blocks_and_names_the_language() {
             stage: Stage::Summarize,
             blocker: Blocker::Incompatible {
                 model: dory_core::models::ModelRef::parse(LLM).unwrap(),
-                why: Mismatch::LanguageUnsupported,
+                why: Mismatch::LanguageUnsupported(vec![tag("tl")]),
             },
         },
     );
@@ -2456,7 +2456,7 @@ fn a_fallback_that_cannot_run_now_reports_the_refusal() {
                     Stage::Summarize,
                     Blocker::Incompatible {
                         model: dory_core::models::ModelRef::parse("fake/first").unwrap(),
-                        why: Mismatch::LanguageUnsupported,
+                        why: Mismatch::LanguageUnsupported(Vec::new()),
                     }
                 ),
                 "never a download prompt for a model that did not see the meeting"
@@ -2498,5 +2498,68 @@ fn a_refused_language_rules_out_the_next_model_that_cannot_read_it() {
             .produced_by
             .as_str(),
         LLM
+    );
+}
+
+/// A Taglish meeting in a library whose meeting languages were filled from the Mac's English.
+fn guessed_english_meeting(choice: Choice<Llm>) -> (Rig, RecordingId, Arc<FakeLanguageModel>) {
+    let english_only = Arc::new(FakeLanguageModel::new(FIRST_REPLY));
+    let rig = Rig::new(
+        FakeTranscriber::new().with_segments(
+            Channel::Mic,
+            &[(0, 900, 0, "hello"), (1_000, 1_900, 0, "kumusta")],
+        ),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    )
+    .with_summary_model(
+        preferred("fake/english-only", LangSet::Only(vec![tag("en")])),
+        english_only.clone(),
+    );
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            llm: choice,
+            meeting_languages: vec![tag("en")],
+            meeting_languages_guessed: true,
+            ..Settings::default()
+        })])
+        .unwrap();
+    let id = rig.seed("taglish", ChannelLayout::MicOnly, 10);
+    (rig, id, english_only)
+}
+
+#[test]
+fn a_guessed_meeting_language_leaves_auto_on_a_model_for_any_language() {
+    let (rig, id, english_only) = guessed_english_meeting(Choice::Auto);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    let summary = dory.library().summary(&id).unwrap().unwrap();
+    assert_eq!(summary.produced_by.as_str(), LLM);
+    assert!(
+        english_only.prompts().is_empty(),
+        "the English-only model never saw Tagalog"
+    );
+}
+
+#[test]
+fn a_guessed_meeting_language_blocks_a_pinned_limited_model_as_unknown() {
+    let pinned: ModelId<Llm> = "fake/english-only".parse().unwrap();
+    let (rig, id, english_only) = guessed_english_meeting(Choice::Pinned(pinned.clone()));
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Summarize,
+            blocker: Blocker::Incompatible {
+                model: pinned.erase(),
+                why: Mismatch::LanguagesUnknown,
+            },
+        },
+    );
+    assert!(
+        english_only.prompts().is_empty(),
+        "the English-only model never saw Tagalog"
     );
 }

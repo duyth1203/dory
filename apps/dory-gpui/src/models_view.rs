@@ -88,7 +88,10 @@ impl ListKind for Llm {
     }
 
     fn wanted(settings: &Settings) -> Vec<LangTag> {
-        Llm::listing_needs(settings).all
+        let needs = Llm::listing_needs(settings);
+        let mut wanted = needs.spoken;
+        wanted.extend(needs.main.filter(|main| !wanted.contains(main)));
+        wanted
     }
 
     fn rows(models: &Models) -> Option<&[ModelRow<Self>]> {
@@ -170,20 +173,16 @@ pub fn unavailable_text(why: &Unavailable) -> String {
 pub const NOTHING_RECOGNIZED: &str = "Heard speech but recognized no words. Add the meeting's languages in Settings, then transcribe again.";
 
 /// The core decides the fit. This names it, and for a language mismatch names the languages.
-pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> Option<String> {
+pub fn fit_text(fit: &Fit) -> Option<String> {
     let why = match fit {
         Fit::Yes => return None,
         Fit::Degraded(why) | Fit::No(why) => why,
     };
     Some(match why {
-        Mismatch::LanguageUnsupported => {
-            let missing = missing_languages::<K>(caps, settings);
-            if missing.is_empty() {
-                "Doesn't support this language".into()
-            } else {
-                format!("Doesn't support {}", missing.join(" or "))
-            }
+        Mismatch::LanguageUnsupported(tags) if tags.is_empty() => {
+            "Doesn't support this language".into()
         }
+        Mismatch::LanguageUnsupported(tags) => format!("Doesn't support {}", in_words(tags)),
         Mismatch::LanguagesUnknown => "Needs your meeting languages set in Settings".into(),
         Mismatch::OneLanguagePerMeeting => "Handles one language per meeting".into(),
         Mismatch::AutoLanguageUnsupported => "Needs a language chosen, can't detect one".into(),
@@ -194,16 +193,13 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
 }
 
 /// The names of the languages the settings ask for that the model cannot read.
-pub fn missing_languages<K: ListKind>(caps: &K::Caps, settings: &Settings) -> Vec<String> {
-    let set = K::languages(caps);
-    K::wanted(settings)
-        .iter()
-        .filter(|tag| !set.supports(tag))
-        .map(languages::name)
-        .collect()
+/// "Tagalog", or "Tagalog or Vietnamese", for the languages a model cannot read.
+pub fn in_words(tags: &[LangTag]) -> String {
+    let names: Vec<String> = tags.iter().map(languages::name).collect();
+    languages::name_list(&names, "or")
 }
 
-pub fn row<K: ListKind>(row: &ModelRow<K>, settings: &Settings, download: Option<Download>) -> Row {
+pub fn row<K: ListKind>(row: &ModelRow<K>, download: Option<Download>) -> Row {
     let entry = &row.status.entry;
     let state = match (&row.status.availability, download) {
         (_, Some(d)) => RowState::Downloading(d.percent().map(|p| p.get())),
@@ -230,7 +226,7 @@ pub fn row<K: ListKind>(row: &ModelRow<K>, settings: &Settings, download: Option
         size,
         download,
         disk,
-        fit: fit_text::<K>(row.fit, &entry.caps, settings),
+        fit: fit_text(&row.fit),
         usable: !matches!(row.fit, Fit::No(_)),
         state,
         chosen: row.chosen,
@@ -541,7 +537,9 @@ impl Models {
             languages::Edit::Removed { note: Some(note) } => {
                 self.language_note = Some(note.clone().into());
             }
-            languages::Edit::Added | languages::Edit::Removed { note: None } => {}
+            languages::Edit::Added
+            | languages::Edit::Removed { note: None }
+            | languages::Edit::Confirmed => {}
         }
         let saved = self.app.update(cx, |app, cx| {
             app.edit_settings(
@@ -961,11 +959,7 @@ impl<K: ListKind> Render for ModelList<K> {
                 .map(|(name, _)| name)
                 .filter(|name| family != Some(*name));
             family = grouped.map(|(name, _)| name);
-            let worded = row(
-                model_row,
-                &settings,
-                app.read(cx).download_of(&entry.id.erase()),
-            );
+            let worded = row(model_row, app.read(cx).download_of(&entry.id.erase()));
             let model = worded.model.clone();
             let about_focus = self.controls.focus(&model, "about", cx);
             let open = self.controls.open.as_ref() == Some(&model);
@@ -1106,11 +1100,7 @@ impl Render for SpeechStep {
             );
         };
         let entry = model_row.status.entry.clone();
-        let worded = row(
-            model_row,
-            &settings,
-            app.read(cx).download_of(&entry.id.erase()),
-        );
+        let worded = row(model_row, app.read(cx).download_of(&entry.id.erase()));
         let model = worded.model.clone();
         let this = cx.entity().downgrade();
         let toggle = {
@@ -1210,7 +1200,6 @@ mod tests {
             &model_row(Availability::NeedsProvision {
                 bytes: Some(487_211_443),
             }),
-            &settings,
             None,
         );
         assert_eq!(missing.size.as_deref(), Some("487 MB to download"));
@@ -1218,7 +1207,7 @@ mod tests {
         assert_eq!(info.download.as_deref(), Some("487 MB"));
         assert_eq!(info.disk.as_deref(), Some("671 MB"));
 
-        let ready = row(&model_row(Availability::Ready), &settings, None);
+        let ready = row(&model_row(Availability::Ready), None);
         assert_eq!(ready.size.as_deref(), Some("671 MB on disk"));
         let info = about(&entry, &ready, &settings);
         assert_eq!(info.download, None, "nothing left to download");

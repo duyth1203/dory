@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use dory_core::app::{LightReason, RecorderStatus};
 use dory_core::domain::{
-    Blocker, FailureCause, FailureClass, Fraction, JobState, Ms, Processing, RecordingId,
+    Blocker, FailureCause, FailureClass, Fraction, JobState, LangTag, Ms, Processing, RecordingId,
     RecordingRow, Stage, SummaryFlag,
 };
 use dory_core::models::{KindTag, Mismatch, ModelRef, UnavailableReason};
@@ -32,7 +32,7 @@ impl Download {
     }
 }
 
-/// A speech or speaker model the Download button names, from the catalog.
+/// A model the Download button or a stopped job's sentence names, from the catalog.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModelInfo {
     pub kind: KindTag,
@@ -146,6 +146,12 @@ pub enum Problem {
         started: bool,
     },
     SummaryModelMissing,
+    /// The summary model cannot read these languages of the meeting. Empty when it refused without
+    /// naming them.
+    SummaryLanguage {
+        name: String,
+        languages: Vec<LangTag>,
+    },
     /// Anything else the summary stage reports, in the core's words.
     Summary(String),
     /// The translate stage failed, in the core's words.
@@ -627,9 +633,24 @@ impl Problem {
                     return Problem::SummaryTranslationModelMissing;
                 }
                 // Translating runs on the summary model, so it is blocked the way a summary is.
-                if matches!(stage, Stage::Summarize | Stage::Translate)
-                    || matches!(blocker, Blocker::NoModel { kind: KindTag::Llm })
-                {
+                let name = |model: &ModelRef| {
+                    models
+                        .get(model)
+                        .map_or_else(|| model.to_string(), |m| m.name.clone())
+                };
+                if matches!(stage, Stage::Summarize | Stage::Translate) {
+                    return match blocker {
+                        Blocker::Incompatible {
+                            model,
+                            why: Mismatch::LanguageUnsupported(languages),
+                        } => Problem::SummaryLanguage {
+                            name: name(model),
+                            languages: languages.clone(),
+                        },
+                        _ => Problem::SummaryModelMissing,
+                    };
+                }
+                if matches!(blocker, Blocker::NoModel { kind: KindTag::Llm }) {
                     return Problem::SummaryModelMissing;
                 }
                 match blocker {
@@ -648,6 +669,17 @@ impl Problem {
                         why: Mismatch::NothingRecognized,
                         ..
                     } => Problem::NothingRecognized,
+                    Blocker::Incompatible {
+                        model,
+                        why: Mismatch::LanguageUnsupported(languages),
+                    } => Problem::Transcription {
+                        text: format!(
+                            "{} can't transcribe {}.",
+                            name(model),
+                            these_languages(languages)
+                        ),
+                        started: false,
+                    },
                     other => Problem::Transcription {
                         text: blocked_text(other),
                         started: false,
@@ -685,7 +717,9 @@ impl Problem {
 
     pub fn stage(&self) -> Stage {
         match self {
-            Problem::SummaryModelMissing | Problem::Summary(_) => Stage::Summarize,
+            Problem::SummaryModelMissing
+            | Problem::SummaryLanguage { .. }
+            | Problem::Summary(_) => Stage::Summarize,
             Problem::Translation(_) => Stage::Translate,
             Problem::SummaryTranslationModelMissing | Problem::SummaryTranslation(_) => {
                 Stage::TranslateSummary
@@ -705,7 +739,9 @@ impl Problem {
             }
             Problem::AudioUnreadable => "Can't read the audio",
             Problem::NothingRecognized => "No words recognized",
-            Problem::SummaryModelMissing | Problem::Summary(_) => "No summary yet",
+            Problem::SummaryModelMissing
+            | Problem::SummaryLanguage { .. }
+            | Problem::Summary(_) => "No summary yet",
             Problem::Translation(_) => "No translation yet",
             Problem::SummaryTranslationModelMissing | Problem::SummaryTranslation(_) => {
                 "The summary wasn't translated"
@@ -738,6 +774,10 @@ impl Problem {
             Problem::SummaryModelMissing => {
                 "The transcript is ready, but summaries aren't set up.".into()
             }
+            Problem::SummaryLanguage { name, languages } => format!(
+                "The transcript is ready, but {name} can't read {}.",
+                these_languages(languages)
+            ),
             Problem::Summary(message) => format!(
                 "The transcript is ready, but the summary failed: {}",
                 sentence_end(message)
@@ -784,6 +824,7 @@ impl Problem {
             Problem::Transcription { started: false, .. } => "Didn't start",
             Problem::Transcription { .. } => "Needs attention",
             Problem::SummaryModelMissing
+            | Problem::SummaryLanguage { .. }
             | Problem::Summary(_)
             | Problem::Translation(_)
             | Problem::SummaryTranslationModelMissing
@@ -798,9 +839,9 @@ impl Problem {
             } => return None,
             Problem::SpeechModelMissing { model, .. } => Fix::Download(model.clone()),
             Problem::NoSpeechModel => Fix::ChooseSpeechModel,
-            Problem::SummaryModelMissing | Problem::SummaryTranslationModelMissing => {
-                Fix::SetUpSummaries
-            }
+            Problem::SummaryModelMissing
+            | Problem::SummaryLanguage { .. }
+            | Problem::SummaryTranslationModelMissing => Fix::SetUpSummaries,
             Problem::DiskFull => Fix::FreeUpSpace,
             Problem::AudioUnreadable => Fix::ShowInFinder,
             Problem::NothingRecognized => Fix::AddMeetingLanguages,
@@ -912,6 +953,15 @@ pub(crate) fn spoken_start(at: Ms) -> String {
             1 => "in about 1 minute".into(),
             n => format!("in about {n} minutes"),
         }
+    }
+}
+
+/// "Tagalog", or "this language" when the model refused without naming one.
+fn these_languages(languages: &[LangTag]) -> String {
+    if languages.is_empty() {
+        "this language".into()
+    } else {
+        crate::models_view::in_words(languages)
     }
 }
 
@@ -1535,6 +1585,84 @@ mod tests {
                 RowStatus::NeedsAttention
             );
         }
+    }
+
+    fn named(model: &ModelRef, kind: KindTag, name: &str) -> HashMap<ModelRef, ModelInfo> {
+        HashMap::from([(
+            model.clone(),
+            ModelInfo {
+                kind,
+                name: name.into(),
+                bytes: None,
+            },
+        )])
+    }
+
+    fn cannot_read(stage: Stage, model: &ModelRef, languages: &[&str]) -> JobState {
+        JobState::Blocked {
+            stage,
+            blocker: Blocker::Incompatible {
+                model: model.clone(),
+                why: Mismatch::LanguageUnsupported(
+                    languages
+                        .iter()
+                        .map(|t| LangTag::parse(t).unwrap())
+                        .collect(),
+                ),
+            },
+        }
+    }
+
+    #[test]
+    fn a_summary_model_that_cannot_read_a_language_names_the_model_and_the_language() {
+        let apple = ModelRef::parse("apple/foundation-model").unwrap();
+        let models = named(&apple, KindTag::Llm, "Apple Intelligence");
+        let problem = Problem::of(
+            &cannot_read(Stage::Summarize, &apple, &["tl"]),
+            &models,
+            &HashMap::new(),
+        );
+        assert_eq!(
+            problem.text(),
+            "The transcript is ready, but Apple Intelligence can't read Tagalog."
+        );
+        assert_eq!(problem.headline(), "No summary yet");
+        assert_eq!(problem.stage(), Stage::Summarize);
+        assert_eq!(problem.fix(), Some(Fix::SetUpSummaries));
+        assert_eq!(
+            Problem::of(
+                &cannot_read(Stage::Translate, &apple, &["tl", "vi"]),
+                &models,
+                &HashMap::new()
+            )
+            .text(),
+            "The transcript is ready, but Apple Intelligence can't read Tagalog or Vietnamese."
+        );
+        assert_eq!(
+            Problem::of(
+                &cannot_read(Stage::Summarize, &apple, &[]),
+                &HashMap::new(),
+                &HashMap::new()
+            )
+            .text(),
+            "The transcript is ready, but apple/foundation-model can't read this language.",
+            "an engine refusal that names no language, before the model list loads"
+        );
+    }
+
+    #[test]
+    fn a_speech_model_that_cannot_transcribe_a_language_names_it() {
+        let speech = ModelRef::parse("apple/speech").unwrap();
+        let problem = Problem::of(
+            &cannot_read(Stage::Transcribe, &speech, &["tl"]),
+            &named(&speech, KindTag::Stt, "Apple Speech"),
+            &HashMap::new(),
+        );
+        assert_eq!(
+            problem.text(),
+            "Your recording is saved, but Apple Speech can't transcribe Tagalog."
+        );
+        assert_eq!(problem.headline(), "Transcription didn't start");
     }
 
     #[test]

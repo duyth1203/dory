@@ -705,8 +705,8 @@ fn notes_too_long_for_one_summary_pass_are_merged_first() {
 /// Gemma stops a note at `max_output_tokens` of its own tokens, but the Ollama adapter counts
 /// a third or more above that, so a note at its cap counts past the cap. Merged notes reach the
 /// cap more often than notes on transcript, so a run that merges twice can be left with notes
-/// no two of which fit one capped pass. A two-hour meeting in a 32k context hit that in 3 of 9
-/// live runs.
+/// no two of which fit one capped pass. Live, gemma4:e4b stopped a merged note at 1,024 tokens
+/// that the adapter counted as 1,509, and a two-hour meeting failed this way in 3 of 9 runs.
 #[test]
 fn a_two_hour_meeting_whose_merged_notes_count_past_their_cap_is_still_summarized() {
     let context = 32_768;

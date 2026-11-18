@@ -110,8 +110,8 @@ pub(crate) fn summary_output(context: u32) -> u32 {
     (context / 4).min(4096)
 }
 
-/// Notes stay small enough that any two of them fit one merge pass, so each round of merging at
-/// least halves the notes.
+/// Notes stay small enough that two of them normally fit one merge pass. The cap is in the
+/// model's own tokens, which `count` only estimates, so the merge loop does not rely on it.
 pub(crate) fn notes_output(context: u32) -> u32 {
     (context / 8).min(1024)
 }
@@ -122,15 +122,15 @@ pub(crate) fn notes_output(context: u32) -> u32 {
 pub(crate) const MAX_PASS_INPUT: u32 = 3_000;
 
 /// Tokens left for the input once the system prompt, the output, and the overhead are set aside,
-/// up to [`MAX_PASS_INPUT`].
-pub(crate) fn input_budget(context: u32, system: u32, output: u32) -> u32 {
+/// up to [`MAX_PASS_INPUT`], or up to `floor` when a pass needs more to make progress.
+pub(crate) fn input_budget(context: u32, system: u32, output: u32, floor: u32) -> u32 {
     context
         .saturating_sub(
             system
                 .saturating_add(output)
                 .saturating_add(PROMPT_OVERHEAD),
         )
-        .min(MAX_PASS_INPUT)
+        .min(MAX_PASS_INPUT.max(floor))
 }
 
 /// Packs `items` in order into chunks of at most `budget` tokens. An item over the budget on its
@@ -207,7 +207,7 @@ pub(crate) fn summarize<E>(
     if passes.fits(Prompt::SummaryOfTranscript, &transcript) {
         return passes.run(Prompt::SummaryOfTranscript, &transcript);
     }
-    let budget = passes.budget(Prompt::NotesOfTranscript);
+    let budget = passes.budget(Prompt::NotesOfTranscript, 0);
     if budget == 0 {
         return Err(SummaryError::ContextTooSmall);
     }
@@ -220,10 +220,14 @@ pub(crate) fn summarize<E>(
     loop {
         let items: Vec<String> = notes.iter().map(|n| format!("{}\n\n", n.trim())).collect();
         let all = items.concat();
-        if passes.fits(Prompt::SummaryOfNotes, &all) {
+        // A note can count past its cap, so the cap alone does not keep two notes within
+        // MAX_PASS_INPUT. The summary takes at least one whole note and a merge at least two,
+        // which halves the notes each round for as long as the context holds them.
+        let largest = items.iter().map(|item| count(item)).max().unwrap_or(0);
+        if count(&all) <= passes.budget(Prompt::SummaryOfNotes, largest) {
             return passes.run(Prompt::SummaryOfNotes, &all);
         }
-        let budget = passes.budget(Prompt::NotesOfNotes);
+        let budget = passes.budget(Prompt::NotesOfNotes, largest.saturating_mul(2));
         let groups = plan_chunks(&items, budget, count);
         if budget == 0 || groups.len() >= notes.len() {
             return Err(SummaryError::ContextTooSmall);
@@ -268,13 +272,13 @@ impl<E> Passes<'_, E> {
         }
     }
 
-    fn budget(&self, prompt: Prompt) -> u32 {
+    fn budget(&self, prompt: Prompt, floor: u32) -> u32 {
         let system = (self.count)(&self.system(prompt));
-        input_budget(self.context, system, self.output(prompt))
+        input_budget(self.context, system, self.output(prompt), floor)
     }
 
     fn fits(&self, prompt: Prompt, input: &str) -> bool {
-        (self.count)(input) <= self.budget(prompt)
+        (self.count)(input) <= self.budget(prompt, 0)
     }
 
     fn run(&mut self, prompt: Prompt, user: &str) -> Result<String, SummaryError<E>> {
@@ -548,6 +552,30 @@ mod tests {
         assert!(merges > 0, "some notes passes read notes, not transcript");
         assert_eq!(run.calls.last().unwrap().0, Pass::Summary);
         assert_progress_climbs_to_done(&run);
+    }
+
+    /// Two notes three times their cap: the merge takes both past MAX_PASS_INPUT, and the summary
+    /// takes the one merged note whole.
+    #[test]
+    fn notes_counted_far_past_their_cap_still_reach_the_summary() {
+        let lines: Vec<String> = (0..400).map(|n| line(n, 10)).collect();
+        let context = 32_768;
+        let long_note = vec!["note"; 3 * notes_output(context) as usize].join(" ");
+        let run = run(&lines, context, &long_note);
+        assert_eq!(run.result, Ok("the summary".to_owned()));
+        assert_every_call_fits(&run, context);
+        assert_eq!(run.calls.len(), 4, "two notes, one merge, one summary");
+        assert_progress_climbs_to_done(&run);
+    }
+
+    #[test]
+    fn notes_no_two_of_which_fit_the_context_are_refused() {
+        let lines: Vec<String> = (0..60).map(|n| line(n, 10)).collect();
+        let context = 400;
+        let huge_note = vec!["note"; 200].join(" ");
+        let run = run(&lines, context, &huge_note);
+        assert_eq!(run.result, Err(SummaryError::ContextTooSmall));
+        assert_every_call_fits(&run, context);
     }
 
     #[test]

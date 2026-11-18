@@ -265,6 +265,8 @@ pub struct Session {
     generation: u64,
     query: Option<Query>,
     found: Option<Matches>,
+    /// The transcript text the turns' matches were found in.
+    matched: TranscriptText,
     reveal: u64,
     summary: Entity<TextViewState>,
     /// The rendered summary the matches were counted over.
@@ -305,6 +307,7 @@ impl Session {
             generation: 0,
             query,
             found: None,
+            matched: TranscriptText::default(),
             reveal: 0,
             summary,
             counted: None,
@@ -384,6 +387,12 @@ impl Session {
         self.found.as_ref()
     }
 
+    /// The transcript text whose turns hold the matches, so a view marks a turn only while it
+    /// shows that text.
+    pub fn matched(&self) -> TranscriptText {
+        self.matched
+    }
+
     /// The state the Summary tab draws. Only the session sets its text.
     pub fn summary_state(&self) -> &Entity<TextViewState> {
         &self.summary
@@ -416,9 +425,8 @@ impl Session {
         let found = self.found.as_mut()?;
         let at = found.step(delta).clone();
         let spoken = found.spoken(&detail.turns);
-        // Matches are found in what was spoken and written, so stepping shows those texts, where
-        // they are marked.
-        self.text = TranscriptText::Spoken;
+        // Stepping shows the texts the matches were found in, where they are marked.
+        self.text = self.matched;
         self.set_summary_version(SummaryVersion::Original, cx);
         self.reveal += 1;
         cx.notify();
@@ -428,6 +436,9 @@ impl Session {
     /// Lists the query's matches in the loaded detail. A reload keeps the current match, and only
     /// a new query or the first load asks the views to jump to it. The summary's matches wait for
     /// its text to be rendered, and the jump with them.
+    ///
+    /// The turns' matches come from one transcript text: the one shown for a jump, else the one
+    /// matched before, unless only the other text holds a match.
     fn rematch(&mut self, jump: bool, cx: &mut Context<Self>) {
         let kept = self.found.take();
         self.counted = None;
@@ -446,8 +457,26 @@ impl Session {
             let ready = rendered.source() == self.shown_markdown(&detail);
             let summary = if ready { rendered.as_str() } else { "" };
             let title = crate::library::given_title(&detail.recording).unwrap_or_default();
-            let turns: Vec<&str> = detail.turns.iter().map(|t| t.text.as_str()).collect();
-            self.found = Matches::open(&query, title, &turns, summary).map(|opened| match kept {
+            let first = if jump { self.text } else { self.matched };
+            let other = match first {
+                TranscriptText::Translated => TranscriptText::Spoken,
+                TranscriptText::Spoken => TranscriptText::Translated,
+            };
+            let open = |text: TranscriptText| {
+                let turns: Vec<&str> = detail.shown(text).iter().map(|t| t.text.as_str()).collect();
+                Matches::open(&query, title, &turns, summary)
+            };
+            let mut opened = open(first);
+            self.matched = first;
+            if detail.translated_turns.is_some() && !opened.as_ref().is_some_and(Matches::in_turns)
+            {
+                let in_other = open(other);
+                if in_other.as_ref().is_some_and(Matches::in_turns) {
+                    opened = in_other;
+                    self.matched = other;
+                }
+            }
+            self.found = opened.map(|opened| match kept {
                 Some(old) if !jump && old.query() == &query => opened.on(old.current()),
                 _ => opened,
             });
@@ -458,7 +487,7 @@ impl Session {
                 self.jump_pending |= jump;
             }
             if jump && self.found.is_some() {
-                self.text = TranscriptText::Spoken;
+                self.text = self.matched;
                 self.reveal += 1;
             }
         }

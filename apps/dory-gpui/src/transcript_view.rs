@@ -472,16 +472,17 @@ impl TranscriptView {
         let current = self.cursor == Some(ix);
         let ring = current && self.focus.is_focused(window);
         let spoken = spoken_turn(turn);
-        // Matches are found in what was spoken, so they are drawn only on the spoken text.
-        let marks: Vec<Range<usize>> = if detail.translated(self.text) {
-            Vec::new()
-        } else {
-            self.session
-                .read(cx)
-                .found()
-                .map(|found| found.in_turn(ix).iter().map(|m| m.span.clone()).collect())
-                .unwrap_or_default()
-        };
+        // Matches are spans of the text they were found in, so they are drawn only on that text.
+        let session = self.session.read(cx);
+        let marks: Vec<Range<usize>> =
+            if detail.translated(self.text) != detail.translated(session.matched()) {
+                Vec::new()
+            } else {
+                session
+                    .found()
+                    .map(|found| found.in_turn(ix).iter().map(|m| m.span.clone()).collect())
+                    .unwrap_or_default()
+            };
         let mut described = Vec::new();
         if turn.range.is_none() {
             described.push("No timestamp, so it cannot play from here");

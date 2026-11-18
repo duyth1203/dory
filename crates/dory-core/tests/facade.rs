@@ -2141,6 +2141,81 @@ fn moving_a_job_that_is_not_queued_does_nothing() {
 }
 
 #[test]
+fn a_snippet_quotes_the_translation_when_the_match_is_there() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = RecordingId::parse("talk").unwrap();
+    let transcript = Transcript {
+        revision: Revision(1),
+        segments: vec![
+            segment(0, 1_000, 1, Channel::System, "Aprubado na ang badyet."),
+            segment(1_000, 2_000, 2, Channel::System, "Okay."),
+        ],
+        detected_languages: Vec::new(),
+        produced_by: ModelRef::parse(STT).unwrap(),
+    };
+    let translation = Translation {
+        target: LangTag::parse("en").unwrap(),
+        transcript_revision: Revision(1),
+        produced_by: ModelRef::parse(LLM).unwrap(),
+        texts: vec![Some("The budget is approved.".into()), None],
+    };
+    rig.store
+        .apply(vec![
+            Change::RecordingCreated(recording(&id, None)),
+            Change::TranscriptReplaced {
+                id: id.clone(),
+                transcript,
+            },
+            Change::TranslationReplaced {
+                id: id.clone(),
+                translation,
+            },
+        ])
+        .unwrap();
+    let library = dory.library();
+    let quoted = |text: &str| {
+        let query = Query::parse(text).unwrap();
+        let found = library.snippets(&query, std::slice::from_ref(&id)).unwrap();
+        let e = found[0].clone().expect("a snippet");
+        let marked: Vec<String> = e
+            .snippet
+            .marks
+            .iter()
+            .map(|m| e.snippet.text[m.clone()].to_owned())
+            .collect();
+        (e.source, e.item, e.snippet.text, marked)
+    };
+    assert!(
+        library
+            .search("approved")
+            .unwrap()
+            .is_some_and(|r| r.hits.iter().any(|h| h.row.recording.id == id)),
+        "the translation is searched"
+    );
+    assert_eq!(
+        quoted("approved"),
+        (
+            Where::Transcript,
+            0,
+            "The budget is approved.".to_owned(),
+            vec!["approved".to_owned()]
+        ),
+        "a translated word is quoted from the translation"
+    );
+    assert_eq!(
+        quoted("aprubado"),
+        (
+            Where::Transcript,
+            0,
+            "Aprubado na ang badyet.".to_owned(),
+            vec!["Aprubado".to_owned()]
+        ),
+        "a spoken word is quoted as spoken"
+    );
+}
+
+#[test]
 fn snippets_come_from_turns_then_summary() {
     let rig = Rig::new();
     let dory = rig.open();

@@ -93,6 +93,15 @@ With a target, `Summarize` writes in the target, not `main_language()`. When a C
 
 With no target nothing changes: `transcript_lines` reads the spoken text, `language` is `main_language()`, and the prompt strings are byte for byte today's. A pipeline test pins both the prompt and the stage list.
 
+## Search
+
+A query in the output language finds the meeting. The index's `transcript` column holds what was spoken, then the translated segments of a translation that applies to the stored transcript (same revision, one text per segment). Both stores reindex on `TranslationReplaced`, and the reindex that a new transcript revision already runs drops a translation that no longer applies. Schema v11 has no table change; its migration rebuilds the index so libraries index the translations they already hold.
+
+- A grant that reads transcripts reads their translations. A Titles or Summaries grant finds no translated word and is corrected toward none.
+- A snippet quotes the translated turn when the query matches there, else the spoken turn. The sidebar and `search_recordings` use the same rule, and the assistant's turn cursor counts turns as `get_transcript` does.
+- The detail pane lists a recording's turn matches from one transcript text: the one shown when a hit opens, unless only the other text holds a match. A hit opens on that text, marks are drawn only while it is shown, and Find Next brings it back.
+- The summary's translation is not indexed. A summary hit opens on the summary as written.
+
 ## Schema v9
 
 The search branch takes v8 and lands first. `MIGRATIONS` is a positional list, so this branch carries `schema_v8.sql` as a one-line placeholder and its own work in `schema_v9.sql`. On merge, take search's `schema_v8.sql` and keep `schema_v9.sql` as is. If the search branch ends up at a different number, rename `schema_v9.sql` and fix its `include_str!` position. Nothing else mentions the number except the `LATEST` constant in the store contract test.

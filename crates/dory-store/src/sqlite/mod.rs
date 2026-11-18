@@ -67,12 +67,15 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(include_str!("schema_v5.sql")),
     Migration::sql(include_str!("schema_v6.sql")),
     Migration::sql(include_str!("schema_v7.sql")),
-    Migration {
-        sql: include_str!("schema_v8.sql"),
-        then: Some(search::rebuild),
-    },
+    // v8 created the index and filled it here until v11, whose rebuild reads v9's translations
+    // and now fills it once for every older file.
+    Migration::sql(include_str!("schema_v8.sql")),
     Migration::sql(include_str!("schema_v9.sql")),
     Migration::sql(include_str!("schema_v10.sql")),
+    Migration {
+        sql: include_str!("schema_v11.sql"),
+        then: Some(search::rebuild),
+    },
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1631,6 +1634,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 codec::translation_texts_to_db(&translation.texts),
             ])
             .map_err(db)?;
+            search::reindex(tx, id)?;
             Ok(None)
         }
         Change::TranslationBatchSaved { key, batch } => {

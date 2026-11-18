@@ -1,0 +1,3 @@
+-- The search index's transcript column gains the translated text of a translation that applies to
+-- the transcript. The tables do not change: the migration's rebuild step indexes the translations
+-- that a library already holds.

@@ -337,6 +337,58 @@ fn a_translated_transcript_reads_as_translated_with_the_original_and_its_languag
 }
 
 #[test]
+fn search_finds_a_translated_turn_under_a_transcript_grant_and_quotes_the_translation() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Transcripts);
+    translate_first_turn(dir.path());
+    let mut server = Server::start(dir.path(), Some(&key), true);
+    let hit = server.tool(
+        "search_recordings",
+        json!({"query": "\"budget is approved\""}),
+    );
+    assert_eq!(
+        found(&hit),
+        ["weekly"],
+        "a phrase only the translation holds"
+    );
+    let snippet = &hit["structuredContent"]["recordings"][0]["snippet"];
+    assert_eq!(snippet["field"], "transcript");
+    assert_eq!(snippet["untrusted_text"], "The budget is approved.");
+    assert_eq!(snippet["marks"], json!([[4, 22]]));
+    assert_eq!(snippet["turn"]["cursor"], "r1.t0");
+    let around = server.tool(
+        "get_transcript",
+        json!({"id": "weekly", "cursor": snippet["turn"]["cursor"]}),
+    );
+    assert!(
+        text_of(&around).contains("The budget is approved."),
+        "the cursor opens on the translated turn"
+    );
+    let spoken = server.tool("search_recordings", json!({"query": "aprubado"}));
+    assert_eq!(found(&spoken), ["weekly"]);
+    assert_eq!(
+        spoken["structuredContent"]["recordings"][0]["snippet"]["untrusted_text"],
+        "Aprubado na ang badyet.",
+        "a word only spoken is quoted as spoken"
+    );
+    assert!(server.finish().success());
+
+    let summaries = tempfile::tempdir().unwrap();
+    let key = seed(summaries.path(), Exposure::Summaries);
+    translate_first_turn(summaries.path());
+    let mut server = Server::start(summaries.path(), Some(&key), true);
+    for query in ["\"budget is approved\"", "aprubado"] {
+        let result = server.tool("search_recordings", json!({"query": query}));
+        assert_eq!(
+            found(&result),
+            Vec::<String>::new(),
+            "a summaries grant reads no transcript, translated or spoken: {query}"
+        );
+    }
+    assert!(server.finish().success());
+}
+
+#[test]
 fn refusals_name_what_to_do() {
     let dir = tempfile::tempdir().unwrap();
     let key = seed(dir.path(), Exposure::Titles);

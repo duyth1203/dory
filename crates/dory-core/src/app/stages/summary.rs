@@ -46,10 +46,7 @@ enum Prompt {
 
 fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
     let language = match language {
-        Some(tag) if crate::domain::languages::find(tag.primary()).is_some() => {
-            format!("{} (BCP 47 tag {tag})", crate::domain::languages::name(tag))
-        }
-        Some(tag) => format!("the language with BCP 47 tag {tag}"),
+        Some(tag) => crate::domain::languages::for_prompt(tag),
         None => "the language the meeting was held in".to_owned(),
     };
     let sections = format!(

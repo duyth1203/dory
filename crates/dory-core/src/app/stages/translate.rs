@@ -38,7 +38,7 @@ pub(crate) fn pending(transcript: &Transcript, target: &LangTag) -> Vec<usize> {
 }
 
 pub(crate) fn system_prompt(target: &LangTag) -> String {
-    let language = format!("the language with BCP 47 tag {target}");
+    let language = crate::domain::languages::for_prompt(target);
     format!(
         "You translate lines of a meeting transcript into {language}. The input is numbered \
          lines like \"[1] text\". Reply with exactly the same numbered lines, translated, one \
@@ -367,7 +367,13 @@ mod tests {
     #[test]
     fn the_prompt_names_the_target_and_asks_for_the_same_numbers_back() {
         let prompt = system_prompt(&tag("en"));
-        assert!(prompt.contains("BCP 47 tag en"));
+        assert!(prompt.contains("into English (BCP 47 tag en)"), "{prompt}");
+        let tagalog = system_prompt(&tag("tl"));
+        assert!(
+            tagalog.contains("into Tagalog (BCP 47 tag tl)"),
+            "{tagalog}"
+        );
+        assert!(system_prompt(&tag("xq")).contains("into the language with BCP 47 tag xq"));
         assert!(prompt.contains("same numbers"));
     }
 }

@@ -843,9 +843,9 @@ fn a_summary_instruction_reaches_the_final_pass_and_the_old_summary_is_kept() {
     assert!(rig.store.previous_summary(&id).unwrap().is_some());
 }
 
-/// What `a_transcript_that_fits_the_context_is_summarized_in_one_pass` sent before the output
-/// language existed. With no output language set, the prompt must stay these exact bytes.
-const SAME_AS_SPOKEN_SYSTEM: &str = "You summarize meeting transcripts. Write the whole summary, headings included, in the language with BCP 47 tag vi. Use Markdown with three sections in this order: key points, decisions, and action items. Keep each key point to one short line and merge points that repeat. List every decision and every action item, each once, with its owner and due date when the input names them. Write \"None\" under a section with nothing to report. Use only what the transcript says.";
+/// What `a_transcript_that_fits_the_context_is_summarized_in_one_pass` sends with no output
+/// language set: the prompt names the spoken language and must stay these exact bytes.
+const SAME_AS_SPOKEN_SYSTEM: &str = "You summarize meeting transcripts. Write the whole summary, headings included, in Vietnamese (BCP 47 tag vi). Use Markdown with three sections in this order: key points, decisions, and action items. Keep each key point to one short line and merge points that repeat. List every decision and every action item, each once, with its owner and due date when the input names them. Write \"None\" under a section with nothing to report. Use only what the transcript says.";
 
 #[test]
 fn same_as_spoken_sends_todays_summary_prompt_and_runs_todays_stages() {

@@ -161,7 +161,7 @@ struct Asking {
 }
 
 impl Render for Asking {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let mut body = div().px(px(20.)).pb(px(16.)).flex().flex_col().gap(px(8.));
         for (ix, line) in self.prompt.lines.iter().enumerate() {
@@ -196,13 +196,15 @@ impl Render for Asking {
         )
         .bg(theme.record_red)
         .text_color(theme.on_record);
-        div()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(surface::header("quit", TITLE, None, None, &theme))
-            .child(body)
-            .child(surface::footer(None, vec![cancel, quit], &theme))
+        surface::column(
+            div(),
+            "quit-body",
+            surface::header("quit", TITLE, None, None, &theme),
+            body,
+            surface::footer(None, vec![cancel, quit], &theme),
+            window,
+            cx,
+        )
     }
 }
 

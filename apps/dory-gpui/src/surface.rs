@@ -19,10 +19,12 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::{
     AnyView, App, ClickEvent, Div, FocusHandle, FontWeight, Global, Hsla, InteractiveElement as _,
-    IntoElement, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled,
-    Window, WindowId, div, prelude::FluentBuilder as _, px,
+    IntoElement, ParentElement as _, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled, TestSupportExt as _, Window, WindowId, div,
+    prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y::{self, Node};
@@ -304,6 +306,95 @@ pub fn footer(left: Option<Node>, right: Vec<Node>, theme: &Theme) -> Div {
         .children(right)
 }
 
+/// `content` in a scroll area that fills what its parent leaves it, with a scrollbar that stays
+/// on screen while there is more to read, so a cut line is never mistaken for the end. `id` names
+/// the area and keeps its scroll position. The parent must be a column whose height is capped.
+pub fn scroll_area(
+    id: &str,
+    content: impl Styled + IntoElement,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let scrolled = window
+        .use_keyed_state(SharedString::from(format!("{id}-scroll")), cx, |_, _| {
+            ScrollHandle::new()
+        })
+        .read(cx)
+        .clone();
+    tracked_scroll_area(id, &scrolled, content, cx)
+}
+
+/// [`scroll_area`] driven by the caller's `scrolled`, for a caller that scrolls the area itself,
+/// such as a list that keeps its highlighted row in view.
+pub fn tracked_scroll_area(
+    id: &str,
+    scrolled: &ScrollHandle,
+    content: impl Styled + IntoElement,
+    cx: &App,
+) -> Div {
+    let theme = Theme::get(cx);
+    let thumb = Hsla {
+        a: if theme.high_contrast { 1. } else { 0.5 },
+        ..theme.text_secondary
+    };
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .id(SharedString::from(id.to_owned()))
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .overflow_y_scroll()
+                .track_scroll(scrolled)
+                .child(content.flex_none()),
+        )
+        .child(
+            div().absolute().inset_0().child(
+                Scrollbar::vertical(scrolled)
+                    .id(SharedString::from(format!("{id}-scrollbar")))
+                    .mode(ScrollbarMode::Always)
+                    .viewport_from_layout()
+                    .styles(|styles| {
+                        styles
+                            .thumb(|s| s.bg(thumb))
+                            .thumb_hover(|s| s.bg(thumb))
+                            .thumb_active(|s| s.bg(thumb))
+                    }),
+            ),
+        )
+}
+
+/// A dialog's contents: `el` becomes a column that fills its dialog and never outgrows it. The
+/// header and the footer keep their height and the body, in a [`scroll_area`] called `id`, takes
+/// what is left, so a small window or large text cuts the body rather than the buttons.
+pub fn column<E>(
+    el: E,
+    id: &str,
+    header: Div,
+    body: Div,
+    footer: Div,
+    window: &mut Window,
+    cx: &mut App,
+) -> E
+where
+    E: Styled + gpui_kit::ParentElement,
+{
+    el.flex()
+        .flex_col()
+        .flex_1()
+        .min_h_0()
+        .child(header)
+        .child(scroll_area(id, body, window, cx))
+        .child(footer)
+}
+
 struct Open {
     title: SharedString,
     view: AnyView,
@@ -415,6 +506,7 @@ pub fn dialog_layer(window: &mut Window, cx: &mut App) -> Option<impl IntoElemen
             .popup(paint(
                 div()
                     .id("dialog-surface")
+                    .test_support()
                     .occlude()
                     .w(px(width))
                     .max_h(px(max_height))

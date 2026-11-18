@@ -320,7 +320,7 @@ fn circle(on: bool, enabled: bool, focused: bool, theme: &Theme) -> gpui_kit::Di
             c.bg(theme.control_bg).border_color(if enabled {
                 theme.radio_border
             } else {
-                theme.divider
+                theme.disabled_outline()
             })
         })
         .when(on, |c| {
@@ -386,10 +386,10 @@ pub fn checkbox(
             b.bg(theme.control_bg).border_color(if option.enabled {
                 theme.radio_border
             } else {
-                theme.divider
+                theme.disabled_outline()
             })
         })
-        .when(!option.enabled, |b| b.opacity(0.5))
+        .when(!option.enabled && on, |b| b.opacity(0.5))
         .when(ring, |b| b.child(ring_around(px(RADIO), false, theme)));
     layout(
         row,

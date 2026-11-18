@@ -14,7 +14,8 @@
 //!
 //! The list is one Tab stop. Up and Down move the selection, and the selected row is the list's
 //! active descendant, so VoiceOver follows the selection the way it does in a native source
-//! list. With focus in the list the selected row is `accent`-filled with an `on_accent` ring;
+//! list. With focus in the list the selected row is `accent`-filled with an `on_accent` ring
+//! between two accent bands (`Theme::row_ring`), so the ring shows on a near-white sidebar too;
 //! with focus elsewhere it takes `selection_inactive`. The list scrolls the selected row into
 //! view, so the keyboard never moves the selection out of sight, and Return renames it.
 
@@ -257,7 +258,8 @@ impl Sidebar {
                 let app = self.app.clone();
                 let focus = self.list_focus.clone();
                 let menu_id = id.clone();
-                let row_el = a11y::node(format!("row-{id}"), Role::ListItem, label)
+                let row_key = format!("row-{id}");
+                let row_el = a11y::node(row_key.clone(), Role::ListItem, label)
                     .aria_selected(is_selected)
                     .aria_position_in_set(position)
                     .aria_size_of_set(count)
@@ -272,12 +274,12 @@ impl Sidebar {
                     .py(px(7.))
                     .rounded(px(8.))
                     .border_2()
-                    .border_color(if filled {
-                        theme.focus_ring(true)
-                    } else {
-                        gpui_kit::transparent_black()
+                    .border_color(row_edge(&theme, filled))
+                    .when(filled, |row| {
+                        row.bg(theme.accent)
+                            .relative()
+                            .child(row_ring_line(&row_key, &theme))
                     })
-                    .when(filled, |row| row.bg(theme.accent))
                     .when(is_selected && !list_focused, |row| {
                         row.bg(theme.selection_inactive)
                     })
@@ -381,6 +383,29 @@ struct Block<'a> {
 }
 
 /// "Showing results for roadmap", above the sections of a search that was corrected.
+/// The 2 pt border of a row: the outer `accent` band of the selected row's ring while the list
+/// has focus, clear on every other row.
+pub fn row_edge(theme: &Theme, filled: bool) -> Hsla {
+    if filled {
+        theme.row_ring().edge
+    } else {
+        gpui_kit::transparent_black()
+    }
+}
+
+/// The ring's line, over the row's inner edge so it lies between the `accent` edge and the
+/// `accent` fill. `row_key` is the row's own id.
+pub fn row_ring_line(row_key: &str, theme: &Theme) -> a11y::Node {
+    a11y::probe(format!("{row_key}-ring"))
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .rounded(px(6.))
+        .border_2()
+        .border_color(theme.row_ring().line)
+}
+
 fn correction_line(words: &str, theme: &Theme) -> impl IntoElement {
     let lead = "Showing results for ";
     let line = format!("{lead}{words}");

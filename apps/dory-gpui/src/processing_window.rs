@@ -24,8 +24,8 @@ use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle, FontWeight,
     Global, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, ParentElement as _,
-    Render, Role, ScrollHandle, StatefulInteractiveElement as _, Styled as _, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, canvas, div, point, px, size,
+    Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription, TitlebarOptions,
+    Window, WindowBounds, WindowKind, WindowOptions, canvas, div, point, px, size,
 };
 
 use crate::a11y::{self, Node};
@@ -137,7 +137,6 @@ pub struct ProcessingWindow {
     clear: FocusHandle,
     undo: FocusHandle,
     focus: HashMap<(String, &'static str), FocusHandle>,
-    scroll: ScrollHandle,
     last: Queue,
     /// When the Undo toast appeared, for its entrance.
     toast_at: Option<Instant>,
@@ -189,7 +188,6 @@ impl ProcessingWindow {
             clear: cx.focus_handle(),
             undo: cx.focus_handle(),
             focus: HashMap::new(),
-            scroll: ScrollHandle::new(),
             last,
             toast_at: None,
             _observe: observe,
@@ -548,9 +546,11 @@ impl ProcessingWindow {
                         .child(Icon::GripVertical.view(14., theme.text_secondary)),
                 )
                 .child(
-                    div()
+                    a11y::probe(format!("queue-badge-{position}"))
                         .flex_none()
-                        .size(px(22.))
+                        .min_w(theme.text(22.))
+                        .h(theme.text(22.))
+                        .px(theme.text(4.))
                         .rounded_full()
                         .flex()
                         .items_center()
@@ -723,17 +723,18 @@ impl ProcessingWindow {
                         .flex_1()
                         .min_w_0()
                         .flex()
-                        .gap(px(8.))
+                        .flex_wrap()
                         .items_baseline()
+                        .gap_x(px(8.))
+                        .py(px(4.))
                         .child(
-                            div()
-                                .min_w_0()
+                            a11y::probe(format!("queue-finished-title-{key}"))
                                 .text_size(theme.text(13.))
                                 .truncate()
                                 .child(finished.title.clone()),
                         )
                         .child(
-                            div()
+                            a11y::probe(format!("queue-finished-line-{key}"))
                                 .flex_none()
                                 .text_size(theme.text(12.))
                                 .text_color(theme.text_secondary)
@@ -800,17 +801,7 @@ impl Render for ProcessingWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let queue = self.last.clone();
-        let mut body = div()
-            .id("queue-body")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .px(px(20.))
-            .pb(px(16.))
-            .flex()
-            .flex_col()
-            .gap(px(8.));
+        let mut body = div().px(px(20.)).pb(px(16.)).flex().flex_col().gap(px(8.));
         let nothing = queue.now.is_none() && queue.next.is_empty() && queue.attention.is_empty();
         if nothing && queue.finished.is_empty() {
             body = body.child(
@@ -955,7 +946,7 @@ impl Render for ProcessingWindow {
                 surface::header("queue", "Processing Queue", queue.summary(), None, &theme)
                     .pl(px(92.)),
             )
-            .child(body)
+            .child(surface::scroll_area("queue-body", body, window, cx))
             .child(surface::footer(Some(settings), vec![close], &theme))
             .children(toast)
     }

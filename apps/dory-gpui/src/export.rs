@@ -11,18 +11,23 @@
 //! `export` asks for a path with the native save panel and writes off the UI thread. `copy`
 //! puts the summary Markdown or the transcript text on the clipboard. A failure becomes a
 //! status line through `AppState::say`, never a panic.
+//!
+//! [`Has`] is the one rule for what can be copied or exported right now. `copy` and `export`
+//! check it, so the buttons, both menus, and the key bindings all reach the same answer, and the
+//! menus draw their items from it.
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, Local, TimeZone as _};
-use dory_core::domain::{Ms, Segment};
+use dory_core::domain::{Ms, RecordingId, Segment};
 use gpui_kit::{App, ClipboardItem, Entity};
 
 use crate::a11y;
-use crate::app::{AppState, Detail, Shown, Turn, speaker_label};
+use crate::app::{AppState, Detail, DetailTab, Shown, Turn, speaker_label};
 use crate::library::{local, short_duration};
+use crate::processing::Phase;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -53,6 +58,99 @@ impl ExportBlocked {
 pub enum CopyWhat {
     Summary,
     Transcript,
+}
+
+/// What the open recording has to copy or export. Copy and Export act on text that is shown, so
+/// they wait for it. While the transcript is on its way the tab shows the placeholder or the lines
+/// streaming in, and whatever transcript the store still holds is about to be replaced. A
+/// transcript with no words in it is no transcript.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Has {
+    pub summary: bool,
+    pub transcript: bool,
+    /// Every line of the transcript has a time, which SRT needs.
+    pub timed: bool,
+}
+
+impl Has {
+    pub fn of(detail: &Detail, phase: Option<&Phase>) -> Has {
+        let arriving = phase.is_some_and(Phase::before_transcript);
+        let said = detail
+            .transcript
+            .as_ref()
+            .filter(|transcript| !transcript.segments.is_empty());
+        Has {
+            summary: detail.summary.is_some(),
+            transcript: !arriving && said.is_some(),
+            timed: said.is_some_and(|transcript| transcript.is_timed()),
+        }
+    }
+
+    /// For a recording whose detail has not been read yet, such as a row that was just
+    /// right-clicked, from what the library's row says.
+    pub fn of_row(row: &dory_core::domain::RecordingRow, phase: Option<&Phase>) -> Has {
+        let arriving = phase.is_some_and(Phase::before_transcript);
+        Has {
+            summary: row.summary != dory_core::domain::SummaryFlag::None,
+            transcript: !arriving && row.has_transcript,
+            timed: row.has_transcript,
+        }
+    }
+
+    pub fn can_copy(self, what: CopyWhat) -> bool {
+        match what {
+            CopyWhat::Summary => self.summary,
+            CopyWhat::Transcript => self.transcript,
+        }
+    }
+
+    /// Markdown and Text write whichever of the summary and the transcript there is. SRT writes
+    /// the transcript's times.
+    pub fn can_export(self, format: ExportFormat) -> bool {
+        match format {
+            ExportFormat::Markdown | ExportFormat::Text => self.summary || self.transcript,
+            ExportFormat::Srt => self.transcript && self.timed,
+        }
+    }
+
+    /// The tab's own Copy: the summary on Summary, the transcript on Transcript.
+    pub fn copy(self, tab: DetailTab) -> bool {
+        match tab {
+            DetailTab::Summary => self.can_copy(CopyWhat::Summary),
+            DetailTab::Transcript => self.can_copy(CopyWhat::Transcript),
+        }
+    }
+
+    /// Export writes the text of the tab it is on. The Summary tab also offers the transcript's
+    /// formats, so a recording whose summary failed can still be exported.
+    pub fn export(self, tab: DetailTab) -> bool {
+        match tab {
+            DetailTab::Summary => self.can_export(ExportFormat::Markdown),
+            DetailTab::Transcript => self.transcript,
+        }
+    }
+}
+
+/// What recording `id` has to copy or export right now. From its detail when that is the one
+/// open, and from its row when the detail is still being read, as after a right-click on a row
+/// that was not selected.
+pub fn has_of(app: &AppState, id: &RecordingId, cx: &App) -> Option<Has> {
+    let phase = app.phase_of(id);
+    match app
+        .session()
+        .and_then(|session| session.read(cx).detail())
+        .filter(|detail| &detail.recording.id == id)
+    {
+        Some(detail) => Some(Has::of(&detail, phase.as_ref())),
+        None => app.row(id).map(|row| Has::of_row(row, phase.as_ref())),
+    }
+}
+
+/// The open recording and what it has to copy or export right now.
+pub fn open_recording(app: &AppState, cx: &App) -> Option<(Arc<Detail>, Has)> {
+    let detail = app.session()?.read(cx).detail()?;
+    let has = Has::of(&detail, app.phase_of(&detail.recording.id).as_ref());
+    Some((detail, has))
 }
 
 impl ExportFormat {
@@ -262,14 +360,41 @@ fn safe_stem(title: &str) -> String {
     title.replace(['/', ':', '\\'], "-")
 }
 
+/// Renders what `has` says is there to export. A transcript that is not shown is left out, so
+/// the old one is not written while a new one is on its way.
+pub fn render_open(
+    format: ExportFormat,
+    detail: &Detail,
+    has: Has,
+    shown: Shown,
+) -> Result<String, ExportBlocked> {
+    if !has.can_export(format) {
+        return Err(if format == ExportFormat::Srt && has.transcript {
+            ExportBlocked::Untimed
+        } else {
+            ExportBlocked::NoTranscript
+        });
+    }
+    if has.transcript || detail.transcript.is_none() {
+        render(format, detail, shown)
+    } else {
+        let summary_only = Detail {
+            transcript: None,
+            ..detail.clone()
+        };
+        render(format, &summary_only, shown)
+    }
+}
+
 pub fn export(
     app: &Entity<AppState>,
     detail: Arc<Detail>,
+    has: Has,
     format: ExportFormat,
     shown: Shown,
     cx: &mut App,
 ) {
-    let text = match render(format, &detail, shown) {
+    let text = match render_open(format, &detail, has, shown) {
         Ok(text) => text,
         Err(blocked) => {
             app.update(cx, |app, cx| app.say(blocked.message(), cx));
@@ -310,8 +435,11 @@ pub fn export(
     .detach();
 }
 
-/// Does nothing when the recording has no such text.
-pub fn copy(detail: &Detail, what: CopyWhat, shown: Shown, cx: &mut App) {
+/// Does nothing when `has` says the recording has no such text to show.
+pub fn copy(detail: &Detail, has: Has, what: CopyWhat, shown: Shown, cx: &mut App) {
+    if !has.can_copy(what) {
+        return;
+    }
     let text = match what {
         CopyWhat::Summary => detail.shown_summary(shown.summary).map(str::to_owned),
         CopyWhat::Transcript => detail.transcript.as_ref().map(|_| {

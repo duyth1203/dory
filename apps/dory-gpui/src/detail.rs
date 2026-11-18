@@ -37,6 +37,7 @@ use dory_core::domain::{
     SummaryFlag, Transcript,
 };
 
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
@@ -55,6 +56,7 @@ use crate::actions::{
 use crate::app::{
     AppState, Detail, DetailTab, Loadable, Saved, Session, Shown, SummaryVersion, TranscriptText,
 };
+use crate::export::{ExportFormat, Has};
 use crate::find::Place;
 use crate::fonts;
 use crate::icons::{self, Icon};
@@ -494,6 +496,7 @@ impl DetailPane {
         translate: Translate<'_>,
         summarizing: Option<Option<u64>>,
         readout: Option<String>,
+        phase: Option<&Phase>,
         theme: &Theme,
     ) -> AnyElement {
         let tab_button = |id: &'static str,
@@ -546,39 +549,86 @@ impl DetailPane {
                 .accessibility_id(id)
                 .text_color(theme.accent_text)
         };
-        let actions = div()
+        let has = Has::of(detail, phase);
+        let (copy_on, export_on) = (has.copy(tab), has.export(tab));
+        let gated = |button: Button, on: bool| {
+            if on {
+                button
+            } else {
+                button.disabled(true).text_color(theme.text_secondary)
+            }
+        };
+        // Copy, Export, and Translate wrap among themselves. More actions never wraps off: its
+        // menu holds the only way to Rename and Move to Trash from here.
+        let wrapping = div()
             .flex()
+            .flex_wrap()
             .items_center()
+            .justify_end()
             .gap(px(4.))
-            .child(
+            .flex_shrink(1.)
+            .min_w_0()
+            .child(gated(
                 action("copy", copy_label)
                     .accessibility_label(copy_name.to_owned())
                     .on_click(move |_, window, cx| window.dispatch_action(copy.boxed_clone(), cx)),
-            )
+                copy_on,
+            ))
             .child(
-                action("export", "Export")
-                    .accessibility_label("Export")
-                    .child(Icon::ChevronDown.view(12., theme.accent_text))
-                    .dropdown_menu(|menu, _, _| {
-                        menu.menu("Markdown", Box::new(ExportMarkdown))
-                            .menu("Plain Text", Box::new(ExportText))
-                            .menu("Subtitles (SRT)", Box::new(ExportSrt))
-                    }),
+                gated(
+                    action("export", "Export")
+                        .accessibility_label("Export")
+                        .child(Icon::ChevronDown.view(
+                            12.,
+                            if export_on {
+                                theme.accent_text
+                            } else {
+                                theme.text_secondary
+                            },
+                        )),
+                    export_on,
+                )
+                .dropdown_menu(move |menu, _, _| {
+                    menu.menu_with_disabled(
+                        "Markdown",
+                        Box::new(ExportMarkdown),
+                        !has.can_export(ExportFormat::Markdown),
+                    )
+                    .menu_with_disabled(
+                        "Plain Text",
+                        Box::new(ExportText),
+                        !has.can_export(ExportFormat::Text),
+                    )
+                    .menu_with_disabled(
+                        "Subtitles (SRT)",
+                        Box::new(ExportSrt),
+                        !has.can_export(ExportFormat::Srt),
+                    )
+                }),
             )
             .children(
                 (tab == DetailTab::Summary && detail.summary.is_some())
                     .then(|| translate_button(&action, detail, &translate, theme)),
-            )
+            );
+        let actions = div()
+            .flex()
+            .items_start()
+            .gap(px(4.))
+            .flex_shrink(1.)
+            .min_w_0()
+            .child(wrapping)
             .child(
-                Button::new("more")
-                    .ghost()
-                    .compact()
-                    .accessibility_id("more")
-                    .child(Icon::Ellipsis.view(14., theme.accent_text))
-                    .accessibility_label("More actions")
-                    .dropdown_menu(move |menu, window, cx| {
-                        menus::recording_menu(menu, &id, window, cx)
-                    }),
+                div().flex_none().child(
+                    Button::new("more")
+                        .ghost()
+                        .compact()
+                        .accessibility_id("more")
+                        .child(Icon::Ellipsis.view(14., theme.accent_text))
+                        .accessibility_label("More actions")
+                        .dropdown_menu(move |menu, window, cx| {
+                            menus::recording_menu(menu, &id, window, cx)
+                        }),
+                ),
             );
         div()
             .flex()
@@ -1344,6 +1394,7 @@ impl Render for DetailPane {
                     },
                     dots,
                     readout.clone(),
+                    phase.as_ref(),
                     &theme,
                 );
                 let (in_flow, pinned) = if stuck {

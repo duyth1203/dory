@@ -146,7 +146,7 @@ fn reveal(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
     }
 }
 
-fn click(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
+pub fn click(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
     reveal(window, id, cx);
     let id = gpui_kit::ElementId::Name(id.to_owned().into());
     cx.update_window(window, |_, window, cx| {

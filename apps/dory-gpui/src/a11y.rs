@@ -295,6 +295,12 @@ fn chain<H: ScrollbarHandle + Clone>(
         .child(probe)
 }
 
+/// A plain div the layout tests can find by `id`. It says nothing to VoiceOver, for a part of a
+/// control that already speaks.
+pub fn probe(id: impl Into<SharedString>) -> Node {
+    div().id(ElementId::Name(id.into())).test_support()
+}
+
 pub fn node(id: impl Into<SharedString>, role: Role, label: impl Into<SharedString>) -> Node {
     let id: SharedString = id.into();
     div()

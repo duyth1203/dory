@@ -21,15 +21,27 @@ pub fn marked(
     if marks.is_empty() {
         return text.into_any_element();
     }
-    let style = if on_accent_fill {
+    let style = style(weight, on_accent_fill, theme);
+    StyledText::new(text)
+        .with_highlights(marks.iter().map(|mark| (mark.clone(), style)))
+        .into_any_element()
+}
+
+/// How one mark is drawn. Under Increase Contrast a mark on the paper also gets a 2 pt `text`
+/// underline: `HighlightStyle` has no border, and an underline is the nearest line that stays
+/// with the word through wraps. With the stronger fill and the weight, the mark no longer rests
+/// on a pale tint (`docs/plans/search.md` S4 lane 9).
+pub fn style(weight: FontWeight, on_accent_fill: bool, theme: &Theme) -> HighlightStyle {
+    let underline = |thickness: f32, color| UnderlineStyle {
+        thickness: px(thickness),
+        color: Some(color),
+        wavy: false,
+    };
+    if on_accent_fill {
         HighlightStyle {
             color: Some(theme.on_accent),
             font_weight: Some(weight),
-            underline: Some(UnderlineStyle {
-                thickness: px(1.),
-                color: Some(theme.on_accent),
-                wavy: false,
-            }),
+            underline: Some(underline(1., theme.on_accent)),
             ..HighlightStyle::default()
         }
     } else {
@@ -37,10 +49,8 @@ pub fn marked(
             color: Some(theme.text),
             font_weight: Some(weight),
             background_color: Some(theme.search_match),
+            underline: theme.high_contrast.then(|| underline(2., theme.text)),
             ..HighlightStyle::default()
         }
-    };
-    StyledText::new(text)
-        .with_highlights(marks.iter().map(|mark| (mark.clone(), style)))
-        .into_any_element()
+    }
 }

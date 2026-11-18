@@ -74,6 +74,8 @@ pub struct Tokens {
     pub accent_text: Hsla,
     /// The 2 pt focus ring. `accent` in light; in dark, `accent` is darkened for white text and
     /// falls under 3 to 1 on the dark controls, so the ring uses the lightened `accent_text`.
+    /// Increase Contrast draws it in `text`, which Kit's 50% halo around a focused field then
+    /// keeps strong, where an accent halo washed out to pale blue.
     pub ring: Hsla,
     pub on_accent: Hsla,
     pub selection_inactive: Hsla,
@@ -124,7 +126,8 @@ pub struct Tokens {
     pub group_bg: Hsla,
     pub group_border: Hsla,
     /// The off radio's ring. The brief's `#A9ADB6` and `#5A5B63`, moved until they reach 3 to 1
-    /// on every fill a radio sits on (WCAG 1.4.11).
+    /// on every fill a radio sits on (WCAG 1.4.11). Increase Contrast draws it like every other
+    /// border, in `text_secondary`.
     pub radio_border: Hsla,
     /// A meeting-language chip, `avatar_bg`.
     pub chip_bg: Hsla,
@@ -193,6 +196,13 @@ impl Presentation {
             hanging_timestamps: flags.script_transcript && wide,
         }
     }
+}
+
+/// The two colors of the selected row's focus ring, outside in: `edge`, `line`, then the fill.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowRing {
+    pub edge: Hsla,
+    pub line: Hsla,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -444,6 +454,17 @@ struct Base {
     match_alpha: f32,
 }
 
+/// Increase Contrast multiplies the search mark's fill alpha by this. The mark is also underlined
+/// then, because `HighlightStyle` has no border (A11Y-6, `docs/plans/search.md` S4 lane 9).
+const HIGH_CONTRAST_MATCH_BOOST: f32 = 1.8;
+
+/// How much of `radio_border` a disabled radio or checkbox keeps, over its own fill. A dimmed
+/// control has to stay a visible control; the old `divider` outline fell to 1.2 to 1.
+const DISABLED_OUTLINE_KEEP: f32 = 0.6;
+
+/// The floor for a disabled outline under Increase Contrast.
+pub const DISABLED_OUTLINE_HIGH_MIN: f32 = 2.0;
+
 const LIGHT: Base = Base {
     window_bg: 0xFFFFFF,
     sidebar_bg: 0xF1F3F7,
@@ -642,6 +663,20 @@ const BOOK: [BookPalette; 2] = [
     },
 ];
 
+/// The search mark's fill: `color` at `alpha` over `under`. Increase Contrast raises the alpha by
+/// [`HIGH_CONTRAST_MATCH_BOOST`], backing off in 2% steps until `text` keeps 4.5 to 1 on it, which
+/// a bright accent in dark reaches before the full boost.
+fn match_fill(color: Hsla, under: Hsla, text: Hsla, alpha: f32, high: bool) -> Hsla {
+    if !high {
+        return blend(color, under, alpha);
+    }
+    let mut boosted = (alpha * HIGH_CONTRAST_MATCH_BOOST).min(1.0);
+    while boosted > alpha && contrast(text, blend(color, under, boosted)) < MIN_CONTRAST {
+        boosted -= 0.02;
+    }
+    blend(color, under, boosted.max(alpha))
+}
+
 /// `color` at `alpha` over `under`, as one opaque color.
 fn over((hex, alpha): (u32, f32), under: Hsla) -> Hsla {
     if alpha >= 1.0 {
@@ -686,7 +721,13 @@ impl Theme {
         };
         let border = |normal: u32| if high { text_secondary } else { c(normal) };
         let playing_bg = blend(system_accent, window_bg, base.playing_alpha);
-        let search_match = blend(system_accent, sidebar_bg, base.match_alpha);
+        let search_match = match_fill(
+            system_accent,
+            sidebar_bg,
+            c(base.text),
+            base.match_alpha,
+            high,
+        );
         let reading = [
             window_bg,
             sidebar_bg,
@@ -730,7 +771,9 @@ impl Theme {
             card_border: border(base.card_border),
             accent,
             accent_text: with_contrast_all(system_accent, &reading, MIN_CONTRAST),
-            ring: if dark {
+            ring: if high {
+                c(base.text)
+            } else if dark {
                 with_contrast_all(system_accent, &reading, MIN_CONTRAST)
             } else {
                 accent
@@ -772,11 +815,15 @@ impl Theme {
             track: c(base.track),
             group_bg,
             group_border: border(base.group_border),
-            radio_border: with_contrast_all(
-                c(base.radio_border),
-                &[control_bg, group_bg, window_bg],
-                MIN_NON_TEXT_CONTRAST,
-            ),
+            radio_border: if high {
+                text_secondary
+            } else {
+                with_contrast_all(
+                    c(base.radio_border),
+                    &[control_bg, group_bg, window_bg],
+                    MIN_NON_TEXT_CONTRAST,
+                )
+            },
             chip_bg: c(base.avatar_bg),
             leader: text_secondary,
         };
@@ -851,7 +898,7 @@ impl Theme {
             card_border: border(p.card_border),
             accent,
             accent_text: accent,
-            ring: accent,
+            ring: if high { text } else { accent },
             on_accent: c(p.on_accent),
             selection_inactive: highlight,
             wave_rest,
@@ -873,7 +920,13 @@ impl Theme {
             on_attention: readable_on(attention),
             meter_off: blend(readable_on(record_red), record_red, 0.4),
             playing_bg: highlight,
-            search_match: over(p.search_match, sidebar_bg),
+            search_match: match_fill(
+                c(p.search_match.0),
+                sidebar_bg,
+                text,
+                p.search_match.1,
+                high,
+            ),
             avatar_bg: c(p.avatar_bg),
             surface_raised,
             surface_border: border(p.surface_border),
@@ -889,11 +942,15 @@ impl Theme {
             track: c(p.track),
             group_bg,
             group_border: border(p.group_border),
-            radio_border: with_contrast_all(
-                c(p.radio_border),
-                &[control_bg, group_bg, window_bg],
-                MIN_NON_TEXT_CONTRAST,
-            ),
+            radio_border: if high {
+                text_secondary
+            } else {
+                with_contrast_all(
+                    c(p.radio_border),
+                    &[control_bg, group_bg, window_bg],
+                    MIN_NON_TEXT_CONTRAST,
+                )
+            },
             chip_bg: c(p.avatar_bg),
             leader: c(p.leader),
         };
@@ -1062,6 +1119,23 @@ impl Theme {
         }
     }
 
+    /// The focus ring of the accent-filled selected sidebar row. `on_accent` alone touches the
+    /// sidebar's paper on the outside, so in light a white line vanished into the near-white
+    /// column. The line sits between two accent bands, `edge` outside and the row's fill inside,
+    /// so both of its sides are told apart from it whatever the sidebar is.
+    pub fn row_ring(&self) -> RowRing {
+        RowRing {
+            edge: self.accent,
+            line: self.on_accent,
+        }
+    }
+
+    /// The outline of a disabled radio or checkbox: `radio_border` dimmed toward the control's
+    /// own fill, so it reads as a dimmed control rather than as no control.
+    pub fn disabled_outline(&self) -> Hsla {
+        blend(self.radio_border, self.control_bg, DISABLED_OUTLINE_KEEP)
+    }
+
     pub fn tone(&self, tone: Tone) -> Hsla {
         match tone {
             Tone::Secondary => self.text_secondary,
@@ -1155,6 +1229,34 @@ impl Theme {
                 self.radio_border,
                 bg,
             ));
+        }
+        let row_ring = self.row_ring();
+        pairs.extend([
+            Pair {
+                name: "row ring edge on sidebar_bg".to_owned(),
+                fg: row_ring.edge,
+                bg: self.sidebar_bg,
+                min: ATTENTION_BORDER_MIN,
+            },
+            graphic("row ring line on its edge", row_ring.line, row_ring.edge),
+        ]);
+        for (bg_name, bg) in [
+            ("control_bg", self.control_bg),
+            ("group_bg", self.group_bg),
+            ("window_bg", self.window_bg),
+        ] {
+            pairs.push(Pair {
+                name: format!("disabled outline on {bg_name}"),
+                fg: self.disabled_outline(),
+                bg,
+                // Disabled controls are exempt from WCAG 1.4.11. They only have to be seen, and
+                // under Increase Contrast clearly so.
+                min: if self.high_contrast {
+                    DISABLED_OUTLINE_HIGH_MIN
+                } else {
+                    ATTENTION_BORDER_MIN
+                },
+            });
         }
         pairs.extend([
             text("on_accent on accent", self.on_accent, self.accent),
@@ -1283,6 +1385,13 @@ pub fn sync(cx: &mut App) {
             kit.muted_foreground = theme.text_secondary;
         }
         if theme.name == ThemeName::Book {
+            // In light, Kit paints a text field and an outline button (the pickers) in
+            // `background`, which is its pure white, through `input_background()`. Dark mixes
+            // `input` instead and never reads it. The other readers of `background` (title bar,
+            // badge border, alert, tab, toggle, sheet, kbd) are components Dory does not draw.
+            if !theme.dark {
+                kit.background = theme.control_bg;
+            }
             kit.primary = theme.accent;
             kit.primary_foreground = theme.on_accent;
             kit.secondary = theme.control_bg;

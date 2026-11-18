@@ -24,10 +24,9 @@ use dory_core::models::{
     Availability, Choice, Fit, Llm, Mismatch, ModelId, ModelRef, Resolution, UnavailableReason,
 };
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _, px,
+    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, FontWeight, IntoElement,
+    ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription,
+    Window, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
@@ -665,16 +664,7 @@ impl Render for SetUp {
                 .child(text)
         };
         let close_now = |window: &mut Window, cx: &mut App| surface::close_dialog(window, cx);
-        let mut body = div()
-            .id("set-up-body")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .px(px(20.))
-            .pb(px(16.))
-            .flex()
-            .flex_col()
-            .gap(px(10.));
+        let mut body = div().px(px(20.)).pb(px(16.)).flex().flex_col().gap(px(10.));
         let mut footer = Vec::new();
         match &step {
             Step::System { .. } => {
@@ -943,20 +933,21 @@ impl Render for SetUp {
             }
         }
         let close = surface::close_button("set-up-close", &self.close, &theme, close_now);
-        a11y::node("set-up-summaries", Role::Group, TITLE)
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .flex_1()
-            .child(surface::header(
+        surface::column(
+            a11y::node("set-up-summaries", Role::Group, TITLE),
+            "set-up-body",
+            surface::header(
                 "set-up",
                 TITLE,
                 step.subtitle().map(str::to_owned),
                 Some(close),
                 &theme,
-            ))
-            .child(body)
-            .child(surface::footer(None, footer, &theme))
+            ),
+            body,
+            surface::footer(None, footer, &theme),
+            window,
+            cx,
+        )
     }
 }
 

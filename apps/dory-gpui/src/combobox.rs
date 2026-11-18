@@ -18,10 +18,10 @@ use gpui_kit::component::input::{
     OutdentInline,
 };
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, FontWeight, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render, Role, ScrollHandle,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored,
-    canvas, deferred, div, prelude::FluentBuilder as _, px,
+    Anchor, App, AppContext as _, Bounds, BoxShadow, Context, Entity, FocusHandle, FontWeight,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render, Role,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window,
+    anchored, canvas, deferred, div, point, prelude::FluentBuilder as _, px,
 };
 
 use crate::a11y;
@@ -36,6 +36,50 @@ pub const VISIBLE_ROWS: f32 = 8.;
 const ROW: f32 = 28.;
 /// The popover's clearance from the window's edges.
 const MARGIN: f32 = 8.;
+/// The gap between the field and the popover.
+const GAP: f32 = 6.;
+/// What the popover holds besides its rows: the search field, the hint, and the padding between.
+const CHROME: f32 = 88.;
+
+/// How the field shows keyboard focus. Its 1 pt border takes `color` and a band `halo` wide of the
+/// same color is drawn outside it, as Kit's own fields draw theirs. Recoloring the border alone
+/// is not enough: under Increase Contrast the resting border (`text_secondary`) and the ring
+/// (`text`) are about 1.4 to 1, and the field looked the same focused or not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FocusEdge {
+    pub color: gpui_kit::Hsla,
+    pub halo: Pixels,
+}
+
+pub fn focus_edge(theme: &Theme) -> FocusEdge {
+    FocusEdge {
+        color: theme.ring,
+        halo: px(2.),
+    }
+}
+
+/// Which side of its field the popover opens on, and the tallest it may be there.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Placement {
+    above: bool,
+    max_h: Pixels,
+}
+
+impl Placement {
+    /// Below the field when the popover's full height fits there, as it does in a roomy window.
+    /// Otherwise on the side with more room, so it never covers the field. Its list gives up rows
+    /// to fit that room.
+    fn of(field: Bounds<Pixels>, window_h: Pixels, want: Pixels) -> Placement {
+        let gap = px(GAP + MARGIN);
+        let below = window_h - field.bottom() - gap;
+        let above = field.top() - gap;
+        let up = below < want && above > below;
+        Placement {
+            above: up,
+            max_h: (if up { above } else { below }).max(px(0.)),
+        }
+    }
+}
 
 pub struct LanguageCombobox {
     models: Entity<Models>,
@@ -50,7 +94,8 @@ pub struct LanguageCombobox {
     rows: ScrollHandle,
     /// The highlight moved, so the next frame scrolls its row into view once the rows are laid out.
     reveal: bool,
-    width: Rc<Cell<Pixels>>,
+    /// The field's bounds in the window, as of its last layout.
+    field_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The last thing VoiceOver was told, kept as a status line so it can be read again.
     said: Option<SharedString>,
     _subscriptions: Vec<Subscription>,
@@ -83,7 +128,10 @@ impl LanguageCombobox {
             scroll: ScrollHandle::new(),
             rows: ScrollHandle::new(),
             reveal: false,
-            width: Rc::new(Cell::new(px(360.))),
+            field_bounds: Rc::new(Cell::new(Bounds::new(
+                Default::default(),
+                gpui_kit::size(px(360.), px(36.)),
+            ))),
             said: None,
             _subscriptions: vec![on_type, on_models],
         }
@@ -260,14 +308,17 @@ impl LanguageCombobox {
             .child(remove)
     }
 
-    /// `room` is the window's height. The popover never grows past it: the list gives up rows
+    /// The popover never grows past the room on its side of the field: the list gives up rows
     /// first, so the search field and the hint stay in view.
     fn popover(
         &mut self,
         theme: &Theme,
-        room: Pixels,
+        window_h: Pixels,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let field = self.field_bounds.get();
+        let want = theme.text(ROW) * VISIBLE_ROWS + theme.text(CHROME);
+        let place = Placement::of(field, window_h, want);
         let query = self.query(cx);
         let matches = languages::search(&query);
         let chosen: Vec<LangTag> = self
@@ -283,6 +334,7 @@ impl LanguageCombobox {
         let this = cx.entity().downgrade();
         let mut list = a11y::node("language-options", Role::ListBox, "Languages")
             .track_scroll(&self.rows)
+            .pr(px(12.))
             .flex()
             .flex_col();
         for (ix, lang) in matches.rows.iter().enumerate() {
@@ -381,8 +433,8 @@ impl LanguageCombobox {
                 cx.stop_propagation();
             }
         }))
-        .w(self.width.get())
-        .max_h(room - px(2. * MARGIN))
+        .w(field.size.width)
+        .max_h(place.max_h)
         .p(px(6.))
         .flex()
         .flex_col()
@@ -409,9 +461,8 @@ impl LanguageCombobox {
                 ),
         )
         .child(
-            a11y::nested_scroll_tracked("language-options-scroll", &self.scroll, list)
+            crate::surface::tracked_scroll_area("language-options-scroll", &self.scroll, list, cx)
                 .max_h(theme.text(ROW) * VISIBLE_ROWS)
-                .min_h_0()
                 .flex_shrink(1.),
         )
         .children(empty)
@@ -421,9 +472,17 @@ impl LanguageCombobox {
                 .text_color(theme.text_secondary)
                 .child(HINT),
         );
+        // The anchor sits at the field's bottom edge. Above, the popover's bottom-left corner
+        // goes one gap over the field's top edge.
+        let (corner, lift) = if place.above {
+            (Anchor::BottomLeft, -(field.size.height + px(GAP)))
+        } else {
+            (Anchor::TopLeft, px(GAP))
+        };
         deferred(
             anchored()
-                .offset(gpui_kit::point(px(0.), px(6.)))
+                .anchor(corner)
+                .offset(gpui_kit::point(px(0.), lift))
                 .snap_to_window_with_margin(px(MARGIN))
                 .child(popover),
         )
@@ -488,8 +547,9 @@ impl Render for LanguageCombobox {
         .text_color(theme.accent_text)
         .child(Icon::Plus.view(14., theme.accent_text))
         .child("Add Language");
-        let width = self.width.clone();
-        let ring = theme.ring;
+        let field_bounds = self.field_bounds.clone();
+        let (this_view, open) = (cx.entity_id(), self.open);
+        let focus = focus_edge(&theme);
         let field = a11y::node("meeting-languages", Role::ComboBox, "Meeting languages")
             .aria_value(names.join(", "))
             .aria_expanded(self.open)
@@ -522,34 +582,48 @@ impl Render for LanguageCombobox {
             .bg(theme.control_bg)
             .border_1()
             .border_color(theme.control_border)
-            .focus_visible(move |style| style.border_color(ring))
+            .focus_visible(move |style| {
+                style.border_color(focus.color).shadow(vec![BoxShadow {
+                    color: focus.color,
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: focus.halo,
+                    inset: false,
+                }])
+            })
             .children(chips)
             .child(add);
         // `anchored` is absolutely positioned, so it starts at its parent's origin. This
-        // zero-height strip puts that origin at the field's bottom edge, at the field's width.
-        let anchor = div()
-            .relative()
-            .w_full()
-            .h_0()
-            .child(
-                canvas(
-                    move |bounds, _, _| width.set(bounds.size.width),
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
-            .children(
-                self.open
-                    .then(|| self.popover(&theme, window.viewport_size().height, cx)),
-            );
+        // zero-height strip puts that origin at the field's bottom edge.
+        let anchor = div().relative().w_full().h_0().children(
+            self.open
+                .then(|| self.popover(&theme, window.viewport_size().height, cx)),
+        );
         let status = self.said.clone().map(|said| {
             a11y::node("meeting-languages-status", Role::Status, said)
                 .absolute()
                 .size_0()
                 .overflow_hidden()
         });
-        wrap.relative().child(field).child(anchor).children(status)
+        // The wrap is as big as the field, border included, so the canvas measures it.
+        wrap.relative()
+            .child(field)
+            .child(anchor)
+            .children(status)
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        // The popover is placed from these bounds, so draw it again when they
+                        // move while it is open.
+                        if field_bounds.replace(bounds) != bounds && open {
+                            cx.notify(this_view);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 }
 

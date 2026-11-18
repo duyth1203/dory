@@ -371,16 +371,10 @@ impl Shell {
                     app.translate_selected_summary(action.target.clone(), cx)
                 })
             }))
-            .on_action(cx.listener(|this, _: &CopySummary, _, cx| {
-                if let Some(detail) = this.selected_detail(cx) {
-                    export::copy(&detail, CopyWhat::Summary, this.selected_text(cx), cx);
-                }
-            }))
-            .on_action(cx.listener(|this, _: &CopyTranscript, _, cx| {
-                if let Some(detail) = this.selected_detail(cx) {
-                    export::copy(&detail, CopyWhat::Transcript, this.selected_text(cx), cx);
-                }
-            }))
+            .on_action(cx.listener(|this, _: &CopySummary, _, cx| this.copy(CopyWhat::Summary, cx)))
+            .on_action(
+                cx.listener(|this, _: &CopyTranscript, _, cx| this.copy(CopyWhat::Transcript, cx)),
+            )
             .on_action(cx.listener(|this, _: &ExportMarkdown, _, cx| {
                 this.export(ExportFormat::Markdown, cx)
             }))
@@ -438,10 +432,6 @@ impl Shell {
         }
     }
 
-    fn selected_detail(&self, cx: &Context<Self>) -> Option<std::sync::Arc<crate::app::Detail>> {
-        self.app.read(cx).session()?.read(cx).detail()
-    }
-
     /// Which text of a translated transcript and of a translated summary is on screen, which
     /// Copy and Export put out.
     fn selected_text(&self, cx: &Context<Self>) -> crate::app::Shown {
@@ -451,10 +441,18 @@ impl Shell {
             .map_or_else(Default::default, |s| s.read(cx).shown())
     }
 
+    /// Copy Summary and Copy Transcript, from the menus, the buttons, and the key bindings alike.
+    /// `export::copy` does nothing for text that is not there.
+    fn copy(&self, what: CopyWhat, cx: &mut Context<Self>) {
+        if let Some((detail, has)) = export::open_recording(self.app.read(cx), cx) {
+            export::copy(&detail, has, what, self.selected_text(cx), cx);
+        }
+    }
+
     fn export(&self, format: ExportFormat, cx: &mut Context<Self>) {
-        if let Some(detail) = self.selected_detail(cx) {
+        if let Some((detail, has)) = export::open_recording(self.app.read(cx), cx) {
             let shown = self.selected_text(cx);
-            export::export(&self.app, detail, format, shown, cx);
+            export::export(&self.app, detail, has, format, shown, cx);
         }
     }
 

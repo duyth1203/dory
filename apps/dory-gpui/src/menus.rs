@@ -28,6 +28,7 @@ use gpui_kit::{
 
 use crate::actions::*;
 use crate::app::AppState;
+use crate::export::{CopyWhat, ExportFormat, Has};
 use crate::languages;
 use crate::library::Selection;
 use crate::theme::ThemeName;
@@ -38,6 +39,8 @@ pub struct MenuState {
     pub has_selection: bool,
     pub has_summary: bool,
     pub has_transcript: bool,
+    /// Markdown and Text export the summary or the transcript, whichever there is.
+    pub export_text: bool,
     /// The transcript has times for every segment, which SRT needs.
     pub srt: bool,
     pub can_undo: bool,
@@ -109,12 +112,14 @@ impl Recorder {
 
 pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
     let detail = app.session().and_then(|session| session.read(cx).detail());
-    let transcript = detail.as_ref().and_then(|d| d.transcript.as_ref());
+    let phase = app.selection.id().and_then(|id| app.phase_of(id));
+    let has = detail.as_ref().map(|d| Has::of(d, phase.as_ref()));
     MenuState {
         has_selection: app.selection != Selection::None,
-        has_summary: detail.as_ref().is_some_and(|d| d.summary.is_some()),
-        has_transcript: transcript.is_some(),
-        srt: transcript.is_some_and(|t| !t.segments.is_empty() && t.is_timed()),
+        has_summary: has.is_some_and(|h| h.can_copy(CopyWhat::Summary)),
+        has_transcript: has.is_some_and(|h| h.can_copy(CopyWhat::Transcript)),
+        export_text: has.is_some_and(|h| h.can_export(ExportFormat::Markdown)),
+        srt: has.is_some_and(|h| h.can_export(ExportFormat::Srt)),
         can_undo: app.can_undo(),
         can_step: app
             .session()
@@ -128,17 +133,15 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
             .as_ref()
             .and_then(|d| d.summary.as_ref())
             .and_then(|s| s.language.clone()),
-        translating_summary: app.selection.id().is_some_and(|id| {
-            matches!(
-                app.phase_of(id),
-                Some(crate::processing::Phase::TranslatingSummary { .. })
-            )
-        }),
+        translating_summary: matches!(
+            phase,
+            Some(crate::processing::Phase::TranslatingSummary { .. })
+        ),
     }
 }
 
 pub fn build(state: MenuState) -> Vec<Menu> {
-    let exportable = state.has_summary || state.has_transcript;
+    let exportable = state.export_text;
     let undo = if state.can_undo {
         "Undo Move to Trash"
     } else {
@@ -384,31 +387,60 @@ pub fn recording_menu(
         .as_ref()
         .map(|app| app.read(cx).settings().meeting_languages.clone())
         .unwrap_or_default();
+    // Copy and Export wait for text as the File menu's do, by the same rule.
+    let has = target
+        .as_ref()
+        .and_then(|app| crate::export::has_of(app.read(cx), id, cx))
+        .unwrap_or(Has {
+            summary: false,
+            transcript: false,
+            timed: false,
+        });
     let current = target.and_then(|app| {
         let session = app.read(cx).session()?.read(cx).detail()?;
         Some(session.recording.language.clone())
     });
-    menu.menu("Copy Summary", Box::new(CopySummary))
-        .menu("Copy Transcript", Box::new(CopyTranscript))
-        .separator()
-        .menu("Export as Markdown…", Box::new(ExportMarkdown))
-        .menu("Export as Text…", Box::new(ExportText))
-        .menu("Export as SRT…", Box::new(ExportSrt))
-        .separator()
-        .submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
-            retranscribe_choices(&meeting)
-                .into_iter()
-                .fold(menu, |menu, choice| match choice {
-                    Some((name, action)) => {
-                        let checked = current.as_ref().is_some_and(|c| action.picks(c));
-                        menu.menu_with_check(name, checked, Box::new(action))
-                    }
-                    None => menu.separator(),
-                })
-        })
-        .separator()
-        .menu("Rename", Box::new(Rename))
-        .menu("Move to Trash", Box::new(MoveToTrash))
+    menu.menu_with_disabled(
+        "Copy Summary",
+        Box::new(CopySummary),
+        !has.can_copy(CopyWhat::Summary),
+    )
+    .menu_with_disabled(
+        "Copy Transcript",
+        Box::new(CopyTranscript),
+        !has.can_copy(CopyWhat::Transcript),
+    )
+    .separator()
+    .menu_with_disabled(
+        "Export as Markdown…",
+        Box::new(ExportMarkdown),
+        !has.can_export(ExportFormat::Markdown),
+    )
+    .menu_with_disabled(
+        "Export as Text…",
+        Box::new(ExportText),
+        !has.can_export(ExportFormat::Text),
+    )
+    .menu_with_disabled(
+        "Export as SRT…",
+        Box::new(ExportSrt),
+        !has.can_export(ExportFormat::Srt),
+    )
+    .separator()
+    .submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
+        retranscribe_choices(&meeting)
+            .into_iter()
+            .fold(menu, |menu, choice| match choice {
+                Some((name, action)) => {
+                    let checked = current.as_ref().is_some_and(|c| action.picks(c));
+                    menu.menu_with_check(name, checked, Box::new(action))
+                }
+                None => menu.separator(),
+            })
+    })
+    .separator()
+    .menu("Rename", Box::new(Rename))
+    .menu("Move to Trash", Box::new(MoveToTrash))
 }
 
 /// **Translate…** and **Recording > Translate Summary…**: the meeting languages, a separator

@@ -18,7 +18,7 @@ use dory_core::models::{
 use gpui_kit::component::dialog::Confirm;
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, FontWeight, Global,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render, Role,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, anchored,
     deferred, div, prelude::FluentBuilder as _, px,
 };
@@ -664,17 +664,20 @@ const POPOVER_MARGIN: f32 = 8.;
 /// The info button and, while open, its popover (UX-28). Click, Return, or Space toggles it
 /// (GPUI clicks a focused element on both keys); Escape or a click outside closes it.
 ///
-/// `room` is the window's height. The popover never grows past it: a longer explainer scrolls
-/// inside the popover instead of running off the window.
+/// The popover never grows past the window's height: a longer explainer scrolls inside the
+/// popover, under a scrollbar, instead of running off the window.
 fn explainer(
     about: About,
     model: &ModelRef,
     open: bool,
-    room: Pixels,
     focus: &FocusHandle,
-    theme: &Theme,
     toggle: impl Fn(Option<bool>, &mut Window, &mut App) + Clone + 'static,
+    window: &mut Window,
+    cx: &mut App,
 ) -> gpui_kit::Div {
+    let themed = Theme::get(cx);
+    let theme = &themed;
+    let room = window.viewport_size().height;
     let (on_click, on_confirm, on_escape, on_out) =
         (toggle.clone(), toggle.clone(), toggle.clone(), toggle);
     let info = a11y::focusable(
@@ -759,42 +762,49 @@ fn explainer(
                     .on_mouse_down_out(move |_, window, cx| on_out(Some(false), window, cx))
                     .w(px(300.))
                     .max_h((room - px(2. * POPOVER_MARGIN)).max(px(120.)))
-                    .overflow_y_scroll()
-                    .px(px(16.))
-                    .py(px(14.))
                     .flex()
                     .flex_col()
-                    .gap(px(8.))
                     .map(|pop| crate::surface::paint(pop, crate::surface::Kind::Popover, theme))
-                    .child(
+                    .child(crate::surface::scroll_area(
+                        &format!("about-scroll-{model}"),
                         div()
-                            .text_size(theme.text(13.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(about.name.clone()),
-                    )
-                    .child(line(
-                        format!("about-summary-{model}"),
-                        about.summary.clone(),
-                        12.,
-                    ))
-                    .when(!about.good_at.is_empty(), |p| {
-                        p.child(section(
-                            format!("about-good-{model}"),
-                            "Good at",
-                            about.good_at.clone(),
-                        ))
-                    })
-                    .when(!about.watch_out.is_empty(), |p| {
-                        p.child(section(
-                            format!("about-watch-{model}"),
-                            "Watch out for",
-                            about.watch_out.clone(),
-                        ))
-                    })
-                    .children(facts.into_iter().map(|(key, fact)| {
-                        line(format!("about-{key}-{model}"), fact, 12.)
-                            .text_color(theme.text_secondary)
-                    })),
+                            .px(px(16.))
+                            .py(px(14.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .text_size(theme.text(13.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(about.name.clone()),
+                            )
+                            .child(line(
+                                format!("about-summary-{model}"),
+                                about.summary.clone(),
+                                12.,
+                            ))
+                            .when(!about.good_at.is_empty(), |p| {
+                                p.child(section(
+                                    format!("about-good-{model}"),
+                                    "Good at",
+                                    about.good_at.clone(),
+                                ))
+                            })
+                            .when(!about.watch_out.is_empty(), |p| {
+                                p.child(section(
+                                    format!("about-watch-{model}"),
+                                    "Watch out for",
+                                    about.watch_out.clone(),
+                                ))
+                            })
+                            .children(facts.into_iter().map(|(key, fact)| {
+                                line(format!("about-{key}-{model}"), fact, 12.)
+                                    .text_color(theme.text_secondary)
+                            })),
+                        window,
+                        cx,
+                    )),
                 ),
         )
         .with_priority(2)
@@ -995,10 +1005,10 @@ impl<K: ListKind> Render for ModelList<K> {
                     about(entry, &worded, &settings),
                     &model,
                     open,
-                    window.viewport_size().height,
                     &about_focus,
-                    &theme,
                     toggle,
+                    window,
+                    cx,
                 ));
             choices.push(Choice::Pinned(entry.id.clone()));
             group = group.option(
@@ -1152,10 +1162,10 @@ impl Render for SpeechStep {
                         about(&entry, &worded, &settings),
                         &model,
                         open,
-                        window.viewport_size().height,
                         &about_focus,
-                        &theme,
                         toggle,
+                        window,
+                        cx,
                     ))
                     .children(fetch),
             )

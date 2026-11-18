@@ -102,7 +102,7 @@ light blue ic card_bg #F3F5FAFF
 light blue ic card_border #3C3E44FF
 light blue ic accent #0070EBFF
 light blue ic accent_text #005DC2FF
-light blue ic ring #0070EBFF
+light blue ic ring #1D1D1FFF
 light blue ic on_accent #FFFFFFFF
 light blue ic selection_inactive #DADDE4FF
 light blue ic wave_rest #686E80FF
@@ -116,7 +116,7 @@ light blue ic attention_border #944C00FF
 light blue ic on_attention #FFFFFFFF
 light blue ic meter_off #E76673FF
 light blue ic playing_bg #EDF6FFFF
-light blue ic search_match #BCD8F9FF
+light blue ic search_match #92C3FAFF
 light blue ic avatar_bg #E3E7F0FF
 light blue ic surface_raised #FFFFFFFF
 light blue ic surface_border #3C3E44FF
@@ -128,7 +128,7 @@ light blue ic close_bg #00000000
 light blue ic track #E1E4EAFF
 light blue ic group_bg #F7F8FAFF
 light blue ic group_border #3C3E44FF
-light blue ic radio_border #8B909CFF
+light blue ic radio_border #3C3E44FF
 light blue ic chip_bg #E3E7F0FF
 dark blue ic shadows false
 dark blue ic window_bg #1A1B1FFF
@@ -146,7 +146,7 @@ dark blue ic card_bg #212637FF
 dark blue ic card_border #C8CAD0FF
 dark blue ic accent #0072E5FF
 dark blue ic accent_text #51A8FFFF
-dark blue ic ring #51A8FFFF
+dark blue ic ring #F2F2F4FF
 dark blue ic on_accent #FFFFFFFF
 dark blue ic selection_inactive #393A41FF
 dark blue ic wave_rest #989CAAFF
@@ -160,7 +160,7 @@ dark blue ic attention_border #FFB340FF
 dark blue ic on_attention #1D1D1FFF
 dark blue ic meter_off #EC8389FF
 dark blue ic playing_bg #18283AFF
-dark blue ic search_match #1C4776FF
+dark blue ic search_match #1461B1FF
 dark blue ic avatar_bg #323A52FF
 dark blue ic surface_raised #2B2C32FF
 dark blue ic surface_border #C8CAD0FF
@@ -172,7 +172,7 @@ dark blue ic close_bg #00000000
 dark blue ic track #45464EFF
 dark blue ic group_bg #212226FF
 dark blue ic group_border #C8CAD0FF
-dark blue ic radio_border #757680FF
+dark blue ic radio_border #C8CAD0FF
 dark blue ic chip_bg #323A52FF
 light purple shadows true
 light purple window_bg #FFFFFFFF
@@ -278,7 +278,7 @@ light purple ic card_bg #F3F5FAFF
 light purple ic card_border #3C3E44FF
 light purple ic accent #A945DCFF
 light purple ic accent_text #9527CCFF
-light purple ic ring #A945DCFF
+light purple ic ring #1D1D1FFF
 light purple ic on_accent #FFFFFFFF
 light purple ic selection_inactive #DADDE4FF
 light purple ic wave_rest #686E80FF
@@ -292,7 +292,7 @@ light purple ic attention_border #944C00FF
 light purple ic on_attention #FFFFFFFF
 light purple ic meter_off #E76673FF
 light purple ic playing_bg #F9F3FDFF
-light purple ic search_match #E2D0F2FF
+light purple ic search_match #D7B3EDFF
 light purple ic avatar_bg #E3E7F0FF
 light purple ic surface_raised #FFFFFFFF
 light purple ic surface_border #3C3E44FF
@@ -304,7 +304,7 @@ light purple ic close_bg #00000000
 light purple ic track #E1E4EAFF
 light purple ic group_bg #F7F8FAFF
 light purple ic group_border #3C3E44FF
-light purple ic radio_border #8B909CFF
+light purple ic radio_border #3C3E44FF
 light purple ic chip_bg #E3E7F0FF
 dark purple ic shadows false
 dark purple ic window_bg #1A1B1FFF
@@ -322,7 +322,7 @@ dark purple ic card_bg #212637FF
 dark purple ic card_border #C8CAD0FF
 dark purple ic accent #B034EFFF
 dark purple ic accent_text #D189F6FF
-dark purple ic ring #D189F6FF
+dark purple ic ring #F2F2F4FF
 dark purple ic on_accent #FFFFFFFF
 dark purple ic selection_inactive #393A41FF
 dark purple ic wave_rest #989CAAFF
@@ -336,7 +336,7 @@ dark purple ic attention_border #FFB340FF
 dark purple ic on_attention #1D1D1FFF
 dark purple ic meter_off #EC8389FF
 dark purple ic playing_bg #2E2338FF
-dark purple ic search_match #5B3871FF
+dark purple ic search_match #8647A9FF
 dark purple ic avatar_bg #323A52FF
 dark purple ic surface_raised #2B2C32FF
 dark purple ic surface_border #C8CAD0FF
@@ -348,7 +348,7 @@ dark purple ic close_bg #00000000
 dark purple ic track #45464EFF
 dark purple ic group_bg #212226FF
 dark purple ic group_border #C8CAD0FF
-dark purple ic radio_border #757680FF
+dark purple ic radio_border #C8CAD0FF
 dark purple ic chip_bg #323A52FF
 light pink shadows true
 light pink window_bg #FFFFFFFF
@@ -454,7 +454,7 @@ light pink ic card_bg #F3F5FAFF
 light pink ic card_border #3C3E44FF
 light pink ic accent #EA002DFF
 light pink ic accent_text #C60026FF
-light pink ic ring #EA002DFF
+light pink ic ring #1D1D1FFF
 light pink ic on_accent #FFFFFFFF
 light pink ic selection_inactive #DADDE4FF
 light pink ic wave_rest #686E80FF
@@ -468,7 +468,7 @@ light pink ic attention_border #944C00FF
 light pink ic on_attention #FFFFFFFF
 light pink ic meter_off #E76673FF
 light pink ic playing_bg #FFF0F3FF
-light pink ic search_match #F4C7D3FF
+light pink ic search_match #F7A5B7FF
 light pink ic avatar_bg #E3E7F0FF
 light pink ic surface_raised #FFFFFFFF
 light pink ic surface_border #3C3E44FF
@@ -480,7 +480,7 @@ light pink ic close_bg #00000000
 light pink ic track #E1E4EAFF
 light pink ic group_bg #F7F8FAFF
 light pink ic group_border #3C3E44FF
-light pink ic radio_border #8B909CFF
+light pink ic radio_border #3C3E44FF
 light pink ic chip_bg #E3E7F0FF
 dark pink ic shadows false
 dark pink ic window_bg #1A1B1FFF
@@ -498,7 +498,7 @@ dark pink ic card_bg #212637FF
 dark pink ic card_border #C8CAD0FF
 dark pink ic accent #EA002FFF
 dark pink ic accent_text #FF7994FF
-dark pink ic ring #FF7994FF
+dark pink ic ring #F2F2F4FF
 dark pink ic on_accent #FFFFFFFF
 dark pink ic selection_inactive #393A41FF
 dark pink ic wave_rest #989CAAFF
@@ -512,7 +512,7 @@ dark pink ic attention_border #FFB340FF
 dark pink ic on_attention #1D1D1FFF
 dark pink ic meter_off #EC8389FF
 dark pink ic playing_bg #351E27FF
-dark pink ic search_match #712C3EFF
+dark pink ic search_match #AE314CFF
 dark pink ic avatar_bg #323A52FF
 dark pink ic surface_raised #2B2C32FF
 dark pink ic surface_border #C8CAD0FF
@@ -524,7 +524,7 @@ dark pink ic close_bg #00000000
 dark pink ic track #45464EFF
 dark pink ic group_bg #212226FF
 dark pink ic group_border #C8CAD0FF
-dark pink ic radio_border #757680FF
+dark pink ic radio_border #C8CAD0FF
 dark pink ic chip_bg #323A52FF
 light red shadows true
 light red window_bg #FFFFFFFF
@@ -630,7 +630,7 @@ light red ic card_bg #F3F5FAFF
 light red ic card_border #3C3E44FF
 light red ic accent #ED0D00FF
 light red ic accent_text #C40A00FF
-light red ic ring #ED0D00FF
+light red ic ring #1D1D1FFF
 light red ic on_accent #FFFFFFFF
 light red ic selection_inactive #DADDE4FF
 light red ic wave_rest #686E80FF
@@ -644,7 +644,7 @@ light red ic attention_border #944C00FF
 light red ic on_attention #FFFFFFFF
 light red ic meter_off #E76673FF
 light red ic playing_bg #FFF1F1FF
-light red ic search_match #F4CBCBFF
+light red ic search_match #F7AAA8FF
 light red ic avatar_bg #E3E7F0FF
 light red ic surface_raised #FFFFFFFF
 light red ic surface_border #3C3E44FF
@@ -656,7 +656,7 @@ light red ic close_bg #00000000
 light red ic track #E1E4EAFF
 light red ic group_bg #F7F8FAFF
 light red ic group_border #3C3E44FF
-light red ic radio_border #8B909CFF
+light red ic radio_border #3C3E44FF
 light red ic chip_bg #E3E7F0FF
 dark red ic shadows false
 dark red ic window_bg #1A1B1FFF
@@ -674,7 +674,7 @@ dark red ic card_bg #212637FF
 dark red ic card_border #C8CAD0FF
 dark red ic accent #ED0D00FF
 dark red ic accent_text #FF7F77FF
-dark red ic ring #FF7F77FF
+dark red ic ring #F2F2F4FF
 dark red ic on_accent #FFFFFFFF
 dark red ic selection_inactive #393A41FF
 dark red ic wave_rest #989CAAFF
@@ -688,7 +688,7 @@ dark red ic attention_border #FFB340FF
 dark red ic on_attention #1D1D1FFF
 dark red ic meter_off #EC8389FF
 dark red ic playing_bg #352022FF
-dark red ic search_match #713131FF
+dark red ic search_match #AE3A35FF
 dark red ic avatar_bg #323A52FF
 dark red ic surface_raised #2B2C32FF
 dark red ic surface_border #C8CAD0FF
@@ -700,7 +700,7 @@ dark red ic close_bg #00000000
 dark red ic track #45464EFF
 dark red ic group_bg #212226FF
 dark red ic group_border #C8CAD0FF
-dark red ic radio_border #757680FF
+dark red ic radio_border #C8CAD0FF
 dark red ic chip_bg #323A52FF
 light orange shadows true
 light orange window_bg #FFFFFFFF
@@ -806,7 +806,7 @@ light orange ic card_bg #F3F5FAFF
 light orange ic card_border #3C3E44FF
 light orange ic accent #AD6500FF
 light orange ic accent_text #8F5300FF
-light orange ic ring #AD6500FF
+light orange ic ring #1D1D1FFF
 light orange ic on_accent #FFFFFFFF
 light orange ic selection_inactive #DADDE4FF
 light orange ic wave_rest #686E80FF
@@ -820,7 +820,7 @@ light orange ic attention_border #944C00FF
 light orange ic on_attention #FFFFFFFF
 light orange ic meter_off #E76673FF
 light orange ic playing_bg #FFF8EDFF
-light orange ic search_match #F4DEC1FF
+light orange ic search_match #F7CE95FF
 light orange ic avatar_bg #E3E7F0FF
 light orange ic surface_raised #FFFFFFFF
 light orange ic surface_border #3C3E44FF
@@ -832,7 +832,7 @@ light orange ic close_bg #00000000
 light orange ic track #E1E4EAFF
 light orange ic group_bg #F7F8FAFF
 light orange ic group_border #3C3E44FF
-light orange ic radio_border #8B909CFF
+light orange ic radio_border #3C3E44FF
 light orange ic chip_bg #E3E7F0FF
 dark orange ic shadows false
 dark orange ic window_bg #1A1B1FFF
@@ -850,7 +850,7 @@ dark orange ic card_bg #212637FF
 dark orange ic card_border #C8CAD0FF
 dark orange ic accent #A86600FF
 dark orange ic accent_text #FF9F0AFF
-dark orange ic ring #FF9F0AFF
+dark orange ic ring #F2F2F4FF
 dark orange ic on_accent #FFFFFFFF
 dark orange ic selection_inactive #393A41FF
 dark orange ic wave_rest #989CAAFF
@@ -864,7 +864,7 @@ dark orange ic attention_border #FFB340FF
 dark orange ic on_attention #1D1D1FFF
 dark orange ic meter_off #EC8389FF
 dark orange ic playing_bg #352B1CFF
-dark orange ic search_match #715020FF
+dark orange ic search_match #94641BFF
 dark orange ic avatar_bg #323A52FF
 dark orange ic surface_raised #2B2C32FF
 dark orange ic surface_border #C8CAD0FF
@@ -876,7 +876,7 @@ dark orange ic close_bg #00000000
 dark orange ic track #45464EFF
 dark orange ic group_bg #212226FF
 dark orange ic group_border #C8CAD0FF
-dark orange ic radio_border #757680FF
+dark orange ic radio_border #C8CAD0FF
 dark orange ic chip_bg #323A52FF
 light yellow shadows true
 light yellow window_bg #FFFFFFFF
@@ -982,7 +982,7 @@ light yellow ic card_bg #F3F5FAFF
 light yellow ic card_border #3C3E44FF
 light yellow ic accent #8F7200FF
 light yellow ic accent_text #755E00FF
-light yellow ic ring #8F7200FF
+light yellow ic ring #1D1D1FFF
 light yellow ic on_accent #FFFFFFFF
 light yellow ic selection_inactive #DADDE4FF
 light yellow ic wave_rest #686E80FF
@@ -996,7 +996,7 @@ light yellow ic attention_border #944C00FF
 light yellow ic on_attention #FFFFFFFF
 light yellow ic meter_off #E76673FF
 light yellow ic playing_bg #FFFBEDFF
-light yellow ic search_match #F4EAC1FF
+light yellow ic search_match #F7E495FF
 light yellow ic avatar_bg #E3E7F0FF
 light yellow ic surface_raised #FFFFFFFF
 light yellow ic surface_border #3C3E44FF
@@ -1008,7 +1008,7 @@ light yellow ic close_bg #00000000
 light yellow ic track #E1E4EAFF
 light yellow ic group_bg #F7F8FAFF
 light yellow ic group_border #3C3E44FF
-light yellow ic radio_border #8B909CFF
+light yellow ic radio_border #3C3E44FF
 light yellow ic chip_bg #E3E7F0FF
 dark yellow ic shadows false
 dark yellow ic window_bg #1A1B1FFF
@@ -1026,7 +1026,7 @@ dark yellow ic card_bg #212637FF
 dark yellow ic card_border #C8CAD0FF
 dark yellow ic accent #8A7200FF
 dark yellow ic accent_text #FFD60AFF
-dark yellow ic ring #FFD60AFF
+dark yellow ic ring #F2F2F4FF
 dark yellow ic on_accent #FFFFFFFF
 dark yellow ic selection_inactive #393A41FF
 dark yellow ic wave_rest #989CAAFF
@@ -1040,7 +1040,7 @@ dark yellow ic attention_border #FFB340FF
 dark yellow ic on_attention #1D1D1FFF
 dark yellow ic meter_off #EC8389FF
 dark yellow ic playing_bg #35311CFF
-dark yellow ic search_match #716420FF
+dark yellow ic search_match #7E6E1EFF
 dark yellow ic avatar_bg #323A52FF
 dark yellow ic surface_raised #2B2C32FF
 dark yellow ic surface_border #C8CAD0FF
@@ -1052,7 +1052,7 @@ dark yellow ic close_bg #00000000
 dark yellow ic track #45464EFF
 dark yellow ic group_bg #212226FF
 dark yellow ic group_border #C8CAD0FF
-dark yellow ic radio_border #757680FF
+dark yellow ic radio_border #C8CAD0FF
 dark yellow ic chip_bg #323A52FF
 light green shadows true
 light green window_bg #FFFFFFFF
@@ -1158,7 +1158,7 @@ light green ic card_bg #F3F5FAFF
 light green ic card_border #3C3E44FF
 light green ic accent #23863CFF
 light green ic accent_text #1D6E31FF
-light green ic ring #23863CFF
+light green ic ring #1D1D1FFF
 light green ic on_accent #FFFFFFFF
 light green ic selection_inactive #DADDE4FF
 light green ic wave_rest #686E80FF
@@ -1172,7 +1172,7 @@ light green ic attention_border #944C00FF
 light green ic on_attention #FFFFFFFF
 light green ic meter_off #E76673FF
 light green ic playing_bg #F1FBF3FF
-light green ic search_match #C7E9D4FF
+light green ic search_match #A6E2B8FF
 light green ic avatar_bg #E3E7F0FF
 light green ic surface_raised #FFFFFFFF
 light green ic surface_border #3C3E44FF
@@ -1184,7 +1184,7 @@ light green ic close_bg #00000000
 light green ic track #E1E4EAFF
 light green ic group_bg #F7F8FAFF
 light green ic group_border #3C3E44FF
-light green ic radio_border #8B909CFF
+light green ic radio_border #3C3E44FF
 light green ic chip_bg #E3E7F0FF
 dark green ic shadows false
 dark green ic window_bg #1A1B1FFF
@@ -1202,7 +1202,7 @@ dark green ic card_bg #212637FF
 dark green ic card_border #C8CAD0FF
 dark green ic accent #1E8738FF
 dark green ic accent_text #30D158FF
-dark green ic ring #30D158FF
+dark green ic ring #F2F2F4FF
 dark green ic on_accent #FFFFFFFF
 dark green ic selection_inactive #393A41FF
 dark green ic wave_rest #989CAAFF
@@ -1216,7 +1216,7 @@ dark green ic attention_border #FFB340FF
 dark green ic on_attention #1D1D1FFF
 dark green ic meter_off #EC8389FF
 dark green ic playing_bg #1D3126FF
-dark green ic search_match #29623BFF
+dark green ic search_match #2B7D42FF
 dark green ic avatar_bg #323A52FF
 dark green ic surface_raised #2B2C32FF
 dark green ic surface_border #C8CAD0FF
@@ -1228,7 +1228,7 @@ dark green ic close_bg #00000000
 dark green ic track #45464EFF
 dark green ic group_bg #212226FF
 dark green ic group_border #C8CAD0FF
-dark green ic radio_border #757680FF
+dark green ic radio_border #C8CAD0FF
 dark green ic chip_bg #323A52FF
 light graphite shadows true
 light graphite window_bg #FFFFFFFF
@@ -1334,7 +1334,7 @@ light graphite ic card_bg #F3F5FAFF
 light graphite ic card_border #3C3E44FF
 light graphite ic accent #74747AFF
 light graphite ic accent_text #606065FF
-light graphite ic ring #74747AFF
+light graphite ic ring #1D1D1FFF
 light graphite ic on_accent #FFFFFFFF
 light graphite ic selection_inactive #DADDE4FF
 light graphite ic wave_rest #686E80FF
@@ -1348,7 +1348,7 @@ light graphite ic attention_border #944C00FF
 light graphite ic on_attention #FFFFFFFF
 light graphite ic meter_off #E76673FF
 light graphite ic playing_bg #F7F7F7FF
-light graphite ic search_match #DBDDE1FF
+light graphite ic search_match #CACBCFFF
 light graphite ic avatar_bg #E3E7F0FF
 light graphite ic surface_raised #FFFFFFFF
 light graphite ic surface_border #3C3E44FF
@@ -1360,7 +1360,7 @@ light graphite ic close_bg #00000000
 light graphite ic track #E1E4EAFF
 light graphite ic group_bg #F7F8FAFF
 light graphite ic group_border #3C3E44FF
-light graphite ic radio_border #8B909CFF
+light graphite ic radio_border #3C3E44FF
 light graphite ic chip_bg #E3E7F0FF
 dark graphite ic shadows false
 dark graphite ic window_bg #1A1B1FFF
@@ -1378,7 +1378,7 @@ dark graphite ic card_bg #212637FF
 dark graphite ic card_border #C8CAD0FF
 dark graphite ic accent #74747AFF
 dark graphite ic accent_text #A5A5A9FF
-dark graphite ic ring #A5A5A9FF
+dark graphite ic ring #F2F2F4FF
 dark graphite ic on_accent #FFFFFFFF
 dark graphite ic selection_inactive #393A41FF
 dark graphite ic wave_rest #989CAAFF
@@ -1392,7 +1392,7 @@ dark graphite ic attention_border #FFB340FF
 dark graphite ic on_attention #1D1D1FFF
 dark graphite ic meter_off #EC8389FF
 dark graphite ic playing_bg #292A2EFF
-dark graphite ic search_match #4D4E54FF
+dark graphite ic search_match #6D6E73FF
 dark graphite ic avatar_bg #323A52FF
 dark graphite ic surface_raised #2B2C32FF
 dark graphite ic surface_border #C8CAD0FF
@@ -1404,5 +1404,5 @@ dark graphite ic close_bg #00000000
 dark graphite ic track #45464EFF
 dark graphite ic group_bg #212226FF
 dark graphite ic group_border #C8CAD0FF
-dark graphite ic radio_border #757680FF
+dark graphite ic radio_border #C8CAD0FF
 dark graphite ic chip_bg #323A52FF

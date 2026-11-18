@@ -47,13 +47,15 @@ impl AppKind for Llm {
     fn set_choice(settings: &mut Settings, choice: Choice<Llm>) {
         settings.llm = choice;
     }
+    /// The job's needs before a transcript exists, so Settings shows the fit the job will get.
+    /// An output language is what the summary is written in, as in the summarize stage.
     fn listing_needs(settings: &Settings) -> LlmNeeds {
-        LlmNeeds {
-            language: match &settings.language {
-                LanguagePref::Pinned(tag) => Some(tag.clone()),
-                LanguagePref::Auto => None,
-            },
-        }
+        let main = match &settings.language {
+            LanguagePref::Pinned(tag) => Some(tag.clone()),
+            LanguagePref::Auto => None,
+        };
+        let main = settings.output_language.clone().or(main);
+        LlmNeeds::new(main, &settings.language, &settings.meeting_languages, &[])
     }
 }
 
@@ -126,8 +128,17 @@ impl<K: ModelKind> Registry<K> {
             .collect()
     }
 
-    pub fn resolve(&self, choice: &Choice<K>, needs: &K::Needs) -> Resolution<K> {
-        resolve(choice, &self.statuses(), needs)
+    /// Resolves over every model but `excluded`, which a stage passes after a model refused the
+    /// job, so `Auto` falls back without the catalog changing.
+    pub fn resolve(
+        &self,
+        choice: &Choice<K>,
+        needs: &K::Needs,
+        excluded: &[ModelId<K>],
+    ) -> Resolution<K> {
+        let mut statuses = self.statuses();
+        statuses.retain(|s| !excluded.contains(&s.entry.id));
+        resolve(choice, &statuses, needs)
     }
 
     pub fn rows(&self, choice: &Choice<K>, needs: &K::Needs) -> Vec<ModelRow<K>> {

@@ -151,6 +151,9 @@ pub enum EngineError {
     /// The engine process or runtime died. The pipeline reopens it and retries.
     #[error("engine crashed: {0}")]
     Crashed(String),
+    /// The engine asks the caller to come back later, such as a rate limit.
+    #[error("engine is busy, try again later: {0}")]
+    Busy(String),
     #[error("engine error: {message}")]
     Other {
         message: String,
@@ -163,7 +166,9 @@ impl Classify for EngineError {
     fn class(&self) -> FailureClass {
         match self {
             EngineError::Cancelled => FailureClass::Cancelled,
-            EngineError::ServerUnavailable(_) | EngineError::Crashed(_) => FailureClass::Transient,
+            EngineError::ServerUnavailable(_) | EngineError::Crashed(_) | EngineError::Busy(_) => {
+                FailureClass::Transient
+            }
             EngineError::ModelMissing(_) | EngineError::UnsupportedLanguage(_) => {
                 FailureClass::NeedsUser
             }
@@ -291,6 +296,7 @@ mod tests {
             (EngineError::Cancelled, Cancelled),
             (EngineError::ServerUnavailable("x".into()), Transient),
             (EngineError::Crashed("x".into()), Transient),
+            (EngineError::Busy("x".into()), Transient),
             (EngineError::ModelMissing("x".into()), NeedsUser),
             (
                 EngineError::UnsupportedLanguage(LangTag::parse("vi").unwrap()),

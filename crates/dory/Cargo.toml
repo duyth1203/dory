@@ -8,9 +8,9 @@ license.workspace = true
 
 [features]
 default = ["app"]
-# The speech and summary engines and the platform adapters, which `open` needs. The `dory-mcp`
-# helper builds without them, so it links no engine and no Swift.
-app = ["dep:dory-engines", "dep:dory-macos"]
+# The speech and summary engines and the platform adapters, which `open` needs, Apple Intelligence
+# included. The `dory-mcp` helper builds without them, so it links no engine and no Swift.
+app = ["dep:dory-engines", "dep:dory-macos", "dory-macos?/apple-intelligence"]
 # Registers dory-core's fake speech and summary engines and fake capture, for lanes and demos.
 fake-engines = ["app", "dory-core/testing"]
 
@@ -36,7 +36,12 @@ required-features = ["app"]
 name = "edits"
 required-features = ["app"]
 
+[[test]]
+name = "providers"
+required-features = ["app"]
+
 [dev-dependencies]
+dory-core = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 crossbeam-channel.workspace = true
 

@@ -1,5 +1,8 @@
 //! macOS 26 adapters.
 
+#[cfg(all(target_os = "macos", feature = "apple-intelligence"))]
+pub mod ai;
+
 #[cfg(target_os = "macos")]
 mod capture;
 
@@ -14,6 +17,10 @@ mod playback;
 #[cfg(target_os = "macos")]
 mod trash;
 
+#[cfg(all(target_os = "macos", feature = "apple-intelligence"))]
+pub use ai::foundation_models::FoundationModels;
+#[cfg(all(target_os = "macos", feature = "apple-intelligence"))]
+pub use ai::speech::AppleSpeech;
 #[cfg(target_os = "macos")]
 pub use capture::{CaptureGraph, CoreAudioCapture, CoreAudioHandle, PcmFormat, TimelineClock};
 #[cfg(target_os = "macos")]

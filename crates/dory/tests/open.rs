@@ -173,19 +173,24 @@ mod fakes {
     fn fake_engines_are_registered_in_both_catalogs() {
         let dir = tempfile::tempdir().unwrap();
         let dory = dory::open_with_fake_engines(&Config::new(dir.path())).unwrap();
-        let rows = block_on(dory.models().list::<Stt>()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status.entry.id.to_string(), dory::FAKE_STT);
-        assert!(
-            block_on(dory.models().list::<dory_core::models::Llm>())
-                .unwrap()
-                .len()
-                == 1
+        let stt = block_on(dory.models().list::<Stt>()).unwrap();
+        let llm = block_on(dory.models().list::<dory_core::models::Llm>()).unwrap();
+        assert_eq!(
+            stt.iter()
+                .map(|r| r.status.entry.id.to_string())
+                .collect::<Vec<_>>(),
+            [dory::FAKE_STT, "fake/en-locale-stt"]
+        );
+        assert_eq!(
+            llm.iter()
+                .map(|r| r.status.entry.id.to_string())
+                .collect::<Vec<_>>(),
+            [dory::FAKE_LLM, "fake/en-only-llm"]
         );
     }
 
     #[test]
-    fn plain_open_registers_sherpa_and_ollama_with_models_under_the_data_folder() {
+    fn plain_open_registers_sherpa_ollama_and_apple_with_models_under_the_data_folder() {
         let dir = tempfile::tempdir().unwrap();
         let dory = dory::open(&Config::new(dir.path())).unwrap();
         let stt: Vec<String> = block_on(dory.models().list::<Stt>())
@@ -193,13 +198,26 @@ mod fakes {
             .iter()
             .map(|r| r.status.entry.id.to_string())
             .collect();
-        assert_eq!(stt, ["sherpa/parakeet-tdt-0.6b-v3", "sherpa/whisper-turbo"]);
+        assert_eq!(
+            stt[..2],
+            ["sherpa/parakeet-tdt-0.6b-v3", "sherpa/whisper-turbo"]
+        );
+        if cfg!(target_os = "macos") {
+            assert!(stt.iter().any(|id| id == "apple/speech-en"), "{stt:?}");
+            assert!(stt[2..].iter().all(|id| id.starts_with("apple/speech-")));
+        } else {
+            assert_eq!(stt.len(), 2);
+        }
         let llm: Vec<String> = block_on(dory.models().list::<dory_core::models::Llm>())
             .unwrap()
             .iter()
             .map(|r| r.status.entry.id.to_string())
             .collect();
-        assert_eq!(llm, ["ollama/gemma4:e4b", "ollama/gemma4:12b"]);
+        let mut want = vec!["ollama/gemma4:e4b", "ollama/gemma4:12b"];
+        if cfg!(target_os = "macos") {
+            want.push("apple/foundation-model");
+        }
+        assert_eq!(llm, want);
         assert_eq!(
             Config::new(dir.path()).models_dir(),
             dir.path().join("models")

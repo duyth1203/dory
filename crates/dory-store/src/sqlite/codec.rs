@@ -337,6 +337,8 @@ fn mismatch_to_db(why: Mismatch) -> &'static str {
     match why {
         Mismatch::AutoLanguageUnsupported => "auto_language_unsupported",
         Mismatch::LanguageUnsupported => "language_unsupported",
+        Mismatch::LanguagesUnknown => "languages_unknown",
+        Mismatch::OneLanguagePerMeeting => "one_language_per_meeting",
         Mismatch::NoDiarization => "no_diarization",
         Mismatch::InputTooLong => "input_too_long",
         Mismatch::NothingRecognized => "nothing_recognized",
@@ -347,6 +349,8 @@ fn mismatch_from_db(s: &str) -> Result<Mismatch, StoreError> {
     Ok(match s {
         "auto_language_unsupported" => Mismatch::AutoLanguageUnsupported,
         "language_unsupported" => Mismatch::LanguageUnsupported,
+        "languages_unknown" => Mismatch::LanguagesUnknown,
+        "one_language_per_meeting" => Mismatch::OneLanguagePerMeeting,
         "no_diarization" => Mismatch::NoDiarization,
         "input_too_long" => Mismatch::InputTooLong,
         "nothing_recognized" => Mismatch::NothingRecognized,
@@ -366,6 +370,11 @@ fn reason_to_json(reason: &UnavailableReason) -> Value {
         UnavailableReason::ServerUnreachable { endpoint } => {
             json!({ "k": "server_unreachable", "endpoint": endpoint })
         }
+        UnavailableReason::Preparing { detail } => json!({ "k": "preparing", "detail": detail }),
+        UnavailableReason::TurnedOff {
+            detail,
+            settings_url,
+        } => json!({ "k": "turned_off", "detail": detail, "settings_url": settings_url }),
     }
 }
 
@@ -386,6 +395,13 @@ fn reason_from_json(v: &Value) -> Result<UnavailableReason, StoreError> {
         },
         "server_unreachable" => UnavailableReason::ServerUnreachable {
             endpoint: text(v, "endpoint")?.to_owned(),
+        },
+        "preparing" => UnavailableReason::Preparing {
+            detail: text(v, "detail")?.to_owned(),
+        },
+        "turned_off" => UnavailableReason::TurnedOff {
+            detail: text(v, "detail")?.to_owned(),
+            settings_url: text(v, "settings_url")?.to_owned(),
         },
         other => return Err(corrupt(format!("unknown unavailable reason {other:?}"))),
     })
@@ -504,4 +520,25 @@ pub(crate) fn raw_segments_from_db(s: &str) -> Result<Vec<RawSegment>, StoreErro
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparing_round_trips() {
+        let blocker = Blocker::Unavailable {
+            model: ModelRef::parse("apple/foundation-model").unwrap(),
+            why: Unavailable {
+                reason: UnavailableReason::Preparing {
+                    detail: "Apple is getting the model ready".into(),
+                },
+                fix: None,
+            },
+        };
+        let stored = blocker_to_db(&blocker);
+        assert!(stored.contains("\"preparing\""), "{stored}");
+        assert_eq!(blocker_from_db(&stored).unwrap(), blocker);
+    }
 }

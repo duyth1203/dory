@@ -946,6 +946,20 @@ impl FakeTranscriber {
         self
     }
 
+    /// Labels each channel's segments so far with `languages` in turn, as a model that hears a
+    /// meeting switch languages would.
+    pub fn speaking(mut self, languages: &[LangTag]) -> Self {
+        if languages.is_empty() {
+            return self;
+        }
+        for segments in self.segments.values_mut() {
+            for (segment, language) in segments.iter_mut().zip(languages.iter().cycle()) {
+                segment.language = Some(language.clone());
+            }
+        }
+        self
+    }
+
     /// While held, `transcribe` waits until it is cancelled.
     pub fn hold(&self, hold: bool) {
         self.hold_from(if hold { 0 } else { usize::MAX });
@@ -1040,6 +1054,20 @@ pub struct FakeLanguageModel {
     /// Calls from this index on wait until they are cancelled.
     hold_from: AtomicUsize,
     prompts: Mutex<Vec<Completion>>,
+    /// The first this many calls fail this way.
+    refusal: Option<(Refusal, usize)>,
+}
+
+/// How a fake summary model turns a call away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// `UnsupportedLanguage` with this tag, after streaming the first word of its reply, the way
+    /// a model that gets partway into a meeting would.
+    Language(&'static str),
+    /// `InputRejected`, after streaming the first word of its reply.
+    Input,
+    /// `Busy`, at once.
+    Busy,
 }
 
 /// One completion asked for.
@@ -1063,6 +1091,7 @@ impl FakeLanguageModel {
             reply: Box::new(reply),
             hold_from: AtomicUsize::new(usize::MAX),
             prompts: Mutex::new(Vec::new()),
+            refusal: None,
         }
     }
 
@@ -1075,6 +1104,12 @@ impl FakeLanguageModel {
     /// until it is cancelled.
     pub fn hold_from(&self, call: usize) {
         self.hold_from.store(call, Ordering::SeqCst);
+    }
+
+    /// Fails the first `calls` completions with `refusal`. Every call is kept in `prompts`.
+    pub fn refusing(mut self, refusal: Refusal, calls: usize) -> Self {
+        self.refusal = Some((refusal, calls));
+        self
     }
 
     pub fn prompts(&self) -> Vec<Completion> {
@@ -1112,6 +1147,22 @@ impl LanguageModel for FakeLanguageModel {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let reply = (self.reply)(req);
+        if let Some((refusal, calls)) = self.refusal
+            && index < calls
+        {
+            let first = reply.split_inclusive(' ').next().unwrap_or_default();
+            return Err(match refusal {
+                Refusal::Busy => EngineError::Busy("the fake model is busy".into()),
+                Refusal::Language(tag) => {
+                    sink.text(first);
+                    EngineError::UnsupportedLanguage(LangTag::parse(tag).expect("a valid tag"))
+                }
+                Refusal::Input => {
+                    sink.text(first);
+                    EngineError::InputRejected("the fake model refused".into())
+                }
+            });
+        }
         for piece in reply.split_inclusive(' ') {
             sink.text(piece);
         }
@@ -1175,6 +1226,7 @@ pub fn diar_entry(id: &str) -> ModelEntry<Diar> {
         recommended: false,
         rank: 0,
         disk_bytes: None,
+        built_in: false,
     }
 }
 
@@ -1197,6 +1249,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
         recommended: false,
         rank: 0,
         disk_bytes: None,
+        built_in: false,
     }
 }
 
@@ -1213,6 +1266,7 @@ pub fn llm_entry(id: &str) -> ModelEntry<Llm> {
         recommended: false,
         rank: 0,
         disk_bytes: None,
+        built_in: false,
     }
 }
 

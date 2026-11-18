@@ -138,7 +138,9 @@ pub fn unavailable_reason(reason: &UnavailableReason) -> String {
     match reason {
         UnavailableReason::UnsupportedPlatform => "not supported on this platform".into(),
         UnavailableReason::OsTooOld { required } => format!("needs {required}"),
-        UnavailableReason::NotEligible { detail } => detail.clone(),
+        UnavailableReason::NotEligible { detail }
+        | UnavailableReason::Preparing { detail }
+        | UnavailableReason::TurnedOff { detail, .. } => detail.clone(),
         UnavailableReason::ServerUnreachable { endpoint } => format!("cannot reach {endpoint}"),
     }
 }

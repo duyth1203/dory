@@ -12,10 +12,12 @@
 //! - `recording:<title>` and `recording:<title>:transcript`
 //! - `phase:<P1, P2, P3a, P3b, P4, P5, P6, P7, or P8>[:<title>]`, on that recording or the
 //!   newest
-//! - `explainer`, the first speech model's info popover in Settings › Transcription
+//! - `explainer`, the first speech model's info popover in Settings › Transcription, and
+//!   `explainer:<model name>` for the model of that name, speech or summary
 //! - `queue`, the Processing window, and `queue:<state>` pinned to one of
 //!   [`fixtures::QUEUE_STATES`] (running, light, blocked, finished, empty, busy)
-//! - `summaries:<U1, U2, or U3>`, Set Up Summaries pinned to that step
+//! - `summaries`, Set Up Summaries as the library's models leave it, and `summaries:<U1, U2, or
+//!   U3>` pinned to that step
 //! - `quit`, the "Quit Dory?" dialog with a recording, two jobs, and a download in progress
 //!
 //! The app prints `show: ready` once the view is in place.
@@ -56,11 +58,12 @@ pub enum View {
         ix: usize,
         title: Option<String>,
     },
-    Explainer,
+    /// A model's explainer, by display name. `None` is the first speech model's.
+    Explainer(Option<String>),
     /// `None` shows the live queue.
     Queue(Option<String>),
-    /// U1, U2, or U3.
-    Summaries(String),
+    /// U1, U2, or U3. `None` follows the models.
+    Summaries(Option<String>),
     Quit,
 }
 
@@ -94,7 +97,7 @@ impl fmt::Display for LaunchError {
             ),
             LaunchError::View(value) => write!(
                 f,
-                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer, queue[:<running|light|blocked|finished|empty|busy>], summaries:<U1|U2|U3>, or quit, not {value:?}"
+                "{SHOW_VAR} takes settings:<pane>, settings:transcription:languages-open, about, recording:<title>[:transcript], phase:<P1..P8>[:<title>], explainer[:<model name>], queue[:<running|light|blocked|finished|empty|busy>], summaries[:<U1|U2|U3>], or quit, not {value:?}"
             ),
             LaunchError::Appearance(value) => {
                 write!(f, "{APPEARANCE_VAR} takes light or dark, not {value:?}")
@@ -150,7 +153,8 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
     let trimmed = value.trim();
     match trimmed {
         "about" => return Ok(View::About),
-        "explainer" => return Ok(View::Explainer),
+        "explainer" => return Ok(View::Explainer(None)),
+        "summaries" => return Ok(View::Summaries(None)),
         "queue" => return Ok(View::Queue(None)),
         "quit" => return Ok(View::Quit),
         _ => {}
@@ -162,8 +166,14 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
     }
     if let Some(step) = trimmed.strip_prefix("summaries:") {
         return fixtures::summaries_step(step)
-            .map(|_| View::Summaries(step.to_ascii_uppercase()))
+            .map(|_| View::Summaries(Some(step.to_ascii_uppercase())))
             .ok_or_else(bad);
+    }
+    if let Some(name) = trimmed.strip_prefix("explainer:") {
+        if name.is_empty() {
+            return Err(bad());
+        }
+        return Ok(View::Explainer(Some(name.to_owned())));
     }
     if let Some(rest) = trimmed.strip_prefix("settings:") {
         let (rest, min_height) = match rest.strip_suffix(":min-height") {
@@ -261,8 +271,10 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
         View::Summaries(step) => {
             // Deferred: the dialog layer is the main window's root view, still being built.
             window.defer(cx, move |window, cx| {
-                if let Some(step) = fixtures::summaries_step(&step) {
-                    set_up_summaries::preview(step, window, cx);
+                match step.as_deref().map(fixtures::summaries_step) {
+                    Some(Some(step)) => set_up_summaries::preview(step, window, cx),
+                    Some(None) => {}
+                    None => set_up_summaries::sheet(window, cx),
                 }
                 ready(&view);
             });
@@ -307,7 +319,28 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
             });
             ready(&view);
         }
-        View::Explainer => {
+        View::Explainer(Some(name)) => {
+            settings_window::open_at(app, Pane::Transcription, cx);
+            let (Some(settings), Some(models)) =
+                (settings_window::current(cx), models_view::shared(cx))
+            else {
+                return;
+            };
+            let open = move |cx: &mut App| settings.update(cx, |s, cx| s.open_explainer(&name, cx));
+            if open(cx) {
+                ready(&view);
+                return;
+            }
+            let done = Rc::new(Cell::new(false));
+            cx.observe(&models, move |_, cx| {
+                if !done.get() && open(cx) {
+                    done.set(true);
+                    ready(&view);
+                }
+            })
+            .detach();
+        }
+        View::Explainer(None) => {
             settings_window::open_at(app, Pane::Transcription, cx);
             let (Some(settings), Some(models)) =
                 (settings_window::current(cx), models_view::shared(cx))
@@ -426,7 +459,12 @@ mod tests {
             }))
         );
         assert_eq!(view("about"), Ok(Some(View::About)));
-        assert_eq!(view("explainer"), Ok(Some(View::Explainer)));
+        assert_eq!(view("explainer"), Ok(Some(View::Explainer(None))));
+        assert_eq!(
+            view("explainer:Apple Intelligence"),
+            Ok(Some(View::Explainer(Some("Apple Intelligence".into()))))
+        );
+        assert_eq!(view("summaries"), Ok(Some(View::Summaries(None))));
         assert_eq!(view("queue"), Ok(Some(View::Queue(None))));
         for state in fixtures::QUEUE_STATES {
             assert_eq!(
@@ -437,7 +475,7 @@ mod tests {
         for step in ["U1", "U2", "U3", "u2"] {
             assert_eq!(
                 view(&format!("summaries:{step}")),
-                Ok(Some(View::Summaries(step.to_ascii_uppercase())))
+                Ok(Some(View::Summaries(Some(step.to_ascii_uppercase()))))
             );
         }
         assert_eq!(view("quit"), Ok(Some(View::Quit)));
@@ -493,7 +531,7 @@ mod tests {
             "phase:P4:",
             "queue:open",
             "summaries:U4",
-            "summaries",
+            "explainer:",
         ] {
             assert_eq!(view(bad), Err(LaunchError::View(bad.into())), "{bad:?}");
         }

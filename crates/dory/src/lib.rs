@@ -37,8 +37,8 @@ use thiserror::Error;
 
 pub use clock::SystemClock;
 pub use config::{
-    Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
-    legacy_data_dir, machine_override,
+    APPLE_VAR, Config, ConfigError, DATA_DIR_VAR, MACHINE_VAR, OLLAMA_HOST_VAR, OLLAMA_NUM_CTX_VAR,
+    PretendApple, apple_override, legacy_data_dir, machine_override,
 };
 pub use dory_assistants::ControlError;
 pub use dory_core::app::{Dory, LibraryReader};
@@ -72,6 +72,9 @@ pub enum OpenError {
     Catalog(#[from] CatalogError),
     #[error(transparent)]
     Core(#[from] dory_core::app::OpenError),
+    #[cfg(feature = "fake-engines")]
+    #[error(transparent)]
+    FakeKnob(#[from] fake::KnobError),
 }
 
 #[derive(Debug, Error)]
@@ -100,8 +103,32 @@ fn providers(config: &Config) -> Providers {
         None => ollama,
     };
     Providers {
-        stt: vec![Arc::new(sherpa)],
-        llm: vec![Arc::new(ollama)],
+        stt: vec![
+            Arc::new(sherpa),
+            #[cfg(target_os = "macos")]
+            Arc::new(dory_macos::AppleSpeech::load()),
+        ],
+        llm: vec![
+            Arc::new(ollama),
+            #[cfg(target_os = "macos")]
+            Arc::new(apple(config)),
+        ],
+    }
+}
+
+#[cfg(all(feature = "app", target_os = "macos"))]
+/// Apple Intelligence, or the state `DORY_APPLE` pretends.
+fn apple(config: &Config) -> dory_macos::FoundationModels {
+    use dory_macos::FoundationModels;
+    use dory_macos::ai::foundation_models::Availability;
+    match config.apple {
+        None => FoundationModels::from_this_mac(),
+        Some(state) => FoundationModels::pretending(match state {
+            PretendApple::Off => Availability::NotEnabled,
+            PretendApple::Ineligible => Availability::NotEligible,
+            PretendApple::Preparing => Availability::NotReady,
+            PretendApple::OldOs => Availability::OsTooOld,
+        }),
     }
 }
 
@@ -279,7 +306,7 @@ pub fn open_library(config: &Config) -> Result<LibraryReader, OpenError> {
 /// Like [`open_library`], with dory-core's fake speech and summary engines registered.
 #[cfg(feature = "fake-engines")]
 pub fn open_library_with_fake_engines(config: &Config) -> Result<LibraryReader, OpenError> {
-    open_library_with(config, fake::providers())
+    open_library_with(config, fake::providers(&fake::knobs_from_env()?))
 }
 
 /// Like [`open`], with dory-core's fake speech and summary engines registered.
@@ -289,7 +316,7 @@ pub fn open_with_fake_engines(config: &Config) -> Result<Dory, OpenError> {
         config,
         platform::capture(),
         Options::default(),
-        fake::providers(),
+        fake::providers(&fake::knobs_from_env()?),
     )
 }
 

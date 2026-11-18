@@ -85,6 +85,7 @@ fn follow(dory: &Dory, events: &Subscription, mut job: Job) -> Result<(), String
                         println!("  {} {tenth}%", view::stage(stage));
                     }
                 }
+                Event::DraftReset { .. } => println!("  summary starts over with another model"),
                 Event::Error { context, message } => eprintln!("  error {context}: {message}"),
                 _ => {}
             }

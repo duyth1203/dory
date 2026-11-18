@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Builds swift/DoryAI.swift and the `ai` module over it. `dory`'s `app` feature turns it on. A
+# binary that links it must target macOS 12 or later, which the workspace's `.cargo/config.toml`
+# does with MACOSX_DEPLOYMENT_TARGET 26.0: below 12 the Swift concurrency runtime links as
+# `@rpath/libswift_Concurrency.dylib`.
+apple-intelligence = []
+
 [dependencies]
 dory-core.workspace = true
 serde.workspace = true
@@ -33,6 +40,14 @@ tempfile.workspace = true
 name = "dory-capture"
 path = "examples/dory-capture/main.rs"
 test = true
+
+[[test]]
+name = "foundation_models_live"
+required-features = ["apple-intelligence"]
+
+[[test]]
+name = "speech_live"
+required-features = ["apple-intelligence"]
 
 [lints]
 workspace = true

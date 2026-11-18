@@ -17,6 +17,22 @@ const OLLAMA_DEFAULT: &str = "http://127.0.0.1:11434";
 /// `thermal=nominal|fair|serious|critical`, comma-separated. What it leaves out reads as a cool
 /// Mac on power. Refused unless `DORY_DATA_DIR` is set, like the `--fake-*` flags.
 pub const MACHINE_VAR: &str = "DORY_MACHINE";
+/// Pretends Apple Intelligence's state, for lanes: `off`, `ineligible`, `preparing`, or `old-os`.
+/// Refused unless `DORY_DATA_DIR` is set, like `DORY_MACHINE`.
+pub const APPLE_VAR: &str = "DORY_APPLE";
+
+/// A state of Apple Intelligence that `DORY_APPLE` pretends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PretendApple {
+    /// Turned off in System Settings.
+    Off,
+    /// A Mac that cannot run it.
+    Ineligible,
+    /// The model is still downloading or being prepared.
+    Preparing,
+    /// macOS older than 26.4.
+    OldOs,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -28,6 +44,8 @@ pub struct Config {
     pub machine: Option<Conditions>,
     /// Overrides the Processing setting for this process, for the bench.
     pub processing: Option<Processing>,
+    /// Apple Intelligence's state, from `DORY_APPLE`, instead of asking the Mac.
+    pub apple: Option<PretendApple>,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -51,6 +69,12 @@ pub enum ConfigError {
         "{MACHINE_VAR} takes battery, ac, low-power, and thermal=nominal|fair|serious|critical, not {0:?}"
     )]
     Machine(String),
+    #[error(
+        "{APPLE_VAR} pretends Apple Intelligence's state, so it needs {DATA_DIR_VAR} set to a throwaway folder"
+    )]
+    AppleNeedsDataDir,
+    #[error("{APPLE_VAR} takes off, ineligible, preparing, or old-os, not {0:?}")]
+    Apple(String),
 }
 
 /// The old app's data folder. The importer reads it. Nothing writes to it.
@@ -66,20 +90,27 @@ impl Config {
             ollama_num_ctx: None,
             machine: None,
             processing: None,
+            apple: None,
         }
     }
 
     /// `DORY_DATA_DIR` when set, else `~/Library/Application Support/com.dory.app/v2` on macOS.
-    /// `OLLAMA_HOST` and `DORY_OLLAMA_NUM_CTX` set the summary engine, and `DORY_MACHINE`
-    /// pretends the machine's conditions.
+    /// `OLLAMA_HOST` and `DORY_OLLAMA_NUM_CTX` set the summary engine, and `DORY_MACHINE` and
+    /// `DORY_APPLE` pretend the machine's conditions and Apple Intelligence's state.
     pub fn from_env() -> Result<Self, ConfigError> {
         let data_dir = std::env::var_os(DATA_DIR_VAR);
+        let data_dir_set = data_dir.as_ref().is_some_and(|d| !d.is_empty());
         let machine = std::env::var(MACHINE_VAR)
             .ok()
-            .map(|value| machine_override(&value, data_dir.as_ref().is_some_and(|d| !d.is_empty())))
+            .map(|value| machine_override(&value, data_dir_set))
+            .transpose()?;
+        let apple = std::env::var(APPLE_VAR)
+            .ok()
+            .map(|value| apple_override(&value, data_dir_set))
             .transpose()?;
         let mut config = Self::from_vars(data_dir, std::env::var_os("HOME"))?;
         config.machine = machine;
+        config.apple = apple;
         if let Ok(host) = std::env::var(OLLAMA_HOST_VAR) {
             config.ollama_url = ollama_url(&host);
         }
@@ -178,6 +209,20 @@ pub fn machine_override(value: &str, data_dir_set: bool) -> Result<Conditions, C
     Ok(conditions)
 }
 
+/// Parses `DORY_APPLE`. A pretend state never reaches the default library.
+pub fn apple_override(value: &str, data_dir_set: bool) -> Result<PretendApple, ConfigError> {
+    if !data_dir_set {
+        return Err(ConfigError::AppleNeedsDataDir);
+    }
+    match value.trim() {
+        "off" => Ok(PretendApple::Off),
+        "ineligible" => Ok(PretendApple::Ineligible),
+        "preparing" => Ok(PretendApple::Preparing),
+        "old-os" => Ok(PretendApple::OldOs),
+        _ => Err(ConfigError::Apple(value.to_owned())),
+    }
+}
+
 fn same_folder(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -230,6 +275,26 @@ mod tests {
         assert_eq!(
             machine_override("thermal=hot", true),
             Err(ConfigError::Machine("thermal=hot".into()))
+        );
+    }
+
+    #[test]
+    fn dory_apple_names_a_state_and_needs_a_data_folder() {
+        for (value, want) in [
+            ("off", PretendApple::Off),
+            ("ineligible", PretendApple::Ineligible),
+            (" preparing ", PretendApple::Preparing),
+            ("old-os", PretendApple::OldOs),
+        ] {
+            assert_eq!(apple_override(value, true), Ok(want), "{value:?}");
+        }
+        assert_eq!(
+            apple_override("off", false),
+            Err(ConfigError::AppleNeedsDataDir)
+        );
+        assert_eq!(
+            apple_override("on", true),
+            Err(ConfigError::Apple("on".into()))
         );
     }
 

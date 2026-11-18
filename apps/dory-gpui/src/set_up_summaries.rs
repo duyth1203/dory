@@ -2,6 +2,11 @@
 //! in two steps, install Ollama and then download the summary model, named "Set Up Summaries"
 //! for VoiceOver.
 //!
+//! A model built into macOS (Apple Intelligence) comes first when it can run: the dialog says it
+//! needs nothing to install, or asks the user to turn it on or choose meeting languages, with the
+//! Ollama steps one button away. Its state comes from the shared [`Models`] cache, whose probes
+//! run off the main thread.
+//!
 //! - U1: step 1 is active, with Get Ollama…, which opens the website. Dory checks again whenever
 //!   the window comes back to the front, and says "Ollama found" when it is. Step 2, dashed,
 //!   names the catalog's summary model and its size, and the footer's Download Model waits for
@@ -13,8 +18,11 @@
 //!
 //! The commands that install Ollama by hand live on in Settings › Summaries (`ollama_steps`).
 
-use dory_core::domain::Blocker;
-use dory_core::models::{Llm, ModelId, ModelRef, Resolution};
+use dory_core::app::{AppKind as _, ModelRow};
+use dory_core::domain::{Blocker, LangSet};
+use dory_core::models::{
+    Availability, Choice, Fit, Llm, Mismatch, ModelId, ModelRef, Resolution, UnavailableReason,
+};
 use gpui_kit::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, FontWeight,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
@@ -24,7 +32,9 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::icons::Icon;
-use crate::models_view::{self, Models, button, chosen_pick, progress_bar, size_text};
+use crate::models_view::{
+    self, Models, button, chosen_pick, missing_languages, progress_bar, size_text,
+};
 use crate::processing::{Download, Phase, Problem};
 use crate::surface::{self, Look};
 use crate::theme::Theme;
@@ -56,6 +66,17 @@ pub enum Readiness {
     },
 }
 
+impl Readiness {
+    /// The name of the model the Ollama steps set up, when the catalog lists it.
+    fn model_name(&self) -> Option<String> {
+        match self {
+            Readiness::Checking => None,
+            Readiness::NotRunning { model } => model.as_ref().map(|m| m.name.clone()),
+            Readiness::Missing { name, .. } | Readiness::Ready { name } => Some(name.clone()),
+        }
+    }
+}
+
 /// A summary model as step 2 names it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Model {
@@ -63,10 +84,23 @@ pub struct Model {
     pub bytes: Option<u64>,
 }
 
-/// The settings' summary choice, resolved the way a job resolves it.
+/// Where the Ollama steps stand: the settings' summary choice resolved the way a job resolves it,
+/// over the models Dory installs. A choice of a built-in model counts as Automatic here.
 pub fn readiness(models: &Models) -> Readiness {
-    let (Some(settings), Some(rows)) = (models.settings(), models.rows::<Llm>()) else {
+    let (Some(settings), Some(all)) = (models.settings(), models.rows::<Llm>()) else {
         return Readiness::Checking;
+    };
+    let rows: Vec<ModelRow<Llm>> = all
+        .iter()
+        .filter(|r| !r.status.entry.built_in)
+        .cloned()
+        .collect();
+    let rows = rows.as_slice();
+    let pick = match Llm::choice(settings) {
+        Choice::Pinned(id) if !rows.iter().any(|r| r.status.entry.id == *id) => {
+            models_view::auto_pick(rows, settings)
+        }
+        _ => chosen_pick(rows, settings),
     };
     let row_of = |model: &ModelRef| rows.iter().find(|r| &r.status.entry.id.erase() == model);
     let named = |model: &ModelRef| {
@@ -84,7 +118,7 @@ pub fn readiness(models: &Models) -> Readiness {
                 bytes: row.status.entry.disk_bytes,
             })
     };
-    match chosen_pick(rows, settings) {
+    match pick {
         Resolution::Use(id) => Readiness::Ready {
             name: row_of(&id.erase())
                 .map_or_else(|| id.to_string(), |r| r.status.entry.display_name.clone()),
@@ -107,9 +141,100 @@ pub fn readiness(models: &Models) -> Readiness {
     }
 }
 
-/// The dialog's state, U1 to U3.
+/// A model built into the system, as the dialog offers it before the Ollama steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum System {
+    /// It summarizes now, with nothing to install.
+    Ready { name: String },
+    /// It could, once the user or the system does `on`.
+    Waits { name: String, on: Wait },
+    /// It cannot read these meeting languages, named: "Tagalog".
+    Unsupported { name: String, languages: String },
+}
+
+/// What a built-in model waits on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// Turned off in the system's settings, which `settings_url` opens.
+    TurnOn { settings_url: String },
+    /// The system is getting it ready, in its own words.
+    Preparing { detail: String },
+    /// The meeting languages, which a model for only some languages needs known.
+    Languages,
+}
+
+/// The built-in summary model's offer, from its row: `None` when there is none, when this Mac
+/// cannot run it (the Ollama steps then show with no word of it), or when the settings pin
+/// another model or turn summaries off.
+pub fn system(models: &Models) -> Option<System> {
+    let (settings, rows) = (models.settings()?, models.rows::<Llm>()?);
+    let row = rows.iter().find(|r| r.status.entry.built_in)?;
+    let entry = &row.status.entry;
+    match Llm::choice(settings) {
+        Choice::Auto => {}
+        Choice::Pinned(id) if *id == entry.id => {}
+        Choice::Pinned(_) | Choice::Off => return None,
+    }
+    let name = entry.display_name.clone();
+    let waits = |on| {
+        Some(System::Waits {
+            name: name.clone(),
+            on,
+        })
+    };
+    let unsupported = || {
+        let missing = missing_languages::<Llm>(&entry.caps, settings);
+        Some(System::Unsupported {
+            name: name.clone(),
+            languages: if missing.is_empty() {
+                "your meeting languages".into()
+            } else {
+                crate::languages::name_list(&missing, "or")
+            },
+        })
+    };
+    // A model that names its languages and lacks the meeting's is no use once turned on. One
+    // that names none has not read them yet, so its state comes first.
+    let names_languages = entry.caps.languages != LangSet::Only(Vec::new());
+    match (&row.status.availability, row.fit) {
+        (_, Fit::No(Mismatch::LanguageUnsupported)) if names_languages => unsupported(),
+        (Availability::Unavailable(why), _) => match &why.reason {
+            UnavailableReason::TurnedOff { settings_url, .. } => waits(Wait::TurnOn {
+                settings_url: settings_url.clone(),
+            }),
+            UnavailableReason::Preparing { detail } => waits(Wait::Preparing {
+                detail: detail.clone(),
+            }),
+            _ => None,
+        },
+        (_, Fit::No(Mismatch::LanguagesUnknown)) => waits(Wait::Languages),
+        (_, Fit::No(_)) => unsupported(),
+        (Availability::Ready, _) => Some(System::Ready { name }),
+        (Availability::NeedsProvision { .. }, _) => None,
+    }
+}
+
+/// The sentence the Ollama steps open with when the built-in model cannot read the meeting.
+pub fn unsupported_note(system: Option<&System>) -> Option<String> {
+    match system? {
+        System::Unsupported { name, languages } => {
+            Some(format!("{name} doesn't support {languages}."))
+        }
+        _ => None,
+    }
+}
+
+/// The dialog's state: the built-in model's path, then U1 to U3.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
+    /// A built-in model summarizes now. The Ollama steps, which set up `ollama_model` when the
+    /// catalog names it, are one button away.
+    System {
+        name: String,
+        ollama_model: Option<String>,
+    },
+    /// A built-in model waits on the user or the system. The Ollama steps are offered beside it.
+    Waits { name: String, on: Wait },
     /// U1: Ollama is not found yet.
     Install { model: Option<Model> },
     /// U1 once Ollama is found: Download Model is ready.
@@ -125,7 +250,26 @@ pub enum Step {
 }
 
 impl Step {
-    pub fn of(readiness: Readiness, download: Option<Download>, waiting: Option<String>) -> Step {
+    /// `ollama` is true once the user asked for the Ollama steps over the built-in model.
+    pub fn of(
+        readiness: Readiness,
+        system: Option<System>,
+        ollama: bool,
+        download: Option<Download>,
+        waiting: Option<String>,
+    ) -> Step {
+        match (readiness, system.filter(|_| !ollama)) {
+            (Readiness::Ready { .. }, _) => Step::Ready { waiting },
+            (readiness, Some(System::Ready { name })) => Step::System {
+                name,
+                ollama_model: readiness.model_name(),
+            },
+            (_, Some(System::Waits { name, on })) => Step::Waits { name, on },
+            (readiness, _) => Self::ollama(readiness, download, waiting),
+        }
+    }
+
+    fn ollama(readiness: Readiness, download: Option<Download>, waiting: Option<String>) -> Step {
         match readiness {
             Readiness::Checking => Step::Install { model: None },
             Readiness::NotRunning { model } => Step::Install { model },
@@ -142,9 +286,59 @@ impl Step {
             Step::Install { .. } | Step::Download { .. } => {
                 Some("2 short steps. Everything stays on this Mac.")
             }
+            Step::Waits { .. } => Some("Everything stays on this Mac."),
             Step::Downloading { .. } => Some("Step 2 of 2"),
-            Step::Ready { .. } => None,
+            Step::System { .. } | Step::Ready { .. } => None,
         }
+    }
+
+    /// The System path's sentence, also what VoiceOver reads for it.
+    pub fn system_text(&self) -> Option<String> {
+        match self {
+            Step::System { name, .. } => Some(format!(
+                "Summaries use {name} on this Mac. Nothing to install."
+            )),
+            _ => None,
+        }
+    }
+
+    /// The System path's way to the Ollama steps: "Use Gemma 4 E4B for long meetings".
+    pub fn ollama_text(&self) -> Option<String> {
+        let Step::System { ollama_model, .. } = self else {
+            return None;
+        };
+        let model = ollama_model.as_deref().unwrap_or("Ollama");
+        Some(format!("Use {model} for long meetings"))
+    }
+
+    /// The built-in model's card while it waits: its label, heading, and sentence.
+    pub fn waits_text(&self) -> Option<(String, String, String)> {
+        let Step::Waits { name, on } = self else {
+            return None;
+        };
+        let (heading, text) = match on {
+            Wait::TurnOn { .. } => (
+                format!("Turn on {name}"),
+                format!(
+                    "Turn it on in System Settings, and {name} summarizes your meetings on this Mac with nothing to install. Dory checks again when you come back."
+                ),
+            ),
+            Wait::Preparing { detail } => (
+                format!("{name} is getting ready"),
+                format!("{detail}. Dory uses it once it is ready, with nothing to install."),
+            ),
+            Wait::Languages => (
+                "Choose your meeting languages".to_owned(),
+                format!(
+                    "Choose the languages your meetings use, and {name} can summarize them on this Mac."
+                ),
+            ),
+        };
+        let label = match on {
+            Wait::Preparing { .. } => heading.clone(),
+            _ => format!("Step 1, {heading}"),
+        };
+        Some((label, heading, text))
     }
 
     /// Step 2's heading: "Download the summary model · Gemma 4 E4B · 9.5 GB".
@@ -175,8 +369,12 @@ impl Step {
         }
     }
 
+    /// True once Ollama answers, for the "Ollama found" announcement.
     fn found(&self) -> bool {
-        !matches!(self, Step::Install { .. })
+        matches!(
+            self,
+            Step::Download { .. } | Step::Downloading { .. } | Step::Ready { .. }
+        )
     }
 }
 
@@ -270,6 +468,10 @@ pub struct SetUp {
     /// `None` when `models_view::install` never ran, so the dialog can only show step 1.
     models: Option<Entity<Models>>,
     pinned: Option<Step>,
+    /// The user chose the Ollama steps over the built-in model.
+    ollama: bool,
+    open_settings: FocusHandle,
+    use_ollama: FocusHandle,
     get: FocusHandle,
     not_now: FocusHandle,
     download: FocusHandle,
@@ -306,6 +508,9 @@ impl SetUp {
         let mut this = Self {
             models,
             pinned,
+            ollama: false,
+            open_settings: cx.focus_handle(),
+            use_ollama: cx.focus_handle(),
             get: cx.focus_handle(),
             not_now: cx.focus_handle(),
             download: cx.focus_handle(),
@@ -330,6 +535,7 @@ impl SetUp {
         };
         let models = models.read(cx);
         let readiness = readiness(models);
+        let system = system(models);
         let app = models.app().read(cx);
         let download = match &readiness {
             Readiness::Missing { model, .. } => app.download_of(&model.erase()),
@@ -348,13 +554,32 @@ impl SetUp {
                     .find(|b| b.problem == Problem::SummaryModelMissing)
                     .map(|b| b.title.clone())
             });
-        Step::of(readiness, download, waiting)
+        Step::of(readiness, system, self.ollama, download, waiting)
     }
 
-    /// U1 starts on Get Ollama… (or Download Model once Ollama is found), U2 on Continue in
-    /// Background, U3 on Done.
+    /// The built-in model's offer, for the sentence the Ollama steps open with.
+    fn system(&self, cx: &App) -> Option<System> {
+        self.models.as_ref().and_then(|m| system(m.read(cx)))
+    }
+
+    /// The System path starts on Done, a model to turn on on Open System Settings…, one that is
+    /// getting ready on the Ollama path, and the languages step on Not Now. U1 starts on Get
+    /// Ollama… (or Download Model once Ollama is found), U2 on Continue in Background, U3 on Done.
     fn first_focus(&self, cx: &App) -> FocusHandle {
         match self.step(cx) {
+            Step::System { .. } => self.done.clone(),
+            Step::Waits {
+                on: Wait::TurnOn { .. },
+                ..
+            } => self.open_settings.clone(),
+            Step::Waits {
+                on: Wait::Preparing { .. },
+                ..
+            } => self.use_ollama.clone(),
+            Step::Waits {
+                on: Wait::Languages,
+                ..
+            } => self.not_now.clone(),
             Step::Install { .. } => self.get.clone(),
             Step::Download { .. } => self.download.clone(),
             Step::Downloading { .. } => self.background.clone(),
@@ -377,6 +602,31 @@ impl SetUp {
             })
     }
 
+    /// U3 and the System path: a check, "Summaries are ready", and `text` under it.
+    fn ready_card(id: &str, label: String, text: String, theme: &Theme) -> a11y::Node {
+        a11y::node(id.to_owned(), Role::Status, label)
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.))
+            .py(px(16.))
+            .child(Icon::CircleCheck.view(40., theme.accent_text))
+            .child(
+                div()
+                    .text_size(theme.text(15.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Summaries are ready"),
+            )
+            .child(
+                div()
+                    .max_w(px(360.))
+                    .text_center()
+                    .text_size(theme.text(13.))
+                    .text_color(theme.text_secondary)
+                    .child(text),
+            )
+    }
+
     fn heading(text: String, done: bool, theme: &Theme) -> gpui_kit::Div {
         div()
             .flex()
@@ -397,9 +647,18 @@ impl SetUp {
 }
 
 impl Render for SetUp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let step = self.step(cx);
+        let this = cx.entity().downgrade();
+        let choose_ollama = move |window: &mut Window, cx: &mut App| {
+            let _ = this.update(cx, |this, cx| {
+                this.ollama = true;
+                let first = this.first_focus(cx);
+                window.focus(&first, cx);
+                cx.notify();
+            });
+        };
         let note = |text: String| {
             div()
                 .text_size(theme.text(12.))
@@ -419,9 +678,100 @@ impl Render for SetUp {
             .gap(px(10.));
         let mut footer = Vec::new();
         match &step {
+            Step::System { .. } => {
+                let text = step.system_text().unwrap_or_default();
+                body = body.child(Self::ready_card(
+                    "set-up-system",
+                    text.clone(),
+                    text,
+                    &theme,
+                ));
+                let use_ollama = step.ollama_text().unwrap_or_default();
+                footer.push(surface::button(
+                    "set-up-use-gemma",
+                    use_ollama.clone(),
+                    use_ollama,
+                    Look::Secondary,
+                    &self.use_ollama,
+                    &theme,
+                    choose_ollama,
+                ));
+                footer.push(surface::button(
+                    "set-up-done",
+                    "Done",
+                    "Done",
+                    Look::Primary,
+                    &self.done,
+                    &theme,
+                    close_now,
+                ));
+            }
+            Step::Waits { on, .. } => {
+                let (label, heading, text) = step.waits_text().unwrap_or_default();
+                let mut first = Self::card("set-up-system", label, true, false, &theme)
+                    .child(Self::heading(heading, false, &theme))
+                    .child(note(text));
+                match on {
+                    Wait::TurnOn { settings_url } => {
+                        let url = settings_url.clone();
+                        first = first.child(div().flex().child(surface::button(
+                            "set-up-open-settings",
+                            "Open System Settings…",
+                            "Open System Settings…",
+                            Look::Primary,
+                            &self.open_settings,
+                            &theme,
+                            move |_, cx| cx.open_url(&url),
+                        )));
+                    }
+                    Wait::Languages => {
+                        if let Some(models) = &self.models {
+                            let app = models.read(cx).app().clone();
+                            first =
+                                first.child(crate::combobox::meeting_languages(&app, window, cx));
+                        }
+                    }
+                    Wait::Preparing { .. } => {}
+                }
+                let other = Self::card(
+                    "set-up-ollama-path",
+                    "Or use Ollama".into(),
+                    false,
+                    false,
+                    &theme,
+                )
+                .child(Self::heading("Or use Ollama".into(), false, &theme))
+                .child(note(ABOUT_OLLAMA.into()))
+                .child(div().flex().child(surface::button(
+                    "set-up-use-ollama",
+                    "Use Ollama Instead",
+                    "Use Ollama Instead",
+                    Look::Secondary,
+                    &self.use_ollama,
+                    &theme,
+                    choose_ollama,
+                )));
+                body = body.child(first).child(other);
+                footer.push(surface::button(
+                    "set-up-not-now",
+                    "Not Now",
+                    "Not Now",
+                    Look::Secondary,
+                    &self.not_now,
+                    &theme,
+                    close_now,
+                ));
+            }
             Step::Install { .. } | Step::Download { .. } => {
                 let found = step.found();
-                body = body.child(note(ABOUT_OLLAMA.into()));
+                let aside = self
+                    .pinned
+                    .is_none()
+                    .then(|| unsupported_note(self.system(cx).as_ref()))
+                    .flatten();
+                body = body
+                    .children(aside.map(&note))
+                    .child(note(ABOUT_OLLAMA.into()));
                 let first = if found {
                     Self::card(
                         "set-up-step-1",
@@ -576,29 +926,12 @@ impl Render for SetUp {
                 ));
             }
             Step::Ready { .. } => {
-                body = body.child(
-                    a11y::node("set-up-ready", Role::Status, "Summaries are ready")
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(8.))
-                        .py(px(16.))
-                        .child(Icon::CircleCheck.view(40., theme.accent_text))
-                        .child(
-                            div()
-                                .text_size(theme.text(15.))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child("Summaries are ready"),
-                        )
-                        .child(
-                            div()
-                                .max_w(px(360.))
-                                .text_center()
-                                .text_size(theme.text(13.))
-                                .text_color(theme.text_secondary)
-                                .child(step.ready_text()),
-                        ),
-                );
+                body = body.child(Self::ready_card(
+                    "set-up-ready",
+                    "Summaries are ready".into(),
+                    step.ready_text(),
+                    &theme,
+                ));
                 footer.push(surface::button(
                     "set-up-done",
                     "Done",
@@ -646,6 +979,8 @@ mod tests {
                 model: Some(gemma()),
             },
             None,
+            false,
+            None,
             None,
         );
         assert_eq!(
@@ -666,6 +1001,8 @@ mod tests {
                 size: Some("9.5 GB".into()),
             },
             None,
+            false,
+            None,
             None,
         );
         assert!(found.found());
@@ -676,6 +1013,8 @@ mod tests {
                 name: "Gemma 4 E4B".into(),
                 size: None,
             },
+            None,
+            false,
             Some(Download {
                 done: 1_200_000_000,
                 total: Some(3_300_000_000),
@@ -688,12 +1027,41 @@ mod tests {
                 name: "Gemma".into(),
             },
             None,
+            false,
+            None,
             Some("Hiring debrief".into()),
         );
         assert_eq!(ready.subtitle(), None);
         assert_eq!(
             ready.ready_text(),
             "Hiring debrief is being summarized now. New recordings get a summary automatically."
+        );
+    }
+
+    #[test]
+    fn the_system_path_names_the_model_the_ollama_steps_set_up() {
+        let apple = || {
+            Some(System::Ready {
+                name: "Apple Intelligence".into(),
+            })
+        };
+        let named = Step::of(
+            Readiness::NotRunning {
+                model: Some(gemma()),
+            },
+            apple(),
+            false,
+            None,
+            None,
+        );
+        assert_eq!(
+            named.ollama_text().as_deref(),
+            Some("Use Gemma 4 E4B for long meetings")
+        );
+        let unnamed = Step::of(Readiness::Checking, apple(), false, None, None);
+        assert_eq!(
+            unnamed.ollama_text().as_deref(),
+            Some("Use Ollama for long meetings")
         );
     }
 

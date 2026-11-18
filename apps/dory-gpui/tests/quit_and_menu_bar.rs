@@ -326,6 +326,7 @@ fn the_notification_setting_is_written_to_the_prefs_file(cx: &mut TestAppContext
         ollama_num_ctx: None,
         machine: None,
         processing: None,
+        apple: None,
     };
     let (_, app) = launch(cx, dory_on(empty()), past_first_run());
     cx.update(|cx| dory_gpui::prefs::watch(&app, &config, cx));

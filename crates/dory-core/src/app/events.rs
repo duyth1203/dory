@@ -64,6 +64,10 @@ pub enum Event {
         job: JobId,
         text: String,
     },
+    /// The summary starts over with another model, so drop the draft streamed so far.
+    DraftReset {
+        job: JobId,
+    },
 
     ProvisionProgress {
         model: ModelRef,

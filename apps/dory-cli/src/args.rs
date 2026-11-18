@@ -318,22 +318,32 @@ impl KindArg {
     }
 }
 
-/// `models choose KIND auto|off|ID`. The choice stays a string here because its type depends on
+/// `models choose KIND auto|off|ID [--fake-engines]`. The choice stays a string here because its type depends on
 /// the kind, which the command resolves.
 #[derive(Debug, PartialEq)]
 pub struct ChooseArgs {
     pub kind: KindArg,
     pub choice: String,
+    /// Checks the id against the fake catalogs, so a lane can pin a fake model.
+    pub fake_engines: bool,
 }
 
 impl ChooseArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
+        let (args, fake_engines) = match args {
+            [rest @ .., flag] if flag == "--fake-engines" => (rest, true),
+            _ => (args, false),
+        };
         match args {
             [kind, choice] => Ok(Self {
                 kind: KindArg::parse(kind)?,
                 choice: choice.clone(),
+                fake_engines,
             }),
-            _ => Err("models choose takes a kind and auto, off, or a model id".into()),
+            _ => Err(
+                "models choose takes a kind and auto, off, or a model id, then --fake-engines"
+                    .into(),
+            ),
         }
     }
 }
@@ -614,8 +624,14 @@ mod tests {
             ChooseArgs::parse(&words("stt sherpa/whisper-turbo")).unwrap(),
             ChooseArgs {
                 kind: KindArg::Stt,
-                choice: "sherpa/whisper-turbo".into()
+                choice: "sherpa/whisper-turbo".into(),
+                fake_engines: false,
             }
+        );
+        assert!(
+            ChooseArgs::parse(&words("llm fake/en-only-llm --fake-engines"))
+                .unwrap()
+                .fake_engines
         );
         assert!(ChooseArgs::parse(&words("video auto")).is_err());
         assert!(ChooseArgs::parse(&words("stt")).is_err());

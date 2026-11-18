@@ -44,6 +44,8 @@ pub trait ListKind: AppKind {
     /// "Speech", "Summary".
     const NOUN: &'static str;
     fn languages(caps: &Self::Caps) -> &LangSet;
+    /// True for a model offered once per language, such as Apple Speech (English).
+    fn per_language(caps: &Self::Caps) -> bool;
     /// The languages the settings ask a model of this kind to handle.
     fn wanted(settings: &Settings) -> Vec<LangTag>;
     fn rows(models: &Models) -> Option<&[ModelRow<Self>]>;
@@ -56,6 +58,10 @@ impl ListKind for Stt {
         match &caps.languages {
             LangSupport::Multilingual { tags, .. } | LangSupport::FixedLocale { tags } => tags,
         }
+    }
+
+    fn per_language(caps: &Self::Caps) -> bool {
+        matches!(caps.languages, LangSupport::FixedLocale { .. })
     }
 
     fn wanted(settings: &Settings) -> Vec<LangTag> {
@@ -77,11 +83,12 @@ impl ListKind for Llm {
         &caps.languages
     }
 
+    fn per_language(_: &Self::Caps) -> bool {
+        false
+    }
+
     fn wanted(settings: &Settings) -> Vec<LangTag> {
-        match &settings.language {
-            LanguagePref::Pinned(tag) => vec![tag.clone()],
-            LanguagePref::Auto => Vec::new(),
-        }
+        Llm::listing_needs(settings).all
     }
 
     fn rows(models: &Models) -> Option<&[ModelRow<Self>]> {
@@ -152,7 +159,9 @@ pub fn unavailable_text(why: &Unavailable) -> String {
     match &why.reason {
         UnavailableReason::UnsupportedPlatform => "Not supported on this Mac".into(),
         UnavailableReason::OsTooOld { required } => format!("Needs {required}"),
-        UnavailableReason::NotEligible { detail } => detail.clone(),
+        UnavailableReason::NotEligible { detail }
+        | UnavailableReason::Preparing { detail }
+        | UnavailableReason::TurnedOff { detail, .. } => detail.clone(),
         UnavailableReason::ServerUnreachable { endpoint } => format!("Can't reach {endpoint}"),
     }
 }
@@ -168,23 +177,30 @@ pub fn fit_text<K: ListKind>(fit: Fit, caps: &K::Caps, settings: &Settings) -> O
     };
     Some(match why {
         Mismatch::LanguageUnsupported => {
-            let set = K::languages(caps);
-            let missing: Vec<String> = K::wanted(settings)
-                .iter()
-                .filter(|tag| !set.supports(tag))
-                .map(languages::name)
-                .collect();
+            let missing = missing_languages::<K>(caps, settings);
             if missing.is_empty() {
                 "Doesn't support this language".into()
             } else {
                 format!("Doesn't support {}", missing.join(" or "))
             }
         }
+        Mismatch::LanguagesUnknown => "Needs your meeting languages set in Settings".into(),
+        Mismatch::OneLanguagePerMeeting => "Handles one language per meeting".into(),
         Mismatch::AutoLanguageUnsupported => "Needs a language chosen, can't detect one".into(),
         Mismatch::NoDiarization => "Can't tell speakers apart".into(),
         Mismatch::InputTooLong => "Long recordings get cut short".into(),
         Mismatch::NothingRecognized => NOTHING_RECOGNIZED.into(),
     })
+}
+
+/// The names of the languages the settings ask for that the model cannot read.
+pub fn missing_languages<K: ListKind>(caps: &K::Caps, settings: &Settings) -> Vec<String> {
+    let set = K::languages(caps);
+    K::wanted(settings)
+        .iter()
+        .filter(|tag| !set.supports(tag))
+        .map(languages::name)
+        .collect()
 }
 
 pub fn row<K: ListKind>(row: &ModelRow<K>, settings: &Settings, download: Option<Download>) -> Row {
@@ -276,6 +292,21 @@ pub fn about<K: ListKind>(entry: &ModelEntry<K>, row: &Row, settings: &Settings)
     }
 }
 
+/// A per-language row's family and language, "Apple Speech" and "English" from "Apple Speech
+/// (English)", so the list shows the family once as a heading over its languages.
+pub fn per_language<K: ListKind>(entry: &ModelEntry<K>) -> Option<(&str, &str)> {
+    if !K::per_language(&entry.caps) {
+        return None;
+    }
+    let (family, language) = entry.display_name.split_once(" (")?;
+    Some((family, language.strip_suffix(')')?))
+}
+
+/// A per-language row that cannot take the meeting stays out of the list unless it is chosen.
+pub fn shown<K: ListKind>(row: &ModelRow<K>) -> bool {
+    row.chosen || !(K::per_language(&row.status.entry.caps) && matches!(row.fit, Fit::No(_)))
+}
+
 /// What `Auto` picks with these rows and settings, by the core's own rule.
 pub fn auto_pick<K: ListKind>(rows: &[ModelRow<K>], settings: &Settings) -> Resolution<K> {
     resolve_with(&Choice::Auto, rows, settings)
@@ -302,6 +333,16 @@ fn name_of<K: ListKind>(rows: &[ModelRow<K>], model: &ModelRef) -> String {
             || model.to_string(),
             |r| r.status.entry.display_name.clone(),
         )
+}
+
+/// True when the model the settings' choice resolves to waits on a server that does not answer,
+/// so Settings shows how to start it.
+pub fn waits_on_server<K: ListKind>(rows: &[ModelRow<K>], settings: &Settings) -> bool {
+    matches!(
+        chosen_pick(rows, settings),
+        Resolution::Blocked(Blocker::Unavailable { why, .. })
+            if matches!(why.reason, UnavailableReason::ServerUnreachable { .. })
+    )
 }
 
 /// The line under **Automatic**: which model it uses now, and why not when it can't.
@@ -875,6 +916,18 @@ impl<K: ListKind> ModelList<K> {
         cx.notify();
         true
     }
+
+    /// Opens the explainer of the model named `name`. False when the list has none by that name.
+    pub fn open_explainer(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(row) = K::rows(self.models.read(cx))
+            .and_then(|rows| rows.iter().find(|r| r.status.entry.display_name == name))
+        else {
+            return false;
+        };
+        self.controls.open = Some(row.status.entry.id.erase());
+        cx.notify();
+        true
+    }
 }
 
 impl<K: ListKind> Render for ModelList<K> {
@@ -900,8 +953,14 @@ impl<K: ListKind> Render for ModelList<K> {
                 Radio::new(format!("choice-auto-{tag}"), "Automatic")
                     .description(auto_line(&rows, &settings)),
             );
-        for model_row in &rows {
+        let mut family = None;
+        for model_row in rows.iter().filter(|row| shown(*row)) {
             let entry = &model_row.status.entry;
+            let grouped = per_language(entry);
+            let heading = grouped
+                .map(|(name, _)| name)
+                .filter(|name| family != Some(*name));
+            family = grouped.map(|(name, _)| name);
             let worded = row(
                 model_row,
                 &settings,
@@ -949,11 +1008,16 @@ impl<K: ListKind> Render for ModelList<K> {
                 ));
             choices.push(Choice::Pinned(entry.id.clone()));
             group = group.option(
-                Radio::new(format!("model-{model}"), worded.name.clone())
-                    .description(detail)
-                    .warning(worded.fit.clone())
-                    .enabled(worded.usable || worded.chosen)
-                    .trailing(trailing),
+                Radio::new(
+                    format!("model-{model}"),
+                    grouped
+                        .map_or_else(|| worded.name.clone(), |(_, language)| language.to_owned()),
+                )
+                .heading(heading.map(str::to_owned))
+                .description(detail)
+                .warning(worded.fit.clone())
+                .enabled(worded.usable || worded.chosen)
+                .trailing(trailing),
             );
         }
         if K::OPTIONAL {

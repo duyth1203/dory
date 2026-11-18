@@ -121,6 +121,8 @@ impl ModelProvider<Stt> for HeldProvider {
 struct Rig {
     store: Arc<MemStore>,
     llm: Arc<FakeLlmProvider>,
+    /// More summary providers after Ollama's, such as a built-in model.
+    more_llm: Vec<Arc<dyn ModelProvider<Llm>>>,
     machine: Arc<FakeMachine>,
     transcriber: Arc<FakeTranscriber>,
     dir: std::path::PathBuf,
@@ -145,6 +147,7 @@ fn rig(meeting: &[&str]) -> Rig {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     Rig {
+        more_llm: Vec::new(),
         store,
         machine: Arc::new(FakeMachine::default()),
         transcriber: Arc::new(FakeTranscriber::new()),
@@ -159,6 +162,15 @@ fn rig(meeting: &[&str]) -> Rig {
 }
 
 fn open(rig: &Rig, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
+    open_with_speech(rig, Vec::new(), cx)
+}
+
+/// Like `open`, with `more` speech providers after the two sherpa models and the held one.
+fn open_with_speech(
+    rig: &Rig,
+    more: Vec<Arc<dyn ModelProvider<Stt>>>,
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<AppState>) {
     let dir = &rig.dir;
     let stt = Arc::new(FakeSttProvider::new(
         "sherpa",
@@ -182,8 +194,13 @@ fn open(rig: &Rig, cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState
             clock: Arc::new(ManualClock::new(Timestamp(
                 fixtures::now().timestamp_millis(),
             ))),
-            stt: vec![stt, held],
-            llm: vec![rig.llm.clone()],
+            stt: [stt as Arc<dyn ModelProvider<Stt>>, held]
+                .into_iter()
+                .chain(more)
+                .collect(),
+            llm: std::iter::once(rig.llm.clone() as Arc<dyn ModelProvider<Llm>>)
+                .chain(rig.more_llm.iter().cloned())
+                .collect(),
             diar: Vec::new(),
             machine: rig.machine.clone(),
             guard: None,
@@ -379,6 +396,76 @@ fn rows_say_which_meeting_language_a_model_lacks(cx: &mut TestAppContext) {
         value(window, "meeting-languages", cx).as_deref(),
         Some("Tagalog, English")
     );
+}
+
+/// Apple Speech's shape: one row per language, each fixed to that language's locales.
+fn apple_speech(rig: &Rig) -> Arc<dyn ModelProvider<Stt>> {
+    let row = |language: &str, name: &str, locales: &[&str]| {
+        let mut entry = stt_entry(
+            &format!("apple/speech-{language}"),
+            DiarizationSupport::None,
+        );
+        entry.display_name = format!("Apple Speech ({name})");
+        entry.caps.languages = LangSupport::FixedLocale {
+            tags: LangSet::Only(tags(locales)),
+        };
+        entry
+    };
+    let provider = FakeSttProvider::new(
+        "apple",
+        vec![
+            row("de", "German", &["de-DE"]),
+            row("en", "English", &["en-GB", "en-US"]),
+            row("fr", "French", &["fr-FR"]),
+        ],
+        rig.transcriber.clone(),
+    );
+    provider.set_availability(
+        &"apple/speech-de".parse().unwrap(),
+        Availability::NeedsProvision { bytes: None },
+    );
+    Arc::new(provider)
+}
+
+#[gpui_kit::test]
+fn apple_speech_shows_as_one_group_of_the_languages_that_fit(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open_with_speech(&rig, vec![apple_speech(&rig)], cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    let english = "model-apple/speech-en";
+    until(cx, "the Apple rows", |cx| has(window, english, cx));
+    assert_eq!(
+        label(window, &format!("heading-{english}"), cx).as_deref(),
+        Some("Apple Speech")
+    );
+    assert_eq!(label(window, english, cx).as_deref(), Some("English"));
+    assert!(description(window, english, cx).unwrap().contains("Ready"));
+    for hidden in ["model-apple/speech-de", "model-apple/speech-fr"] {
+        assert!(!has(window, hidden, cx), "{hidden} does not fit English");
+    }
+    assert!(has(window, &format!("model-{WHISPER}"), cx));
+}
+
+#[gpui_kit::test]
+fn a_pinned_apple_language_stays_listed_when_it_no_longer_fits(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let mut pinned = settings(&rig);
+    pinned.stt = Choice::Pinned("apple/speech-de".parse().unwrap());
+    rig.store
+        .apply(vec![Change::SettingsReplaced(pinned)])
+        .unwrap();
+    let (main, app) = open_with_speech(&rig, vec![apple_speech(&rig)], cx);
+    let window = open_settings(&app, main, settings_window::Pane::Transcription, cx);
+    let german = "model-apple/speech-de";
+    until(cx, "the pinned row", |cx| has(window, german, cx));
+    assert_eq!(
+        label(window, &format!("heading-{german}"), cx).as_deref(),
+        Some("Apple Speech"),
+        "the first listed language carries the heading"
+    );
+    assert!(!has(window, "heading-model-apple/speech-en", cx));
+    assert!(has(window, "model-apple/speech-en", cx));
+    assert!(!has(window, "model-apple/speech-fr", cx));
 }
 
 #[gpui_kit::test]
@@ -610,6 +697,50 @@ fn the_summaries_sheet_says_when_summaries_are_ready(cx: &mut TestAppContext) {
         })
         .unwrap();
     assert!(!open, "Done closes it");
+}
+
+#[gpui_kit::test]
+fn ollama_section_only_for_ollama_choices(cx: &mut TestAppContext) {
+    let mut rig = rig(&["en"]);
+    let gemma: ModelId<Llm> = GEMMA.parse().unwrap();
+    rig.llm.set_availability(
+        &gemma,
+        Availability::Unavailable(Unavailable {
+            reason: UnavailableReason::ServerUnreachable {
+                endpoint: "http://127.0.0.1:11434".into(),
+            },
+            fix: None,
+        }),
+    );
+    let mut system = llm_entry("system/summarizer");
+    system.display_name = "Apple Intelligence".into();
+    system.caps.languages = LangSet::Only(tags(&["en"]));
+    system.rank = -1;
+    system.built_in = true;
+    rig.more_llm.push(Arc::new(FakeLlmProvider::new(
+        "system",
+        vec![system],
+        Arc::new(FakeLanguageModel::new("summary")),
+    )));
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Summaries, cx);
+    until(cx, "the summary rows", |cx| {
+        has(window, "model-system/summarizer", cx)
+    });
+    assert!(
+        !has(window, "settings-ollama", cx),
+        "Automatic uses the built-in model, so a stopped Ollama does not matter"
+    );
+    assert!(
+        description(window, "model-system/summarizer", cx)
+            .unwrap_or_default()
+            .contains("Ready"),
+        "the built-in row reads Ready"
+    );
+    click(window, &format!("model-{GEMMA}"), cx);
+    until(cx, "the Ollama steps once Gemma is chosen", |cx| {
+        has(window, "settings-ollama", cx)
+    });
 }
 
 struct Onboarding(Entity<AppState>);

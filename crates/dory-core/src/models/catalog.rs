@@ -71,6 +71,7 @@ mod tests {
             recommended: false,
             rank: 0,
             disk_bytes: None,
+            built_in: false,
         }
     }
 

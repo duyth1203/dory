@@ -1,0 +1,4 @@
+[env]
+# Dory runs on macOS 26 (LSMinimumSystemVersion in apps/dory-gpui/Info.plist). Linking for it also
+# makes the Swift concurrency runtime resolve to /usr/lib/swift by absolute path.
+MACOSX_DEPLOYMENT_TARGET = "26.0"

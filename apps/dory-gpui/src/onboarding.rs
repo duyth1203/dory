@@ -285,11 +285,14 @@ pub struct Onboarding {
     /// The step the last frame showed, so a new step moves focus to its primary button.
     shown: Option<OnboardingStep>,
     _app: Subscription,
+    _models: Subscription,
 }
 
 impl Onboarding {
     pub fn new(app: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&app, |_, _, cx| cx.notify());
+        let models = crate::models_view::install(&app, cx);
+        let models = cx.observe(&models, |_, _, cx| cx.notify());
         Self {
             app,
             primary: cx.focus_handle(),
@@ -298,6 +301,7 @@ impl Onboarding {
             grant: [cx.focus_handle(), cx.focus_handle()],
             shown: None,
             _app: observe,
+            _models: models,
         }
     }
 
@@ -430,7 +434,7 @@ impl Onboarding {
                         .min_w(px(0.))
                         .text_size(theme.text(13.))
                         .text_color(theme.text_secondary)
-                        .child("Summaries are optional and need Ollama."),
+                        .child(summaries_sentence(cx)),
                 )
                 .child(button(
                     "onboarding-summaries",
@@ -442,6 +446,18 @@ impl Onboarding {
                 ))
                 .into_any_element(),
         ]
+    }
+}
+
+/// Names the built-in summary model when it can summarize these meetings now.
+fn summaries_sentence(cx: &App) -> String {
+    let system = crate::models_view::shared(cx)
+        .and_then(|models| crate::set_up_summaries::system(models.read(cx)));
+    match system {
+        Some(crate::set_up_summaries::System::Ready { name }) => {
+            format!("Summaries run on this Mac with {name}.")
+        }
+        _ => "Summaries are optional and need Ollama.".into(),
     }
 }
 

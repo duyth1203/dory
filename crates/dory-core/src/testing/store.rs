@@ -2059,7 +2059,18 @@ mod contract {
                 model: model(),
                 why: Unavailable {
                     reason: UnavailableReason::NotEligible {
-                        detail: "Apple Intelligence is off".into(),
+                        detail: "This Mac can't run Apple Intelligence".into(),
+                    },
+                    fix: None,
+                },
+            },
+            Blocker::Unavailable {
+                model: model(),
+                why: Unavailable {
+                    reason: UnavailableReason::TurnedOff {
+                        detail: "Apple Intelligence is turned off".into(),
+                        settings_url: "x-apple.systempreferences:com.apple.Siri-Settings.extension"
+                            .into(),
                     },
                     fix: Some("Turn it on in Settings".into()),
                 },
@@ -2073,6 +2084,15 @@ mod contract {
                     fix: Some("Start \"ollama\"".into()),
                 },
             },
+            Blocker::Unavailable {
+                model: model(),
+                why: Unavailable {
+                    reason: UnavailableReason::Preparing {
+                        detail: "Apple is getting the model ready".into(),
+                    },
+                    fix: None,
+                },
+            },
             Blocker::Incompatible {
                 model: model(),
                 why: Mismatch::AutoLanguageUnsupported,
@@ -2080,6 +2100,14 @@ mod contract {
             Blocker::Incompatible {
                 model: model(),
                 why: Mismatch::LanguageUnsupported,
+            },
+            Blocker::Incompatible {
+                model: model(),
+                why: Mismatch::LanguagesUnknown,
+            },
+            Blocker::Incompatible {
+                model: model(),
+                why: Mismatch::OneLanguagePerMeeting,
             },
             Blocker::Incompatible {
                 model: model(),

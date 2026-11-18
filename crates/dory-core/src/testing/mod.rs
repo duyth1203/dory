@@ -976,10 +976,12 @@ impl Transcriber for FakeTranscriber {
     }
 }
 
-/// A summary model that answers every prompt with the same text and keeps the prompts. Tokens
-/// are words.
+type Reply = Box<dyn Fn(&CompletionRequest<'_>) -> String + Send + Sync>;
+
+/// A summary model that answers every prompt with the same text, or with what `replying` picks,
+/// and keeps the prompts. Tokens are words.
 pub struct FakeLanguageModel {
-    reply: String,
+    reply: Reply,
     prompts: Mutex<Vec<Completion>>,
 }
 
@@ -993,8 +995,15 @@ pub struct Completion {
 
 impl FakeLanguageModel {
     pub fn new(reply: &str) -> Self {
+        let reply = reply.to_owned();
+        Self::replying(move |_| reply.clone())
+    }
+
+    pub fn replying(
+        reply: impl Fn(&CompletionRequest<'_>) -> String + Send + Sync + 'static,
+    ) -> Self {
         Self {
-            reply: reply.to_owned(),
+            reply: Box::new(reply),
             prompts: Mutex::new(Vec::new()),
         }
     }
@@ -1023,10 +1032,11 @@ impl LanguageModel for FakeLanguageModel {
             user: req.user.to_owned(),
             max_output_tokens: req.max_output_tokens,
         });
-        for piece in self.reply.split_inclusive(' ') {
+        let reply = (self.reply)(req);
+        for piece in reply.split_inclusive(' ') {
             sink.text(piece);
         }
-        Ok(self.reply.clone())
+        Ok(reply)
     }
 }
 

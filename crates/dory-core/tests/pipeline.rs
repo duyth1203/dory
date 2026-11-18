@@ -61,8 +61,17 @@ impl Rig {
         llm: ModelEntry<Llm>,
         reply: &str,
     ) -> Rig {
+        Self::with_model(transcriber, stt, llm, FakeLanguageModel::new(reply))
+    }
+
+    fn with_model(
+        transcriber: FakeTranscriber,
+        stt: Vec<ModelEntry<Stt>>,
+        llm: ModelEntry<Llm>,
+        model: FakeLanguageModel,
+    ) -> Rig {
         let transcriber = Arc::new(transcriber);
-        let model = Arc::new(FakeLanguageModel::new(reply));
+        let model = Arc::new(model);
         Rig {
             store: Arc::new(MemStore::new()),
             takes: MemTakes::new(),
@@ -690,6 +699,67 @@ fn notes_too_long_for_one_summary_pass_are_merged_first() {
     );
     for prompt in &prompts {
         assert!(words(&prompt.system) + words(&prompt.user) + prompt.max_output_tokens <= context);
+    }
+}
+
+/// Gemma stops a note at `max_output_tokens` of its own tokens, but the Ollama adapter counts
+/// a third or more above that, so a note at its cap counts past the cap. Merged notes reach the
+/// cap more often than notes on transcript, so a run that merges twice can be left with notes
+/// no two of which fit one capped pass. A two-hour meeting in a 32k context hit that in 3 of 9
+/// live runs.
+#[test]
+fn a_two_hour_meeting_whose_merged_notes_count_past_their_cap_is_still_summarized() {
+    let context = 32_768;
+    let lines: Vec<(u64, u64, u16, String)> = (0..1_200)
+        .map(|n| {
+            let text: Vec<String> = (0..15).map(|w| format!("l{n}w{w}")).collect();
+            (n * 6_000, n * 6_000 + 5_000, 0, text.join(" "))
+        })
+        .collect();
+    let borrowed: Vec<(u64, u64, u16, &str)> = lines
+        .iter()
+        .map(|(a, b, s, t)| (*a, *b, *s, t.as_str()))
+        .collect();
+    let model = FakeLanguageModel::replying(|req| {
+        if req
+            .system
+            .contains("key points, decisions, and action items")
+        {
+            SUMMARY.to_owned()
+        } else if req.user.contains("noted") {
+            vec!["noted"; req.max_output_tokens as usize * 8 / 5].join(" ")
+        } else {
+            vec!["noted"; req.max_output_tokens as usize * 3 / 4].join(" ")
+        }
+    });
+    let rig = Rig::with_model(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mixed, &borrowed)
+            .detecting("vi"),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(context),
+        model,
+    );
+    let id = rig.seed("two-hours", ChannelLayout::Mixed, 7_201);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the job to end", || {
+        matches!(
+            job_state(&dory, &id),
+            Some(JobState::Succeeded | JobState::Failed { .. })
+        )
+    });
+
+    assert_eq!(job_state(&dory, &id), Some(JobState::Succeeded));
+    assert_eq!(
+        dory.library().summary(&id).unwrap().unwrap().markdown,
+        SUMMARY
+    );
+    for prompt in &rig.llm.prompts() {
+        assert!(
+            words(&prompt.system) + words(&prompt.user) + prompt.max_output_tokens <= context,
+            "a prompt overflows the {context}-token context"
+        );
     }
 }
 

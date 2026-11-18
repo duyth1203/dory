@@ -72,8 +72,8 @@ fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
     let sections = format!(
         "Write the whole summary in {language}{included}. Use Markdown with three sections in this order: \
          key points, decisions, and action items. Start each section with a \"## \" heading and \
-         add no title.{headings} Write at most eight key points, one short line each, and never \
-         repeat a line. List every decision and every action item, each once, with its owner and \
+         add no title.{headings} Keep each key point to one short line and merge points that \
+         repeat, with at most eight key points. List every decision and every action item, each once, with its owner and \
          due date when the input names them. {task} Under a section with nothing to report, \
          write {none} that says there is none."
     );
@@ -582,14 +582,18 @@ mod tests {
     }
 
     /// Apple wrote one key point about 85 times on the 15-minute slice, until the output cap
-    /// left no room for the action items.
+    /// left no room for the action items. The cap rides on the old key-point sentence: worded
+    /// as "Write at most eight key points, one short line each, and never repeat a line." it
+    /// made Gemma write a Tagalog meeting's summary in English in 3 of 3 runs when no language
+    /// was named, and this wording kept Tagalog in 3 of 3.
     #[test]
-    fn the_summary_caps_key_points_and_repeats_none() {
+    fn the_summary_caps_key_points() {
         for prompt in [Prompt::SummaryOfTranscript, Prompt::SummaryOfNotes] {
             let system = system_prompt(prompt, None);
             assert!(
                 system.contains(
-                    "Write at most eight key points, one short line each, and never repeat a line."
+                    "Keep each key point to one short line and merge points that repeat, with at \
+                     most eight key points."
                 ),
                 "{prompt:?}: {system}"
             );

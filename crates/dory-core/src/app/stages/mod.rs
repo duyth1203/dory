@@ -20,8 +20,8 @@ use crate::domain::{
     TimeRange, Transcript, Translation,
 };
 use crate::models::{
-    Choice, Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
-    ModelId, ModelKind, ModelRef, Resolution, Stt, SttNeeds, run_language,
+    Choice, Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, LangSupport, Llm,
+    LlmNeeds, Mismatch, ModelId, ModelKind, ModelRef, Resolution, Stt, SttNeeds, run_language,
 };
 use crate::ports::{
     CancelToken, Change, Checkpoint, CheckpointKey, Classify, Clip, CompletionRequest, EngineError,
@@ -190,6 +190,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let needs = SttNeeds {
         language: recording.language.clone(),
         expected: cx.settings.meeting_languages.clone(),
+        expected_guessed: cx.settings.meeting_languages_guessed,
         diarization: if any_diarized {
             DiarizationNeed::Required
         } else {
@@ -735,6 +736,24 @@ impl SegmentSink for Drafts<'_, '_> {
     }
 }
 
+/// The languages a transcript's engine heard, as evidence of what the meeting used. A model that
+/// runs in one locale reports only that locale, so what it heard says nothing about the rest of
+/// the meeting and counts for nothing.
+fn heard_languages<'a>(models: &Registries, transcript: &'a Transcript) -> &'a [LangTag] {
+    let one_locale = transcript
+        .produced_by
+        .as_str()
+        .parse::<ModelId<Stt>>()
+        .ok()
+        .and_then(|id| models.get::<Stt>().entry(&id))
+        .is_some_and(|e| matches!(e.caps.languages, LangSupport::FixedLocale { .. }));
+    if one_locale {
+        &[]
+    } else {
+        &transcript.detected_languages
+    }
+}
+
 /// Writes the transcript in the output language, beside the spoken one. The policy is in
 /// `translate.rs`.
 fn translate(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
@@ -761,7 +780,7 @@ fn translate(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         Some(target.clone()),
         &recording.language,
         cx.settings.chosen_meeting_languages(),
-        &transcript.detected_languages,
+        heard_languages(cx.models, &transcript),
     );
     let Some(llm_id) = settle(
         cx.models
@@ -910,7 +929,7 @@ fn translate_summary(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let mut read = store
         .transcript(id)
         .map_err(failed)?
-        .map(|t| t.detected_languages)
+        .map(|t| heard_languages(cx.models, &t).to_vec())
         .unwrap_or_default();
     read.extend(summary.language.clone());
     let needs = LlmNeeds::new(
@@ -1024,7 +1043,7 @@ fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         target.or_else(|| transcript.main_language().cloned()),
         &recording.language,
         cx.settings.chosen_meeting_languages(),
-        &transcript.detected_languages,
+        heard_languages(cx.models, &transcript),
     );
     let names = store.speaker_names(id).map_err(failed)?;
     let lines = summary::transcript_lines(&transcript, &names, translation.as_ref());

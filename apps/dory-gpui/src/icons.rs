@@ -1,8 +1,9 @@
 //! The Lucide icons Dory draws (`docs/design/settings-icons-blur.md` section 2, UX-25), vendored
 //! into `assets/icons/` by `scripts/vendor-lucide.sh` and compiled into the binary.
 //!
-//! [`Icon::view`] draws one at a fixed size, tinted by its color: 12 in rows and status, 14 in
-//! buttons and tabs, 16 by default, 20 in the transport. The `Transport` icons are 1.5-stroke
+//! [`Icon::view`] draws one at a size in points at 100% text, tinted by its color: 12 in rows and
+//! status, 14 in buttons and tabs, 16 by default, 20 in the transport. It grows with View > Bigger
+//! through [`scaled`], so it keeps its weight beside words that doubled. The `Transport` icons are 1.5-stroke
 //! copies for that size. An icon is a graphic with no accessibility node, so VoiceOver reads the
 //! word beside it, or the label of the button it sits in, and never the icon.
 //!
@@ -12,8 +13,8 @@
 use std::borrow::Cow;
 
 use gpui_kit::{
-    AssetSource, Div, Hsla, IntoElement, ParentElement as _, Pixels, Result, SharedString,
-    Styled as _, Svg, div, px, svg,
+    AssetSource, Div, Hsla, IntoElement, ParentElement as _, Pixels, Rems, Result, SharedString,
+    Styled as _, Svg, div, px, rems, svg,
 };
 
 macro_rules! icons {
@@ -77,13 +78,26 @@ icons! {
     X => "x.svg",
 }
 
+/// `points` at 100% text, as a size that grows with the text. The window's rem is Kit's font size,
+/// 16 pt times the text scale, and never below 16 (`theme::sync`), so a control sized in it grows
+/// with the text and does not shrink under 100%, as Kit's own controls do (A11Y-9).
+pub fn scaled(points: f32) -> Rems {
+    rems(points / 16.)
+}
+
 impl Icon {
     pub fn view(self, size: f32, color: Hsla) -> Svg {
         svg()
             .data(self.bytes())
             .flex_none()
-            .size(px(size))
+            .size(scaled(size))
             .text_color(color)
+    }
+
+    /// As [`Icon::view`], at `size` points whatever the text scale, for an icon drawn inside a
+    /// control or a figure that keeps its own size, such as the player's transport.
+    pub fn fixed(self, size: f32, color: Hsla) -> Svg {
+        self.view(size, color).size(px(size))
     }
 
     /// The icon a GPUI Kit component asks for at `path`, such as `icons/check.svg`.

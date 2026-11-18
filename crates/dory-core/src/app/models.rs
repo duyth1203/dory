@@ -34,6 +34,7 @@ impl AppKind for Stt {
         SttNeeds {
             language: settings.language.clone(),
             expected: settings.meeting_languages.clone(),
+            expected_guessed: settings.meeting_languages_guessed,
             diarization: DiarizationNeed::NotNeeded,
             input: Ms(0),
         }

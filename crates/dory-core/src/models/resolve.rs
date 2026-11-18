@@ -219,6 +219,7 @@ mod tests {
         SttNeeds {
             language,
             expected: Vec::new(),
+            expected_guessed: false,
             diarization: DiarizationNeed::NotNeeded,
             input: Ms(1),
         }

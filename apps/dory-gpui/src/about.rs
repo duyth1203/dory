@@ -4,9 +4,10 @@
 //! (SIL Open Font License 1.1), which the Book theme reads in.
 
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Context, FontWeight, Global, IntoElement,
-    ParentElement as _, Render, Role, ScrollHandle, StatefulInteractiveElement as _, Styled as _,
-    Window, WindowBounds, WindowOptions, div, px, relative, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Context, FontWeight, Global,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
+    StatefulInteractiveElement as _, Styled as _, TitlebarOptions, Window, WindowBounds,
+    WindowControlArea, WindowOptions, div, point, px, relative, size,
 };
 
 use crate::a11y;
@@ -14,6 +15,8 @@ use crate::theme::Theme;
 
 pub const WIDTH: f32 = 440.;
 pub const HEIGHT: f32 = 640.;
+/// The strip above the scrolling credits, under the traffic lights.
+const TITLEBAR: f32 = 40.;
 
 const LUCIDE_VERSION: &str = include_str!("../assets/icons/VERSION");
 /// The app icon at 128 pt, rendered at 2x from `Dory.icns`, so it keeps the icon grid and the
@@ -57,6 +60,23 @@ pub fn paragraphs(license: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether a paragraph of a license file is a Markdown rule (`---`), which the window draws as a
+/// divider.
+pub fn is_rule(paragraph: &str) -> bool {
+    paragraph.len() >= 3 && paragraph.bytes().all(|b| b == b'-')
+}
+
+/// A transparent title bar, so the window's own background carries up to the top edge in every
+/// theme, as in Settings and the Processing Queue. The title stays for VoiceOver and the Window
+/// menu.
+pub fn titlebar() -> TitlebarOptions {
+    TitlebarOptions {
+        title: Some("About Dory".into()),
+        appears_transparent: true,
+        traffic_light_position: Some(point(px(20.), px(20.))),
+    }
+}
+
 struct Open(AnyWindowHandle);
 
 impl Global for Open {}
@@ -71,10 +91,7 @@ pub fn open(cx: &mut App) {
         return;
     }
     let options = WindowOptions {
-        titlebar: Some(gpui_kit::TitlebarOptions {
-            title: Some("About Dory".into()),
-            ..Default::default()
-        }),
+        titlebar: Some(titlebar()),
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(WIDTH), px(HEIGHT)),
@@ -85,20 +102,16 @@ pub fn open(cx: &mut App) {
     };
     if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |window, cx| {
         crate::platform::print_window_id(window);
-        cx.new(|_| About {
-            scroll: ScrollHandle::new(),
-        })
+        cx.new(|_| About)
     }) {
         cx.set_global(Open(handle));
     }
 }
 
-pub struct About {
-    scroll: ScrollHandle,
-}
+pub struct About;
 
 impl Render for About {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::get(cx);
         let version = format!("Version {}", env!("CARGO_PKG_VERSION"));
         let credits = credits().into_iter().map(|credit| {
@@ -123,6 +136,13 @@ impl Render for About {
                 .child(credit.name),
             )
             .children(paragraphs.into_iter().enumerate().map(|(ix, text)| {
+                if is_rule(&text) {
+                    return a11y::probe(format!("acknowledgement-{}-{ix}-rule", credit.id))
+                        .w_full()
+                        .h(px(1.))
+                        .my(px(4.))
+                        .bg(theme.divider);
+                }
                 a11y::node(
                     format!("acknowledgement-{}-{ix}", credit.id),
                     Role::Label,
@@ -134,14 +154,9 @@ impl Render for About {
                 .child(text)
             }))
         });
-        a11y::node("dory-about", Role::Document, "About Dory")
-            .size_full()
-            .overflow_y_scroll()
-            .track_scroll(&self.scroll)
-            .bg(theme.window_bg)
-            .text_color(theme.text)
+        let body = div()
             .px(px(28.))
-            .py(px(24.))
+            .pb(px(24.))
             .flex()
             .flex_col()
             .gap(px(16.))
@@ -187,7 +202,21 @@ impl Render for About {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Acknowledgements"),
             )
-            .children(credits)
+            .children(credits);
+        a11y::node("dory-about", Role::Document, "About Dory")
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(theme.window_bg)
+            .text_color(theme.text)
+            .child(
+                a11y::probe("about-titlebar")
+                    .flex_none()
+                    .w_full()
+                    .h(px(TITLEBAR))
+                    .window_control_area(WindowControlArea::Drag),
+            )
+            .child(crate::surface::scroll_area("about-body", body, window, cx))
     }
 }
 

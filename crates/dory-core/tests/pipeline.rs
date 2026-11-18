@@ -1318,7 +1318,7 @@ fn a_recovered_stretch_that_drops_its_own_tail_is_decoded_again() {
 
 /// What `a_transcript_that_fits_the_context_is_summarized_in_one_pass` sends with no output
 /// language set: the prompt names the spoken language and must stay these exact bytes.
-const SAME_AS_SPOKEN_SYSTEM: &str = "You summarize meeting transcripts. Write the whole summary, headings included, in Vietnamese (BCP 47 tag vi). Use Markdown with three sections in this order: key points, decisions, and action items. Keep each key point to one short line and merge points that repeat. List every decision and every action item, each once, with its owner and due date when the input names them. Write \"None\" under a section with nothing to report. Use only what the transcript says.";
+const SAME_AS_SPOKEN_SYSTEM: &str = "You summarize meeting transcripts. Write the whole summary in Vietnamese (BCP 47 tag vi). Use Markdown with three sections in this order: key points, decisions, and action items. Start each section with a \"## \" heading and add no title. Write the three headings in Vietnamese (BCP 47 tag vi) too, even though this instruction is in English. Keep each key point to one short line and merge points that repeat. List every decision and every action item, each once, with its owner and due date when the input names them. Under a section with nothing to report, write a short Vietnamese (BCP 47 tag vi) phrase that says there is none. Use only what the transcript says.";
 
 #[test]
 fn same_as_spoken_sends_todays_summary_prompt_and_runs_todays_stages() {
@@ -2673,4 +2673,166 @@ fn a_guessed_meeting_language_blocks_a_pinned_limited_model_as_unknown() {
         english_only.prompts().is_empty(),
         "the English-only model never saw Tagalog"
     );
+}
+
+const ENGLISH_LOCALE: &str = "fake/english-locale";
+const ANY_LANGUAGE: &str = "fake/any-language";
+
+/// A speech row that runs in English only, ranked above one that detects any language, as Apple
+/// Speech ranks above Whisper.
+fn english_locale_row() -> ModelEntry<Stt> {
+    let mut entry = stt(ENGLISH_LOCALE, DiarizationSupport::None, WINDOW);
+    entry.caps.languages = LangSupport::FixedLocale {
+        tags: LangSet::Only(vec![tag("en-US")]),
+    };
+    entry.rank = 20;
+    entry
+}
+
+fn any_language_row() -> ModelEntry<Stt> {
+    let mut entry = stt(ANY_LANGUAGE, DiarizationSupport::None, WINDOW);
+    entry.rank = 10;
+    entry
+}
+
+/// A two-sided Taglish meeting in a library whose English meeting language is `guessed` or chosen.
+/// The engine reports English for every window, which is all a one-locale model can report.
+fn english_meeting_with(
+    rows: Vec<ModelEntry<Stt>>,
+    stt_choice: Choice<Stt>,
+    guessed: bool,
+) -> (Rig, RecordingId) {
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mic, &[(0, 900, 0, "hello kumusta")])
+            .with_segments(Channel::System, &[(1_000, 1_900, 1, "salamat po")])
+            .detecting("en"),
+        rows,
+        llm(8_192),
+    );
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            stt: stt_choice,
+            meeting_languages: vec![tag("en")],
+            meeting_languages_guessed: guessed,
+            ..Settings::default()
+        })])
+        .unwrap();
+    let id = rig.seed("taglish-two-sided", ChannelLayout::MicSystem, 10);
+    (rig, id)
+}
+
+fn transcribed_by(dory: &Dory, id: &RecordingId) -> String {
+    dory.library()
+        .transcript(id)
+        .unwrap()
+        .unwrap()
+        .produced_by
+        .to_string()
+}
+
+#[test]
+fn a_guessed_meeting_language_keeps_auto_on_the_speech_model_that_detects_languages() {
+    let (rig, id) = english_meeting_with(
+        vec![english_locale_row(), any_language_row()],
+        Choice::Auto,
+        true,
+    );
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    assert_eq!(transcribed_by(&dory, &id), ANY_LANGUAGE);
+    assert!(
+        rig.transcriber
+            .calls()
+            .iter()
+            .all(|c| c.language == LanguagePref::Auto),
+        "the Tagalog half is heard, not read as English: {:?}",
+        rig.transcriber.calls()
+    );
+}
+
+#[test]
+fn a_chosen_meeting_language_still_hands_auto_to_the_one_locale_speech_model() {
+    let (rig, id) = english_meeting_with(
+        vec![english_locale_row(), any_language_row()],
+        Choice::Auto,
+        false,
+    );
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    assert_eq!(transcribed_by(&dory, &id), ENGLISH_LOCALE);
+    let pinned = LanguagePref::Pinned(tag("en"));
+    assert!(rig.transcriber.calls().iter().all(|c| c.language == pinned));
+}
+
+#[test]
+fn a_guessed_meeting_language_still_runs_a_one_locale_model_when_it_is_all_there_is() {
+    let (rig, id) = english_meeting_with(vec![english_locale_row()], Choice::Auto, true);
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    assert_eq!(transcribed_by(&dory, &id), ENGLISH_LOCALE);
+    let pinned = LanguagePref::Pinned(tag("en"));
+    assert!(rig.transcriber.calls().iter().all(|c| c.language == pinned));
+}
+
+#[test]
+fn a_guessed_meeting_language_does_not_stop_a_pinned_one_locale_model() {
+    let pinned: ModelId<Stt> = ENGLISH_LOCALE.parse().unwrap();
+    let (rig, id) = english_meeting_with(
+        vec![english_locale_row(), any_language_row()],
+        Choice::Pinned(pinned),
+        true,
+    );
+    let dory = rig.open();
+    process(&dory, &id, Goal::TRANSCRIBE);
+    assert_eq!(transcribed_by(&dory, &id), ENGLISH_LOCALE);
+}
+
+/// What a guessed English meeting is summarized by after `rows` transcribed it, with an English-only
+/// model ranked above `fake/llm`.
+fn summarized_after(rows: Vec<ModelEntry<Stt>>) -> (Dory, RecordingId, Arc<FakeLanguageModel>) {
+    let english_only = Arc::new(FakeLanguageModel::new(FIRST_REPLY));
+    let (rig, id) = english_meeting_with(rows, Choice::Auto, true);
+    let rig = rig.with_summary_model(
+        preferred("fake/english-only", LangSet::Only(vec![tag("en")])),
+        english_only.clone(),
+    );
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    (dory, id, english_only)
+}
+
+#[test]
+fn what_a_one_locale_model_heard_does_not_make_a_guessed_meeting_known() {
+    let (dory, id, english_only) = summarized_after(vec![english_locale_row()]);
+    assert_eq!(transcribed_by(&dory, &id), ENGLISH_LOCALE);
+    assert_eq!(
+        dory.library()
+            .summary(&id)
+            .unwrap()
+            .unwrap()
+            .produced_by
+            .as_str(),
+        LLM
+    );
+    assert!(
+        english_only.prompts().is_empty(),
+        "the engine could only report English, so the Tagalog half is unknown"
+    );
+}
+
+#[test]
+fn what_a_detecting_model_heard_still_counts_when_the_meeting_is_guessed() {
+    let (dory, id, english_only) = summarized_after(vec![any_language_row()]);
+    assert_eq!(transcribed_by(&dory, &id), ANY_LANGUAGE);
+    assert_eq!(
+        dory.library()
+            .summary(&id)
+            .unwrap()
+            .unwrap()
+            .produced_by
+            .as_str(),
+        "fake/english-only"
+    );
+    assert_eq!(english_only.prompts().len(), 1);
 }

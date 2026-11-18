@@ -28,9 +28,9 @@ use gpui_kit::component::input::{Escape, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
-    ScrollHandle, StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Window,
-    div, prelude::FluentBuilder as _, px, relative,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Role,
+    ScrollHandle, StatefulInteractiveElement as _, Styled, StyledText, Subscription, Window, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
@@ -127,7 +127,7 @@ impl Sidebar {
     }
 
     /// The headings and rows, and the selected row's index among them.
-    fn rows(&self, window: &Window, cx: &mut Context<Self>) -> (Vec<AnyElement>, Option<usize>) {
+    fn rows(&self, window: &Window, cx: &mut Context<Self>) -> Rows {
         let theme = Theme::get(cx);
         let loops = motion::looping(window, cx);
         let at = loops.then(motion::clock_ms);
@@ -159,7 +159,11 @@ impl Sidebar {
                 .text_color(theme.text_secondary)
                 .child(why)
                 .into_any_element();
-            return (vec![empty], None);
+            return Rows {
+                children: vec![empty],
+                selected: None,
+                headers: Vec::new(),
+            };
         }
         let count = visible.len();
         let statuses: std::collections::HashMap<_, _> = visible
@@ -194,6 +198,7 @@ impl Sidebar {
         let mut position = 0;
         let mut children: Vec<AnyElement> = Vec::new();
         let mut selected_ix = None;
+        let mut headers = Vec::new();
         if let Some(words) = app
             .search
             .as_ref()
@@ -202,6 +207,7 @@ impl Sidebar {
             children.push(correction_line(&words, &theme).into_any_element());
         }
         for block in blocks {
+            headers.push((children.len(), block.label.clone()));
             children.push(heading(&block.id, &block.label, &theme).into_any_element());
             for row in block.rows {
                 position += 1;
@@ -370,8 +376,32 @@ impl Sidebar {
         if breathing && loops {
             window.request_animation_frame();
         }
-        (children, selected_ix)
+        Rows {
+            children,
+            selected: selected_ix,
+            headers,
+        }
     }
+
+    /// The group whose header the list has scrolled past, with the header's height: the label that
+    /// stays on screen under the search field while the group's rows scroll. Read from the last
+    /// frame's layout, whose item bounds do not include the scroll offset. `None` while the first header is fully shown.
+    fn sticky(&self, headers: &[(usize, String)]) -> Option<(String, Pixels)> {
+        let top = self.scroll.bounds().top();
+        let scrolled = self.scroll.offset().y;
+        headers.iter().rev().find_map(|(ix, label)| {
+            let header = self.scroll.bounds_for_item(*ix)?;
+            (header.top() + scrolled < top - px(0.5)).then(|| (label.clone(), header.size.height))
+        })
+    }
+}
+
+/// What the list draws: its children in order, the selected row's index among them, and each
+/// group header's index and label.
+struct Rows {
+    children: Vec<AnyElement>,
+    selected: Option<usize>,
+    headers: Vec<(usize, String)>,
 }
 
 /// One heading and the rows under it: a date group, or a search section.
@@ -431,8 +461,27 @@ fn marked_words(text: String, words: Range<usize>, color: Hsla) -> AnyElement {
 }
 
 fn heading(id: &str, label: &str, theme: &Theme) -> impl IntoElement {
-    let header = a11y::node(id.to_owned(), Role::Heading, label.to_owned())
-        .aria_level(3)
+    let header = a11y::node(id.to_owned(), Role::Heading, label.to_owned()).aria_level(3);
+    heading_style(header, label, theme)
+}
+
+/// The group header that stays at the list's top while its group scrolls. It repeats the heading
+/// in the list, which VoiceOver already reads, so it has no node of its own.
+fn sticky_header(label: &str, height: Pixels, fill: Hsla, theme: &Theme) -> AnyElement {
+    heading_style(a11y::probe("sidebar-sticky-header"), label, theme)
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(height)
+        .bg(fill)
+        .border_b_1()
+        .border_color(theme.divider)
+        .into_any_element()
+}
+
+fn heading_style<E: Styled + ParentElement>(el: E, label: &str, theme: &Theme) -> E {
+    let header = el
         .flex_none()
         .px(px(12.))
         .pt(px(12.))
@@ -510,7 +559,12 @@ impl Render for Sidebar {
                 app.selection == Selection::None,
             )
         };
-        let (rows, selected_ix) = self.rows(window, cx);
+        let Rows {
+            children: rows,
+            selected: selected_ix,
+            headers,
+        } = self.rows(window, cx);
+        let sticky = self.sticky(&headers);
         if selected_ix != self.scrolled_to {
             self.scrolled_to = selected_ix;
             if let Some(ix) = selected_ix {
@@ -571,42 +625,67 @@ impl Render for Sidebar {
                             .child(self.filter_button(filter)),
                     )
                     .child(
-                        a11y::node("recordings", Role::List, "Recordings")
-                            .track_focus(&self.list_focus.clone().tab_stop(true))
+                        div()
+                            .relative()
                             .flex_1()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
+                            .min_h_0()
                             .flex()
                             .flex_col()
-                            .gap(px(2.))
-                            .pb(px(8.))
-                            .rounded(px(10.))
-                            .border_2()
-                            .border_color(gpui_kit::transparent_black())
-                            .when(nothing_selected, |list| {
-                                list.focus_visible(move |style| style.border_color(list_ring))
-                            })
-                            .aria_keyshortcuts("Return")
-                            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                                if event.keystroke.key == "enter"
-                                    && !event.keystroke.modifiers.modified()
-                                {
-                                    if this.app.read(cx).selection.id().is_some() {
-                                        window.dispatch_action(Box::new(Rename), cx);
-                                        cx.stop_propagation();
-                                    }
-                                    return;
-                                }
-                                let delta = match event.keystroke.key.as_str() {
-                                    "down" => 1,
-                                    "up" => -1,
-                                    _ => return,
-                                };
-                                this.app
-                                    .update(cx, |app, cx| app.select_relative(delta, cx));
-                                cx.stop_propagation();
-                            }))
-                            .children(rows),
+                            .child(
+                                a11y::node("recordings", Role::List, "Recordings")
+                                    .track_focus(&self.list_focus.clone().tab_stop(true))
+                                    .flex_1()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll)
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.))
+                                    .pb(px(8.))
+                                    .rounded(px(10.))
+                                    .border_2()
+                                    .border_color(gpui_kit::transparent_black())
+                                    .when(nothing_selected, |list| {
+                                        list.focus_visible(move |style| {
+                                            style.border_color(list_ring)
+                                        })
+                                    })
+                                    .aria_keyshortcuts("Return")
+                                    .on_key_down(cx.listener(
+                                        |this, event: &KeyDownEvent, window, cx| {
+                                            if event.keystroke.key == "enter"
+                                                && !event.keystroke.modifiers.modified()
+                                            {
+                                                if this.app.read(cx).selection.id().is_some() {
+                                                    window.dispatch_action(Box::new(Rename), cx);
+                                                    cx.stop_propagation();
+                                                }
+                                                return;
+                                            }
+                                            let delta = match event.keystroke.key.as_str() {
+                                                "down" => 1,
+                                                "up" => -1,
+                                                _ => return,
+                                            };
+                                            this.app.update(cx, |app, cx| {
+                                                app.select_relative(delta, cx)
+                                            });
+                                            cx.stop_propagation();
+                                        },
+                                    ))
+                                    .children(rows),
+                            )
+                            .children(sticky.map(|(label, height)| {
+                                sticky_header(
+                                    &label,
+                                    height,
+                                    if fill.a >= 1.0 {
+                                        fill
+                                    } else {
+                                        theme.sidebar_bg
+                                    },
+                                    &theme,
+                                )
+                            })),
                     ),
             )
             .child(prefs::sidebar_resize_handle(&self.app, cx))

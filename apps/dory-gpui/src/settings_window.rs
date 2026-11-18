@@ -1811,7 +1811,7 @@ impl SettingsWindow {
                 .child(
                     div()
                         .flex_none()
-                        .size(px(22.))
+                        .size(crate::icons::scaled(22.))
                         .rounded(px(6.))
                         .flex()
                         .items_center()

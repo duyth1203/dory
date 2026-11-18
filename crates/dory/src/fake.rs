@@ -33,7 +33,8 @@ pub const FAKE_EN_LOCALE_STT: &str = "fake/en-locale-stt";
 pub const FAKE_LLM_VAR: &str = "DORY_FAKE_LLM";
 /// Comma-separated tags the fake transcriber labels its segments with in turn, such as `en,tl`.
 pub const FAKE_STT_LANGS_VAR: &str = "DORY_FAKE_STT_LANGS";
-/// `limited` keeps only the two limited rows in the fake catalogs.
+/// `limited` keeps only the two limited rows in the fake catalogs. `locale-first` ranks the
+/// one-locale speech row above `fake/stt`, as Apple Speech ranks above Whisper.
 pub const FAKE_ROWS_VAR: &str = "DORY_FAKE_ROWS";
 
 /// Put in front of every line the fake engines translate.
@@ -72,6 +73,7 @@ pub(crate) struct Knobs {
     llm: Option<(Refusal, usize)>,
     stt_languages: Vec<LangTag>,
     limited: bool,
+    locale_first: bool,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -83,7 +85,7 @@ pub enum KnobError {
     Llm(String),
     #[error("{FAKE_STT_LANGS_VAR} takes comma-separated language tags, not {0:?}")]
     Languages(String),
-    #[error("{FAKE_ROWS_VAR} takes limited, not {0:?}")]
+    #[error("{FAKE_ROWS_VAR} takes limited or locale-first, not {0:?}")]
     Rows(String),
 }
 
@@ -124,6 +126,7 @@ pub(crate) fn knobs(
                     .map_err(|_| KnobError::Languages(value.into()))?;
             }
             _ if value == "limited" => knobs.limited = true,
+            _ if value == "locale-first" => knobs.locale_first = true,
             _ => return Err(KnobError::Rows(value.into())),
         }
     }
@@ -151,7 +154,7 @@ pub(crate) fn providers(knobs: &Knobs) -> Providers {
     let english = || LangSet::Only(vec![LangTag::parse("en").expect("a valid tag")]);
     let mut en_locale = stt_entry(FAKE_EN_LOCALE_STT, DiarizationSupport::None);
     en_locale.caps.languages = LangSupport::FixedLocale { tags: english() };
-    en_locale.rank = -1;
+    en_locale.rank = if knobs.locale_first { 20 } else { -1 };
     let mut en_only = llm_entry(FAKE_EN_ONLY_LLM);
     en_only.caps.context_tokens = 4096;
     en_only.caps.languages = english();
@@ -306,6 +309,7 @@ mod tests {
                 llm: Some((Refusal::Busy, 2)),
                 stt_languages: vec![tag("en"), tag("tl")],
                 limited: true,
+                locale_first: false,
             })
         );
         assert_eq!(
@@ -323,6 +327,7 @@ mod tests {
             (FAKE_LLM_VAR, "slow"),
             (FAKE_STT_LANGS_VAR, "en,!"),
             (FAKE_ROWS_VAR, "all"),
+            (FAKE_ROWS_VAR, "locale"),
         ] {
             assert!(
                 knobs(vars(&[(name, value)]), true).is_err(),
@@ -348,6 +353,7 @@ mod tests {
         let stt_needs = SttNeeds {
             language: LanguagePref::Auto,
             expected: meeting.clone(),
+            expected_guessed: false,
             diarization: DiarizationNeed::Required,
             input: dory_core::domain::Ms(1_000),
         };
@@ -384,5 +390,34 @@ mod tests {
             auto_picks(&limited, &["en"]),
             pick(FAKE_EN_LOCALE_STT, FAKE_EN_ONLY_LLM)
         );
+    }
+
+    #[test]
+    fn the_locale_first_row_wins_auto_only_on_a_language_the_user_chose() {
+        let knobs = Knobs {
+            locale_first: true,
+            ..Knobs::default()
+        };
+        let providers = providers(&knobs);
+        let pick = |guessed: bool| {
+            let needs = SttNeeds {
+                language: LanguagePref::Auto,
+                expected: vec![tag("en")],
+                expected_guessed: guessed,
+                diarization: DiarizationNeed::NotNeeded,
+                input: dory_core::domain::Ms(1_000),
+            };
+            match resolve(&Choice::Auto, &statuses(&providers.stt), &needs) {
+                Resolution::Use(id) => id.to_string(),
+                other => format!("{other:?}"),
+            }
+        };
+        assert_eq!(pick(false), FAKE_EN_LOCALE_STT);
+        assert_eq!(pick(true), FAKE_STT, "a guess does not hand it the meeting");
+        assert!(knobs_from(&[(FAKE_ROWS_VAR, "locale-first")]).locale_first);
+    }
+
+    fn knobs_from(pairs: &[(&'static str, &'static str)]) -> Knobs {
+        knobs(vars(pairs), true).unwrap()
     }
 }

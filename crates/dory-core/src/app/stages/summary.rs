@@ -45,16 +45,35 @@ enum Prompt {
 }
 
 fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
-    let language = match language {
-        Some(tag) => crate::domain::languages::for_prompt(tag),
-        None => "the language the meeting was held in".to_owned(),
+    // With no language named, telling Gemma the instruction is in English made it write an
+    // English meeting's summary in German, so that case only asks for the meeting's language.
+    let (language, included, headings, none) = match language {
+        Some(tag) => {
+            let language = crate::domain::languages::for_prompt(tag);
+            (
+                language.clone(),
+                "",
+                format!(
+                    " Write the three headings in {language} too, even though this instruction \
+                     is in English."
+                ),
+                format!("a short {language} phrase"),
+            )
+        }
+        None => (
+            "the language the meeting was held in".to_owned(),
+            ", headings included",
+            String::new(),
+            "a short phrase in that language".to_owned(),
+        ),
     };
     let sections = format!(
-        "Write the whole summary, headings included, in {language}. Use Markdown with three \
-         sections in this order: key points, decisions, and action items. Keep each key point to \
-         one short line and merge points that repeat. List every decision and every action item, \
-         each once, with its owner and due date when the input names them. Write \"None\" under \
-         a section with nothing to report."
+        "Write the whole summary in {language}{included}. Use Markdown with three sections in this order: \
+         key points, decisions, and action items. Start each section with a \"## \" heading and \
+         add no title.{headings} Keep each key point to one short line and merge points that \
+         repeat. List every decision and every action item, each once, with its owner and due \
+         date when the input names them. Under a section with nothing to report, write {none} \
+         that says there is none."
     );
     let notes = format!(
         "Write in {language}. Keep every key point, decision, and action item with its owner, \
@@ -396,6 +415,43 @@ mod tests {
         assert!(
             unknown.contains("in the language with BCP 47 tag xq"),
             "{unknown}"
+        );
+    }
+
+    /// Gemma wrote a Tagalog summary under "Key Points", "Decisions" and "Action Items" with
+    /// "None" under two of them, because the prompt named the headings in English and quoted the
+    /// English "None" to copy. A section is found by position, so nothing reads the words: the
+    /// prompt asks for the headings and the empty-section phrase in the summary's language.
+    #[test]
+    fn the_summary_prompt_asks_for_headings_and_the_empty_phrase_in_the_language() {
+        let tl = LangTag::parse("tl").unwrap();
+        for prompt in [Prompt::SummaryOfTranscript, Prompt::SummaryOfNotes] {
+            let system = system_prompt(prompt, Some(&tl));
+            assert!(
+                system.contains("headings in Tagalog (BCP 47 tag tl) too"),
+                "{prompt:?}: {system}"
+            );
+            assert!(
+                system.contains("a short Tagalog (BCP 47 tag tl) phrase that says there is none"),
+                "{prompt:?}: {system}"
+            );
+            assert!(!system.contains("\"None\""), "{prompt:?}: {system}");
+            assert!(system.contains("add no title"), "{prompt:?}: {system}");
+        }
+        let auto = system_prompt(Prompt::SummaryOfTranscript, None);
+        assert!(
+            auto.contains("in the language the meeting was held in, headings included"),
+            "{auto}"
+        );
+        assert!(
+            auto.contains("a short phrase in that language that says there is none"),
+            "{auto}"
+        );
+        assert!(!auto.contains("instruction is in English"), "{auto}");
+        let notes = system_prompt(Prompt::NotesOfTranscript, None);
+        assert!(
+            notes.contains("Write in the language the meeting was held in. "),
+            "{notes}"
         );
     }
 

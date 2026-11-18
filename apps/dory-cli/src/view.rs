@@ -123,6 +123,14 @@ pub fn blocker(blocker: &Blocker) -> (String, String) {
             "add the meeting's languages with dory-cli languages TAG..., then run process again"
                 .into(),
         ),
+        Blocker::Incompatible {
+            model,
+            why: Mismatch::LanguagesUnknown,
+        } => (
+            format!("{model} {}", Mismatch::LanguagesUnknown),
+            "confirm the meeting's languages with dory-cli languages TAG..., or pick another model, then run process again"
+                .into(),
+        ),
         Blocker::Incompatible { model, why } => (
             format!("{model} {why}"),
             "pick another model, or set the recording's language".into(),
@@ -297,6 +305,30 @@ mod tests {
             detected_languages: vec![],
             produced_by: ModelRef::parse("fake/stt").unwrap(),
         }
+    }
+
+    #[test]
+    fn a_model_blocked_by_unknown_meeting_languages_points_at_the_languages_command() {
+        let model = ModelRef::parse("fake/en-only-llm").unwrap();
+        let blocked = |why| Blocker::Incompatible {
+            model: model.clone(),
+            why,
+        };
+        let (what, fix) = blocker(&blocked(Mismatch::LanguagesUnknown));
+        assert_eq!(
+            what,
+            "fake/en-only-llm needs your meeting languages set in Settings"
+        );
+        assert!(
+            fix.contains("dory-cli languages TAG..."),
+            "the fix names the command that confirms them: {fix}"
+        );
+        assert!(!fix.contains("recording's language"), "{fix}");
+        let (_, other) = blocker(&blocked(Mismatch::LanguageUnsupported(Vec::new())));
+        assert_eq!(
+            other, "pick another model, or set the recording's language",
+            "every other mismatch keeps its hint"
+        );
     }
 
     #[test]

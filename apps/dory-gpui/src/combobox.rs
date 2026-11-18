@@ -277,7 +277,7 @@ impl LanguageCombobox {
             false,
         )
         .flex_none()
-        .size(px(24.))
+        .size(crate::icons::scaled(24.))
         .flex()
         .items_center()
         .justify_center()
@@ -371,7 +371,7 @@ impl LanguageCombobox {
                 .child(
                     div()
                         .flex_none()
-                        .w(px(16.))
+                        .w(crate::icons::scaled(16.))
                         .when(on, |d| d.child(Icon::Check.view(12., fg))),
                 )
                 .child(div().flex_1().min_w_0().child(lang.english))

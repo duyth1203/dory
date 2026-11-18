@@ -42,7 +42,7 @@ fn clear_button(
 ) -> impl IntoElement {
     let hover = theme.control_bg;
     a11y::node(format!("{id}-clear"), Role::Button, "Clear search")
-        .size(px(24.))
+        .size(crate::icons::scaled(24.))
         .flex_none()
         .flex()
         .items_center()

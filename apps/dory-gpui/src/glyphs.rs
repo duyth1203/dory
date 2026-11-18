@@ -1,15 +1,15 @@
 //! Status glyphs for the sidebar row, the card's step row, onboarding's permission rows, and the
 //! Summary tab: Lucide icons, and the drawn dots for work under way. Each sits next to a word that
-//! carries the state (A11Y-8), so the glyph itself is not announced. Glyphs keep their size at
-//! every text scale (`docs/design/processing-view.md` section 2).
+//! carries the state (A11Y-8), so the glyph itself is not announced. Glyphs grow with the text
+//! above 100% ([`scaled`]), so they keep their weight beside words that doubled.
 //!
 //! The dots glyph replaces the spinning ring: rotation is outside the allowed motion, so its three
 //! dots breathe in opacity instead. `at` is [`crate::motion::clock_ms`] while it may animate and
 //! `None` for the Reduce Motion stand-in, three dots at full opacity.
 
-use gpui_kit::{Div, Hsla, IntoElement as _, ParentElement as _, Styled as _, div, px};
+use gpui_kit::{Div, Hsla, IntoElement as _, ParentElement as _, Styled as _, div};
 
-use crate::icons::Icon;
+use crate::icons::{Icon, scaled};
 use crate::library::Glyph;
 use crate::motion;
 use crate::processing::StepGlyph;
@@ -20,8 +20,8 @@ fn frame(size: f32) -> Div {
         .flex_none()
         .items_center()
         .justify_center()
-        .w(px(size))
-        .h(px(size))
+        .w(scaled(size))
+        .h(scaled(size))
 }
 
 fn icon(icon: Icon, color: Hsla, size: f32) -> Div {
@@ -32,12 +32,12 @@ fn icon(icon: Icon, color: Hsla, size: f32) -> Div {
 pub fn dots(color: Hsla, size: f32, at: Option<u64>) -> Div {
     let dot = size * 0.22;
     frame(size)
-        .gap(px((size * 0.1).max(1.)))
+        .gap(scaled((size * 0.1).max(1.)))
         .children((0..3).map(|i| {
             div()
                 .flex_none()
-                .w(px(dot))
-                .h(px(dot))
+                .w(scaled(dot))
+                .h(scaled(dot))
                 .rounded_full()
                 .bg(color)
                 .opacity(at.map_or(1.0, |at| motion::dot(i, at)))
@@ -50,8 +50,8 @@ pub fn row(glyph: Glyph, color: Hsla, size: f32, at: Option<u64>) -> Div {
     match glyph {
         Glyph::Dot => frame(size).child(
             div()
-                .w(px(size * 0.6))
-                .h(px(size * 0.6))
+                .w(scaled(size * 0.6))
+                .h(scaled(size * 0.6))
                 .rounded_full()
                 .bg(color),
         ),

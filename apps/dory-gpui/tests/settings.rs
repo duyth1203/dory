@@ -1063,6 +1063,45 @@ fn every_radio_sits_at_the_same_place_in_recording_and_transcription(cx: &mut Te
     }
 }
 
+/// The circle of the first radio under `row`, in points.
+fn control_size(window: AnyWindowHandle, row: &str, cx: &mut TestAppContext) -> f32 {
+    render(window, cx);
+    cx.update_window(window, |_, window, _| {
+        let all = gpui_kit::base::test_support::snapshots(window);
+        let radio = all
+            .iter()
+            .find(|e| matches!(e.path().last(), Some(ElementId::Name(n)) if n.contains(row)))
+            .unwrap_or_else(|| panic!("no {row} row"));
+        let control = all
+            .iter()
+            .find(|e| {
+                e.path().starts_with(radio.path())
+                    && matches!(e.path().last(), Some(ElementId::Name(n)) if n == "control")
+            })
+            .expect("the row has a control");
+        f32::from(control.bounds().size.width)
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn radios_and_checkboxes_grow_with_the_text(cx: &mut TestAppContext) {
+    let rig = rig(&["tl", "en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Recording, cx);
+    until(cx, "the microphones", |cx| {
+        has(window, "microphone-automatic", cx)
+    });
+    assert_eq!(control_size(window, "microphone-automatic", cx), 16.);
+    app.update(cx, |app, cx| app.set_text_scale(2.0, cx));
+    cx.run_until_parked();
+    assert_eq!(
+        control_size(window, "microphone-automatic", cx),
+        32.,
+        "the circle stayed 16 pt beside text that doubled"
+    );
+}
+
 fn focus_by_tab(window: AnyWindowHandle, id: &str, cx: &mut TestAppContext) {
     for _ in 0..80 {
         if focused(window, id, cx) {

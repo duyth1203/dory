@@ -225,7 +225,7 @@ pub fn close_button(
             },
         )
         .flex_none()
-        .size(px(28.))
+        .size(crate::icons::scaled(28.))
         .flex()
         .items_center()
         .justify_center()

@@ -12,7 +12,7 @@ At the end, the same card becomes the player. The waveform stays where it is, th
 
 ## 2. Anatomy and sizes
 
-All sizes are in points at 100% text. Text sizes scale with View › Bigger/Smaller (0.85 to 2.0). Spacing, glyphs, waveform height and radii do not scale.
+All sizes are in points at 100% text. Text sizes scale with View › Bigger/Smaller (0.85 to 2.0). Spacing, waveform height and radii do not scale. Glyphs and icons grow with the text above 100% and keep their size below it (`icons::scaled`), except the player's transport.
 
 ```text
 Title                         30 bold                    ┐

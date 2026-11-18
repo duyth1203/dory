@@ -171,6 +171,7 @@ fn speech_pick(rows: &[ModelStatus<Stt>], languages: &[&str]) -> Resolution<Stt>
             .iter()
             .map(|tag| LangTag::parse(tag).unwrap())
             .collect(),
+        expected_guessed: false,
         diarization: DiarizationNeed::NotNeeded,
         input: Ms(42_600),
     };

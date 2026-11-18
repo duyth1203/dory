@@ -49,6 +49,7 @@ fn a_tagalog_and_english_meeting_fits_whisper_but_not_parakeet() {
     let needs = |language: LanguagePref, expected: &[&str]| SttNeeds {
         language,
         expected: expected.iter().map(|s| tag(s)).collect(),
+        expected_guessed: false,
         diarization: DiarizationNeed::NotNeeded,
         input: Ms(3_600_000),
     };

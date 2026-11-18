@@ -682,3 +682,46 @@ fn the_selected_row_draws_its_ring_between_two_bands(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// At 800 x 560 and 200% text the sidebar shows about three rows. Scrolled to the selected last
+/// row, the header of the group above it was cut in half under the search field.
+#[gpui_kit::test]
+fn a_group_header_scrolled_off_the_list_stays_at_its_top(cx: &mut TestAppContext) {
+    let (window, app) = open_with_prefs(cx, dory_on(sample_store()), at_200_percent());
+    app.update(cx, |app, cx| {
+        app.select(Selection::One(id_of("Roadmap review")), cx)
+    });
+    for _ in 0..2 {
+        settle(window, cx);
+    }
+    for _ in 0..4 {
+        settle(window, cx);
+    }
+    cx.update_window(window, |_, window, _| {
+        let list = window.find("recordings").bounds();
+        let sticky = window.try_find("sidebar-sticky-header");
+        let sticky = sticky
+            .expect("the header of the group the list scrolled into is pinned")
+            .bounds();
+        assert!(
+            sticky.top() >= list.top() && sticky.top() <= list.top() + px(4.),
+            "the pinned header {sticky:?} sits at the list's top {list:?}"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_list_that_fits_pins_no_header(cx: &mut TestAppContext) {
+    let (window, app) = open_with_prefs(cx, dory_on(sample_store()), common::past_first_run());
+    app.update(cx, |app, cx| {
+        app.select(Selection::One(id_of("Weekly sync")), cx)
+    });
+    for _ in 0..4 {
+        settle(window, cx);
+    }
+    cx.update_window(window, |_, window, _| {
+        assert!(window.try_find("sidebar-sticky-header").is_none());
+    })
+    .unwrap();
+}

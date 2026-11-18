@@ -10,15 +10,16 @@
 
 use gpui_kit::{
     AnyElement, App, FocusHandle, FontWeight, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Pixels, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px, relative,
 };
 
 use crate::a11y;
-use crate::icons::{self, Icon};
+use crate::icons::{self, Icon, scaled};
 use crate::theme::Theme;
 
-/// The control's size and its distance from the row's left edge.
+/// The control's size at 100% text, which grows with the text, and its distance from the row's
+/// left edge.
 pub const RADIO: f32 = 16.;
 pub const INSET: f32 = 14.;
 /// The label's first line, which the radio and a trailing control center on.
@@ -250,7 +251,7 @@ fn layout(
                 div()
                     .id("control")
                     .test_support()
-                    .size(px(RADIO))
+                    .size(scaled(RADIO))
                     .child(control),
             ),
         )
@@ -309,7 +310,7 @@ fn layout(
 fn circle(on: bool, enabled: bool, focused: bool, theme: &Theme) -> gpui_kit::Div {
     div()
         .relative()
-        .size(px(RADIO))
+        .size(scaled(RADIO))
         .flex()
         .items_center()
         .justify_center()
@@ -324,17 +325,17 @@ fn circle(on: bool, enabled: bool, focused: bool, theme: &Theme) -> gpui_kit::Di
             })
         })
         .when(on, |c| {
-            c.child(div().size(px(6.)).rounded_full().bg(theme.on_accent))
+            c.child(div().size(scaled(6.)).rounded_full().bg(theme.on_accent))
         })
-        .when(focused, |c| c.child(ring_around(px(RADIO), true, theme)))
+        .when(focused, |c| c.child(ring_around(RADIO, true, theme)))
 }
 
-fn ring_around(size: Pixels, round: bool, theme: &Theme) -> gpui_kit::Div {
+fn ring_around(points: f32, round: bool, theme: &Theme) -> gpui_kit::Div {
     div()
         .absolute()
         .top(px(-5.))
         .left(px(-5.))
-        .size(size + px(8.))
+        .size(scaled(points + 8.))
         .when(round, |r| r.rounded_full())
         .when(!round, |r| r.rounded(px(7.)))
         .border_2()
@@ -371,7 +372,7 @@ pub fn checkbox(
         });
     let tick = div()
         .relative()
-        .size(px(RADIO))
+        .size(scaled(RADIO))
         .flex()
         .items_center()
         .justify_center()
@@ -390,7 +391,7 @@ pub fn checkbox(
             })
         })
         .when(!option.enabled && on, |b| b.opacity(0.5))
-        .when(ring, |b| b.child(ring_around(px(RADIO), false, theme)));
+        .when(ring, |b| b.child(ring_around(RADIO, false, theme)));
     layout(
         row,
         tick,

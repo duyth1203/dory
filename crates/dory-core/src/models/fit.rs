@@ -59,11 +59,14 @@ pub enum Fit {
 }
 
 impl Fit {
+    /// Lower is better. A model that may drop part of the meeting ranks below one that runs with a
+    /// limitation the user can see, such as no speaker names.
     pub(crate) fn rank(&self) -> u8 {
         match self {
             Fit::Yes => 0,
+            Fit::Degraded(Mismatch::LanguagesUnknown) => 2,
             Fit::Degraded(_) => 1,
-            Fit::No(_) => 2,
+            Fit::No(_) => 3,
         }
     }
 }
@@ -78,7 +81,8 @@ pub enum Mismatch {
     #[error("does not support {}", in_words(.0))]
     LanguageUnsupported(Vec<LangTag>),
     /// A model that reads only some languages cannot be trusted with a meeting whose languages
-    /// are unknown, because it may drop the parts it cannot read.
+    /// are unknown, because it may drop the parts it cannot read. Speech models that run in one
+    /// locale meet this on a guessed language, where it only ranks them below any other fit.
     #[error("needs your meeting languages set in Settings")]
     LanguagesUnknown,
     /// The model runs in one language chosen up front, and the meeting uses two or more.
@@ -142,6 +146,9 @@ pub struct SttNeeds {
     /// them, so a meeting that mixes Tagalog and English never lands on an English-only model.
     /// Empty means no constraint.
     pub expected: Vec<LangTag>,
+    /// `expected` is the app's guess from the Mac's language and nobody has chosen it. Speech still
+    /// follows it, but a model that runs in one locale does not take `Auto` cleanly on it.
+    pub expected_guessed: bool,
     pub diarization: DiarizationNeed,
     pub input: Ms,
 }
@@ -175,6 +182,11 @@ impl ModelKind for Stt {
                 return Fit::No(Mismatch::LanguageUnsupported(vec![lang.clone()]));
             }
             LanguagePref::Pinned(_) => {}
+        }
+        // A one-locale model reads only the language it runs in, so on a guess it may drop the
+        // rest of a meeting held in two. It still runs when nothing else does, or when pinned.
+        if fixed && needs.language == LanguagePref::Auto && needs.expected_guessed {
+            return Fit::Degraded(Mismatch::LanguagesUnknown);
         }
         if needs.diarization == DiarizationNeed::Required
             && caps.diarization == DiarizationSupport::None
@@ -354,6 +366,7 @@ mod tests {
         SttNeeds {
             language,
             expected: Vec::new(),
+            expected_guessed: false,
             diarization,
             input: Ms(input),
         }
@@ -659,6 +672,51 @@ mod tests {
             Fit::No(Mismatch::AutoLanguageUnsupported),
             "no meeting languages set"
         );
+    }
+
+    #[test]
+    fn a_guessed_language_does_not_let_a_one_locale_row_take_auto_cleanly() {
+        let guessed = |expected: &[&str], language: LanguagePref| SttNeeds {
+            expected_guessed: true,
+            language,
+            ..expecting(expected)
+        };
+        assert_eq!(
+            Stt::fit(&fixed_english(), &guessed(&["en"], LanguagePref::Auto)),
+            Fit::Degraded(Mismatch::LanguagesUnknown),
+            "the guess may be wrong about a meeting this row can only read in English"
+        );
+        assert_eq!(
+            Stt::fit(&fixed_english(), &expecting(&["en"])),
+            Fit::Yes,
+            "a language the user chose still fits cleanly"
+        );
+        let detecting = caps(whisper(), DiarizationSupport::None, None);
+        assert_eq!(
+            Stt::fit(&detecting, &guessed(&["en"], LanguagePref::Auto)),
+            Fit::Yes,
+            "a model that detects the language keeps following the guess"
+        );
+        assert_eq!(
+            Stt::fit(&fixed_english(), &guessed(&["en"], pinned("en"))),
+            Fit::Yes,
+            "a recording pinned to a language is not a guess"
+        );
+        assert_eq!(
+            Stt::fit(&fixed_english(), &guessed(&["fr"], LanguagePref::Auto)),
+            Fit::No(unsupported(&["fr"])),
+            "the guess still rules out a row that cannot read it"
+        );
+    }
+
+    #[test]
+    fn a_fit_that_may_drop_speech_ranks_below_one_with_a_known_limit() {
+        let unknown = Fit::Degraded(Mismatch::LanguagesUnknown);
+        let limited = Fit::Degraded(Mismatch::NoDiarization);
+        let no = Fit::No(Mismatch::AutoLanguageUnsupported);
+        assert!(Fit::Yes.rank() < limited.rank());
+        assert!(limited.rank() < unknown.rank());
+        assert!(unknown.rank() < no.rank());
     }
 
     #[test]

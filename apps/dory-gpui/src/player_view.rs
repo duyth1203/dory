@@ -476,7 +476,7 @@ impl PlayerView {
                 .min_h(px(40.))
                 .px(px(4.))
                 .bg(theme.accent)
-                .child(icon.view(TRANSPORT, theme.on_accent))
+                .child(icon.fixed(TRANSPORT, theme.on_accent))
         } else {
             // The seconds sit inside the arrow's circle and keep their size, like the arrow.
             let seconds = div()
@@ -494,7 +494,7 @@ impl PlayerView {
                 div()
                     .relative()
                     .size(px(TRANSPORT))
-                    .child(icon.view(TRANSPORT, theme.text))
+                    .child(icon.fixed(TRANSPORT, theme.text))
                     .child(seconds),
             )
         }

@@ -221,13 +221,19 @@ pub(crate) fn summarize<E>(
         let items: Vec<String> = notes.iter().map(|n| format!("{}\n\n", n.trim())).collect();
         let all = items.concat();
         // A note can count past its cap, so the cap alone does not keep two notes within
-        // MAX_PASS_INPUT. The summary takes at least one whole note and a merge at least two,
-        // which halves the notes each round for as long as the context holds them.
-        let largest = items.iter().map(|item| count(item)).max().unwrap_or(0);
-        if count(&all) <= passes.budget(Prompt::SummaryOfNotes, largest) {
+        // MAX_PASS_INPUT. Every pass over notes takes at least two of them, so each merge round
+        // halves the notes for as long as the context holds them, and the last two go to the
+        // summary whole instead of through a merge that would cut them to one note's cap.
+        let floor = items
+            .iter()
+            .map(|item| count(item))
+            .max()
+            .unwrap_or(0)
+            .saturating_mul(2);
+        if count(&all) <= passes.budget(Prompt::SummaryOfNotes, floor) {
             return passes.run(Prompt::SummaryOfNotes, &all);
         }
-        let budget = passes.budget(Prompt::NotesOfNotes, largest.saturating_mul(2));
+        let budget = passes.budget(Prompt::NotesOfNotes, floor);
         let groups = plan_chunks(&items, budget, count);
         if budget == 0 || groups.len() >= notes.len() {
             return Err(SummaryError::ContextTooSmall);
@@ -554,17 +560,25 @@ mod tests {
         assert_progress_climbs_to_done(&run);
     }
 
-    /// Two notes three times their cap: the merge takes both past MAX_PASS_INPUT, and the summary
-    /// takes the one merged note whole.
+    /// Three notes, each three times its cap: a merge takes the first two past MAX_PASS_INPUT,
+    /// the third is merged on its own, and the summary takes the last two whole rather than
+    /// through a merge that would cut them to one note's cap.
     #[test]
     fn notes_counted_far_past_their_cap_still_reach_the_summary() {
-        let lines: Vec<String> = (0..400).map(|n| line(n, 10)).collect();
+        let lines: Vec<String> = (0..700).map(|n| line(n, 10)).collect();
         let context = 32_768;
-        let long_note = vec!["note"; 3 * notes_output(context) as usize].join(" ");
+        let note_words = 3 * notes_output(context) as usize;
+        let long_note = vec!["note"; note_words].join(" ");
         let run = run(&lines, context, &long_note);
         assert_eq!(run.result, Ok("the summary".to_owned()));
         assert_every_call_fits(&run, context);
-        assert_eq!(run.calls.len(), 4, "two notes, one merge, one summary");
+        let passes: Vec<Pass> = run.calls.iter().map(|c| c.0).collect();
+        assert_eq!(
+            passes,
+            [[Pass::Notes; 5].as_slice(), &[Pass::Summary]].concat(),
+            "three notes on transcript, two merges, one summary"
+        );
+        assert_eq!(words(&run.calls[5].2) as usize, 2 * note_words);
         assert_progress_climbs_to_done(&run);
     }
 

@@ -644,16 +644,20 @@ impl TranscriptView {
                     )
                     .children(hint)
                     .child(
-                        div()
-                            .text_size(theme.text(15.))
-                            .line_height(relative(1.6))
-                            .child(marked(
-                                turn.text.clone(),
-                                &marks,
-                                FontWeight::SEMIBOLD,
-                                false,
-                                &theme,
-                            )),
+                        a11y::text(
+                            format!("turn-{ix}-text"),
+                            turn.text.clone(),
+                            turn.text_language.clone(),
+                        )
+                        .text_size(theme.text(15.))
+                        .line_height(relative(1.6))
+                        .child(marked(
+                            turn.text.clone(),
+                            &marks,
+                            FontWeight::SEMIBOLD,
+                            false,
+                            &theme,
+                        )),
                     ),
             )
             .when(probing, |el| el.child(self.probe(ix, false, cx)))
@@ -802,7 +806,15 @@ impl TranscriptView {
             .min_w_0()
             .text_size(size)
             .line_height(relative(1.7))
-            .child(theme.reading(div()).child(paragraph))
+            .child(
+                theme
+                    .reading(a11y::text(
+                        format!("turn-{ix}-text"),
+                        turn.text.clone(),
+                        turn.text_language.clone(),
+                    ))
+                    .child(paragraph),
+            )
             .child(speaker);
         let outline = playing.then(|| theme.highlight_outline()).flatten();
         a11y::node(format!("turn-{ix}"), Role::ListItem, spoken)
@@ -994,6 +1006,7 @@ mod tests {
             range: range.and_then(|(a, b)| TimeRange::new(Ms(a), Ms(b))),
             text: String::new(),
             language: None,
+            text_language: None,
             tag: None,
             translated_from: None,
         }

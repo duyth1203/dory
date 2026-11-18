@@ -14,7 +14,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use dory_core::domain::Ms;
+use dory_core::domain::{LangTag, Ms};
 use gpui_kit::base::ScrollbarHandle;
 use gpui_kit::component::input::InputState;
 use gpui_kit::{
@@ -467,6 +467,89 @@ pub fn with_markdown_children(el: Node, markdown: &str) -> Node {
             builder.push_child(id, node);
         }
     })
+}
+
+/// Text VoiceOver reads in `language`'s voice: a label whose AccessKit text runs carry the
+/// BCP 47 tag. AccessKit hands macOS a language only as `AXLanguage` in a label's attributed
+/// text, and a label has attributed text only when it has text runs, so a tag on a plain label
+/// never reaches VoiceOver. Without a `language` the runs carry none.
+pub fn text(id: impl Into<SharedString>, text: String, language: Option<LangTag>) -> Node {
+    let id: SharedString = id.into();
+    div()
+        .id(ElementId::Name(id.clone()))
+        .test_support()
+        .accessibility_id(id)
+        .role(Role::Label)
+        .a11y_synthetic_children(move |builder| {
+            let bounds = builder.parent_node().bounds();
+            for (ix, mut run) in text_runs(&text, language.as_ref()).into_iter().enumerate() {
+                if let Some(bounds) = bounds {
+                    run.set_bounds(bounds);
+                }
+                let id = builder.synthetic_node_id(ix);
+                builder.push_child(id, run);
+            }
+        })
+}
+
+/// The most characters one AccessKit text run holds: its word starts are `u8` indices.
+const RUN_CHARS: usize = u8::MAX as usize;
+
+/// `text` as AccessKit text runs of at most [`RUN_CHARS`] characters, split between words, each
+/// tagged with `language` when known.
+pub fn text_runs(text: &str, language: Option<&LangTag>) -> Vec<gpui_kit::accesskit::Node> {
+    #[derive(Default)]
+    struct Run {
+        value: String,
+        lengths: Vec<u8>,
+        starts: Vec<u8>,
+    }
+    let finish = |run: Run| {
+        let mut node = gpui_kit::accesskit::Node::new(Role::TextRun);
+        node.set_value(run.value);
+        node.set_character_lengths(run.lengths);
+        node.set_word_starts(run.starts);
+        if let Some(language) = language {
+            node.set_language(language.as_str());
+        }
+        node
+    };
+    let mut runs = Vec::new();
+    let mut run = Run::default();
+    for word in words(text) {
+        if !run.lengths.is_empty() && run.lengths.len() + word.chars().count() > RUN_CHARS {
+            runs.push(finish(std::mem::take(&mut run)));
+        }
+        for (ix, ch) in word.chars().enumerate() {
+            if run.lengths.len() == RUN_CHARS {
+                runs.push(finish(std::mem::take(&mut run)));
+            }
+            if ix == 0 {
+                run.starts.push(run.lengths.len() as u8);
+            }
+            run.value.push(ch);
+            run.lengths.push(ch.len_utf8() as u8);
+        }
+    }
+    if !run.lengths.is_empty() {
+        runs.push(finish(run));
+    }
+    runs
+}
+
+/// `text`'s words as AccessKit counts them: each with the whitespace after it.
+fn words(text: &str) -> Vec<&str> {
+    let mut after_space = false;
+    let starts: Vec<usize> = text
+        .char_indices()
+        .filter_map(|(i, ch)| {
+            let start = i == 0 || (after_space && !ch.is_whitespace());
+            after_space = ch.is_whitespace();
+            start.then_some(i)
+        })
+        .chain([text.len()])
+        .collect();
+    starts.windows(2).map(|w| &text[w[0]..w[1]]).collect()
 }
 
 /// Asks VoiceOver to speak `message` now (A11Y-4). A no-op where the platform has no bridge.

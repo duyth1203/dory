@@ -140,6 +140,9 @@ pub struct Turn {
     pub text: String,
     /// The language the turn was spoken in, in a translated turn too. `None` when unknown.
     pub language: Option<LangTag>,
+    /// The language `text` is in, which VoiceOver reads it in: the translation's target once any
+    /// of the turn's segments is translated, the spoken language otherwise. `None` when unknown.
+    pub text_language: Option<LangTag>,
     /// The spoken language's name, set only where it tells the reader something: the transcript
     /// is bilingual and this turn is not in its main language. `None` everywhere else.
     pub tag: Option<SharedString>,
@@ -195,7 +198,8 @@ fn group(
         let text = translated.unwrap_or(&segment.text);
         // Every translated segment marks its turn, and the languages it was spoken in ride along.
         let marked = |turn: &mut Turn| {
-            if translated.is_some() {
+            if let Some(translation) = translation.filter(|_| translated.is_some()) {
+                turn.text_language = Some(translation.target.clone());
                 let from = turn.translated_from.get_or_insert_with(Vec::new);
                 if let Some(language) = &segment.language
                     && !from.iter().any(|l| l.primary() == language.primary())
@@ -224,6 +228,7 @@ fn group(
                     range: segment.range,
                     text: text.to_owned(),
                     language: segment.language.clone(),
+                    text_language: segment.language.clone(),
                     tag: segment
                         .language
                         .as_ref()

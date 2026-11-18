@@ -314,6 +314,7 @@ mod tests {
             range: start.and_then(|s| TimeRange::new(Ms(s), Ms(s + 5_000))),
             text: String::new(),
             language: None,
+            text_language: None,
             tag: None,
             translated_from: None,
         }

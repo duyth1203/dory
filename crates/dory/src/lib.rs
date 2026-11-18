@@ -116,6 +116,12 @@ fn providers(config: &Config) -> Providers {
     }
 }
 
+#[cfg(feature = "app")]
+/// The speech providers [`open`] registers, for benches that score every engine the app can run.
+pub fn speech_providers(config: &Config) -> Vec<Arc<dyn ModelProvider<Stt>>> {
+    providers(config).stt
+}
+
 #[cfg(all(feature = "app", target_os = "macos"))]
 /// Apple Intelligence, or the state `DORY_APPLE` pretends.
 fn apple(config: &Config) -> dory_macos::FoundationModels {

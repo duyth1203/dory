@@ -111,7 +111,7 @@ The bench lands as its own PR, outside the GPUI stack. It can start before GPUI 
 
 ## Measured on the operator's Mac (2026-11-16)
 
-The operator's meetings are Tagalog and English. Sona's repo is gone, so the bake-off moved to sherpa-onnx 2.0.1 in process, int8 models, CPU, and up to 4 threads on an M3 Pro. The bench is `crates/dory-engines/examples/wer-bench.rs`. It ran on the first 37 Filipino and 43 English FLEURS test clips, streamed within a 50 MB download budget. Text is lowercased and stripped of punctuation before scoring. The RTFx column is audio seconds per second of compute.
+The operator's meetings are Tagalog and English. Sona's repo is gone, so the bake-off moved to sherpa-onnx 2.0.1 in process, int8 models, CPU, and up to 4 threads on an M3 Pro. The bench was `crates/dory-engines/examples/wer-bench.rs`, moved on 2026-11-18 to `crates/dory/examples/wer-bench.rs`. It ran on the first 37 Filipino and 43 English FLEURS test clips, streamed within a 50 MB download budget. Text is lowercased and stripped of punctuation before scoring. The RTFx column is audio seconds per second of compute.
 
 | Model | Tagalog WER, auto | Tagalog WER, pinned `tl` | English WER, auto | RTFx |
 | --- | --- | --- | --- | --- |
@@ -128,6 +128,41 @@ The operator's meetings are Tagalog and English. Sona's repo is gone, so the bak
 ## The operator's own recordings are not used (2026-11-17)
 
 The operator declined to share meeting recordings, for privacy, so no recording of theirs is scored and no reference transcript of a real meeting is made. The public sets in `docs/plans/bilingual.md` Appendix F replace this plan's code-switching step. They are the turn-switch set, built from the test library's own takes, and 24 CS-FLEURS `tgl_eng` clips (CC BY-NC 4.0, downloaded by checksum and never committed). `scripts/bilingual-fixtures.sh` rebuilds both on any Mac, and `cargo run --release -p dory-engines --example bilingual-bench -- score <folder>` scores them through the `Transcriber` port with word errors, wrong-language rate, dropped turns, and RTFx. The gap this leaves is that no real Taglish is measured. The CS-FLEURS speech is synthetic, with a voice change at every switch.
+
+## Apple models measured against the defaults (2026-11-18)
+
+Platform AI plan P5 (`docs/plans/platform-ai.md`) measured Apple Speech and Apple Intelligence against Parakeet, Whisper turbo, and Gemma on the operator's M3 Pro (18 GB, macOS 26.5.2, AC power) with release builds of `a1c5353` plus P5's working tree. Raw files are in the P5 lane folders named below.
+
+| Engine | macOS | FLEURS English WER | RTFx, 2-hour file | CPU-seconds, 2-hour file | Rubric, 8 English transcripts | Action items kept, 2-hour summary |
+| --- | --- | --- | --- | --- | --- | --- |
+| Apple Speech (`apple/speech-en`) | 26.5.2 | 6.9% (64 of 921) | 85.1 | 117 (108.7 in `localspeechrecognition`) | n/a | n/a |
+| Parakeet TDT 0.6B v3 | 26.5.2 | 5.2% (48 of 921) | 12.7 | 2,411 | n/a | n/a |
+| Whisper large-v3 turbo | 26.5.2 | 4.5% (41 of 921) | 3.8 | 8,281 | n/a | n/a |
+| Gemma 4 E4B (`ollama/gemma4:e4b`) | 26.5.2 | n/a | n/a | n/a | 3.95 (4.16 on all 10) | 39 of 40, 27 with owner |
+| Apple Intelligence (`apple/foundation-model`) | 26.5.2 | n/a | n/a | n/a | 3.73 (declines the 2 Tagalog transcripts) | 3 of 40, 2 with owner |
+| Apple Speech | 27 | pending, operator | pending, operator | pending, operator | n/a | n/a |
+| Apple Intelligence | 27 | n/a | n/a | n/a | pending, operator | pending, operator |
+
+How each number was taken:
+
+- **WER.** `cargo run --release -p dory --example wer-bench -- --model <id> [--expect en] <clips>` on the first 43 English FLEURS test clips (the first complete WAVs of `data/en_us/audio/test.tar.gz`, 400.7 s, 921 reference words from `raw_transcription`). Text is lowercased and stripped of punctuation. Three runs per engine gave the same text word for word. The bench now lives in the composition root and runs any Ready row of `dory::speech_providers`. Trunk's sherpa-only bench and the moved bench give identical text, and the moved bench's wall time is within 1% of trunk's (median of 3 interleaved runs, 171.7 s against 171.5 s).
+- **RTFx and CPU.** `dory-cli process` on "Two hour planning" (7,905.6 s) with `--pace fast`, meeting languages `en`, and summaries off, three interleaved rounds on fresh library clones, only while no compiler ran and the 1-minute load was at most 2.5. Medians are shown, and every engine's spread was under 1% of its median. Each engine's three transcripts are byte-identical. CPU-seconds are Dory's user plus system time, plus `localspeechrecognition` for Apple Speech, sampled with `ps` once a second.
+- **Limiters.** Parakeet and Whisper are bound by Fast's 4-thread cap, keeping 3.89 and 3.96 cores busy. Apple Speech is bound by the `localspeechrecognition` service at 1.17 cores, with Dory itself at 0.09. Neural Engine use was not measured, because `powermetrics` needs root.
+- **Rubric.** The E5 rubric (decisions, action items, accuracy, and summary language, 1 to 5 each, mean of the four). The 10 transcripts are every recording in the test library plus slices of the long one, because the operator's meetings are not used and nothing new was downloaded. They are "Weekly sync", "Pulong sa Tagalog", "Two hour planning", its first 2, next 5, 10, 15, 30, and 45 minutes as six recordings, and "Taglish sync", which joins the first two. Parakeet transcribed the English ones and Whisper the two with Tagalog. Two blind passes scored every summary, each on its own packet with engines labelled A and B in a different random order. The table gives the mean of the two passes. They agreed on 62 of 72 criterion scores, and their overall scores differed by 0.11 on average and by 0.50 at most. Only 2 of the 10 transcripts are non-English, short of rule 7's 3. Apple Intelligence refuses both, so the comparison uses the 8 English transcripts. Time to first token was not recorded. Total wall time for the 2-hour summary was 230 s for Gemma and 272 s for Apple.
+- **Action items.** `scripts/score-summary.py` on each engine's summary of the Parakeet transcript of "Two hour planning".
+
+What the numbers say:
+
+- Apple Speech is 1.7 points of WER behind Parakeet and 6.7 times faster, using about a twentieth of the CPU-seconds. The gap is mostly formatting. Apple writes numbers as digits ("2 fish species", "20th century") and American spellings, where the references spell them out. Writing numbers as words on both sides, as a sensitivity check and not the bench's metric, gives Apple 6.0% and Parakeet 5.2%. On the long meeting's 160 action-item sentences Apple Speech got 104 owner-and-item pairs exactly, Whisper 101, and Parakeet 85 (`scripts/score-items.py`).
+- Apple Intelligence wins the short slices and loses the long ones. It scored 5.0 on the 2- and 5-minute slices, where Gemma filed its action items as decisions. From the 10-minute slice up it keeps at most 5 action items, and on the 15-minute slice it wrote one line about 85 times instead of the three sections. Gemma kept 39 of the 2-hour meeting's 40 action items, and Apple kept 3.
+- The 2026-11-16 run reported 7.2% for Parakeet and 6.2% for Whisper on what appears to be the same 43 clips. Both runs took the first 43 complete WAVs of the same archive, both reference sets have 921 words, and that run's last clip is in this set. The conversion command, the model files, the sherpa-onnx native library (`Cargo.lock` checksum), and the decode path are the same. The one recorded difference is the reference column. That run wrote FLEURS's normalized `transcription` into `refs.tsv`, and this run writes `raw_transcription`. Every engine moved by about the same count (Parakeet 66 to 48 errors, Whisper 57 to 41), which points at the references rather than the audio. This is inferred by elimination. `test.tsv` was not kept, so which words differ is not verified.
+
+Platform AI P5's rule, applied to these numbers:
+
+- **Apple Speech stays not recommended.** Its RTFx is 6.7 times Parakeet's (the rule needs 2), but its WER is 1.7 points behind (the rule needs at most 1).
+- **Apple Intelligence stays below Gemma.** Its rubric score is 0.22 behind Gemma's on the 8 shared transcripts (the rule needs at most 0.25), but it keeps 3 of Gemma's 39 action items, 8% (the rule needs at least 90%).
+
+The order stays P2's and P3's. `crates/dory/tests/catalog_order.rs` pins it. The decision waits for the operator's go on platform AI Appendix G, question 1. Every macOS 27 number is an operator lane, and so is the battery lane. The catalog's Parakeet and Whisper pros still quote the 2026-11-16 WERs (7.2% and 6.2%) and the bench's "about 14 times" speed, against 12.7 on the full app path here.
 
 ## What is not verified yet
 

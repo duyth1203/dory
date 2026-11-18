@@ -40,6 +40,14 @@ required-features = ["app"]
 name = "providers"
 required-features = ["app"]
 
+[[test]]
+name = "catalog_order"
+required-features = ["app"]
+
+[[example]]
+name = "wer-bench"
+required-features = ["app"]
+
 [dev-dependencies]
 dory-core = { workspace = true, features = ["testing"] }
 tempfile.workspace = true

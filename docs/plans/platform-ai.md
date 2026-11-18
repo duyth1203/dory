@@ -354,19 +354,19 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Files.**
 
-- [ ] Edit `crates/dory-engines/examples/wer-bench.rs`, or move it to `crates/dory/examples/wer-bench.rs` if it must name an Apple provider, since only the composition root names adapters.
-- [ ] Create `scripts/score-summary.py`, `scripts/score-items.py`, and `crates/dory/tests/catalog_order.rs`.
-- [ ] Edit `docs/plans/speech-model-evaluation.md` (a new measured section).
+- [x] Edit `crates/dory-engines/examples/wer-bench.rs`, or move it to `crates/dory/examples/wer-bench.rs` if it must name an Apple provider, since only the composition root names adapters.
+- [x] Create `scripts/score-summary.py`, `scripts/score-items.py`, and `crates/dory/tests/catalog_order.rs`.
+- [x] Edit `docs/plans/speech-model-evaluation.md` (a new measured section).
 - [ ] Edit `crates/dory-macos/src/ai/foundation_models.rs` and `crates/dory-macos/src/ai/speech.rs` (`recommended` and `rank` only, if the rule below says so).
 
 **Build.**
 
-- [ ] Let the bench run every Ready speech row through `dory::open`'s providers, not only sherpa, with `--model <id>` to pick one.
-- [ ] Score English WER on the same 43 FLEURS clips as the 2026-11-16 run, for Apple Speech, Parakeet, and Whisper. Tagalog needs no run, because no Apple row covers it.
-- [ ] Time the 2-hour file for all three, three runs each, with CPU-seconds including system services.
-- [ ] Score summaries for Gemma and Apple on the same 10 transcripts with the E5 rubric in `docs/plans/speech-model-evaluation.md`, plus action-item recall on `Two hour planning` with `scripts/score-summary.py`.
+- [x] Let the bench run every Ready speech row through `dory::open`'s providers, not only sherpa, with `--model <id>` to pick one.
+- [x] Score English WER on the same 43 FLEURS clips as the 2026-11-16 run, for Apple Speech, Parakeet, and Whisper. Tagalog needs no run, because no Apple row covers it.
+- [x] Time the 2-hour file for all three, three runs each, with CPU-seconds including system services.
+- [x] Score summaries for Gemma and Apple on the same 10 transcripts with the E5 rubric in `docs/plans/speech-model-evaluation.md`, plus action-item recall on `Two hour planning` with `scripts/score-summary.py`.
 - [ ] Repeat every Apple number on a Mac running macOS 27, because Apple rebuilt the on-device model for 27 (Appendix C, risk 1). This is an Operator lane if no such Mac is at hand.
-- [ ] Apply this rule and log it. Apple Speech becomes `recommended` for its languages only if its FLEURS English WER is within 1 point of Parakeet's and its RTFx is at least twice Parakeet's on the 2-hour file. Apple Intelligence outranks Gemma only if its rubric score is within 0.25 points of Gemma's and it keeps at least 90 percent of Gemma's action items. Otherwise the rows keep P2's and P3's order.
+- [x] Apply this rule and log it. Apple Speech becomes `recommended` for its languages only if its FLEURS English WER is within 1 point of Parakeet's and its RTFx is at least twice Parakeet's on the 2-hour file. Apple Intelligence outranks Gemma only if its rubric score is within 0.25 points of Gemma's and it keeps at least 90 percent of Gemma's action items. Otherwise the rows keep P2's and P3's order.
 
 **You see.**
 
@@ -375,8 +375,8 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `scripts/score-summary.py` and `scripts/score-items.py` get a doctest each on the spike's saved summaries in Appendix A. Run `python3 -I -m doctest scripts/score-summary.py scripts/score-items.py`.
-- [ ] `crates/dory/tests/catalog_order.rs` gains `auto_order_matches_the_logged_rule`. Run `cargo test -p dory --test catalog_order`.
+- [x] `scripts/score-summary.py` and `scripts/score-items.py` get a doctest each on the spike's saved summaries in Appendix A. Run `python3 -I -m doctest scripts/score-summary.py scripts/score-items.py`.
+- [x] `crates/dory/tests/catalog_order.rs` gains `auto_order_matches_the_logged_rule`. Run `cargo test -p dory --test catalog_order`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 

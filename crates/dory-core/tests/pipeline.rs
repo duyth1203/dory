@@ -481,8 +481,15 @@ fn native_diarization_sends_the_whole_diarized_clip_in_one_call() {
 
 /// Four windows of speech on a mic-only take, one line each.
 fn four_windows(stt_entries: Vec<ModelEntry<Stt>>) -> (Rig, RecordingId) {
+    four_windows_on(FakeTranscriber::new(), stt_entries)
+}
+
+fn four_windows_on(
+    transcriber: FakeTranscriber,
+    stt_entries: Vec<ModelEntry<Stt>>,
+) -> (Rig, RecordingId) {
     let rig = Rig::new(
-        FakeTranscriber::new().with_segments(
+        transcriber.with_segments(
             Channel::Mic,
             &[
                 (1_000, 5_000, 0, "first"),
@@ -565,6 +572,54 @@ fn a_rerun_after_a_crash_resumes_at_the_first_unfinished_window() {
         rig.store.checkpoints(&key).unwrap(),
         vec![],
         "cleared with the transcript"
+    );
+}
+
+#[test]
+fn each_window_hears_the_lead_in_before_it_and_keeps_only_its_own_sentences() {
+    let mut entry = stt(STT, DiarizationSupport::None, WINDOW);
+    entry.caps.lead_in = Ms(40_000);
+    let (rig, id) = four_windows(vec![entry]);
+    crash_during_the_third_window(&rig, &id);
+    assert_eq!(
+        rig.store
+            .checkpoints(&rig.key(&id, STT, Channel::Mic))
+            .unwrap()
+            .iter()
+            .map(|c| (c.span, c.segments.iter().map(|s| s.text.clone()).collect()))
+            .collect::<Vec<_>>(),
+        vec![
+            (r(0, 20_000), vec!["first".to_owned()]),
+            (r(40_000, 60_000), vec!["second".to_owned()]),
+        ] as Vec<(TimeRange, Vec<String>)>,
+        "checkpoints cover the windows alone"
+    );
+    let job = rig.store.jobs_for(&id).unwrap().remove(0);
+    rig.store
+        .apply(vec![Change::Job {
+            job: job.id,
+            event: JobEvent::Started {
+                stage: Stage::Transcribe,
+            },
+        }])
+        .unwrap();
+    let dory = rig.open();
+    wait_for(&dory, &id, JobState::Succeeded);
+    assert_eq!(
+        spans(&rig.transcriber.calls()),
+        vec![
+            (Channel::Mic, r(0, 20_000)),
+            (Channel::Mic, r(0, 60_000)),
+            (Channel::Mic, r(40_000, 100_000)),
+            (Channel::Mic, r(40_000, 100_000)),
+            (Channel::Mic, r(80_000, 140_000)),
+        ],
+        "a window starts up to the lead-in early, never before the take, and a resume does the same"
+    );
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(
+        texts(&transcript.segments),
+        ["first", "second", "third", "fourth"]
     );
 }
 
@@ -2428,6 +2483,62 @@ fn a_fixed_locale_model_runs_in_the_one_meeting_language() {
         2,
         "the checkpoint key names the language the model ran in"
     );
+}
+
+/// The engine runs en-US until the crash and would pick en-GB after it, as when en-GB's assets
+/// arrive while the meeting waits.
+#[test]
+fn a_resumed_meeting_keeps_the_locale_its_first_window_ran_in() {
+    let mut english = stt("fake/english", DiarizationSupport::None, WINDOW);
+    english.caps.languages = LangSupport::FixedLocale {
+        tags: LangSet::Only(vec![tag("en-GB"), tag("en-US")]),
+    };
+    let heard =
+        FakeTranscriber::new().detecting_each(&["en-US", "en-US", "en-US", "en-GB", "en-GB"]);
+    let (rig, id) = four_windows_on(heard, vec![english]);
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            meeting_languages: vec![tag("en")],
+            ..Settings::default()
+        })])
+        .unwrap();
+    crash_during_the_third_window(&rig, &id);
+    let job = rig.store.jobs_for(&id).unwrap().remove(0);
+    rig.store
+        .apply(vec![Change::Job {
+            job: job.id,
+            event: JobEvent::Started {
+                stage: Stage::Transcribe,
+            },
+        }])
+        .unwrap();
+    let dory = rig.open();
+    wait_for(&dory, &id, JobState::Succeeded);
+
+    let locales: Vec<_> = rig
+        .transcriber
+        .calls()
+        .into_iter()
+        .map(|c| c.locale.map(|l| l.to_string()))
+        .collect();
+    let us = Some("en-US".to_owned());
+    assert_eq!(
+        locales,
+        [None, us.clone(), us.clone(), us.clone(), us],
+        "the first window picks, every later window and the resume keep it"
+    );
+}
+
+#[test]
+fn an_automatic_meeting_never_keeps_a_locale() {
+    let heard = FakeTranscriber::new().detecting_each(&["en", "tl", "en", "tl"]);
+    let (rig, id) = four_windows_on(heard, vec![stt(STT, DiarizationSupport::None, WINDOW)]);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    wait_for(&dory, &id, JobState::Succeeded);
+    let calls = rig.transcriber.calls();
+    assert_eq!(calls.len(), 4);
+    assert!(calls.iter().all(|c| c.locale.is_none()), "{calls:?}");
 }
 
 #[test]

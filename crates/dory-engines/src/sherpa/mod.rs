@@ -77,6 +77,7 @@ fn entry(model: &Model) -> ModelEntry<Stt> {
             max_input: None,
             window: Some(Ms(model.window_secs * 1000)),
             sentence_times: model.sentence_times,
+            lead_in: Ms(0),
         },
         recommended: model.recommended,
         rank: model.rank,

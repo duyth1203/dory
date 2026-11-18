@@ -105,6 +105,7 @@ fn main() {
                 hint: None,
                 threads: 4,
                 sentence_times: false,
+                locale: None,
             };
             let mut sink = Collect::default();
             let started = Instant::now();

@@ -26,6 +26,11 @@ pub struct TranscribeRequest<'a> {
     /// One `RawSegment` per sentence, each with its own range. Set only for an engine whose caps
     /// say `sentence_times`; others ignore it.
     pub sentence_times: bool,
+    /// The locale the meeting's first window ran in, as its outcome reported it, on every later
+    /// window of a pinned meeting, a resumed run's included. An engine that runs one regional
+    /// variant of the pinned language keeps to it, so a meeting never mixes en-US and en-GB.
+    /// Engines that run no regional variant ignore it.
+    pub locale: Option<LangTag>,
 }
 
 pub trait SegmentSink {
@@ -46,5 +51,8 @@ pub struct RawSegment {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TranscribeOutcome {
+    /// The language the engine heard. An engine that runs one regional variant of a pinned
+    /// language reports the locale it ran in, which later windows get back as
+    /// [`TranscribeRequest::locale`].
     pub detected_language: Option<LangTag>,
 }

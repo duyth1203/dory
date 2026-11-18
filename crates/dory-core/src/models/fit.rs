@@ -120,6 +120,11 @@ pub struct SttCaps {
     /// Asked for them, the engine returns one segment per sentence with its own time, so the core
     /// can see which speech a window left without text.
     pub sentence_times: bool,
+    /// Audio the engine hears before each window, for an engine that transcribes the start of a
+    /// window better once it has heard what came before. The core sends it with the window, never
+    /// from before the clip, and keeps only the sentences centered inside the window, so
+    /// checkpoints and resume stay per window. Zero sends each window alone.
+    pub lead_in: Ms,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,6 +326,7 @@ mod tests {
             max_input: max_input.map(Ms),
             window: None,
             sentence_times: false,
+            lead_in: Ms(0),
         }
     }
 

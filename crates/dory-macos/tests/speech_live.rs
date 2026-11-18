@@ -67,6 +67,7 @@ fn request(clip: &Clip) -> TranscribeRequest<'_> {
         hint: None,
         threads: 1,
         sentence_times: false,
+        locale: None,
     }
 }
 
@@ -119,10 +120,15 @@ fn the_weekly_sync_transcribes() {
     let clip = clip(WEEKLY, WEEKLY_MS);
     let mut sink = Collect::default();
     let started = Instant::now();
-    engine
+    let outcome = engine
         .transcribe(&request(&clip), &mut sink, &cancel)
         .expect("transcribe");
     let transcribe_ms = started.elapsed().as_millis();
+    assert_eq!(
+        outcome.detected_language,
+        Some(LangTag::parse("en-US").unwrap()),
+        "the outcome names the locale the window ran in"
+    );
 
     let segments = &sink.segments;
     let sample = &segments[segments.len() / 2];
@@ -158,6 +164,24 @@ fn the_weekly_sync_transcribes() {
     assert!(text.contains("Maria"), "{text}");
     assert_eq!(sink.progress.first(), Some(&0.0));
     assert_eq!(sink.progress.last(), Some(&1.0));
+
+    let gb = LangTag::parse("en-GB").unwrap();
+    let kept = TranscribeRequest {
+        locale: Some(gb.clone()),
+        ..request(&clip)
+    };
+    let mut again = Collect::default();
+    let outcome = engine
+        .transcribe(&kept, &mut again, &cancel)
+        .expect("transcribe in the kept locale");
+    assert_eq!(outcome.detected_language, Some(gb), "a kept locale wins");
+    assert!(
+        again
+            .segments
+            .iter()
+            .all(|s| s.language == Some(LangTag::parse("en").unwrap())),
+        "segments keep the meeting's language, not the locale"
+    );
 }
 
 #[test]

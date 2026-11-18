@@ -315,6 +315,7 @@ mod tests {
             max_input: None,
             window: CAP,
             sentence_times,
+            lead_in: Ms(0),
         }
     }
 

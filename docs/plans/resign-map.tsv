@@ -1,0 +1,111 @@
+old	new	subject
+504eb7a047bab692889948965389d9eb837c5d65	85ac06bde24ca3d99b76a08270c2d38cd0783b47	docs: plan search with FTS5, typo correction, sections, and jump to match
+fcc5bb31ed19cead2191d300b0c0577b8d68d34b	3098ffeaafe32d7732a7da5c58ba5a538db228df	docs: search covers all text with no scope control, per the operator's answers
+fc0deb5b7208ea18b47c51cf1e01b25f64d0e8ba	fae5943d7651fb1c2d0099f87c1b848e3e6ea003	feat(cli): seed synthetic recordings and log search, settle, and reveal times
+e157024b68e06c8402c03c6cf0724a7f89d47245	26b533b63ae735bcf8f1986a0ea25b6e930d3655	feat(core): search rules as pure functions: tokens, fold, query, and matches
+0b9cce2040922bf67a488cc31f2fc630b54c6aca	ec7e873ef34d40e557ed2b27a4c45347064118a1	feat(store): search through a contentless FTS5 index at schema v6
+3fdb7297890f330b26f44b084511cd7c3a3f1b11	a3ca16499666d2c4b5122f782582c356f6201ca0	perf(store): index one-letter prefixes and truncate the WAL after a migration
+2f1b2056d6ef50163f28b29e3a54f03ed6c733f5	78e1718ee5f03359e1acdd969640a4709c5f37a7	docs: document search and amend the search plan for schema v6
+b356674f0afbaed6b0a92d63f653c9e3c32ca49f	025ef8060a77300fa09edd691904a3e1f2ab9e4e	feat(search): correct a typo against the store's vocabulary when nothing matches
+72431aa6ff1281d55de34ead6df70d43502e0123	6dc43c0835c822a343b47b13e0e6fb6e3b5cf4dd	feat(cli): print each search correction, and document the vocabulary port
+45e29f310d165fd9bb5c8e0cefc248309e1b59d6	62c729693848fba5cf326cd635856c05a0b00dab	docs: log the S2 typo-correction decisions
+628d79f9109918bc342809bf2db403a2fca10c96	10bf4c6ee7145bfbac6f2239f843a6ba1b633dc1	feat(search): split hits into sections and build a snippet for each conversation hit
+913b9eb4fd18fcd4651079d5144cba958f981e92	162d3d163373c3408478f65dfa6b6c264cf0c230	feat(gpui): list search results in Titles and In conversations sections with snippets
+aee23ad6e919cbe20e9e6f814c569d6806480d53	34fe0bca6b32720fd35663d5d2a24eb73b68dbaa	feat(gpui): clear the search with Escape in the field
+39695ce60a1f48a5cf5b145e7a50b827d6225b15	2112ad9a672ed45a51aa7fcccfba836a4cd63b61	docs: add UX-32, document the snippet rules, and log the S3 decisions
+7ef745e35739c905c9e49e78f79912f5f74361fa	23567b6954a8c4772256cda8810cf2af937d6c2c	refactor(gpui): move the matched-word mark out of the sidebar so the detail pane can use it
+79ab00f223c44669a4b4e71f8a8b1bb5a0be78f4	405d6a99ce62f0fdaa232c53c6ff39547b2db5ea	feat(gpui): list a search's matches in one recording and step through them with wrap
+94302be49c828c31251282819845a2141cb4ed0c	81c9f75ac2284b6e9ec6ff26285b6d51d8d380b5	feat(gpui): open a search hit at its first match, mark every match, and step through them with Command-G
+95075c20dad1d007404f8ec0efc0769e75a4fae6	81fe81b485cafc6975027229577324e13ebff202	docs: describe opening at a match and Find Next in UX-32, and log the S4 decisions
+8f67d1bcd541f92d5365474d7beb441455f49e38	8db7ff6bdc390786b5946415f1e6b82a76b83e17	fix(search): agree with SQLite's tokenizer on the final sigma and on letters it splits at
+162d2c16aaedd5c1c7887f4ad9ebd808c983b6c1	be01aa33e574d2d5c0295bc32ff6eeafab198db7	fix(search): let the last part of a typed split word be a prefix
+87d4d9c3c411b3465af6d2dfc5a3533bc19121e7	890c548947671aeb7f3fa7521c1e42c13822a177	fix(gpui): search only the title the user gave, and announce text that holds no word
+f32afa217e69a3e571287f7db56215b6aa3167a2	c660cec6b512c3432654661829f56316dae73779	fix(gpui): count a summary's matches over the text the Summary tab draws
+dff0d6d4a1bdf7bd2104078cb05100963c6b61b1	ab11ae854d241ba4b383d6d2afc586abcc9c0e24	test(search): keep the sigma contract case clippy clean
+ae64269ce4b8f82e139370cfb085e424aaa0bd85	c7b8f3882136fb63aef2ac5fb4de8efd6d308f79	docs: drop the Settings pane and one-click connect from the MCP plan
+24bb6c3a232cec6f12e2bf082672da8bd9efe6f6	6781b4184ae7a9f8a1b132d36dbf95269c719eb8	fix(store): read the library without ever writing it
+a0804d66cc2751b4ce4b1584ca4ea1c06561ddf0	4d4a02576cab0930702b687469f5572972b54222	feat(core): store which assistants may read what
+95ccbafe5b49616802f298d78480f54f378be9ed	de614ebeef98830dcebe25231eb07c6998416120	feat(store): log every assistant read
+9ed1133288571264f8fd5a0ef91594aa1c916ab7	ff07d108cab92450c2f05c6833ff3dba51216234	feat(mcp): let assistants search and read meetings over stdio
+2c7397bd43ce16e4dac95eb3110c5b547df8a462	5797d0aa7715329b76e1df1285055babaab8a07e	feat(mcp): offer meetings as resources and two prompts
+03e03dafbfc075342c8ec143fa3c437a6458afa2	55efa454d5192a66cdd605a6cfd89a14881bbe2b	feat(assistants): let an assistant ask to rename a meeting or a speaker
+5827723369cac1244ecf7d4231c177a5ab67b6db	85d0f42f8fedccacfe4a80687714be54eae1515b	feat(assistants): re-summarize a meeting with the user's instruction
+43ddfd5ea9102657ef011ad56a7b951f3abfd33a	5637a900f05385aed34b6634b6b0f73afe827a17	docs: record what each MCP PR verified and what it did not
+9ef0af02c3431ad1fe510d3510279fba40ffc2f2	0e85dfbf3bb03f8cbcb52ecb09037a40fd7772c8	feat(gpui): connect assistants from Settings
+72ef706ed1b8335bdc3421c67230c64bb3f18cf1	b3c8775da6fac05b549d59bfcb34d678722121d3	Merge the MCP integration stack into refactor/hexagonal-core
+c9a7a5c007948ed85399ef77ba8c543756f932c6	205bc7c47e34112330d05ed476d019665a0db2ac	feat(gpui): connect Cursor and Codex too, from one Copy Setup button
+b77497d68bb21fe51bde58fea1331d6272c31386	436f5bad696f976e87323b584ac5050c5c5ff4c4	fix(gpui): one search field for the main window and Settings
+0a9f5fe21b58b58740bac1d2cfc2d0abff549857	670988eb626b63fb9bf47be3a9805e282f3f4dcd	docs: the branch is feat/gpui-rewrite, a rewrite rather than a refactor
+d69fd935bed75db3c33d8890712ff7c9de150558	001d59b663503945c7ccd4ec354911409f686188	Merge feat/gpui-rewrite into feat/search-assistants
+45c2ea2579241d8402b09cc9c53ad554e6a83133	d3e4a0c418eed71b44ad46e5e314a91a7f2085e9	feat(assistants): search with the app's rules, inside each grant
+3561b23eed5b6fec2b4ae2460f9801ddca676810	0ce3bc471fcd726cdc10b0feb2bac98b57b5cab8	docs: describe assistant search and log the S5 decisions
+f7baa5d3631a9eaa9e9f6358b4d498c6054ef5a5	37e9eb69d0bba692a041e54aa54130023ce1ce11	fix(gpui): keep search rows from shrinking in a long list, and end a clamped snippet with an ellipsis
+8c6dc7e695274199da5066048b14d12f53bb73ef	b7f3612295c36fafb34b8d6a8a055d3632b0d8c3	docs: log that the current match keeps the shared mark
+808e6a683c7d0d3f9bc802ea684aed310386c6c3	d8958ac090dfb6386bd43791371d92e6243fc226	fix(core): name the summary's language in words, not only by its tag
+2da16fa8083e881a879c76243c6be8481d73761a	873db26fced6df2b9f156a55eb8189ae26a7ed97	fix(gpui): run probes on the test thread so GPUI tests stay deterministic
+ee1dce403c181923534b42321e0ac9c49b6ee3bc	cfb703d626346a0d082902e7706a495e980090dd	test(core): a two-hour meeting whose merged notes count past their cap fails to summarize
+e0f7dcc9df2db3d715944305d19ab2ba31c5e23d	f0d5ac9ea9acc774e4b932184a1056eb2911472e	fix(core): a merge pass always takes two notes, so long meetings summarize
+d0b7e1b116a7dbd3861dddef050ee8a2b997589a	de9db14b2d7f0e1fda8bb66ed91b91abaefe6c47	fix(core): the summary takes the last two notes whole
+97cf749d5b320066413445e80562bc06b4979b2e	fc43024ea579e2b3c6a8d5107649b2d65ee3559d	docs: log the two-note floor for summary passes over notes
+30beef89163d6568213ddc04ecbbb91bc7812e29	499f4be7dd745de9263381edcae3b4db3c5f6597	Merge branch 'fix/summary-context-budget' into feat/gpui-rewrite
+d595651ff481e6849880589ed82287d85a13db56	a4c1d3f680182ce4b575f8a4bbc43c8ae07ab8e7	docs: plan bilingual Tagalog and English meetings, with spike evidence
+cb7826db3cb167f0e4c28e54955d1ddb22c3322c	282db9ca0c410bc40f2d1a26b5791a770940deb4	docs: bilingual plan covers Parakeet hearing nothing and the language sources tried
+79a3aaadb66e795d35cc4c2a8a7af9f805edfd20	361c07752dd69eee7f3c3ed5d6e459d3c0891b98	docs: bilingual plan decides recovery on public audio and adds on-demand summary translation
+fdc613b992b1b6ccbab4e2fb4d2afca9f14d7fce	cddbd6687250831aae334da1ab522318fc70b908	chore: log window time and the language heard in transcribe_window
+5c5d9c45ea1b2d736a71c8a898c116f846769d9c	9b19f4d763745a951db3bb7226adf351d80887ad	test: add the bilingual bench and its public-audio fixtures
+e5b451b5b7a862f97ea5d43afdd790a5cc9635bb	eb962e705e5218f8ac3a3eb730c0e2658e466f86	fix: record the language Whisper hears in each window
+88f3abc817a35e425c78a1d373f5bcba150a40b9	0d28268a00736d7ec3975af3f5ba3ce1e69d3b1d	feat: recover the turns Whisper drops when a window switches language
+b73e7bb9b972a8ee7f93a673b38481d4767ab74e	84ce48c30ea539ba99077ecbd756197d496fc0b6	feat(gpui): add the switch that recovers speech lost when the language changes
+5fef3818b14b74d74a457f48cc1aa413bd52b7ef	58453efa7e1c982cd29e7fd78231ca88cd9b2f3e	feat: recover dropped turns in rounds and default switch recovery to off
+b9919386e2e1ce29865dd4a6dd3f20dee15be324	f34643ad01877bfc3b320664132b697228f72f71	feat: output language, translating transcripts and writing summaries in it
+681963efa22cbd7f660d05514b6dbb296dbae448	8c6e55684abc5f402db829dc2b83db92791b95fe	fix(core): name the translation target in words, like the summary prompt
+8914df21cfbeb1ea62f943f722cd663ac56fd61a	228dfdf9d444030da70d74dab5261ba8585fa38e	Merge feat/output-language into the B4 base
+756cd7f966a676b681ffa117c2347f7cf56119ea	a530b0a2a1f8eaaf0afae44681a1590ce13b2049	docs: log the restack onto 808e6a6 and the B4 base merge
+d50da0bf34569045914656ef88685d9d0940c6c4	dd0c6f5c6587bd24a156d5417462746fb4ace2c1	perf: log how long grouping a transcript into turns takes
+ccb58acd24cb3187405c56318be3fddb5cb9fbf5	10a12e180047534346b341446cd99cf40b7b3e2c	feat: label each turn with its language and read it aloud
+7470bd15f28944cab5f3546c47e140a78536b0d5	d6c18cf81c060a51692e375ac27606cc1a2408ab	docs: record the B4 build, its unit boxes, and the live and perf findings; add the turns probe
+be7fa5c1fe04bdf89fedbd0158d9d1c43bab6b9b	cb205b160c51d4b175d853ae16e9cd80a59131ad	docs: B4's Taglish labels appear only with recovery on; ask the operator in Appendix G
+dc4b6592e7a458ee6a484b5d0266848794f09cae	591cf0fc07b17666d2de24f2eeaf47a5f6ff7868	feat: translate a summary on demand, beside the original
+5dc72e0e8597945bf5ac4c3c4ee24b6a84ef4b42	2b3fdef63fa197997afdcd1a73b3fcd312c19b1d	fix(cli): translate-summary follows a translation that a blocked job resumed
+52d3eb31a53b02800b65200735323d0b3a4e2fbb	a93bbe6901b9afd08d34888872f7de3cdf74a081	fix(core): name a summary translation's target in words through for_prompt
+50978562658d7ebeefb7d44b2820212be61b5577	24bf8031b467d8b18cb61da9281986303d2079f7	Merge branch 'feat/translate-summary' into feat/gpui-rewrite (bilingual B1-B5 and output language)
+59074c52cd7d71c965a52b2290c319595fa35bea	7ce51308d640c8969fc075626c2a7702f1ae3199	docs: plan Dory's use of Apple Intelligence and Apple Speech
+17894ced43e71e0504e2d63ca726e6738781b598	9444f753512fb77dc8914f463ae60f2403ce9d20	feat(core): rule out models that cannot read every meeting language
+10a0d565026dd30df12d572bf1b86cd98f9d3cf0	e2030b084aa30b3eda2100611b207b4dd6bac012	feat(cli): let models choose pin a fake model with --fake-engines
+f73372f104932936388874d180b3ec0b6805b2d9	75bf53b479d7b388c01d63f482600d903e32995b	docs: log P1's decisions and verification
+e651c951a116d91c52ffb6da3c148f5674e462c6	833f611da4df10adb943768d5e01c35aac523dfd	fix(core): a summary model that reads only some languages needs the meeting's languages known
+70f6d7a03e33f5c252397473818f6b9bdf6b4ef3	f124bdbc089ea5863a85f9a9271a0f455b0710b2	feat(macos): bridge to Apple's Foundation Models through a Swift static library
+2cf29d7aa6cdf65027cd5e8c4c4791ec66e126f3	51c3d2aa33d756e99ec2dea383d880d06bc2e565	build: link for macOS 26 and build the Apple bridge with the app
+341e32406d429efe5158fa1c8113974edc5b523c	70ca808c99e1cec6d4245fa371d3ee2491686116	feat(macos): summarize with Apple Intelligence
+6a18f75ee247a84d38046e0afb04d4ae5a18f969	b3dabbd4e557864a57c4ffdb0de91f1a77dbb75c	docs: log P2's decisions and say how the Swift runtime loads
+87e89bea6c6a92497e84ed0f912785a4fb1cbfcc	81fd6df3656be7afca5fda7fa3ede63fe6e5f92b	docs: log P2's verification and perf results
+4797a20a115f28392077aaf852ef26123313a72f	cd85e5cf6f656a0378829335a1ce9bf0a99a3da6	feat(macos): transcribe with Apple Speech
+17929fa37e5a56617d42ffbe1407b11a02f35210	29df193b43dc0745bd04a41ebb40f438d4df592a	feat(dory): transcribe with Apple Speech when one language is known
+e9c3122579b2cc3771f1d107186b66be0791692a	aedcf5f27646d44b1563e69d6effadda43b95e8e	docs: log P3's Apple Speech decisions, verification and perf results
+3e453d201dca59328286f9ad4e6ff879544169c3	ce8dd214e1417ad91256795382ca9a13e1d4c0fd	fix(core): say a fixed-locale speech model handles one language per meeting
+32145572e794d769c31c42bf428221663e2f31a7	8a0f3c9f394e2e97122fb9910eea22c8514c3bf2	feat(core): mark built-in models and a model turned off in system settings
+63d9929b98f38b826775c27c03543dd3b9251967	bd7891dba45caecfe572228a45cafce4856f48f8	feat(gpui): show Apple Intelligence where users set up summaries
+fa13fccbd6d0a375298903882063d4d3c30de6f9	c74953e5256b9df7b3359896315c764d47d484b9	docs: log P4's verification and add its review screenshots
+b97a37661a786fe5686ef5f7a17f9fe000a34141	150561155ec92f9f69cb5a62ba24c33678196788	fix(macos): never claim every language for Apple Intelligence before its languages are read
+f62101c448459fc186b946c90c16ebe3100b8082	87778b4404af44eb2a3ad8441988c9620bac0ecc	fix(gpui): name an unsupported language before asking to turn Apple Intelligence on
+e8c1f3f7d489c63477d834c969a17f1118ecf4de	786d03df02f79217cc817d6ab66ec5f6ba788a0e	docs: say an empty language list fits only a model for any language
+941a9aec15b6202a4b69ef2b1a01090e38b3c25e	ea03a7431d341c36febd02627df9048bddce25ca	fix(macos): flush the converter at the end of each Apple Speech window
+beb2400940060855482826e82e85a8e640cf0375	d1682f030972441a47bd34317489713d4d54d88b	fix(gpui): name the catalog's model on the long-meetings button
+e23b7c13f5ab5090fac61166e0a2834965576732	ac45c6eb20ac1a08b97e6c8e20af9a86dda5c726	docs: log the platform AI review, reruns, and follow-ups
+1a1ae1e24f813919000e117f82e113e0c9666bee	67c50fb96868a2d2ed93ee8de01ceb781cd6acd6	Merge branch 'feat/apple-intelligence-setup' into feat/gpui-rewrite (platform AI P1-P4)
+9c4c4735bb7bfaa5c892a8d680c68c6f2d78ceef	bb1959af070cdfa378ecb988f30a8e878cf11d37	feat(search): find and mark translated transcript text
+d723c8b005abd2a7a335f2e3fcdfeb1c2673c17a	3354337d5d480874f85fd2a975ad0e41173dd59b	Merge branch 'feat/search-translations' into feat/gpui-rewrite
+f7fe4e6a8ef26e93a6fee5fcaef885b2dedb8e4f	87427c552e01baeb792af111e6b1140b34301476	feat(gpui): DORY_SHOW=search:<query> opens a search for the visual pass
+d09479eb0cb637c93217f91d3ef2339d903e33a4	e21ada08372cd6c2fcb77fadf5a3b6e381418ba7	feat(gpui): new app icon, cut cleanly onto the macOS icon grid
+44bb6bf76acbf04a4dd45cf2441925ec5cdece80	a7b1a05bf28ec6637b0cf9ec22721343a0c60aa5	feat(search): find and mark translated summary text
+2ffcebf9a817a74d60884224b6bfa1674982254a	1a2e380ec29d02f755e80fe3eb864352376798d1	Merge branch 'feat/search-summary-translations' into feat/gpui-rewrite
+b05fa740754580d651d7c752a567605d4db82a61	0dc791a6d6da8de80c700aefd35837ef20a2ea77	fix: a guessed meeting language no longer lets a limited summary model fit, and language blockers name the language
+d776a609aa653c0da85f062fadc7327ecb77f1ba	d1ee3fc3292fcbe129d253bdcdcf4d14f8481010	Merge branch 'fix/summary-fit-unknown-languages' into feat/gpui-rewrite
+1a6eb138c7e955003afe5d4ca859de0b31c57344	5eb06eeff18a481eacaf3eb5a4e0cf05ba09ae8f	fix(store): pass a 16 kHz take's samples through to the clip unchanged
+540cef32ea71604051bf98f9caac7f5c06111952	f76d3fc1ce41a88a9fefeaf266871153b0edbdcb	fix(speech): hear 30 s before each Apple Speech window, keep one locale per meeting
+aac4d92f057fc96ed956a3cc0cafed679432c065	500a835a0361b835570c18096d818c6d058dfcfd	Merge branch 'fix/apple-speech-lead-in-and-locale' into feat/gpui-rewrite
+a791f1891f73603c953a8fa777221fbbb8a91371	20a21987fc75ee0d59716ab6a20099a8646dee8e	fix(gpui): VoiceOver reads a turn's text in its language
+d330397544ae25f5f966f24408939f2a270c6aba	5ab8a4c72d5132678afb1099256cff3d3a290411	Merge branch 'fix/voiceover-turn-language' into feat/gpui-rewrite
+0a41e308d4ccc5512a78649fe154086801cd6a26	9fc22441c09fea823e406bbea503130b66ed9832	fix(gpui): visual sweep fixes for small windows, large text and contrast
+a1c5353ebd0c030308c709b849bf4ee994dddcbe	9c7406a7ea80392e84c8b80f08913c1c348e9143	fix: guessed meeting languages keep Auto off one-locale speech, and low sweep fixes
+ebf32405e9e746bc21dd0b9f01af6b03f3f76bbc	8d865bbfa085c8055a7e3d01d359292d4fc9e1ce	feat: measure Apple models against the defaults and keep Auto's order (P5)

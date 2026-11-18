@@ -1084,7 +1084,7 @@ fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
                 return Ok(vec![Change::SummaryReplaced {
                     id: id.clone(),
                     summary: Summary {
-                        markdown: text.trim().to_owned(),
+                        markdown: crate::domain::tidy(&text).trim().to_owned(),
                         language: needs.main.clone(),
                         produced_by: llm_id.erase(),
                         transcript_revision: transcript.revision,

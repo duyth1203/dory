@@ -1321,6 +1321,19 @@ fn a_recovered_stretch_that_drops_its_own_tail_is_decoded_again() {
 const SAME_AS_SPOKEN_SYSTEM: &str = "You summarize meeting transcripts. Write the whole summary in Vietnamese (BCP 47 tag vi). Use Markdown with three sections in this order: key points, decisions, and action items. Start each section with a \"## \" heading and add no title. Write the three headings in Vietnamese (BCP 47 tag vi) too, even though this instruction is in English. Keep each key point to one short line and merge points that repeat, with at most eight key points. List every decision and every action item, each once, with its owner and due date when the input names them. A task someone will do is an action item, not a decision, even when the meeting calls it a decision. Under a section with nothing to report, write a short Vietnamese (BCP 47 tag vi) phrase that says there is none. Use only what the transcript says.";
 
 #[test]
+fn a_summary_that_loops_is_stored_once_and_tidy() {
+    let looped = "## Key points\n- Ship it.\n- Ship it.\n## Decisions\n- Ship it.\n## Action items\n- Ana: notes\n## Key points\n- Ship it.\n";
+    let (rig, id) = long_meeting(8_192, looped);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    let summary = dory.library().summary(&id).unwrap().unwrap();
+    assert_eq!(
+        summary.markdown,
+        "## Key points\n- Ship it.\n## Decisions\n- Ship it.\n## Action items\n- Ana: notes"
+    );
+}
+
+#[test]
 fn same_as_spoken_sends_todays_summary_prompt_and_runs_todays_stages() {
     let (rig, id) = long_meeting(8_192, SUMMARY);
     let dory = rig.open();

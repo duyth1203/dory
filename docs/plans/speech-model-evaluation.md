@@ -162,7 +162,7 @@ Platform AI P5's rule, applied to these numbers:
 - **Apple Speech stays not recommended.** Its RTFx is 6.7 times Parakeet's (the rule needs 2), but its WER is 1.7 points behind (the rule needs at most 1).
 - **Apple Intelligence stays below Gemma.** Its rubric score is 0.22 behind Gemma's on the 8 shared transcripts (the rule needs at most 0.25), but it keeps 3 of Gemma's 39 action items, 8% (the rule needs at least 90%).
 
-The order stays P2's and P3's. `crates/dory/tests/catalog_order.rs` pins it. The decision waits for the operator's go on platform AI Appendix G, question 1. Every macOS 27 number is an operator lane, and so is the battery lane. The catalog's Parakeet and Whisper pros still quote the 2026-11-16 WERs (7.2% and 6.2%) and the bench's "about 14 times" speed, against 12.7 on the full app path here.
+The order stays P2's and P3's. `crates/dory/tests/catalog_order.rs` pins it. The decision waits for the operator's go on platform AI Appendix G, question 1. Every macOS 27 number is an operator lane, and so is the battery lane. The catalog's Parakeet and Whisper pros and cons now quote these English WERs (5.2% and 4.5%) and the app-path speeds (about 13 and 4 times real time). Whisper's Tagalog 14.6% is still the 2026-11-16 number, scored against the normalized references.
 
 ## What is not verified yet
 

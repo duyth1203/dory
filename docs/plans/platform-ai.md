@@ -357,7 +357,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 - [x] Edit `crates/dory-engines/examples/wer-bench.rs`, or move it to `crates/dory/examples/wer-bench.rs` if it must name an Apple provider, since only the composition root names adapters.
 - [x] Create `scripts/score-summary.py`, `scripts/score-items.py`, and `crates/dory/tests/catalog_order.rs`.
 - [x] Edit `docs/plans/speech-model-evaluation.md` (a new measured section).
-- [ ] Edit `crates/dory-macos/src/ai/foundation_models.rs` and `crates/dory-macos/src/ai/speech.rs` (`recommended` and `rank` only, if the rule below says so).
+- [x] Edit `crates/dory-macos/src/ai/foundation_models.rs` and `crates/dory-macos/src/ai/speech.rs` (`recommended` and `rank` only, if the rule below says so). Not needed: the rule kept the order on 2026-11-18.
 
 **Build.**
 
@@ -380,23 +380,23 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Run the bench for Parakeet and Whisper at trunk and head. Save `regression.tsv`. Pass when their WER matches trunk to the word.
-- [ ] Lane 2. Run the bench for Apple Speech on the 43 English clips. Save `apple-wer.tsv`. Pass when every clip produced text and the WER is recorded.
-- [ ] Lane 3. Time `Two hour planning` for the three speech engines. Save `speed.tsv`. Pass when each has three runs with a spread under 10 percent and a named limiter.
-- [ ] Lane 4. Summarize the 10 rubric transcripts with Gemma and Apple. Save `rubric.tsv`. Pass when every transcript has both summaries and a score.
-- [ ] Lane 5. Score action-item recall on `Two hour planning` for both summary engines. Save `recall.txt`. Pass when both numbers are recorded with the transcript engine named.
+- [x] Lane 1. Regression lane against trunk. Run the bench for Parakeet and Whisper at trunk and head. Save `regression.tsv`. Pass when their WER matches trunk to the word.
+- [x] Lane 2. Run the bench for Apple Speech on the 43 English clips. Save `apple-wer.tsv`. Pass when every clip produced text and the WER is recorded.
+- [x] Lane 3. Time `Two hour planning` for the three speech engines. Save `speed.tsv`. Pass when each has three runs with a spread under 10 percent and a named limiter.
+- [x] Lane 4. Summarize the 10 rubric transcripts with Gemma and Apple. Save `rubric.tsv`. Pass when every transcript has both summaries and a score.
+- [x] Lane 5. Score action-item recall on `Two hour planning` for both summary engines. Save `recall.txt`. Pass when both numbers are recorded with the transcript engine named.
 - [ ] Lane 6. Operator lane. Repeat lanes 2 to 5 for Apple on a Mac running macOS 27. Save `macos27.tsv`. Pass when every Apple number has a macOS 27 value or a recorded reason it could not run.
 - [x] Lane 7. Run `dory-cli models` on a copy after the rule is applied. Save `order.txt`. Pass when the order matches the decision row.
-- [ ] Lane 8. Run the Taglish recording on Auto after the change. Save `taglish.txt`. Pass when Whisper and Gemma still handle it.
-- [ ] Lane 9. Run the English weekly sync on Auto after the change, with `dory-cli languages en`. Save `english.txt`. Pass when the chosen engines match the rule.
+- [x] Lane 8. Run the Taglish recording on Auto after the change. Save `taglish.txt`. Pass when Whisper and Gemma still handle it.
+- [x] Lane 9. Run the English weekly sync on Auto after the change, with `dory-cli languages en`. Save `english.txt`. Pass when the chosen engines match the rule.
 - [ ] Lane 10. Operator lane. Unplug the Mac at full charge, transcribe `Two hour planning` with Apple Speech and then with Parakeet, and summarize it with Apple Intelligence and then Gemma, recording `pmset -g batt` before and after each and the CPU-seconds of each run including system services. Save `battery.txt`. Pass when every run has a battery drop and CPU-seconds recorded.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. The bench's own wall time for the full English set, so the bench stays cheap to rerun.
-- [ ] Probe. Run the bench on trunk (sherpa only) and head (sherpa only), interleaved, three times.
-- [ ] Baseline. Record trunk's median first.
-- [ ] Rule. Head fails if the sherpa-only bench is more than 10 percent slower than trunk.
+- [x] Metric. The bench's own wall time for the full English set, so the bench stays cheap to rerun.
+- [x] Probe. Run the bench on trunk (sherpa only) and head (sherpa only), interleaved, three times.
+- [x] Baseline. Record trunk's median first.
+- [x] Rule. Head fails if the sherpa-only bench is more than 10 percent slower than trunk.
 
 **Review gate.** None. P5 is not review-gated. Its decision rows wait for the operator's go on Appendix G, question 1.
 

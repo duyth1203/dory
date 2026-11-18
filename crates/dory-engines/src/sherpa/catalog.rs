@@ -79,9 +79,9 @@ pub(super) fn models() -> Vec<Model> {
             rank: 30,
             summary: "NVIDIA's fast speech model for English and 24 other European languages.",
             pros: &[
-                "About 14 times faster than real time on an M3 Pro, five times faster than Whisper",
+                "About 13 times faster than real time on an M3 Pro, more than three times faster than Whisper",
                 "Word timestamps, so each sentence gets its own time",
-                "7.2% word errors on 43 English FLEURS clips, measured on an M3 Pro",
+                "5.2% word errors on 43 English FLEURS clips, measured on an M3 Pro",
             ],
             cons: &[
                 "No Tagalog, and no languages outside Europe",
@@ -110,11 +110,11 @@ pub(super) fn models() -> Vec<Model> {
             pros: &[
                 "Covers the most languages, Tagalog included",
                 "14.6% word errors on 37 Tagalog FLEURS clips, measured on an M3 Pro",
-                "6.2% word errors on 43 English FLEURS clips, measured on an M3 Pro",
+                "4.5% word errors on 43 English FLEURS clips, measured on an M3 Pro",
                 "Detects the spoken language by itself",
             ],
             cons: &[
-                "About 3 times faster than real time on an M3 Pro, five times slower than Parakeet",
+                "About 4 times faster than real time on an M3 Pro, more than three times slower than Parakeet",
                 "Can repeat text over long silence",
                 "Times each sentence only in meetings held in more than one language, so most windows are one block of text",
             ],

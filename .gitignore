@@ -5,3 +5,6 @@
 .env
 *.local
 .DS_Store
+
+# Python bytecode from the scoring scripts
+__pycache__/

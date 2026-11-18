@@ -4,12 +4,12 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use dory_core::domain::Translation;
 use dory_core::domain::{
     AssistantChange, AssistantClient, Channel, ChannelLayout, ClientKey, Exposure, LangTag,
     LanguagePref, Ms, Recording, RecordingId, Revision, Segment, SpeakerId, SpeakerNames, Summary,
     TimeRange, Timestamp, Transcript, Writes,
 };
+use dory_core::domain::{SummaryTranslation, Translation};
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, Store, StoreRead};
 use serde_json::{Value, json};
@@ -385,6 +385,61 @@ fn search_finds_a_translated_turn_under_a_transcript_grant_and_quotes_the_transl
             "a summaries grant reads no transcript, translated or spoken: {query}"
         );
     }
+    assert!(server.finish().success());
+}
+
+fn translate_summary(data: &Path) {
+    let config = dory::Config::new(data);
+    let store = dory_store::SqliteStore::open(config.db_path()).unwrap();
+    let id = RecordingId::parse("weekly").unwrap();
+    let spanish = LangTag::parse("es").unwrap();
+    store
+        .apply(vec![
+            Change::SummaryTranslationWanted {
+                id: id.clone(),
+                target: spanish.clone(),
+            },
+            Change::SummaryTranslated {
+                id,
+                translation: SummaryTranslation {
+                    target: spanish,
+                    produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+                    markdown: "## Puntos clave\n- Presupuesto **aprobado**\n".into(),
+                },
+            },
+        ])
+        .unwrap();
+}
+
+#[test]
+fn search_finds_a_translated_summary_under_a_summaries_grant_and_quotes_the_translation() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = seed(dir.path(), Exposure::Summaries);
+    translate_summary(dir.path());
+    let mut server = Server::start(dir.path(), Some(&key), true);
+    let hit = server.tool("search_recordings", json!({"query": "presupuesto"}));
+    assert_eq!(found(&hit), ["weekly"], "a word only the translation holds");
+    let snippet = &hit["structuredContent"]["recordings"][0]["snippet"];
+    assert_eq!(snippet["field"], "summary");
+    assert_eq!(snippet["untrusted_text"], "Presupuesto aprobado");
+    assert_eq!(snippet["marks"], json!([[0, 11]]));
+    let written = server.tool("search_recordings", json!({"query": "decisions"}));
+    assert_eq!(
+        written["structuredContent"]["recordings"][0]["snippet"]["untrusted_text"], "Decisions",
+        "a word only written is quoted as written"
+    );
+    assert!(server.finish().success());
+
+    let titles = tempfile::tempdir().unwrap();
+    let key = seed(titles.path(), Exposure::Titles);
+    translate_summary(titles.path());
+    let mut server = Server::start(titles.path(), Some(&key), true);
+    let result = server.tool("search_recordings", json!({"query": "presupuesto"}));
+    assert_eq!(
+        found(&result),
+        Vec::<String>::new(),
+        "a titles grant reads no summary, translated or written"
+    );
     assert!(server.finish().success());
 }
 

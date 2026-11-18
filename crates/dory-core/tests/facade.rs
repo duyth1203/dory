@@ -2216,6 +2216,68 @@ fn a_snippet_quotes_the_translation_when_the_match_is_there() {
 }
 
 #[test]
+fn a_snippet_quotes_the_summary_translation_before_the_summary_as_written() {
+    let rig = Rig::new();
+    let dory = rig.open();
+    let id = RecordingId::parse("talk").unwrap();
+    rig.store
+        .apply(vec![
+            Change::RecordingCreated(recording(&id, None)),
+            Change::SummaryReplaced {
+                id: id.clone(),
+                summary: Summary {
+                    markdown: "## Mga punto\n- Budget: aprubado na".into(),
+                    language: Some(LangTag::parse("tl").unwrap()),
+                    produced_by: ModelRef::parse(LLM).unwrap(),
+                    transcript_revision: Revision(1),
+                },
+            },
+            Change::SummaryTranslationWanted {
+                id: id.clone(),
+                target: LangTag::parse("en").unwrap(),
+            },
+            Change::SummaryTranslated {
+                id: id.clone(),
+                translation: SummaryTranslation {
+                    target: LangTag::parse("en").unwrap(),
+                    produced_by: ModelRef::parse(LLM).unwrap(),
+                    markdown: "## Points\n- The budget is **approved**".into(),
+                },
+            },
+        ])
+        .unwrap();
+    let library = dory.library();
+    let quoted = |text: &str| {
+        let query = Query::parse(text).unwrap();
+        let found = library.snippets(&query, std::slice::from_ref(&id)).unwrap();
+        let e = found[0].clone().expect("a snippet");
+        (e.source, e.snippet.text)
+    };
+    assert!(
+        library
+            .search("approved")
+            .unwrap()
+            .is_some_and(|r| r.hits.iter().any(|h| h.row.recording.id == id)),
+        "the summary translation is searched"
+    );
+    assert_eq!(
+        quoted("approved"),
+        (Where::Summary, "The budget is approved".to_owned()),
+        "a translated word is quoted from the translation, its Markdown stripped"
+    );
+    assert_eq!(
+        quoted("budget"),
+        (Where::Summary, "The budget is approved".to_owned()),
+        "a word in both is quoted from the translation"
+    );
+    assert_eq!(
+        quoted("aprubado"),
+        (Where::Summary, "Budget: aprubado na".to_owned()),
+        "a written word is quoted as written"
+    );
+}
+
+#[test]
 fn snippets_come_from_turns_then_summary() {
     let rig = Rig::new();
     let dory = rig.open();

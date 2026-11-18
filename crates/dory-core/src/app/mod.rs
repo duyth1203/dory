@@ -1252,8 +1252,8 @@ impl LibraryReader {
 
     /// The line to show under each of `ids`, a hit of `query`, in the same order: where in the
     /// transcript it first matches, its translation before what was spoken, else in the summary,
-    /// else in a speaker name. `None` for a
-    /// recording that has been deleted since the search, or that holds no word of the query.
+    /// its translation before what was written, else in a speaker name. `None` for a recording
+    /// that has been deleted since the search, or that holds no word of the query.
     pub fn snippets(
         &self,
         query: &Query,
@@ -1288,10 +1288,18 @@ impl LibraryReader {
                 let spoken: Vec<&str> = spoken.iter().map(String::as_str).collect();
                 let translated: Vec<&str> = translated.iter().map(String::as_str).collect();
                 let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
+                let translated_blocks = self
+                    .store
+                    .summary_translation(id)?
+                    .map(|t| search::summary_blocks(&t.markdown))
+                    .unwrap_or_default();
+                let translated_blocks: Vec<&str> =
+                    translated_blocks.iter().map(String::as_str).collect();
                 Ok(search::excerpt(
                     query,
                     &translated,
                     &spoken,
+                    &translated_blocks,
                     &blocks,
                     &speakers,
                 ))

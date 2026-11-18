@@ -100,7 +100,10 @@ A query in the output language finds the meeting. The index's `transcript` colum
 - A grant that reads transcripts reads their translations. A Titles or Summaries grant finds no translated word and is corrected toward none.
 - A snippet quotes the translated turn when the query matches there, else the spoken turn. The sidebar and `search_recordings` use the same rule, and the assistant's turn cursor counts turns as `get_transcript` does.
 - The detail pane lists a recording's turn matches from one transcript text: the one shown when a hit opens, unless only the other text holds a match. A hit opens on that text, marks are drawn only while it is shown, and Find Next brings it back.
-- The summary's translation is not indexed. A summary hit opens on the summary as written.
+- The index's `summary` column holds what was written, then the summary's translation. The translation always describes the stored summary, so it needs no staleness check: `SummaryReplaced` and `SummaryRestored` drop it and reindex in the same commit, and both stores reindex on `SummaryTranslated`. Schema v12 has no table change; its migration rebuilds the index so libraries index the summary translations they already hold, and v11 no longer runs its own rebuild.
+- A grant that reads summaries reads their translation. A Titles grant never does.
+- A snippet quotes the translated summary line when the query matches there, else the line as written, for the sidebar and for `search_recordings`.
+- The Summary tab shows a search's matches on the version the tab shows, unless only the other version holds a match. A hit opens on that version, and Find Next brings it back after the user switches away, while the recording has a match left to step to.
 
 ## Schema v9
 

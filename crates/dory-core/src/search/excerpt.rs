@@ -47,18 +47,29 @@ fn in_first_match(query: &Query, items: &[&str], source: Source, width: usize) -
 }
 
 /// The first place `query` matches, looking in the transcript's `translated` turns, then in its
-/// `spoken` turns, then in the summary's `blocks`, then in `speakers`, the names the user gave.
-/// `translated` is empty without a translation, and turn `n` is the same turn in both, so a hit
-/// in a translation is quoted as the transcript shows it. `None` when none of them holds a word
-/// of the query.
+/// `spoken` turns, then in the summary translation's `translated_blocks`, then in the summary's
+/// `blocks`, then in `speakers`, the names the user gave. `translated` is empty without a
+/// translation, and turn `n` is the same turn in both, so a hit in a translation is quoted as the
+/// transcript shows it. `translated_blocks` is empty without a summary translation, and `item`
+/// counts blocks of the text the excerpt came from. `None` when none of them holds a word of the
+/// query.
 pub fn excerpt(
     query: &Query,
     translated: &[&str],
     spoken: &[&str],
+    translated_blocks: &[&str],
     blocks: &[&str],
     speakers: &[&str],
 ) -> Option<Excerpt> {
-    excerpt_within(query, translated, spoken, blocks, speakers, SNIPPET_WIDTH)
+    excerpt_within(
+        query,
+        translated,
+        spoken,
+        translated_blocks,
+        blocks,
+        speakers,
+        SNIPPET_WIDTH,
+    )
 }
 
 /// [`excerpt`] with snippets of about `width` characters.
@@ -66,12 +77,14 @@ pub fn excerpt_within(
     query: &Query,
     translated: &[&str],
     spoken: &[&str],
+    translated_blocks: &[&str],
     blocks: &[&str],
     speakers: &[&str],
     width: usize,
 ) -> Option<Excerpt> {
     in_first_match(query, translated, Source::Transcript, width)
         .or_else(|| in_first_match(query, spoken, Source::Transcript, width))
+        .or_else(|| in_first_match(query, translated_blocks, Source::Summary, width))
         .or_else(|| in_first_match(query, blocks, Source::Summary, width))
         .or_else(|| in_first_match(query, speakers, Source::Speakers, width))
 }
@@ -124,6 +137,7 @@ mod tests {
             &q("roadmap"),
             &[],
             &["hello", "we agreed the roadmap slips"],
+            &[],
             &["Roadmap review"],
             &["Roadmap Rita"],
         )
@@ -139,6 +153,7 @@ mod tests {
             &q("budget"),
             &[],
             &["hello"],
+            &[],
             &["Key points", "The budget is fine"],
             &["Sam"],
         )
@@ -146,17 +161,24 @@ mod tests {
         assert_eq!(from_summary.source, Source::Summary);
         assert_eq!(from_summary.snippet.text, "The budget is fine");
 
-        let from_name =
-            excerpt(&q("sam"), &[], &["hello"], &["Key points"], &["Sam", "Lee"]).unwrap();
+        let from_name = excerpt(
+            &q("sam"),
+            &[],
+            &["hello"],
+            &[],
+            &["Key points"],
+            &["Sam", "Lee"],
+        )
+        .unwrap();
         assert_eq!(from_name.source, Source::Speakers);
         assert_eq!(from_name.snippet.text, "Sam");
         assert_eq!(marked(&from_name), ["Sam"]);
 
         assert_eq!(
-            excerpt(&q("zanzibar"), &[], &["hello"], &["Key"], &["Sam"]),
+            excerpt(&q("zanzibar"), &[], &["hello"], &[], &["Key"], &["Sam"]),
             None
         );
-        assert_eq!(excerpt(&q("zanzibar"), &[], &[], &[], &[]), None);
+        assert_eq!(excerpt(&q("zanzibar"), &[], &[], &[], &[], &[]), None);
     }
 
     #[test]
@@ -165,6 +187,7 @@ mod tests {
             &q("\"budget review\""),
             &[],
             &["intro", "about the budget", "review it is"],
+            &[],
             &[],
             &[],
         )
@@ -177,7 +200,7 @@ mod tests {
     fn a_long_turn_is_cut_to_a_window_around_the_match() {
         let turn = "One two three four five six seven eight nine ten eleven twelve roadmap \
                     thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
-        let found = excerpt(&q("roadmap"), &[], &[turn], &[], &[]).unwrap();
+        let found = excerpt(&q("roadmap"), &[], &[turn], &[], &[], &[]).unwrap();
         assert!(found.snippet.text.starts_with('…') && found.snippet.text.ends_with('…'));
         assert!(found.snippet.text.chars().count() <= SNIPPET_WIDTH + 2);
         assert_eq!(marked(&found), ["roadmap"]);
@@ -209,16 +232,48 @@ mod tests {
     fn a_translated_turn_is_quoted_before_the_spoken_one() {
         let translated = ["Hello.", "The budget is approved."];
         let spoken = ["Hello.", "Aprubado na ang badyet."];
-        let found = excerpt(&q("approved"), &translated, &spoken, &["Approved"], &[]).unwrap();
+        let found = excerpt(
+            &q("approved"),
+            &translated,
+            &spoken,
+            &[],
+            &["Approved"],
+            &[],
+        )
+        .unwrap();
         assert_eq!((found.source, found.item), (Source::Transcript, 1));
         assert_eq!(found.snippet.text, "The budget is approved.");
         assert_eq!(marked(&found), ["approved"]);
 
-        let found = excerpt(&q("aprubado"), &translated, &spoken, &[], &[]).unwrap();
+        let found = excerpt(&q("aprubado"), &translated, &spoken, &[], &[], &[]).unwrap();
         assert_eq!(
             (found.source, found.item, found.snippet.text.as_str()),
             (Source::Transcript, 1, "Aprubado na ang badyet."),
             "a word only spoken is quoted as spoken"
+        );
+    }
+
+    #[test]
+    fn a_translated_summary_block_is_quoted_before_the_written_one() {
+        let translated = ["Points", "The budget is approved"];
+        let written = ["Mga punto", "Budget: aprubado na"];
+        let found = excerpt(&q("budget"), &[], &["hello"], &translated, &written, &[]).unwrap();
+        assert_eq!((found.source, found.item), (Source::Summary, 1));
+        assert_eq!(found.snippet.text, "The budget is approved");
+        assert_eq!(marked(&found), ["budget"]);
+
+        let found = excerpt(&q("aprubado"), &[], &[], &translated, &written, &[]).unwrap();
+        assert_eq!(
+            (found.source, found.item, found.snippet.text.as_str()),
+            (Source::Summary, 1, "Budget: aprubado na"),
+            "a word only written is quoted as written"
+        );
+
+        let found = excerpt(&q("budget"), &[], &["the budget"], &translated, &[], &[]).unwrap();
+        assert_eq!(
+            found.source,
+            Source::Transcript,
+            "the transcript still wins"
         );
     }
 }

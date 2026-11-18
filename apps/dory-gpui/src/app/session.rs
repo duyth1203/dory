@@ -5,7 +5,7 @@ use dory_core::domain::{
     SummaryTranslation, TimeRange, Transcript, Translation,
 };
 use dory_core::ports::StoreError;
-use dory_core::search::Query;
+use dory_core::search::{self, Query};
 use gpui_kit::component::text::{RenderedText, TextViewState};
 use gpui_kit::{AppContext as _, Context, Entity, SharedString, Subscription, Task};
 
@@ -99,6 +99,26 @@ impl Detail {
     /// Whether `version` ends up showing the summary's translation.
     pub fn summary_translated(&self, version: SummaryVersion) -> bool {
         version == SummaryVersion::Translated && self.summary_translation.is_some()
+    }
+
+    /// The summary version a search shows its matches on: `preferred`, unless only the other
+    /// holds a match of `query`. Each version is read as the sidebar quotes it, its Markdown
+    /// stripped.
+    pub fn summary_holding(&self, query: &Query, preferred: SummaryVersion) -> SummaryVersion {
+        let holds = |version| {
+            self.shown_summary(version).is_some_and(|markdown| {
+                let plain = search::summary_blocks(markdown).join("\n");
+                !search::highlights(query, &plain).is_empty()
+            })
+        };
+        let other = match preferred {
+            SummaryVersion::Translated => SummaryVersion::Original,
+            SummaryVersion::Original => SummaryVersion::Translated,
+        };
+        match !holds(preferred) && holds(other) {
+            true => other,
+            false => preferred,
+        }
     }
 }
 
@@ -425,9 +445,10 @@ impl Session {
         let found = self.found.as_mut()?;
         let at = found.step(delta).clone();
         let spoken = found.spoken(&detail.turns);
+        let summary = detail.summary_holding(found.query(), self.summary_version);
         // Stepping shows the texts the matches were found in, where they are marked.
         self.text = self.matched;
-        self.set_summary_version(SummaryVersion::Original, cx);
+        self.set_summary_version(summary, cx);
         self.reveal += 1;
         cx.notify();
         Some(Moved { at, spoken })
@@ -442,15 +463,11 @@ impl Session {
     fn rematch(&mut self, jump: bool, cx: &mut Context<Self>) {
         let kept = self.found.take();
         self.counted = None;
-        // A search opens on what was written, as it does on what was spoken. The summary's text
-        // view then renders again and this runs once more over the written text.
-        if jump
-            && self.query.is_some()
-            && self
-                .detail()
-                .is_some_and(|d| d.summary_translated(self.summary_version))
-        {
-            self.set_summary_version(SummaryVersion::Original, cx);
+        // A search opens on the summary version that holds its matches. When that changes the
+        // version, the summary's text view renders again and this runs once more over it.
+        if let (true, Some(query), Some(detail)) = (jump, &self.query, self.detail()) {
+            let version = detail.summary_holding(query, self.summary_version);
+            self.set_summary_version(version, cx);
         }
         if let (Some(query), Some(detail)) = (self.query.clone(), self.detail()) {
             let rendered = self.summary.read(cx).rendered_text();

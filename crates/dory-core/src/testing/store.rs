@@ -284,8 +284,9 @@ impl Default for MemStore {
 
 impl Entry {
     /// The searchable text: title, speaker names, summary, transcript. Names count only for the
-    /// transcript revision they were given for. The transcript is what was spoken, then the
-    /// translated segments of a translation that applies to it.
+    /// transcript revision they were given for. The summary is what was written, then its
+    /// translation. The transcript is what was spoken, then the translated segments of a
+    /// translation that applies to it.
     fn fields(&self) -> [String; 4] {
         let revision = self.transcript.as_ref().map(|t| t.revision);
         let names = match revision {
@@ -318,9 +319,11 @@ impl Entry {
             self.recording.title.clone().unwrap_or_default(),
             names,
             self.summary
-                .as_ref()
-                .map(|s| s.markdown.clone())
-                .unwrap_or_default(),
+                .iter()
+                .map(|s| s.markdown.as_str())
+                .chain(self.summary_translation.iter().map(|t| t.markdown.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
             transcript,
         ]
     }
@@ -766,6 +769,14 @@ mod contract {
         (
             "assistant_search_finds_the_translation_only_under_a_transcript_grant",
             assistant_search_reads_the_translation_as_transcript,
+        ),
+        (
+            "search_finds_the_summary_translation_until_the_summary_changes",
+            search_finds_the_summary_translation,
+        ),
+        (
+            "assistant_search_finds_the_summary_translation_under_a_summaries_grant",
+            assistant_search_reads_the_summary_translation_as_summary,
         ),
         (
             "translation_batches_are_kept_per_run_in_save_order",
@@ -3160,6 +3171,168 @@ mod contract {
         let done = summary_translation_of("en", "## Points\n- \"Okay\"\n\n- Fine");
         store_translation(store, id, &done);
         done
+    }
+
+    fn search_finds_the_summary_translation(store: &dyn Store) {
+        store
+            .apply(vec![
+                titled("r", 10, "Weekly sync"),
+                Change::SummaryReplaced {
+                    id: rid("r"),
+                    summary: summary(1, "## Mga punto\n- Aprubado na ang badyet"),
+                },
+            ])
+            .unwrap();
+        want(store, "r", "en");
+        assert_eq!(
+            found(store, "approved"),
+            Vec::<String>::new(),
+            "a wish alone indexes nothing"
+        );
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("en", "## Points\n- The budget is **approved**"),
+        );
+        assert_eq!(found(store, "approved"), ["r"], "a translated word");
+        assert_eq!(
+            found(store, "\"budget is approved\""),
+            ["r"],
+            "a translated phrase"
+        );
+        assert_eq!(found(store, "aprubado"), ["r"], "the written words stay");
+        assert_eq!(
+            found(store, "badyet approved"),
+            ["r"],
+            "written and translated together"
+        );
+        assert!(
+            store
+                .vocabulary()
+                .unwrap()
+                .terms()
+                .iter()
+                .any(|t| t == "approved"),
+            "a correction can reach a translated word"
+        );
+
+        want(store, "r", "de");
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("de", "## Punkte\n- Das Budget ist genehmigt"),
+        );
+        assert_eq!(
+            found(store, "approved"),
+            Vec::<String>::new(),
+            "a replaced translation"
+        );
+        assert_eq!(found(store, "genehmigt"), ["r"], "the new translation");
+
+        store
+            .apply(vec![Change::SummaryReplaced {
+                id: rid("r"),
+                summary: summary(1, "## Mga punto\n- Tapos na"),
+            }])
+            .unwrap();
+        assert_eq!(
+            found(store, "genehmigt"),
+            Vec::<String>::new(),
+            "a summary written again drops its translation"
+        );
+        assert_eq!(found(store, "tapos"), ["r"]);
+
+        want(store, "r", "en");
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("en", "## Points\n- It is finished"),
+        );
+        assert_eq!(found(store, "finished"), ["r"]);
+        store
+            .apply(vec![Change::SummaryRestored(rid("r"))])
+            .unwrap();
+        assert_eq!(
+            found(store, "finished"),
+            Vec::<String>::new(),
+            "a restored summary drops its translation"
+        );
+        assert_eq!(found(store, "aprubado"), ["r"], "the restored summary");
+
+        want(store, "r", "en");
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("en", "## Points\n- The budget is approved"),
+        );
+        store
+            .apply(vec![Change::RecordingDeleted(rid("r"))])
+            .unwrap();
+        assert_eq!(
+            found(store, "approved"),
+            Vec::<String>::new(),
+            "after delete"
+        );
+    }
+
+    fn assistant_search_reads_the_summary_translation_as_summary(store: &dyn Store) {
+        use crate::domain::{AssistantQuery, Fields};
+        store
+            .apply(vec![
+                titled("r", 10, "Weekly sync"),
+                Change::SummaryReplaced {
+                    id: rid("r"),
+                    summary: summary(1, "## Mga punto\n- Aprubado na ang badyet"),
+                },
+            ])
+            .unwrap();
+        want(store, "r", "en");
+        store_translation(
+            store,
+            "r",
+            &summary_translation_of("en", "## Points\n- The budget is approved"),
+        );
+        let found_with = |fields: Fields| -> Vec<String> {
+            store
+                .assistant_recordings(&AssistantQuery {
+                    query: Some(Query::parse("approved").unwrap()),
+                    fields,
+                    since: None,
+                    until: None,
+                    after: None,
+                    limit: 10,
+                })
+                .unwrap()
+                .into_iter()
+                .map(|f| f.row.recording.id.to_string())
+                .collect()
+        };
+        let summaries = Fields {
+            title: true,
+            speakers: true,
+            summary: true,
+            transcript: false,
+        };
+        let titles = Fields {
+            speakers: false,
+            summary: false,
+            ..summaries
+        };
+        assert_eq!(found_with(summaries), ["r"]);
+        assert_eq!(found_with(titles), Vec::<String>::new());
+        let has = |fields: Fields| {
+            store
+                .assistant_vocabulary(fields)
+                .unwrap()
+                .terms()
+                .iter()
+                .any(|t| t == "approved")
+        };
+        assert!(
+            has(summaries),
+            "a summaries grant may be corrected toward it"
+        );
+        assert!(!has(titles), "a titles grant never sees it");
     }
 
     fn summary_translation_round_trips(store: &dyn Store) {

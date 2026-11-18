@@ -1,0 +1,2 @@
+-- The search index's summary column gains the summary's translation. The tables do not change:
+-- the migration's rebuild step indexes the summary translations that a library already holds.

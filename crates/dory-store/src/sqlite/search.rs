@@ -26,9 +26,10 @@ fn push_words(out: &mut String, text: &str) {
 }
 
 /// The recording's folded words per index column: title, speakers, summary, transcript. Speaker
-/// names count only when they were given for the current transcript revision. The transcript
-/// column holds what was spoken, then the translated segments of a translation that applies, so
-/// a grant that reads the transcript reads its translation too.
+/// names count only when they were given for the current transcript revision. The summary column
+/// holds what was written, then its translation, which always describes the stored summary. The
+/// transcript column holds what was spoken, then the translated segments of a translation that
+/// applies. So a grant that reads a text reads its translation too.
 fn row_words(conn: &Connection, id: &str) -> Result<[String; 4], StoreError> {
     let (title, names_revision) = conn
         .prepare_cached("SELECT title, names_revision FROM recordings WHERE id = ?1")
@@ -61,14 +62,18 @@ fn row_words(conn: &Connection, id: &str) -> Result<[String; 4], StoreError> {
     }
 
     let mut summary = String::new();
-    if let Some(markdown) = conn
-        .prepare_cached("SELECT markdown FROM summaries WHERE recording_id = ?1")
-        .map_err(db)?
-        .query_row([id], |row| row.get::<_, String>(0))
-        .optional()
-        .map_err(db)?
-    {
-        push_words(&mut summary, &markdown);
+    for table in ["summaries", "summary_translations"] {
+        if let Some(markdown) = conn
+            .prepare_cached(&format!(
+                "SELECT markdown FROM {table} WHERE recording_id = ?1"
+            ))
+            .map_err(db)?
+            .query_row([id], |row| row.get::<_, String>(0))
+            .optional()
+            .map_err(db)?
+        {
+            push_words(&mut summary, &markdown);
+        }
     }
 
     let mut transcript = String::new();
@@ -171,7 +176,7 @@ pub(super) fn forget(tx: &Connection, id: &RecordingId) -> Result<(), StoreError
 }
 
 /// Indexes every recording from scratch with this build's tokens, in the caller's transaction.
-/// The v11 migration runs it, and so does an open that finds an index built by another
+/// The v12 migration runs it, and so does an open that finds an index built by another
 /// [`TOKENS_VERSION`]. A crash before the commit leaves the old state, so the next open runs it
 /// again.
 pub(super) fn rebuild(tx: &Connection) -> Result<(), StoreError> {

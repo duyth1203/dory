@@ -81,8 +81,11 @@ pub fn languages(config: &Config, args: &LanguagesArgs) -> Result<(), String> {
     let dory = open(config, false)?;
     if let LanguagesArgs::Set(tags) = args {
         let tags = tags.clone();
-        dory.update_settings(|s| s.meeting_languages = tags)
-            .map_err(crate::chain)?;
+        dory.update_settings(|s| {
+            s.meeting_languages = tags;
+            s.meeting_languages_guessed = false;
+        })
+        .map_err(crate::chain)?;
     }
     let settings = dory.settings().map_err(crate::chain)?;
     if settings.meeting_languages.is_empty() {
@@ -93,7 +96,12 @@ pub fn languages(config: &Config, args: &LanguagesArgs) -> Result<(), String> {
             .iter()
             .map(ToString::to_string)
             .collect();
-        println!("meeting languages: {}", tags.join(", "));
+        let guessed = if settings.meeting_languages_guessed {
+            " (guessed from the Mac's language, so summary models that read only some languages wait for you to set them)"
+        } else {
+            ""
+        };
+        println!("meeting languages: {}{guessed}", tags.join(", "));
     }
     Ok(())
 }

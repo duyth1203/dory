@@ -51,7 +51,7 @@ pub enum Llm {}
 pub enum Diar {}
 
 /// How well a model suits a job. `No` rules it out. `Degraded` runs, with a known limitation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fit {
     Yes,
     Degraded(Mismatch),
@@ -59,7 +59,7 @@ pub enum Fit {
 }
 
 impl Fit {
-    pub(crate) fn rank(self) -> u8 {
+    pub(crate) fn rank(&self) -> u8 {
         match self {
             Fit::Yes => 0,
             Fit::Degraded(_) => 1,
@@ -68,13 +68,15 @@ impl Fit {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Mismatch {
     /// The language is Auto but the model needs one chosen up front.
     #[error("needs a language chosen, it cannot detect one")]
     AutoLanguageUnsupported,
-    #[error("does not support this language")]
-    LanguageUnsupported,
+    /// The languages the model cannot read, in the order the meeting names them. Empty when the
+    /// engine refused without saying which.
+    #[error("does not support {}", in_words(.0))]
+    LanguageUnsupported(Vec<LangTag>),
     /// A model that reads only some languages cannot be trusted with a meeting whose languages
     /// are unknown, because it may drop the parts it cannot read.
     #[error("needs your meeting languages set in Settings")]
@@ -158,13 +160,16 @@ impl ModelKind for Stt {
                 return Fit::No(Mismatch::OneLanguagePerMeeting);
             }
             LanguagePref::Auto if !can_auto => return Fit::No(Mismatch::AutoLanguageUnsupported),
-            LanguagePref::Auto if needs.expected.iter().any(|lang| !tags.supports(lang)) => {
-                return Fit::No(Mismatch::LanguageUnsupported);
+            LanguagePref::Auto => {
+                let missing = unsupported(tags, &needs.expected);
+                if !missing.is_empty() {
+                    return Fit::No(Mismatch::LanguageUnsupported(missing));
+                }
             }
             LanguagePref::Pinned(lang) if !tags.supports(lang) => {
-                return Fit::No(Mismatch::LanguageUnsupported);
+                return Fit::No(Mismatch::LanguageUnsupported(vec![lang.clone()]));
             }
-            _ => {}
+            LanguagePref::Pinned(_) => {}
         }
         if needs.diarization == DiarizationNeed::Required
             && caps.diarization == DiarizationSupport::None
@@ -211,16 +216,18 @@ pub struct LlmCaps {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlmNeeds {
-    /// The meeting's main language, when known. The prompt asks for the summary in it.
+    /// The language the model writes in, when known: the summary's or translation's target, else
+    /// the meeting's main language. A model must support it too.
     pub main: Option<LangTag>,
-    /// Every language the meeting may use, each once. A model must read all of them. Empty means
-    /// nothing is known, and only a model for any language fits.
-    pub all: Vec<LangTag>,
+    /// Every language the meeting may be spoken in, each once. A model must read all of them.
+    /// Empty means nothing is known, and only a model for any language fits. `main` never fills
+    /// it, because the language notes are written in says nothing about what was said.
+    pub spoken: Vec<LangTag>,
 }
 
 impl LlmNeeds {
-    /// `all` is `main`, the recording's pinned language, the meeting languages from Settings, and
-    /// the languages the transcript detected, in that order, each once.
+    /// `spoken` is the recording's pinned language, the meeting languages the user chose, and the
+    /// languages the transcript detected, in that order, each once.
     pub fn new(
         main: Option<LangTag>,
         pinned: &LanguagePref,
@@ -231,13 +238,13 @@ impl LlmNeeds {
             LanguagePref::Pinned(tag) => Some(tag),
             LanguagePref::Auto => None,
         };
-        let mut all: Vec<LangTag> = Vec::new();
-        for tag in main.iter().chain(pinned).chain(meeting).chain(detected) {
-            if !all.contains(tag) {
-                all.push(tag.clone());
+        let mut spoken: Vec<LangTag> = Vec::new();
+        for tag in pinned.into_iter().chain(meeting).chain(detected) {
+            if !spoken.contains(tag) {
+                spoken.push(tag.clone());
             }
         }
-        Self { main, all }
+        Self { main, spoken }
     }
 }
 
@@ -252,13 +259,25 @@ impl ModelKind for Llm {
     /// the meeting's languages known, because with none set it may summarize the half it reads
     /// and drop the rest without refusing.
     fn fit(caps: &LlmCaps, needs: &LlmNeeds) -> Fit {
-        match &caps.languages {
-            LangSet::Any => Fit::Yes,
-            LangSet::Only(_) if needs.all.is_empty() => Fit::No(Mismatch::LanguagesUnknown),
-            LangSet::Only(_) if needs.all.iter().all(|lang| caps.languages.supports(lang)) => {
-                Fit::Yes
-            }
-            LangSet::Only(_) => Fit::No(Mismatch::LanguageUnsupported),
+        if caps.languages == LangSet::Any {
+            return Fit::Yes;
+        }
+        if needs.spoken.is_empty() {
+            return Fit::No(Mismatch::LanguagesUnknown);
+        }
+        let mut read = needs.spoken.clone();
+        read.extend(
+            needs
+                .main
+                .iter()
+                .filter(|m| !needs.spoken.contains(m))
+                .cloned(),
+        );
+        let missing = unsupported(&caps.languages, &read);
+        if missing.is_empty() {
+            Fit::Yes
+        } else {
+            Fit::No(Mismatch::LanguageUnsupported(missing))
         }
     }
 }
@@ -285,6 +304,27 @@ impl ModelKind for Diar {
     }
 }
 
+/// The tags in `wanted` that `set` does not cover, in order.
+fn unsupported(set: &LangSet, wanted: &[LangTag]) -> Vec<LangTag> {
+    wanted
+        .iter()
+        .filter(|lang| !set.supports(lang))
+        .cloned()
+        .collect()
+}
+
+/// "Tagalog", "Tagalog or Vietnamese", "Tagalog, Vietnamese, or Thai", or "this language" when no
+/// tag is known.
+fn in_words(tags: &[LangTag]) -> String {
+    let names: Vec<String> = tags.iter().map(crate::domain::languages::name).collect();
+    match names.as_slice() {
+        [] => "this language".into(),
+        [one] => one.clone(),
+        [a, b] => format!("{a} or {b}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,6 +339,10 @@ mod tests {
 
     fn pinned(s: &str) -> LanguagePref {
         LanguagePref::Pinned(tag(s))
+    }
+
+    fn unsupported(tags: &[&str]) -> Mismatch {
+        Mismatch::LanguageUnsupported(tags.iter().map(|t| tag(t)).collect())
     }
 
     fn needs(language: LanguagePref, diarization: DiarizationNeed, input: u64) -> SttNeeds {
@@ -351,7 +395,7 @@ mod tests {
         assert_eq!(fit(&["en"]), Fit::Yes);
         assert_eq!(
             fit(&["tl", "en"]),
-            Fit::No(Mismatch::LanguageUnsupported),
+            Fit::No(unsupported(&["tl"])),
             "Tagalog and English meetings rule out a model without Tagalog"
         );
         let pinned_english = SttNeeds {
@@ -403,7 +447,7 @@ mod tests {
                 "pinned but unsupported",
                 caps(whisper(), NoDiar, None),
                 needs(pinned("de"), NotNeeded, 1),
-                No(Mismatch::LanguageUnsupported),
+                No(unsupported(&["de"])),
             ),
             (
                 "fixed locale with auto",
@@ -421,7 +465,7 @@ mod tests {
                 "fixed locale with another region",
                 caps(apple, NoDiar, None),
                 needs(pinned("en-GB"), NotNeeded, 1),
-                No(Mismatch::LanguageUnsupported),
+                No(unsupported(&["en-GB"])),
             ),
             (
                 "multilingual without auto detect",
@@ -457,7 +501,7 @@ mod tests {
                 "hard mismatch beats degradation",
                 caps(whisper(), NoDiar, Some(10)),
                 needs(pinned("de"), Required, 99),
-                No(Mismatch::LanguageUnsupported),
+                No(unsupported(&["de"])),
             ),
             (
                 "diarization reported before length",
@@ -478,10 +522,10 @@ mod tests {
         }
     }
 
-    fn llm_needs(all: &[&str]) -> LlmNeeds {
+    fn llm_needs(spoken: &[&str]) -> LlmNeeds {
         LlmNeeds {
-            main: all.first().map(|t| tag(t)),
-            all: all.iter().map(|t| tag(t)).collect(),
+            main: spoken.first().map(|t| tag(t)),
+            spoken: spoken.iter().map(|t| tag(t)).collect(),
         }
     }
 
@@ -492,12 +536,12 @@ mod tests {
         assert_eq!(Llm::fit(&english, &llm_needs(&["en-US"])), Fit::Yes);
         assert_eq!(
             Llm::fit(&english, &llm_needs(&["en", "tl"])),
-            Fit::No(Mismatch::LanguageUnsupported),
+            Fit::No(unsupported(&["tl"])),
             "a Taglish meeting rules out an English-only model even when English comes first"
         );
         assert_eq!(
             Llm::fit(&english, &llm_needs(&["vi"])),
-            Fit::No(Mismatch::LanguageUnsupported)
+            Fit::No(unsupported(&["vi"]))
         );
         assert_eq!(
             Llm::fit(&llm_caps(LangSet::Any), &llm_needs(&["en", "tl", "vi"])),
@@ -520,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn llm_needs_gather_every_language_once() {
+    fn llm_needs_gather_every_spoken_language_once() {
         let needs = LlmNeeds::new(
             Some(tag("en")),
             &pinned("fr"),
@@ -528,10 +572,47 @@ mod tests {
             &[tag("en"), tag("vi")],
         );
         assert_eq!(needs.main, Some(tag("en")));
-        assert_eq!(needs.all, vec![tag("en"), tag("fr"), tag("tl"), tag("vi")]);
         assert_eq!(
-            LlmNeeds::new(None, &LanguagePref::Auto, &[], &[]).all,
+            needs.spoken,
+            vec![tag("fr"), tag("en"), tag("tl"), tag("vi")]
+        );
+        assert_eq!(
+            LlmNeeds::new(None, &LanguagePref::Auto, &[], &[]).spoken,
             Vec::<LangTag>::new()
+        );
+    }
+
+    #[test]
+    fn the_language_a_summary_is_written_in_does_not_say_what_was_spoken() {
+        let writing_english = LlmNeeds::new(Some(tag("en")), &LanguagePref::Auto, &[], &[]);
+        assert_eq!(
+            Llm::fit(&llm_caps(only(&["en"])), &writing_english),
+            Fit::No(Mismatch::LanguagesUnknown),
+            "a Taglish meeting with English notes may still hold Tagalog"
+        );
+        assert_eq!(
+            Llm::fit(&llm_caps(LangSet::Any), &writing_english),
+            Fit::Yes
+        );
+        let tagalog_to_english =
+            LlmNeeds::new(Some(tag("en")), &LanguagePref::Auto, &[tag("tl")], &[]);
+        assert_eq!(
+            Llm::fit(&llm_caps(only(&["tl"])), &tagalog_to_english),
+            Fit::No(unsupported(&["en"])),
+            "the model also writes the summary's language"
+        );
+    }
+
+    #[test]
+    fn a_language_mismatch_names_the_languages() {
+        assert_eq!(unsupported(&["tl"]).to_string(), "does not support Tagalog");
+        assert_eq!(
+            unsupported(&["tl", "vi"]).to_string(),
+            "does not support Tagalog or Vietnamese"
+        );
+        assert_eq!(
+            unsupported(&[]).to_string(),
+            "does not support this language"
         );
     }
 
@@ -564,7 +645,7 @@ mod tests {
         );
         assert_eq!(
             fit(&["fr"]),
-            Fit::No(Mismatch::LanguageUnsupported),
+            Fit::No(unsupported(&["fr"])),
             "one language the row does not cover"
         );
         assert_eq!(

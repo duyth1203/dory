@@ -146,6 +146,7 @@ impl LanguageCombobox {
             Edit::Added => self.say(format!("{name} added")),
             Edit::Removed { .. } => self.say(format!("{name} removed")),
             Edit::KeptLast => self.say(KEEP_ONE.into()),
+            Edit::Confirmed => self.say(format!("{name} chosen")),
         }
         cx.notify();
         Some(edit)

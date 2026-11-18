@@ -247,7 +247,7 @@ fn meeting_languages_steer_auto_away_from_models_without_them() {
         .lines()
         .find(|l| l.contains("sherpa/parakeet-tdt-0.6b-v3"))
         .unwrap();
-    assert!(parakeet.contains("language"), "{parakeet}");
+    assert!(parakeet.contains("does not support Tagalog"), "{parakeet}");
     assert_eq!(
         env.ok(&["languages", "--clear"]).trim(),
         "meeting languages: any"

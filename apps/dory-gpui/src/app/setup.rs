@@ -16,16 +16,18 @@ impl AppState {
         self.prefs.onboarding.unwrap_or(OnboardingStep::Done)
     }
 
+    /// The Models step asks which languages meetings are in, with the Mac's filled in, so the
+    /// list it shows counts as chosen.
     pub fn continue_onboarding(&mut self, cx: &mut Context<Self>) {
         let next = self.onboarding().next();
-        if next == OnboardingStep::Models
-            && let Some(language) = onboarding::system_language()
-        {
+        if next == OnboardingStep::Models {
+            let language = onboarding::system_language();
             self.update_settings(
                 move |settings| {
                     if settings.meeting_languages.is_empty() {
-                        settings.meeting_languages = vec![language];
+                        settings.meeting_languages.extend(language);
                     }
+                    settings.meeting_languages_guessed = false;
                 },
                 cx,
             );

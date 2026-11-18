@@ -712,6 +712,15 @@ impl StoreRead for $t {
                     .map(|v| codec::parse_tag(v))
                     .transpose()?;
             }
+            if let Some(v) = rows.get("meeting_languages_guessed") {
+                settings.meeting_languages_guessed = match v.as_str() {
+                    "1" => true,
+                    "0" => false,
+                    other => {
+                        return Err(corrupt(format!("meeting_languages_guessed is {other:?}")));
+                    }
+                };
+            }
             if let Some(v) = rows.get("auto_process") {
                 settings.auto_process = match v.as_str() {
                     "1" => true,
@@ -1733,6 +1742,15 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                         .as_ref()
                         .map(ToString::to_string)
                         .unwrap_or_default(),
+                ),
+                (
+                    "meeting_languages_guessed",
+                    if settings.meeting_languages_guessed {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .to_owned(),
                 ),
                 (
                     "auto_process",

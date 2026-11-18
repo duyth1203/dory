@@ -333,10 +333,10 @@ fn kind_from_db(s: &str) -> Result<KindTag, StoreError> {
     })
 }
 
-fn mismatch_to_db(why: Mismatch) -> &'static str {
+fn mismatch_to_db(why: &Mismatch) -> &'static str {
     match why {
         Mismatch::AutoLanguageUnsupported => "auto_language_unsupported",
-        Mismatch::LanguageUnsupported => "language_unsupported",
+        Mismatch::LanguageUnsupported(_) => "language_unsupported",
         Mismatch::LanguagesUnknown => "languages_unknown",
         Mismatch::OneLanguagePerMeeting => "one_language_per_meeting",
         Mismatch::NoDiarization => "no_diarization",
@@ -345,10 +345,19 @@ fn mismatch_to_db(why: Mismatch) -> &'static str {
     }
 }
 
-fn mismatch_from_db(s: &str) -> Result<Mismatch, StoreError> {
+/// `languages` is the blocker's list of unsupported tags. A blocker stored before it carried them
+/// reads back with none, which the apps word as "this language".
+fn mismatch_from_db(s: &str, languages: Option<&Value>) -> Result<Mismatch, StoreError> {
     Ok(match s {
         "auto_language_unsupported" => Mismatch::AutoLanguageUnsupported,
-        "language_unsupported" => Mismatch::LanguageUnsupported,
+        "language_unsupported" => Mismatch::LanguageUnsupported(match languages {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(tags)) => tags
+                .iter()
+                .map(|t| parse_tag(t.as_str().ok_or_else(|| corrupt("blocker language"))?))
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(corrupt("blocker languages")),
+        }),
         "languages_unknown" => Mismatch::LanguagesUnknown,
         "one_language_per_meeting" => Mismatch::OneLanguagePerMeeting,
         "no_diarization" => Mismatch::NoDiarization,
@@ -420,7 +429,14 @@ pub(crate) fn blocker_to_db(blocker: &Blocker) -> String {
             "fix": why.fix,
         }),
         Blocker::Incompatible { model, why } => {
-            json!({ "k": "incompatible", "model": model.as_str(), "why": mismatch_to_db(*why) })
+            let mut value =
+                json!({ "k": "incompatible", "model": model.as_str(), "why": mismatch_to_db(why) });
+            if let Mismatch::LanguageUnsupported(tags) = why
+                && !tags.is_empty()
+            {
+                value["languages"] = tags.iter().map(LangTag::as_str).collect();
+            }
+            value
         }
         Blocker::NoModel { kind } => json!({ "k": "no_model", "kind": kind_to_db(*kind) }),
     };
@@ -451,7 +467,7 @@ pub(crate) fn blocker_from_db(s: &str) -> Result<Blocker, StoreError> {
         },
         "incompatible" => Blocker::Incompatible {
             model: parse_model_ref(text(&v, "model")?)?,
-            why: mismatch_from_db(text(&v, "why")?)?,
+            why: mismatch_from_db(text(&v, "why")?, v.get("languages"))?,
         },
         "no_model" => Blocker::NoModel {
             kind: kind_from_db(text(&v, "kind")?)?,
@@ -540,5 +556,26 @@ mod tests {
         let stored = blocker_to_db(&blocker);
         assert!(stored.contains("\"preparing\""), "{stored}");
         assert_eq!(blocker_from_db(&stored).unwrap(), blocker);
+    }
+
+    #[test]
+    fn a_language_blocker_keeps_its_languages_and_an_old_one_reads_back_without() {
+        let model = ModelRef::parse("apple/foundation-model").unwrap();
+        let blocker = Blocker::Incompatible {
+            model: model.clone(),
+            why: Mismatch::LanguageUnsupported(vec![LangTag::parse("tl").unwrap()]),
+        };
+        let stored = blocker_to_db(&blocker);
+        assert!(stored.contains(r#""languages":["tl"]"#), "{stored}");
+        assert_eq!(blocker_from_db(&stored).unwrap(), blocker);
+        let old =
+            r#"{"k":"incompatible","model":"apple/foundation-model","why":"language_unsupported"}"#;
+        assert_eq!(
+            blocker_from_db(old).unwrap(),
+            Blocker::Incompatible {
+                model,
+                why: Mismatch::LanguageUnsupported(Vec::new()),
+            }
+        );
     }
 }

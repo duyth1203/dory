@@ -390,11 +390,42 @@ fn a_library_with_no_meeting_languages_gets_the_system_language() {
     assert!(store.settings().unwrap().meeting_languages.is_empty());
     let english = LangTag::parse("en").unwrap();
     dory_gpui::seed_meeting_languages(&dory, Some(english.clone())).unwrap();
-    assert_eq!(store.settings().unwrap().meeting_languages, vec![english]);
+    let seeded = store.settings().unwrap();
+    assert_eq!(seeded.meeting_languages, vec![english]);
+    assert!(
+        seeded.meeting_languages_guessed,
+        "nobody chose it, so summary models must not trust it"
+    );
+    assert!(seeded.chosen_meeting_languages().is_empty());
     dory_gpui::seed_meeting_languages(&dory, LangTag::parse("fr").ok()).unwrap();
     assert_eq!(
         store.settings().unwrap().meeting_languages,
         vec![LangTag::parse("en").unwrap()],
         "a chosen list is kept"
+    );
+}
+
+#[gpui_kit::test]
+fn the_models_step_turns_a_guessed_language_into_a_chosen_one(cx: &mut TestAppContext) {
+    let store = Arc::new(MemStore::new());
+    let dory = dory_on(store.clone());
+    dory_gpui::seed_meeting_languages(&dory, LangTag::parse("en").ok()).unwrap();
+    assert!(store.settings().unwrap().meeting_languages_guessed);
+    let (window, app) = open_fresh(cx, dory);
+    click(window, "onboarding-continue", cx);
+    assert!(
+        store.settings().unwrap().meeting_languages_guessed,
+        "the Welcome step does not show the languages"
+    );
+    click(window, "onboarding-continue", cx);
+    assert_eq!(step(&app, cx), OnboardingStep::Models);
+    let settings = store.settings().unwrap();
+    assert_eq!(
+        settings.meeting_languages,
+        vec![LangTag::parse("en").unwrap()]
+    );
+    assert!(
+        !settings.meeting_languages_guessed,
+        "the Models step asks for the languages, so the list it shows is chosen"
     );
 }

@@ -19,7 +19,7 @@
 //! The commands that install Ollama by hand live on in Settings › Summaries (`ollama_steps`).
 
 use dory_core::app::{AppKind as _, ModelRow};
-use dory_core::domain::{Blocker, LangSet};
+use dory_core::domain::{Blocker, LangSet, LangTag};
 use dory_core::models::{
     Availability, Choice, Fit, Llm, Mismatch, ModelId, ModelRef, Resolution, UnavailableReason,
 };
@@ -32,9 +32,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::icons::Icon;
-use crate::models_view::{
-    self, Models, button, chosen_pick, missing_languages, progress_bar, size_text,
-};
+use crate::models_view::{self, Models, button, chosen_pick, in_words, progress_bar, size_text};
 use crate::processing::{Download, Phase, Problem};
 use crate::surface::{self, Look};
 use crate::theme::Theme;
@@ -182,22 +180,23 @@ pub fn system(models: &Models) -> Option<System> {
             on,
         })
     };
-    let unsupported = || {
-        let missing = missing_languages::<Llm>(&entry.caps, settings);
+    let unsupported = |missing: &[LangTag]| {
         Some(System::Unsupported {
             name: name.clone(),
             languages: if missing.is_empty() {
                 "your meeting languages".into()
             } else {
-                crate::languages::name_list(&missing, "or")
+                in_words(missing)
             },
         })
     };
     // A model that names its languages and lacks the meeting's is no use once turned on. One
     // that names none has not read them yet, so its state comes first.
     let names_languages = entry.caps.languages != LangSet::Only(Vec::new());
-    match (&row.status.availability, row.fit) {
-        (_, Fit::No(Mismatch::LanguageUnsupported)) if names_languages => unsupported(),
+    match (&row.status.availability, &row.fit) {
+        (_, Fit::No(Mismatch::LanguageUnsupported(missing))) if names_languages => {
+            unsupported(missing)
+        }
         (Availability::Unavailable(why), _) => match &why.reason {
             UnavailableReason::TurnedOff { settings_url, .. } => waits(Wait::TurnOn {
                 settings_url: settings_url.clone(),
@@ -208,7 +207,7 @@ pub fn system(models: &Models) -> Option<System> {
             _ => None,
         },
         (_, Fit::No(Mismatch::LanguagesUnknown)) => waits(Wait::Languages),
-        (_, Fit::No(_)) => unsupported(),
+        (_, Fit::No(_)) => unsupported(&[]),
         (Availability::Ready, _) => Some(System::Ready { name }),
         (Availability::NeedsProvision { .. }, _) => None,
     }

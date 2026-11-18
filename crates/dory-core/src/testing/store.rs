@@ -1296,6 +1296,7 @@ mod contract {
             diar: Choice::Off,
             language: LanguagePref::Pinned(LangTag::parse("zh-Hans-CN").unwrap()),
             meeting_languages: vec![LangTag::parse("tl").unwrap(), LangTag::parse("en").unwrap()],
+            meeting_languages_guessed: false,
             output_language: Some(LangTag::parse("en-US").unwrap()),
             auto_process: false,
             processing: Processing::Light,
@@ -1307,12 +1308,18 @@ mod contract {
             diar: Choice::Auto,
             language: LanguagePref::Auto,
             meeting_languages: Vec::new(),
+            meeting_languages_guessed: false,
             output_language: None,
             auto_process: true,
             processing: Processing::Fast,
             switch_recovery: Recovery::On,
         };
-        for settings in [pinned, off, Settings::default()] {
+        let guessed = Settings {
+            meeting_languages: vec![LangTag::parse("en").unwrap()],
+            meeting_languages_guessed: true,
+            ..Settings::default()
+        };
+        for settings in [pinned, off, guessed, Settings::default()] {
             store
                 .apply(vec![Change::SettingsReplaced(settings.clone())])
                 .unwrap();
@@ -2129,7 +2136,14 @@ mod contract {
             },
             Blocker::Incompatible {
                 model: model(),
-                why: Mismatch::LanguageUnsupported,
+                why: Mismatch::LanguageUnsupported(Vec::new()),
+            },
+            Blocker::Incompatible {
+                model: model(),
+                why: Mismatch::LanguageUnsupported(vec![
+                    LangTag::parse("tl").unwrap(),
+                    LangTag::parse("zh-Hant").unwrap(),
+                ]),
             },
             Blocker::Incompatible {
                 model: model(),

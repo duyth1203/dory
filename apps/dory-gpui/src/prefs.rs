@@ -329,6 +329,7 @@ pub fn watch(app: &Entity<AppState>, config: &dory::Config, cx: &mut App) {
                 });
             }
             AppEvent::RowsReloaded => restore(&app, &persist, cx),
+            AppEvent::SearchFilled(_) => {}
         }
     });
 

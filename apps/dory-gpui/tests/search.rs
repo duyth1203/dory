@@ -1443,3 +1443,32 @@ fn a_match_in_the_translation_is_marked_on_the_translated_text(cx: &mut TestAppC
     assert_eq!(current(&app, cx), Some((1, 2, Place::Turn(3))));
     assert!(described(window, 3, cx).is_some_and(|d| d.contains("Search match")));
 }
+
+/// The visual pass's `search:<query>` fills the sidebar field as typing would, so its screenshot
+/// shows the query, the hits, and the clear button.
+#[gpui_kit::test]
+fn filling_the_search_shows_the_query_in_the_field_and_searches_it(cx: &mut TestAppContext) {
+    let (window, app, _) = open_corpus_with(Vec::new(), cx);
+    app.update(cx, |app, cx| app.fill_search("roadmap", cx));
+    cx.executor().advance_clock(SEARCH_DEBOUNCE);
+    settle(window, cx);
+    let clear = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id("search-clear")).label().map(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(
+        clear.as_deref(),
+        Some("Clear search"),
+        "the field holds the query"
+    );
+    app.read_with(cx, |app, _| {
+        assert_eq!(app.typed.text(), "roadmap");
+        let hits = &app.search.as_ref().expect("the search settled").hits;
+        assert!(
+            hits.iter().any(|hit| hit.row.recording.id == id_of(TALK)),
+            "the query was searched"
+        );
+    });
+}

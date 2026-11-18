@@ -34,7 +34,7 @@ use gpui_kit::{
 
 use crate::a11y;
 use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
-use crate::app::AppState;
+use crate::app::{AppEvent, AppState};
 use crate::fonts;
 use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::marks::marked;
@@ -69,13 +69,19 @@ impl Sidebar {
             },
         );
         let on_app = cx.observe(&app, |_, _, cx| cx.notify());
+        let on_fill = cx.subscribe_in(&app, window, |this, _, event: &AppEvent, window, cx| {
+            if let AppEvent::SearchFilled(text) = event {
+                this.search
+                    .update(cx, |search, cx| search.set_value(text.clone(), window, cx));
+            }
+        });
         Self {
             app,
             search,
             list_focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             scrolled_to: None,
-            _subscriptions: vec![on_type, on_app],
+            _subscriptions: vec![on_type, on_app, on_fill],
         }
     }
 

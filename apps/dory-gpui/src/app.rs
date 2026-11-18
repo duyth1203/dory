@@ -112,6 +112,8 @@ pub struct Notice {
 pub enum AppEvent {
     SelectionChanged,
     RowsReloaded,
+    /// The search field should read this, as if it had been typed. Only the visual pass asks.
+    SearchFilled(String),
 }
 
 /// A take just stopped is listed with its audio, so its finish card can take focus.
@@ -449,6 +451,12 @@ impl AppState {
             None => last,
         };
         self.select(Selection::One(ids[at as usize].clone()), cx);
+    }
+
+    /// Puts `text` in the search field and searches it, as typing it would.
+    pub fn fill_search(&mut self, text: &str, cx: &mut Context<Self>) {
+        cx.emit(AppEvent::SearchFilled(text.to_owned()));
+        self.set_search(text, cx);
     }
 
     /// Searches titles, speaker names, summaries, and transcripts once typing pauses for

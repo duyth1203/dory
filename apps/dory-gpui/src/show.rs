@@ -19,6 +19,8 @@
 //! - `summaries`, Set Up Summaries as the library's models leave it, and `summaries:<U1, U2, or
 //!   U3>` pinned to that step
 //! - `quit`, the "Quit Dory?" dialog with a recording, two jobs, and a download in progress
+//! - `search:<query>`, the query in the sidebar's search field and its first hit open, with the
+//!   matches marked
 //!
 //! The app prints `show: ready` once the view is in place.
 
@@ -65,6 +67,8 @@ pub enum View {
     /// U1, U2, or U3. `None` follows the models.
     Summaries(Option<String>),
     Quit,
+    /// The query, searched as if typed, with its first hit open.
+    Search(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,6 +162,12 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
         "queue" => return Ok(View::Queue(None)),
         "quit" => return Ok(View::Quit),
         _ => {}
+    }
+    if let Some(query) = trimmed.strip_prefix("search:") {
+        if query.trim().is_empty() {
+            return Err(bad());
+        }
+        return Ok(View::Search(query.trim().to_owned()));
     }
     if let Some(state) = trimmed.strip_prefix("queue:") {
         return fixtures::queue_state(state)
@@ -361,6 +371,47 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
             })
             .detach();
         }
+        View::Search(query) => {
+            let filled = Rc::new(Cell::new(false));
+            let done = Rc::new(Cell::new(false));
+            // Deferred, so the launch selection rule in `prefs::watch` has run first.
+            let step = move |app: Entity<AppState>, cx: &mut App| {
+                let (view, query, filled, done) =
+                    (view.clone(), query.clone(), filled.clone(), done.clone());
+                cx.defer(move |cx| {
+                    if done.get() || !app.read(cx).is_loaded() {
+                        return;
+                    }
+                    if !filled.get() {
+                        filled.set(true);
+                        app.update(cx, |app, cx| app.fill_search(&query, cx));
+                        return;
+                    }
+                    let state = app.read(cx);
+                    if state.typed.text() != query {
+                        return;
+                    }
+                    let Some(results) = state.search.as_ref() else {
+                        return;
+                    };
+                    done.set(true);
+                    match results.hits.first().map(|hit| hit.row.recording.id.clone()) {
+                        Some(id) => {
+                            app.update(cx, |app, cx| app.select(Selection::One(id), cx));
+                            ready(&view);
+                        }
+                        None => eprintln!("show: no hit for {view:?}"),
+                    }
+                });
+            };
+            step(app.clone(), cx);
+            cx.subscribe(app, move |app, event: &AppEvent, cx| {
+                if matches!(event, AppEvent::RowsReloaded) {
+                    step(app, cx);
+                }
+            })
+            .detach();
+        }
         View::Recording { .. } | View::Phase { .. } => {
             let done = Rc::new(Cell::new(false));
             // Deferred, so the launch selection rule in `prefs::watch` has run first.
@@ -479,6 +530,11 @@ mod tests {
             );
         }
         assert_eq!(view("quit"), Ok(Some(View::Quit)));
+        assert_eq!(
+            view("search: hoja de ruta "),
+            Ok(Some(View::Search("hoja de ruta".into())))
+        );
+        assert!(view("search: ").is_err());
         assert_eq!(
             view("recording:1:1 with Sam"),
             Ok(Some(View::Recording {

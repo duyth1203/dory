@@ -114,6 +114,7 @@ mod tests {
             speaker: SpeakerId(u16::from(channel != Channel::Mic)),
             channel,
             text: text.into(),
+            language: None,
         }
     }
 

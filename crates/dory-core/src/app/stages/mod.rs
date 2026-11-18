@@ -1,4 +1,4 @@
-//! What the transcribe and summarize stages do. Each returns the changes to commit with its
+//! What the transcribe, translate, and summarize stages do. Each returns the changes to commit with its
 //! `StageDone`, or why it could not finish.
 //!
 //! Transcribe plans every clip's windows first, so progress covers the whole job. Each finished
@@ -6,7 +6,10 @@
 
 mod merge;
 mod summary;
+mod translate;
 pub mod windows;
+
+use std::collections::BTreeMap;
 
 use super::events::{Db, Event};
 use super::models::{Engines, Registries};
@@ -14,7 +17,7 @@ use super::pace::Budget;
 use crate::domain::{
     Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Fraction, Job, JobError, LangTag,
     LanguagePref, Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, TimeRange,
-    Transcript,
+    Transcript, Translation,
 };
 use crate::models::{
     Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, Llm, LlmNeeds, Mismatch,
@@ -22,7 +25,8 @@ use crate::models::{
 };
 use crate::ports::{
     CancelToken, Change, Checkpoint, CheckpointKey, Classify, Clip, CompletionRequest, EngineError,
-    RawSegment, SegmentSink, Takes, TextSink, TranscribeRequest, Transcriber, Turn,
+    RawSegment, SegmentSink, Takes, TextSink, TranscribeRequest, Transcriber, TranslationBatch,
+    TranslationKey, Turn,
 };
 use summary::{Pass, SummaryError};
 
@@ -88,6 +92,7 @@ pub(crate) struct StageCx<'a> {
 pub(crate) fn run(stage: Stage, cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     match stage {
         Stage::Transcribe => transcribe(cx),
+        Stage::Translate => translate(cx),
         Stage::Summarize => summarize(cx),
     }
 }
@@ -264,6 +269,10 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         done: 0,
         budget,
     };
+    let pinned = match &recording.language {
+        LanguagePref::Pinned(tag) => Some(tag.clone()),
+        LanguagePref::Auto => None,
+    };
     let mut segments = Vec::new();
     let mut heard = Vec::new();
     let mut speech = Ms(0);
@@ -291,7 +300,17 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
                 .map(|s| s.text.split_whitespace().count())
                 .sum::<usize>();
             heard.extend(heard_languages(&checkpoint));
-            raw.extend(checkpoint.segments);
+            let detected = checkpoint.detected_language;
+            // An engine that detects nothing still spoke the language it was told to.
+            raw.extend(checkpoint.segments.into_iter().map(|segment| {
+                RawSegment {
+                    language: segment
+                        .language
+                        .or_else(|| detected.clone())
+                        .or_else(|| pinned.clone()),
+                    ..segment
+                }
+            }));
         }
         let turns = match (&diarizer, run.plan.speakers) {
             (Some((model, diarizer)), Speakers::Diarized { .. }) if !raw.is_empty() => Some(
@@ -558,6 +577,7 @@ pub(crate) fn place(raw: Vec<RawSegment>, plan: ClipPlan, turns: Option<&[Turn]>
                 speaker,
                 channel: plan.channel,
                 text: segment.text.trim().to_owned(),
+                language: segment.language,
             }
         })
         .collect()
@@ -690,6 +710,145 @@ impl SegmentSink for Drafts<'_, '_> {
     }
 }
 
+/// Writes the transcript in the output language, beside the spoken one. The policy is in
+/// `translate.rs`.
+fn translate(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
+    // A stage queued before the user went back to Same as spoken has nothing to do.
+    let Some(target) = cx.settings.output_language.clone() else {
+        return Ok(Vec::new());
+    };
+    let id = &cx.job.recording;
+    let store = cx.db.store.as_ref();
+    let transcript = store
+        .transcript(id)
+        .map_err(failed)?
+        .ok_or_else(|| permanent("there is no transcript to translate"))?;
+    let todo = translate::pending(&transcript, &target);
+    if todo.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needs = LlmNeeds {
+        language: Some(target.clone()),
+    };
+    let Some(llm_id) = settle(cx.models.get::<Llm>().resolve(&cx.settings.llm, &needs))? else {
+        return Ok(Vec::new());
+    };
+    let context = cx
+        .models
+        .get::<Llm>()
+        .entry(&llm_id)
+        .map(|e| e.caps.context_tokens)
+        .ok_or_else(|| permanent("the summary model left the catalog"))?;
+    let model = llm_id.erase();
+    let llm = cx
+        .engines
+        .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)
+        .map_err(engine_failed(model.clone()))?;
+
+    let key = TranslationKey {
+        recording: id.clone(),
+        revision: transcript.revision,
+        target: target.clone(),
+        model: model.clone(),
+    };
+    let mut done: BTreeMap<usize, String> = store
+        .translation_batches(&key)
+        .map_err(failed)?
+        .into_iter()
+        .flat_map(|batch| batch.texts)
+        .filter(|(ix, _)| todo.contains(ix))
+        .collect();
+    let total = todo.len();
+    let remaining: Vec<usize> = todo
+        .iter()
+        .copied()
+        .filter(|ix| !done.contains_key(ix))
+        .collect();
+
+    let system = translate::system_prompt(&target);
+    let system_tokens = llm.count_tokens(&system);
+    let budget = translate::input_budget(context, system_tokens);
+    if budget == 0 {
+        return Err(permanent(
+            "the summary model's context window is too small for its instructions",
+        ));
+    }
+    let costs: Vec<u32> = remaining
+        .iter()
+        .map(|ix| llm.count_tokens(&translate::line(99, &transcript.segments[*ix].text)))
+        .collect();
+    for range in translate::plan_batches(&costs, budget) {
+        if cx.cancel.is_cancelled() {
+            return Err(failed(EngineError::Cancelled));
+        }
+        cx.db.publish(Event::StageProgress {
+            job: cx.job.id,
+            stage: Stage::Translate,
+            fraction: Fraction::new(done.len() as f32 / total as f32),
+            budget: Some((cx.pace)()),
+        });
+        let indexes = &remaining[range];
+        let texts: Vec<&str> = indexes
+            .iter()
+            .map(|ix| transcript.segments[*ix].text.as_str())
+            .collect();
+        let lines = translate::translate_batch(
+            &texts,
+            &system,
+            &|user| translate::max_output(context, system_tokens, llm.count_tokens(user)),
+            &mut |call| {
+                let request = CompletionRequest {
+                    system: call.system,
+                    user: call.user,
+                    max_output_tokens: call.max_output_tokens,
+                    temperature: 0.1,
+                };
+                llm.complete(&request, &mut Discard, cx.cancel)
+            },
+        )
+        .map_err(engine_failed(model.clone()))?;
+        // A blank reply for a spoken line keeps the line as spoken.
+        let texts: Vec<(usize, String)> = indexes
+            .iter()
+            .copied()
+            .zip(lines)
+            .filter(|(_, text)| !text.trim().is_empty())
+            .collect();
+        cx.db
+            .apply(vec![Change::TranslationBatchSaved {
+                key: key.clone(),
+                batch: TranslationBatch {
+                    texts: texts.clone(),
+                },
+            }])
+            .map_err(failed)?;
+        done.extend(texts);
+    }
+    cx.db.publish(Event::StageProgress {
+        job: cx.job.id,
+        stage: Stage::Translate,
+        fraction: Fraction::new(1.0),
+        budget: Some((cx.pace)()),
+    });
+
+    let mut texts = vec![None; transcript.segments.len()];
+    for (ix, text) in done {
+        texts[ix] = Some(text);
+    }
+    Ok(vec![
+        Change::TranslationReplaced {
+            id: id.clone(),
+            translation: Translation {
+                target,
+                transcript_revision: transcript.revision,
+                produced_by: model,
+                texts,
+            },
+        },
+        Change::TranslationBatchesCleared(id.clone()),
+    ])
+}
+
 fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let id = &cx.job.recording;
     let store = cx.db.store.as_ref();
@@ -701,7 +860,17 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     if transcript.segments.iter().all(|s| s.text.trim().is_empty()) {
         return Ok(Vec::new());
     }
-    let language = transcript.main_language().cloned();
+    // With an output language the summary is written in it, from the translated lines when a
+    // translation of this revision exists. Without one nothing here differs from before.
+    let target = cx.settings.output_language.clone();
+    let translation = match &target {
+        Some(target) => store
+            .translation(id)
+            .map_err(failed)?
+            .filter(|t| t.applies_to(&transcript) && t.target == *target),
+        None => None,
+    };
+    let language = target.or_else(|| transcript.main_language().cloned());
     let needs = LlmNeeds {
         language: language.clone(),
     };
@@ -715,7 +884,7 @@ fn summarize(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .map(|e| e.caps.context_tokens)
         .ok_or_else(|| permanent("the summary model left the catalog"))?;
     let names = store.speaker_names(id).map_err(failed)?;
-    let lines = summary::transcript_lines(&transcript, &names);
+    let lines = summary::transcript_lines(&transcript, &names, translation.as_ref());
     let llm = cx
         .engines
         .get::<Llm>(cx.models, &llm_id, cx.cancel, cx.now_mono)

@@ -156,6 +156,9 @@ pub struct TranscriptPage {
     pub id: RecordingId,
     pub title: Option<String>,
     pub revision: Revision,
+    /// The language the translated turns are written in, when the transcript has a translation
+    /// that applies.
+    pub translated_into: Option<LangTag>,
     /// The index of the first turn on this page.
     pub first: u32,
     pub total: u32,
@@ -538,7 +541,8 @@ impl Assistant {
             None => SpeakerNames::default(),
         };
         let turns = match (&transcript, fields.transcript) {
-            (Some(t), true) => turns::turns(t, &names),
+            // The index holds what was spoken, so hits are shown as spoken.
+            (Some(t), true) => turns::turns(t, &names, None),
             _ => Vec::new(),
         };
         let speakers: Vec<&str> = match (&transcript, fields.speakers) {
@@ -710,13 +714,17 @@ impl Assistant {
                     return Err(Refusal::StaleRevision);
                 }
                 let names = self.store.speaker_names(id).map_err(|e| self.lib(e))?;
-                let all = turns::turns(&transcript, &names);
+                let translation = self.store.translation(id).map_err(|e| self.lib(e))?;
+                let all = turns::turns(&transcript, &names, translation.as_ref());
                 let from = cursor.map_or(0, |c| c.turn as usize);
                 let (page, next) = turns::page(&all, from, budget);
                 Ok(TranscriptPage {
                     id: r.id,
                     title: r.title,
                     revision: transcript.revision,
+                    translated_into: translation
+                        .filter(|t| t.applies_to(&transcript) && t.has_text())
+                        .map(|t| t.target),
                     first: from.min(all.len()) as u32,
                     total: all.len() as u32,
                     turns: page.to_vec(),

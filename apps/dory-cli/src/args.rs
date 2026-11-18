@@ -115,26 +115,41 @@ impl SeedArgs {
     }
 }
 
-/// `show ID [--languages]`. With `--languages` it prints only the languages heard, most heard
-/// first.
+/// `show ID [--languages] [--original]`. With `--languages` it prints only the languages heard,
+/// most heard first.
 #[derive(Debug, PartialEq)]
 pub struct ShowArgs {
     pub id: RecordingId,
     pub languages: bool,
+    /// Prints the spoken transcript even when a translation exists.
+    pub original: bool,
 }
 
 impl ShowArgs {
     pub fn parse(args: &[String]) -> Result<Self, String> {
         match args {
-            [id] if id != "--languages" => Ok(Self {
-                id: parse_id(id)?,
-                languages: false,
-            }),
-            [id, flag] | [flag, id] if flag == "--languages" && id != "--languages" => Ok(Self {
-                id: parse_id(id)?,
-                languages: true,
-            }),
-            _ => Err("show takes the recording id and an optional --languages".into()),
+            [id, flags @ ..] if !id.starts_with("--") => {
+                let mut show = Self {
+                    id: parse_id(id)?,
+                    languages: false,
+                    original: false,
+                };
+                for flag in flags {
+                    let seen = match flag.as_str() {
+                        "--languages" => &mut show.languages,
+                        "--original" => &mut show.original,
+                        _ => return Err(format!("show does not take {flag:?}")),
+                    };
+                    if std::mem::replace(seen, true) {
+                        return Err(format!("show takes {flag} once"));
+                    }
+                }
+                Ok(show)
+            }
+            [flag, id] if flag.starts_with("--") && !id.starts_with("--") => {
+                Self::parse(&[id.clone(), flag.clone()])
+            }
+            _ => Err("show takes the recording id, then --languages or --original".into()),
         }
     }
 }
@@ -355,6 +370,27 @@ impl SwitchRecoveryArgs {
                 )),
             },
             _ => Err("switch-recovery takes one of on, off, or auto".into()),
+        }
+    }
+}
+
+/// `output-language` shows the language transcripts and summaries are written in. A tag sets it,
+/// and `same` goes back to writing in the language that was spoken.
+#[derive(Debug, PartialEq)]
+pub enum OutputLanguageArgs {
+    Show,
+    Set(Option<LangTag>),
+}
+
+impl OutputLanguageArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        match args {
+            [] => Ok(Self::Show),
+            [word] if word == "same" => Ok(Self::Set(None)),
+            [tag] => LangTag::parse(tag)
+                .map(|tag| Self::Set(Some(tag)))
+                .map_err(|e| e.to_string()),
+            _ => Err("output-language takes one language tag, or same".into()),
         }
     }
 }
@@ -592,5 +628,32 @@ mod tests {
         }
         assert!(SwitchRecoveryArgs::parse(&words("maybe")).is_err());
         assert!(SwitchRecoveryArgs::parse(&words("on off")).is_err());
+    }
+
+    #[test]
+    fn output_language_shows_sets_or_goes_back_to_same_as_spoken() {
+        assert_eq!(
+            OutputLanguageArgs::parse(&[]).unwrap(),
+            OutputLanguageArgs::Show
+        );
+        assert_eq!(
+            OutputLanguageArgs::parse(&words("en")).unwrap(),
+            OutputLanguageArgs::Set(Some(LangTag::parse("en").unwrap()))
+        );
+        assert_eq!(
+            OutputLanguageArgs::parse(&words("same")).unwrap(),
+            OutputLanguageArgs::Set(None)
+        );
+        assert!(OutputLanguageArgs::parse(&words("not_a_tag!")).is_err());
+        assert!(OutputLanguageArgs::parse(&words("en fr")).is_err());
+    }
+
+    #[test]
+    fn show_takes_an_id_and_an_optional_original_flag() {
+        assert!(!ShowArgs::parse(&words("r1")).unwrap().original);
+        assert!(ShowArgs::parse(&words("r1 --original")).unwrap().original);
+        assert!(ShowArgs::parse(&words("--original r1")).unwrap().original);
+        assert!(ShowArgs::parse(&words("--original")).is_err());
+        assert!(ShowArgs::parse(&words("r1 --nope")).is_err());
     }
 }

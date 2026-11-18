@@ -72,6 +72,7 @@ pub(crate) fn channel_from_db(s: &str) -> Result<Channel, StoreError> {
 pub(crate) fn stage_to_db(stage: Stage) -> &'static str {
     match stage {
         Stage::Transcribe => "transcribe",
+        Stage::Translate => "translate",
         Stage::Summarize => "summarize",
     }
 }
@@ -79,6 +80,7 @@ pub(crate) fn stage_to_db(stage: Stage) -> &'static str {
 pub(crate) fn stage_from_db(s: &str) -> Result<Stage, StoreError> {
     Ok(match s {
         "transcribe" => Stage::Transcribe,
+        "translate" => Stage::Translate,
         "summarize" => Stage::Summarize,
         other => return Err(corrupt(format!("unknown stage {other:?}"))),
     })
@@ -99,11 +101,58 @@ pub(crate) fn done_from_db(s: &str) -> Result<Vec<Stage>, StoreError> {
 }
 
 pub(crate) fn goal_to_db(goal: Goal) -> i64 {
-    i64::from(goal.wants(Stage::Transcribe)) | i64::from(goal.wants(Stage::Summarize)) << 1
+    i64::from(goal.wants(Stage::Transcribe))
+        | i64::from(goal.wants(Stage::Summarize)) << 1
+        | i64::from(goal.wants(Stage::Translate)) << 2
 }
 
 pub(crate) fn goal_from_db(bits: i64) -> Result<Goal, StoreError> {
-    Goal::new(bits & 1 != 0, bits & 2 != 0).ok_or_else(|| corrupt(format!("empty job goal {bits}")))
+    Goal::new(bits & 1 != 0, bits & 2 != 0)
+        .map(|goal| goal.translating(bits & 4 != 0))
+        .ok_or_else(|| corrupt(format!("empty job goal {bits}")))
+}
+
+/// A translation's texts: a JSON array with a string, or null for a segment kept as spoken.
+pub(crate) fn translation_texts_to_db(texts: &[Option<String>]) -> String {
+    Value::Array(texts.iter().map(|t| json!(t)).collect()).to_string()
+}
+
+pub(crate) fn translation_texts_from_db(s: &str) -> Result<Vec<Option<String>>, StoreError> {
+    let v: Value = serde_json::from_str(s).map_err(|e| corrupt(format!("translation: {e}")))?;
+    v.as_array()
+        .ok_or_else(|| corrupt("translation texts are not a list"))?
+        .iter()
+        .map(|item| match item {
+            Value::Null => Ok(None),
+            Value::String(text) => Ok(Some(text.clone())),
+            _ => Err(corrupt("a translated text is neither text nor null")),
+        })
+        .collect()
+}
+
+/// A saved batch: a JSON array of `[segment index, text]` pairs.
+pub(crate) fn batch_texts_to_db(texts: &[(usize, String)]) -> String {
+    Value::Array(texts.iter().map(|(ix, text)| json!([ix, text])).collect()).to_string()
+}
+
+pub(crate) fn batch_texts_from_db(s: &str) -> Result<Vec<(usize, String)>, StoreError> {
+    let v: Value =
+        serde_json::from_str(s).map_err(|e| corrupt(format!("translation batch: {e}")))?;
+    v.as_array()
+        .ok_or_else(|| corrupt("a translation batch is not a list"))?
+        .iter()
+        .map(|item| {
+            let pair = item.as_array().filter(|p| p.len() == 2);
+            let ix = pair
+                .and_then(|p| p[0].as_u64())
+                .and_then(|n| usize::try_from(n).ok());
+            let text = pair.and_then(|p| p[1].as_str());
+            match (ix, text) {
+                (Some(ix), Some(text)) => Ok((ix, text.to_owned())),
+                _ => Err(corrupt("a translation batch entry is not [index, text]")),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn class_to_db(class: FailureClass) -> &'static str {

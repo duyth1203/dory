@@ -116,6 +116,9 @@ impl Running {
                     left.short()
                 )
             }
+            Phase::Translating { done } => {
+                format!("Translating {}%", Percent::of(*done).get())
+            }
             Phase::Summarizing { left } => format!("Summarizing · {}", left.short()),
             Phase::Preparing => "Getting ready to transcribe".into(),
             other => other.headline().unwrap_or_default(),
@@ -150,6 +153,10 @@ impl Running {
                 said.push('.');
                 said
             }
+            Phase::Translating { done } => format!(
+                "{title}, translating the transcript, {}%.",
+                Percent::of(*done).get()
+            ),
             Phase::Summarizing { left } => format!("{title}, summarizing, {}.", left.spoken()),
             _ => format!("{title}, getting ready to transcribe."),
         }

@@ -904,6 +904,28 @@ impl FakeTranscriber {
         self
     }
 
+    /// Like [`Self::with_segments`], with each segment detected as `language`.
+    pub fn with_segments_in(
+        mut self,
+        channel: Channel,
+        language: &str,
+        segments: &[(u64, u64, u16, &str)],
+    ) -> Self {
+        let language = LangTag::parse(language).expect("a valid language tag");
+        self = self.with_segments(channel, segments);
+        for segment in self
+            .segments
+            .entry(channel)
+            .or_default()
+            .iter_mut()
+            .rev()
+            .take(segments.len())
+        {
+            segment.language = Some(language.clone());
+        }
+        self
+    }
+
     pub fn detecting(mut self, language: &str) -> Self {
         self.detected = Some(LangTag::parse(language).expect("a valid language tag"));
         self
@@ -1013,6 +1035,11 @@ impl Transcriber for FakeTranscriber {
 /// are words.
 pub struct FakeLanguageModel {
     reply: String,
+    /// Answers from the prompt instead of with `reply`: `(system, user) -> reply`.
+    #[allow(clippy::type_complexity)]
+    answer: Option<Box<dyn Fn(&str, &str) -> String + Send + Sync>>,
+    /// Calls from this index on wait until they are cancelled.
+    hold_from: AtomicUsize,
     prompts: Mutex<Vec<Completion>>,
 }
 
@@ -1028,8 +1055,24 @@ impl FakeLanguageModel {
     pub fn new(reply: &str) -> Self {
         Self {
             reply: reply.to_owned(),
+            answer: None,
+            hold_from: AtomicUsize::new(usize::MAX),
             prompts: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A model that answers each prompt with `answer(system, user)`.
+    pub fn answering(answer: impl Fn(&str, &str) -> String + Send + Sync + 'static) -> Self {
+        Self {
+            answer: Some(Box::new(answer)),
+            ..Self::new("")
+        }
+    }
+
+    /// Holds the call with index `call`, counted over every call so far, and every later one,
+    /// until it is cancelled.
+    pub fn hold_from(&self, call: usize) {
+        self.hold_from.store(call, Ordering::SeqCst);
     }
 
     pub fn prompts(&self) -> Vec<Completion> {
@@ -1051,15 +1094,29 @@ impl LanguageModel for FakeLanguageModel {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
-        lock(&self.prompts).push(Completion {
-            system: req.system.to_owned(),
-            user: req.user.to_owned(),
-            max_output_tokens: req.max_output_tokens,
-        });
-        for piece in self.reply.split_inclusive(' ') {
+        let index = {
+            let mut prompts = lock(&self.prompts);
+            prompts.push(Completion {
+                system: req.system.to_owned(),
+                user: req.user.to_owned(),
+                max_output_tokens: req.max_output_tokens,
+            });
+            prompts.len() - 1
+        };
+        while index >= self.hold_from.load(Ordering::SeqCst) {
+            if cancel.is_cancelled() {
+                return Err(EngineError::Cancelled);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let reply = match &self.answer {
+            Some(answer) => answer(req.system, req.user),
+            None => self.reply.clone(),
+        };
+        for piece in reply.split_inclusive(' ') {
             sink.text(piece);
         }
-        Ok(self.reply.clone())
+        Ok(reply)
     }
 }
 

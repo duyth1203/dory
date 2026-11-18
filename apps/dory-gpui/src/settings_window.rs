@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use dory_core::domain::{Exposure, LanguagePref, Recovery, Writes};
+use dory_core::domain::{Exposure, LangTag, LanguagePref, Recovery, Writes};
 use dory_core::models::{Availability, Llm, Stt, UnavailableReason};
 use dory_core::ports::capture::InputDevice;
 use gpui_kit::component::button::Button;
@@ -167,6 +167,16 @@ pub const ENTRIES: &[Entry] = &[
     entry(Pane::Transcription, "Language", "row-language"),
     entry(
         Pane::Transcription,
+        "Output language",
+        "row-output-language",
+    ),
+    entry(
+        Pane::Transcription,
+        "Write transcripts and summaries in",
+        "row-output-language",
+    ),
+    entry(
+        Pane::Transcription,
         "Meeting languages",
         "row-meeting-languages",
     ),
@@ -222,6 +232,13 @@ pub const ADD_MODEL_FILE_REASON: &str =
 #[action(namespace = dory, no_json)]
 pub struct ChooseAssistantApp {
     pub target: Target,
+}
+
+/// Output language > a choice from the popup. `None` is Same as spoken.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct ChooseOutputLanguage {
+    pub language: Option<LangTag>,
 }
 
 /// Language > a choice from the popup.
@@ -995,6 +1012,51 @@ impl SettingsWindow {
             .into_any_element()
     }
 
+    /// "Write transcripts and summaries in": Same as spoken, or one language from the whole list.
+    fn output_language_row(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        const LABEL: &str = "Write transcripts and summaries in";
+        let Some(settings) = self.models.read(cx).settings().cloned() else {
+            return row("setting-output-language", LABEL, "Loading", None, theme)
+                .into_any_element();
+        };
+        let chosen = settings.output_language;
+        let current = languages::output_label(chosen.as_ref());
+        let root = self.root.clone();
+        let menu_chosen = chosen.clone();
+        let popup = Button::new("output-language-popup")
+            .outline()
+            .label(current.clone())
+            .accessibility_label(format!("{LABEL}, {current}"))
+            .child(Icon::ChevronsUpDown.view(12., theme.text_secondary))
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.action_context(root.clone()).menu_with_check(
+                    languages::output_label(None),
+                    menu_chosen.is_none(),
+                    Box::new(ChooseOutputLanguage { language: None }),
+                );
+                menu = menu.separator();
+                for tag in languages::output_choices() {
+                    let on = menu_chosen.as_ref() == Some(&tag);
+                    menu = menu.menu_with_check(
+                        languages::name(&tag),
+                        on,
+                        Box::new(ChooseOutputLanguage {
+                            language: Some(tag),
+                        }),
+                    );
+                }
+                menu
+            });
+        row(
+            "setting-output-language",
+            LABEL,
+            languages::output_description(chosen.as_ref()),
+            Some(popup.into_any_element()),
+            theme,
+        )
+        .into_any_element()
+    }
+
     fn transcription(
         &mut self,
         theme: &Theme,
@@ -1002,6 +1064,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let language = self.language_row(theme, cx);
+        let output = self.output_language_row(theme, cx);
         let meeting = row(
             "setting-meeting-languages",
             "Meeting languages",
@@ -1087,6 +1150,12 @@ impl SettingsWindow {
                 .into_iter()
                 .chain(recovery.map(|r| self.mark("row-switch-recovery", r, theme, cx)))
                 .collect(),
+            ),
+            section(
+                "settings-output-language",
+                "Output language",
+                theme,
+                vec![self.mark("row-output-language", output, theme, cx)],
             ),
             section(
                 "settings-speech-models",
@@ -2066,6 +2135,12 @@ impl Render for SettingsWindow {
                 this.assistant_target = action.target;
                 cx.notify();
             }))
+            .on_action(cx.listener(|this, action: &ChooseOutputLanguage, _, cx| {
+                let language = action.language.clone();
+                this.models.update(cx, |m, cx| {
+                    m.edit(move |s| s.output_language = language.clone(), cx)
+                });
+            }))
             .on_action(cx.listener(|this, action: &ChooseLanguage, _, cx| {
                 let language = action.language.clone();
                 this.models.update(cx, |m, cx| {
@@ -2153,7 +2228,15 @@ mod tests {
         let (panes, hits) = search("lang");
         assert_eq!(panes, [Pane::Transcription]);
         let labels: Vec<&str> = hits.iter().map(|h| h.label).collect();
-        assert_eq!(labels, ["Language", "Meeting languages", RECOVERY_LABEL]);
+        assert_eq!(
+            labels,
+            [
+                "Language",
+                "Output language",
+                "Meeting languages",
+                RECOVERY_LABEL
+            ]
+        );
         let (panes, hits) = search("STORAGE");
         assert_eq!(panes, [Pane::Storage]);
         assert!(hits.is_empty());

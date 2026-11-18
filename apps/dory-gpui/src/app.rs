@@ -29,7 +29,9 @@ use dory_core::search::{Excerpt, Query, SearchResults, Section};
 use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 
 pub use player::PlayerHandle;
-pub use session::{Detail, Loadable, Moved, Session, Turn, speaker_label, turns};
+pub use session::{
+    Detail, Loadable, Moved, Session, TranscriptText, Turn, speaker_label, translated_turns, turns,
+};
 
 pub use self::assistants::{
     ACTIVITY_LINES, Assistants, AssistantsView, COPIED_FOR, Connected, Target, helper_path,

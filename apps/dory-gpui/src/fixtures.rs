@@ -156,6 +156,7 @@ impl Sample {
                 speaker: SpeakerId(1),
                 channel: Channel::System,
                 text: self.transcript.to_owned(),
+                language: None,
             }],
             detected_languages: Vec::new(),
             produced_by: model(),
@@ -246,6 +247,7 @@ pub fn card_phases() -> Vec<(&'static str, Phase, Vec<Segment>)> {
         speaker: SpeakerId(1),
         channel: Channel::System,
         text: text.into(),
+        language: None,
     })
     .collect();
     let transcribing = |light| Phase::Transcribing {

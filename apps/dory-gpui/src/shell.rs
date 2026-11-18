@@ -368,12 +368,12 @@ impl Shell {
             }))
             .on_action(cx.listener(|this, _: &CopySummary, _, cx| {
                 if let Some(detail) = this.selected_detail(cx) {
-                    export::copy(&detail, CopyWhat::Summary, cx);
+                    export::copy(&detail, CopyWhat::Summary, this.selected_text(cx), cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &CopyTranscript, _, cx| {
                 if let Some(detail) = this.selected_detail(cx) {
-                    export::copy(&detail, CopyWhat::Transcript, cx);
+                    export::copy(&detail, CopyWhat::Transcript, this.selected_text(cx), cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &ExportMarkdown, _, cx| {
@@ -437,9 +437,18 @@ impl Shell {
         self.app.read(cx).session()?.read(cx).detail()
     }
 
+    /// Which text of a translated transcript is on screen, which Copy and Export put out.
+    fn selected_text(&self, cx: &Context<Self>) -> crate::app::TranscriptText {
+        self.app
+            .read(cx)
+            .session()
+            .map_or_else(Default::default, |s| s.read(cx).text())
+    }
+
     fn export(&self, format: ExportFormat, cx: &mut Context<Self>) {
         if let Some(detail) = self.selected_detail(cx) {
-            export::export(&self.app, detail, format, cx);
+            let shown = self.selected_text(cx);
+            export::export(&self.app, detail, format, shown, cx);
         }
     }
 

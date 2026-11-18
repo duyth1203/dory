@@ -308,6 +308,7 @@ mod tests {
             label: label.to_owned().into(),
             range: start.and_then(|s| TimeRange::new(Ms(s), Ms(s + 5_000))),
             text: String::new(),
+            translated_from: None,
         }
     }
 

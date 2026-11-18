@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use dory_core::app::{Dory, Options, Ports};
 use dory_core::domain::{
-    Channel, Ms, RecordingId, Revision, Segment, SpeakerId, TimeRange, Timestamp, Transcript,
+    Channel, LangTag, Ms, RecordingId, Revision, Segment, SpeakerId, TimeRange, Timestamp,
+    Transcript, Translation,
 };
 use dory_core::models::ModelRef;
 use dory_core::ports::{Change, Store as _, Takes as _};
@@ -27,6 +28,8 @@ use gpui_kit::{
 const TIMED: &str = "Design review";
 /// Imported from the old app: no times and no take.
 const LEGACY: &str = "1:1 with Sam";
+/// German with an English reply, translated into English: the first turn only.
+const GERMAN: &str = "Kundengespräch Müller GmbH";
 /// Longer than [`PAGED_TURNS`], so it virtualizes.
 const LONG: &str = "Roadmap review";
 const LONG_TURNS: usize = 150;
@@ -45,6 +48,7 @@ fn segment(speaker: u16, channel: Channel, range: Option<TimeRange>, text: &str)
         speaker: SpeakerId(speaker),
         channel,
         text: text.to_owned(),
+        language: None,
     }
 }
 
@@ -63,6 +67,21 @@ fn transcript_of(title: &str) -> Option<Transcript> {
             segment(3, Channel::System, at(750_000, 760_000), "Export first."),
             segment(0, Channel::Mic, at(760_000, 770_000), "Agreed."),
             segment(3, Channel::System, at(780_000, 790_000), "Then waveforms."),
+        ],
+        GERMAN => vec![
+            Segment {
+                language: LangTag::parse("de").ok(),
+                ..segment(
+                    1,
+                    Channel::System,
+                    at(750_000, 760_000),
+                    "Guten Tag, Herr Müller.",
+                )
+            },
+            Segment {
+                language: LangTag::parse("en").ok(),
+                ..segment(2, Channel::System, at(760_000, 770_000), "Hello.")
+            },
         ],
         LEGACY => vec![
             segment(1, Channel::System, None, "Sam wants a mentoring plan."),
@@ -94,6 +113,17 @@ fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>, Arc<Fake
             changes.push(Change::TranscriptReplaced {
                 id: sample.id(),
                 transcript,
+            });
+        }
+        if sample.title == GERMAN {
+            changes.push(Change::TranslationReplaced {
+                id: sample.id(),
+                translation: Translation {
+                    target: LangTag::parse("en").unwrap(),
+                    transcript_revision: Revision(1),
+                    produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+                    texts: vec![Some("Good day, Mr. Müller.".into()), None],
+                },
             });
         }
     }
@@ -444,6 +474,89 @@ fn a_paused_turn_does_not_say_playing(cx: &mut TestAppContext) {
             window.find("turn-2").description(),
             None,
             "a paused playhead does not say Playing"
+        );
+    });
+}
+
+fn text_of_turn(app: &Entity<AppState>, ix: usize, cx: &mut TestAppContext) -> String {
+    app.read_with(cx, |app, cx| {
+        let session = app.session().unwrap().read(cx);
+        let detail = session.detail().unwrap();
+        detail.shown(session.text())[ix].text.clone()
+    })
+}
+
+#[gpui_kit::test]
+fn a_translated_transcript_shows_the_translation_and_says_so_to_voiceover(cx: &mut TestAppContext) {
+    let (window, app, _) = open(cx);
+    show(GERMAN, &app, cx);
+    with_window(window, cx, |window, _| {
+        assert_eq!(
+            window.find("turn-0").label(),
+            Some("Speaker 1, 12 minutes 30 seconds, translated from German, Good day, Mr. Müller.")
+        );
+        assert_eq!(
+            window.find("turn-1").label(),
+            Some("Speaker 2, 12 minutes 40 seconds, Hello."),
+            "a turn that was spoken in English is not marked"
+        );
+        let group = window.find("transcript-text");
+        assert_eq!(group.role(), Some(Role::RadioGroup));
+        assert_eq!(window.find("text-translated").checked(), Some(true));
+        assert_eq!(window.find("text-original").checked(), Some(false));
+    });
+}
+
+#[gpui_kit::test]
+fn the_switch_shows_the_original_and_back(cx: &mut TestAppContext) {
+    let (window, app, _) = open(cx);
+    show(GERMAN, &app, cx);
+    with_window(window, cx, |window, cx| window.click("text-original", cx));
+    assert_eq!(text_of_turn(&app, 0, cx), "Guten Tag, Herr Müller.");
+    with_window(window, cx, |window, _| {
+        assert_eq!(
+            window.find("turn-0").label(),
+            Some("Speaker 1, 12 minutes 30 seconds, Guten Tag, Herr Müller."),
+            "no note on text that was spoken"
+        );
+        assert_eq!(window.find("text-original").checked(), Some(true));
+        assert_eq!(window.find("text-translated").checked(), Some(false));
+    });
+    with_window(window, cx, |window, cx| window.click("text-translated", cx));
+    assert_eq!(text_of_turn(&app, 0, cx), "Good day, Mr. Müller.");
+}
+
+#[gpui_kit::test]
+fn copy_and_export_use_what_the_tab_shows(cx: &mut TestAppContext) {
+    let (_, app, _) = open(cx);
+    show(GERMAN, &app, cx);
+    let detail = app.read_with(cx, |app, cx| {
+        app.session().unwrap().read(cx).detail().unwrap()
+    });
+    use dory_gpui::app::TranscriptText::{Spoken, Translated};
+    use dory_gpui::export::{ExportFormat, render};
+    let translated = render(ExportFormat::Text, &detail, Translated).unwrap();
+    assert!(translated.contains("Good day, Mr. Müller."), "{translated}");
+    assert!(!translated.contains("Guten Tag"), "{translated}");
+    let spoken = render(ExportFormat::Text, &detail, Spoken).unwrap();
+    assert!(spoken.contains("Guten Tag, Herr Müller."), "{spoken}");
+    assert!(!spoken.contains("Good day"), "{spoken}");
+    let srt = render(ExportFormat::Srt, &detail, Translated).unwrap();
+    assert!(srt.contains("Speaker 1: Good day, Mr. Müller."), "{srt}");
+    assert!(srt.contains("Speaker 2: Hello."), "{srt}");
+    let srt = render(ExportFormat::Srt, &detail, Spoken).unwrap();
+    assert!(srt.contains("Speaker 1: Guten Tag, Herr Müller."), "{srt}");
+}
+
+#[gpui_kit::test]
+fn a_recording_with_no_translation_has_no_switch_and_reads_as_before(cx: &mut TestAppContext) {
+    let (window, app, _) = open(cx);
+    show(TIMED, &app, cx);
+    with_window(window, cx, |window, _| {
+        assert!(window.try_find("transcript-text").is_none());
+        assert_eq!(
+            window.find("turn-0").label(),
+            Some("Speaker 3, 12 minutes 30 seconds, Export first.")
         );
     });
 }

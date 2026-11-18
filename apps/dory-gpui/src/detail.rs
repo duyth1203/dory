@@ -52,7 +52,7 @@ use crate::a11y;
 use crate::actions::{
     CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText, FindNext, FindPrevious,
 };
-use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
+use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session, TranscriptText};
 use crate::find::Place;
 use crate::fonts;
 use crate::icons::{self, Icon};
@@ -194,6 +194,8 @@ pub struct DetailPane {
     summary: Entity<SummaryText>,
     page: ScrollHandle,
     tab_focus: [FocusHandle; 2],
+    /// The Original and Translated buttons.
+    text_focus: [FocusHandle; 2],
     title_focus: FocusHandle,
     title_edit: Option<TitleEdit>,
     /// What this frame lays out by.
@@ -262,6 +264,7 @@ impl DetailPane {
             summary,
             page,
             tab_focus: [cx.focus_handle(), cx.focus_handle()],
+            text_focus: [cx.focus_handle(), cx.focus_handle()],
             title_focus: cx.focus_handle(),
             title_edit: None,
             pinning: Pinning::default(),
@@ -476,11 +479,13 @@ impl DetailPane {
         .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tab_row(
         &self,
         tab: DetailTab,
         title: Option<String>,
         detail: &Detail,
+        text: TranscriptText,
         summarizing: Option<Option<u64>>,
         readout: Option<String>,
         theme: &Theme,
@@ -602,6 +607,10 @@ impl DetailPane {
                         None,
                     )),
             )
+            .children(
+                (tab == DetailTab::Transcript && detail.translated_turns.is_some())
+                    .then(|| self.text_switch(detail, text, theme)),
+            )
             .child(div().flex_1())
             .children(readout.map(|readout| self.find_group(readout, &action, theme)))
             .child(actions)
@@ -643,6 +652,83 @@ impl DetailPane {
                 Box::new(FindPrevious),
             ))
             .child(step("find-next", "Next", "Next match", Box::new(FindNext)))
+            .into_any_element()
+    }
+
+    /// The Original / Translated switch in the transcript's header. Translated is first
+    /// chosen, and the choice is what the list, Copy, and Export show.
+    fn text_switch(&self, detail: &Detail, text: TranscriptText, theme: &Theme) -> AnyElement {
+        let showing = if detail.translated(text) {
+            TranscriptText::Translated
+        } else {
+            TranscriptText::Spoken
+        };
+        let written_in = detail
+            .translation
+            .as_ref()
+            .map(|t| crate::languages::name(&t.target));
+        let option = |ix: usize, which: TranscriptText, id: &'static str, label: &'static str| {
+            let selected = showing == which;
+            let session = self.session.clone();
+            let el = a11y::focusable(
+                a11y::node(id, Role::RadioButton, label),
+                &self.text_focus[ix],
+                theme,
+                selected,
+            )
+            .aria_toggled(if selected {
+                gpui_kit::accesskit::Toggled::True
+            } else {
+                gpui_kit::accesskit::Toggled::False
+            })
+            .aria_position_in_set(ix + 1)
+            .aria_size_of_set(2)
+            .on_click(move |_, _, cx| session.update(cx, |s, cx| s.set_text(which, cx)))
+            .cursor_pointer()
+            .min_h(theme.text(26.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .text_size(theme.text(13.))
+            .rounded(px(6.));
+            let el = match (which, &written_in) {
+                (TranscriptText::Translated, Some(name)) => {
+                    el.aria_description(format!("The transcript written in {name}"))
+                }
+                (TranscriptText::Spoken, _) => {
+                    el.aria_description("The transcript as it was spoken")
+                }
+                _ => el,
+            };
+            if selected {
+                el.bg(theme.accent)
+                    .text_color(theme.on_accent)
+                    .font_weight(FontWeight::SEMIBOLD)
+            } else {
+                el.text_color(theme.text_secondary)
+            }
+            .child(label)
+        };
+        a11y::node("transcript-text", Role::RadioGroup, "Transcript text")
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.control_border)
+            .child(option(
+                0,
+                TranscriptText::Spoken,
+                "text-original",
+                "Original",
+            ))
+            .child(option(
+                1,
+                TranscriptText::Translated,
+                "text-translated",
+                "Translated",
+            ))
             .into_any_element()
     }
 }
@@ -1124,10 +1210,12 @@ impl Render for DetailPane {
                     window.request_animation_frame();
                 }
                 let dots = summarizing.then(|| motion::looping(window, cx).then(motion::clock_ms));
+                let text = self.session.read(cx).text();
                 let row = self.tab_row(
                     tab,
                     stuck.then_some(shown),
                     &detail,
+                    text,
                     dots,
                     readout.clone(),
                     &theme,
@@ -1299,6 +1387,8 @@ mod tests {
             summary: sample.summary(),
             names: Default::default(),
             turns: Vec::new(),
+            translation: None,
+            translated_turns: None,
         }
     }
 

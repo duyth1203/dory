@@ -72,6 +72,7 @@ impl AppState {
                                     p,
                                     Phase::Preparing
                                         | Phase::Transcribing { .. }
+                                        | Phase::Translating { .. }
                                         | Phase::Summarizing { .. }
                                 )
                             })

@@ -133,6 +133,17 @@ pub fn find(code: &str) -> Option<&'static Language> {
     LANGUAGES.iter().find(|lang| lang.code == code)
 }
 
+/// How a model prompt names `tag`: "Tagalog (BCP 47 tag tl)" when the table knows it, since a
+/// small model told only a bare tag tends to answer in English, and "the language with BCP 47 tag
+/// xq" when it does not.
+pub fn for_prompt(tag: &LangTag) -> String {
+    if find(tag.primary()).is_some() {
+        format!("{} (BCP 47 tag {tag})", name(tag))
+    } else {
+        format!("the language with BCP 47 tag {tag}")
+    }
+}
+
 /// "Tagalog" for `tl`, "English (US)" for `en-US`, and the tag itself when the table lacks it.
 pub fn name(tag: &LangTag) -> String {
     match (find(tag.as_str()), find(tag.primary())) {

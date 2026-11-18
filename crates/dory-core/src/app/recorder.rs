@@ -638,10 +638,11 @@ pub(crate) fn commit_sealed(
         id: id.clone(),
         edit: RecordingEdit::Take(info),
     }];
-    if db.store.settings()?.auto_process && db.store.jobs_for(id)?.is_empty() {
+    let settings = db.store.settings()?;
+    if settings.auto_process && db.store.jobs_for(id)?.is_empty() {
         changes.push(Change::JobEnqueued {
             id: id.clone(),
-            goal: Goal::ALL,
+            goal: settings.goal_for(Goal::ALL),
             priority: Priority::Normal,
             at: clock.now(),
         });

@@ -67,7 +67,7 @@ impl<'a> SummaryState<'a> {
             };
         }
         if let Some(Phase::Failed(problem)) = phase
-            && problem.stage() == Stage::Summarize
+            && matches!(problem.stage(), Stage::Summarize | Stage::Translate)
         {
             return SummaryState::Missing {
                 text: problem.text(),
@@ -509,6 +509,8 @@ mod tests {
             summary: sample.summary(),
             names: Default::default(),
             turns: Vec::new(),
+            translation: None,
+            translated_turns: None,
         }
     }
 

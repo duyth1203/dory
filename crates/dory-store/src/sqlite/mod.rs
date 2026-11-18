@@ -21,10 +21,13 @@ use dory_core::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
     Job, JobEvent, JobId, JobState, Priority, Processing, Recording, RecordingEdit, RecordingId,
     RecordingQuery, RecordingRow, Recovery, Revision, Segment, Settings, SpeakerId, SpeakerNames,
-    Summary, SummaryFlag, TakeInfo, Timestamp, Transcript, Writes,
+    Summary, SummaryFlag, TakeInfo, Timestamp, Transcript, Translation, Writes,
 };
 use dory_core::models::{Diar, Llm, Stt};
-use dory_core::ports::{Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead};
+use dory_core::ports::{
+    Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead, TranslationBatch,
+    TranslationKey,
+};
 use dory_core::search::{Found, Query, Vocabulary};
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
@@ -67,6 +70,7 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema_v8.sql"),
         then: Some(search::rebuild),
     },
+    Migration::sql(include_str!("schema_v9.sql")),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -696,6 +700,12 @@ impl StoreRead for $t {
                     .map(codec::parse_tag)
                     .collect::<Result<_, _>>()?;
             }
+            if let Some(v) = rows.get("output_language") {
+                settings.output_language = Some(v)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| codec::parse_tag(v))
+                    .transpose()?;
+            }
             if let Some(v) = rows.get("auto_process") {
                 settings.auto_process = match v.as_str() {
                     "1" => true,
@@ -832,6 +842,45 @@ impl StoreRead for $t {
             .query_row([id.as_str()], |row| row.get(0))
             .optional()
             .map_err(db)
+        })
+    }
+
+    fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        self.read(|conn| load_translation(conn, id))
+    }
+
+    fn translation_batches(
+        &self,
+        key: &TranslationKey,
+    ) -> Result<Vec<TranslationBatch>, StoreError> {
+        self.read(|conn| {
+            let rows = conn
+                .prepare_cached(
+                    "SELECT texts FROM translation_batches
+                     WHERE recording_id = ?1 AND transcript_revision = ?2 AND target = ?3
+                       AND model = ?4
+                     ORDER BY seq",
+                )
+                .map_err(db)?
+                .query_map(
+                    params![
+                        key.recording.as_str(),
+                        i64::from(key.revision.0),
+                        key.target.as_str(),
+                        key.model.as_str()
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            rows.iter()
+                .map(|texts| {
+                    Ok(TranslationBatch {
+                        texts: codec::batch_texts_from_db(texts)?,
+                    })
+                })
+                .collect()
         })
     }
 
@@ -984,7 +1033,7 @@ pub(crate) fn load_transcript(
     };
     let mut stmt = conn
         .prepare_cached(
-            "SELECT start_ms, end_ms, speaker, channel, text FROM segments
+            "SELECT start_ms, end_ms, speaker, channel, text, language FROM segments
                  WHERE recording_id = ?1 ORDER BY idx",
         )
         .map_err(db)?;
@@ -996,6 +1045,7 @@ pub(crate) fn load_transcript(
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(db)?
@@ -1003,7 +1053,7 @@ pub(crate) fn load_transcript(
         .map_err(db)?;
     let segments = raws
         .into_iter()
-        .map(|(start, end, speaker, channel, text)| {
+        .map(|(start, end, speaker, channel, text, language)| {
             Ok(Segment {
                 range: range_from_db(start, end)?,
                 speaker: SpeakerId(
@@ -1011,6 +1061,7 @@ pub(crate) fn load_transcript(
                 ),
                 channel: channel_from_db(&channel)?,
                 text,
+                language: language.as_deref().map(codec::parse_tag).transpose()?,
             })
         })
         .collect::<Result<Vec<_>, StoreError>>()?;
@@ -1020,6 +1071,39 @@ pub(crate) fn load_transcript(
         detected_languages: tags_from_db(&languages)?,
         produced_by: parse_model_ref(&produced_by)?,
     }))
+}
+
+pub(crate) fn load_translation(
+    conn: &Connection,
+    id: &RecordingId,
+) -> Result<Option<Translation>, StoreError> {
+    let raw = conn
+        .prepare_cached(
+            "SELECT target, transcript_revision, produced_by, texts
+             FROM translations WHERE recording_id = ?1",
+        )
+        .map_err(db)?
+        .query_row([id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .optional()
+        .map_err(db)?;
+    raw.map(|(target, revision, produced_by, texts)| {
+        Ok(Translation {
+            target: codec::parse_tag(&target)?,
+            transcript_revision: Revision(
+                u32::try_from(revision).map_err(|_| corrupt("revision out of range"))?,
+            ),
+            produced_by: parse_model_ref(&produced_by)?,
+            texts: codec::translation_texts_from_db(&texts)?,
+        })
+    })
+    .transpose()
 }
 
 pub(crate) fn load_summary(
@@ -1430,6 +1514,52 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                 .map_err(db)?;
             Ok(None)
         }
+        Change::TranslationReplaced { id, translation } => {
+            require_recording(tx, id)?;
+            tx.prepare_cached(
+                "INSERT OR REPLACE INTO translations
+                   (recording_id, target, transcript_revision, produced_by, texts)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(db)?
+            .execute(params![
+                id.as_str(),
+                translation.target.as_str(),
+                i64::from(translation.transcript_revision.0),
+                translation.produced_by.as_str(),
+                codec::translation_texts_to_db(&translation.texts),
+            ])
+            .map_err(db)?;
+            Ok(None)
+        }
+        Change::TranslationBatchSaved { key, batch } => {
+            require_recording(tx, &key.recording)?;
+            tx.prepare_cached(
+                "INSERT INTO translation_batches
+                   (recording_id, transcript_revision, target, model, seq, texts)
+                 SELECT ?1, ?2, ?3, ?4, COALESCE(MAX(seq) + 1, 0), ?5
+                 FROM translation_batches
+                 WHERE recording_id = ?1 AND transcript_revision = ?2 AND target = ?3
+                   AND model = ?4",
+            )
+            .map_err(db)?
+            .execute(params![
+                key.recording.as_str(),
+                i64::from(key.revision.0),
+                key.target.as_str(),
+                key.model.as_str(),
+                codec::batch_texts_to_db(&batch.texts),
+            ])
+            .map_err(db)?;
+            Ok(None)
+        }
+        Change::TranslationBatchesCleared(id) => {
+            tx.prepare_cached("DELETE FROM translation_batches WHERE recording_id = ?1")
+                .map_err(db)?
+                .execute([id.as_str()])
+                .map_err(db)?;
+            Ok(None)
+        }
         Change::Assistant(change) => {
             apply_assistant(tx, change)?;
             Ok(None)
@@ -1489,6 +1619,14 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                         .join(","),
                 ),
                 (
+                    "output_language",
+                    settings
+                        .output_language
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
+                ),
+                (
                     "auto_process",
                     if settings.auto_process { "1" } else { "0" }.to_owned(),
                 ),
@@ -1541,8 +1679,9 @@ fn replace_transcript(
         .map_err(db)?;
     let mut insert = tx
         .prepare_cached(
-            "INSERT INTO segments (recording_id, idx, start_ms, end_ms, speaker, channel, text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO segments
+               (recording_id, idx, start_ms, end_ms, speaker, channel, text, language)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .map_err(db)?;
     for (idx, segment) in transcript.segments.iter().enumerate() {
@@ -1555,6 +1694,7 @@ fn replace_transcript(
                 i64::from(segment.speaker.0),
                 channel_to_db(segment.channel),
                 segment.text,
+                segment.language.as_ref().map(ToString::to_string),
             ])
             .map_err(db)?;
     }

@@ -259,6 +259,9 @@ impl AppState {
             sealing: self.sealing.contains(id),
             progress: self.progress.get(id).copied(),
             done: job.map_or(&[], |j| j.done.as_slice()),
+            translating: job.is_some_and(|j| {
+                j.goal.wants(Stage::Translate) && !j.done.contains(&Stage::Translate)
+            }),
             spot: self.spot_of(id),
             left: self
                 .estimates
@@ -353,6 +356,8 @@ impl AppState {
                     estimate::transcribe_left(audio, progress.fraction, rate)
                 })
             }
+            // A translation has no rate history yet, so it shows its percent and no time left.
+            Stage::Translate => None,
             Stage::Summarize => {
                 estimate::summary_left(run.from, progress.fraction, now - run.at_ms)
             }
@@ -387,7 +392,8 @@ impl AppState {
             a11y::announce(&phase.sentence(&title));
         }
         if !self.tab_chosen {
-            let reading = phase.before_transcript() || matches!(phase, Phase::Summarizing { .. });
+            let reading = phase.before_transcript()
+                || matches!(phase, Phase::Translating { .. } | Phase::Summarizing { .. });
             let finished = before.as_ref().is_some_and(Phase::is_processing)
                 && matches!(phase, Phase::Done { .. } | Phase::Failed(_));
             if reading {

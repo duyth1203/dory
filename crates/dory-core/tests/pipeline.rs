@@ -7,13 +7,14 @@ use std::time::Duration;
 
 use dory_core::app::{Dory, Event, Options, Ports};
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, FailureCause, Goal, JobEvent, JobState, LanguagePref, Ms,
-    Recording, RecordingId, Recovery, Segment, Settings, SpeakerId, Stage, TimeRange, Timestamp,
+    Blocker, Channel, ChannelLayout, FailureCause, Goal, JobEvent, JobState, LangTag, LanguagePref,
+    Ms, Recording, RecordingId, Recovery, Revision, Segment, Settings, SpeakerId, Stage, TimeRange,
+    Timestamp, TranslationFlag,
 };
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, KindTag, Llm, Mismatch, ModelEntry, ModelId, Stt,
 };
-use dory_core::ports::{Change, CheckpointKey, Store, StoreRead, Takes};
+use dory_core::ports::{Change, CheckpointKey, Store, StoreRead, Takes, TranslationKey};
 use dory_core::testing::store::MemStore;
 use dory_core::testing::{
     FakeCapture, FakeDiarProvider, FakeDiarizer, FakeLanguageModel, FakeLlmProvider,
@@ -61,8 +62,17 @@ impl Rig {
         llm: ModelEntry<Llm>,
         reply: &str,
     ) -> Rig {
+        Self::with_model(transcriber, stt, llm, FakeLanguageModel::new(reply))
+    }
+
+    fn with_model(
+        transcriber: FakeTranscriber,
+        stt: Vec<ModelEntry<Stt>>,
+        llm: ModelEntry<Llm>,
+        model: FakeLanguageModel,
+    ) -> Rig {
         let transcriber = Arc::new(transcriber);
-        let model = Arc::new(FakeLanguageModel::new(reply));
+        let model = Arc::new(model);
         Rig {
             store: Arc::new(MemStore::new()),
             takes: MemTakes::new(),
@@ -1173,4 +1183,501 @@ fn a_recovered_stretch_that_drops_its_own_tail_is_decoded_again() {
     );
     let transcript = dory.library().transcript(&id).unwrap().unwrap();
     assert_eq!(texts(&transcript.segments), ["isa", "dalawa", "tatlo"]);
+}
+
+/// What `a_transcript_that_fits_the_context_is_summarized_in_one_pass` sends with no output
+/// language set: the prompt names the spoken language and must stay these exact bytes.
+const SAME_AS_SPOKEN_SYSTEM: &str = "You summarize meeting transcripts. Write the whole summary, headings included, in Vietnamese (BCP 47 tag vi). Use Markdown with three sections in this order: key points, decisions, and action items. Keep each key point to one short line and merge points that repeat. List every decision and every action item, each once, with its owner and due date when the input names them. Write \"None\" under a section with nothing to report. Use only what the transcript says.";
+
+#[test]
+fn same_as_spoken_sends_todays_summary_prompt_and_runs_todays_stages() {
+    let (rig, id) = long_meeting(8_192, SUMMARY);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+
+    let prompts = rig.llm.prompts();
+    assert_eq!(prompts.len(), 1, "one summary pass and nothing else");
+    assert_eq!(prompts[0].system, SAME_AS_SPOKEN_SYSTEM);
+    assert!(prompts[0].user.starts_with("[00:00] Speaker 1: l0w0 l0w1"));
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    assert_eq!(job.goal, Goal::ALL);
+    assert_eq!(job.done, [Stage::Transcribe, Stage::Summarize]);
+    let summary = dory.library().summary(&id).unwrap().unwrap();
+    assert_eq!(summary.language.as_ref().map(|l| l.as_str()), Some("vi"));
+}
+
+const TRANSLATED: &str = "## Key points\n- Ship it Friday, in English.";
+
+/// A summary model that translates every `[n] text` line to `[n] EN: text` and writes
+/// `TRANSLATED` for anything else.
+fn translator() -> FakeLanguageModel {
+    FakeLanguageModel::answering(|system, user| {
+        if !system.contains("You translate") {
+            return TRANSLATED.to_owned();
+        }
+        user.lines()
+            .map(|line| match line.split_once("] ") {
+                Some((n, text)) => format!("{n}] EN: {text}"),
+                None => line.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+fn english() -> LangTag {
+    LangTag::parse("en").unwrap()
+}
+
+fn set_output_language(dory: &Dory, language: Option<LangTag>) {
+    dory.update_settings(|s| s.output_language = language)
+        .unwrap();
+}
+
+/// A mostly English meeting with two Tagalog turns, on one diarized channel.
+fn taglish(model: FakeLanguageModel, context: u32) -> (Rig, RecordingId) {
+    let rig = Rig::with_model(
+        FakeTranscriber::new()
+            .with_segments_in(
+                Channel::Mixed,
+                "en",
+                &[
+                    (0, 900, 0, "Ship it Friday."),
+                    (2_000, 2_900, 0, "Sounds good."),
+                ],
+            )
+            .with_segments_in(
+                Channel::Mixed,
+                "tl",
+                &[
+                    (1_000, 1_900, 1, "Sige, ako na bahala."),
+                    (3_000, 3_900, 1, "Salamat po."),
+                ],
+            ),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(context),
+        model,
+    );
+    let id = rig.seed("taglish", ChannelLayout::Mixed, 5);
+    (rig, id)
+}
+
+fn translate_prompts(rig: &Rig) -> Vec<String> {
+    rig.llm
+        .prompts()
+        .into_iter()
+        .filter(|p| p.system.contains("You translate"))
+        .map(|p| p.user)
+        .collect()
+}
+
+#[test]
+fn an_output_language_translates_what_is_not_in_it_and_summarizes_in_it() {
+    let (rig, id) = taglish(translator(), 8_192);
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    let events = dory.events();
+    process(&dory, &id, Goal::ALL);
+
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    assert!(job.goal.wants(Stage::Translate));
+    assert_eq!(
+        job.done,
+        [Stage::Transcribe, Stage::Translate, Stage::Summarize]
+    );
+
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(
+        texts(&transcript.segments),
+        [
+            "Ship it Friday.",
+            "Sige, ako na bahala.",
+            "Sounds good.",
+            "Salamat po."
+        ],
+        "the spoken transcript is untouched"
+    );
+    let translation = dory.library().translation(&id).unwrap().unwrap();
+    assert_eq!(translation.target, english());
+    assert_eq!(translation.transcript_revision, transcript.revision);
+    assert_eq!(
+        translation.texts,
+        [
+            None,
+            Some("EN: Sige, ako na bahala.".to_owned()),
+            None,
+            Some("EN: Salamat po.".to_owned())
+        ],
+        "English turns are not sent to the model"
+    );
+    assert_eq!(
+        translate_prompts(&rig),
+        ["[1] Sige, ako na bahala.\n[2] Salamat po.\n"]
+    );
+
+    let summary_call = rig.llm.prompts().pop().unwrap();
+    assert!(
+        summary_call.system.contains("BCP 47 tag en"),
+        "{}",
+        summary_call.system
+    );
+    assert!(
+        summary_call
+            .user
+            .contains("Speaker 2: EN: Sige, ako na bahala.")
+    );
+    assert!(summary_call.user.contains("Speaker 1: Ship it Friday."));
+    let summary = dory.library().summary(&id).unwrap().unwrap();
+    assert_eq!(summary.language, Some(english()));
+    assert_eq!(summary.markdown, TRANSLATED);
+
+    assert_climbs_to_done(&progress(&drain(&events), Stage::Translate));
+    assert_eq!(
+        rig.store
+            .translation_batches(&TranslationKey {
+                recording: id.clone(),
+                revision: transcript.revision,
+                target: english(),
+                model: dory_core::models::ModelRef::parse(LLM).unwrap(),
+            })
+            .unwrap(),
+        vec![],
+        "batches are cleared with the translation"
+    );
+}
+
+#[test]
+fn a_meeting_already_in_the_output_language_translates_nothing() {
+    let rig = Rig::with_model(
+        FakeTranscriber::new().with_segments_in(
+            Channel::Mixed,
+            "en",
+            &[(0, 900, 0, "Ship it Friday.")],
+        ),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(8_192),
+        translator(),
+    );
+    let id = rig.seed("english-only", ChannelLayout::Mixed, 3);
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    process(&dory, &id, Goal::ALL);
+
+    assert_eq!(translate_prompts(&rig), Vec::<String>::new());
+    assert_eq!(dory.library().translation(&id).unwrap(), None);
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    assert_eq!(
+        job.done,
+        [Stage::Transcribe, Stage::Translate, Stage::Summarize]
+    );
+}
+
+#[test]
+fn a_context_too_small_for_the_whole_transcript_translates_in_batches() {
+    let lines: Vec<(u64, u64, u16, String)> = (0..40)
+        .map(|n| {
+            (
+                n * 1_000,
+                n * 1_000 + 900,
+                0,
+                format!("kumusta {n} {}", "ka ".repeat(8)),
+            )
+        })
+        .collect();
+    let borrowed: Vec<(u64, u64, u16, &str)> = lines
+        .iter()
+        .map(|(a, b, s, t)| (*a, *b, *s, t.as_str()))
+        .collect();
+    let rig = Rig::with_model(
+        FakeTranscriber::new().with_segments_in(Channel::Mixed, "tl", &borrowed),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(400),
+        translator(),
+    );
+    let id = rig.seed("batches", ChannelLayout::Mixed, 41);
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    process(&dory, &id, Goal::TRANSCRIBE);
+
+    let prompts = translate_prompts(&rig);
+    assert!(prompts.len() > 3, "{} batches", prompts.len());
+    for call in rig.llm.prompts() {
+        let sent = words(&call.system) + words(&call.user);
+        assert!(
+            sent + call.max_output_tokens <= 400,
+            "{sent} + {}",
+            call.max_output_tokens
+        );
+    }
+    let translation = dory.library().translation(&id).unwrap().unwrap();
+    assert_eq!(translation.texts.len(), 40);
+    assert!(
+        translation
+            .texts
+            .iter()
+            .all(|t| t.as_deref().is_some_and(|t| t.starts_with("EN: kumusta")))
+    );
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    assert_eq!(job.done, [Stage::Transcribe, Stage::Translate]);
+}
+
+#[test]
+fn a_quit_mid_translation_resumes_at_the_first_unfinished_batch() {
+    let lines: Vec<(u64, u64, u16, String)> = (0..40)
+        .map(|n| {
+            (
+                n * 1_000,
+                n * 1_000 + 900,
+                0,
+                format!("kumusta {n} {}", "ka ".repeat(8)),
+            )
+        })
+        .collect();
+    let borrowed: Vec<(u64, u64, u16, &str)> = lines
+        .iter()
+        .map(|(a, b, s, t)| (*a, *b, *s, t.as_str()))
+        .collect();
+    let rig = Rig::with_model(
+        FakeTranscriber::new().with_segments_in(Channel::Mixed, "tl", &borrowed),
+        vec![stt(STT, DiarizationSupport::Native, None)],
+        llm(400),
+        translator(),
+    );
+    let id = rig.seed("resume", ChannelLayout::Mixed, 41);
+    rig.llm.hold_from(2);
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    eventually("the third batch to start", || rig.llm.prompts().len() == 3);
+    drop(dory);
+    rig.llm.hold_from(usize::MAX);
+
+    let transcript = rig.store.transcript(&id).unwrap().unwrap();
+    let key = TranslationKey {
+        recording: id.clone(),
+        revision: transcript.revision,
+        target: english(),
+        model: dory_core::models::ModelRef::parse(LLM).unwrap(),
+    };
+    let saved: usize = rig
+        .store
+        .translation_batches(&key)
+        .unwrap()
+        .iter()
+        .map(|b| b.texts.len())
+        .sum();
+    assert!(saved > 0 && saved < 40, "{saved} segments saved");
+    assert_eq!(rig.store.translation(&id).unwrap(), None);
+    let before = rig.llm.prompts().len();
+    let job = rig.store.jobs_for(&id).unwrap().remove(0);
+    rig.store
+        .apply(vec![Change::Job {
+            job: job.id,
+            event: JobEvent::Started {
+                stage: Stage::Translate,
+            },
+        }])
+        .unwrap();
+
+    let dory = rig.open();
+    wait_for(&dory, &id, JobState::Succeeded);
+    let again = &rig.llm.prompts()[before..];
+    let resent: usize = again.iter().map(|p| p.user.lines().count()).sum();
+    assert_eq!(resent, 40 - saved, "only what was not saved is sent again");
+    let translation = dory.library().translation(&id).unwrap().unwrap();
+    assert!(translation.texts.iter().all(Option::is_some));
+    assert_eq!(rig.store.translation_batches(&key).unwrap(), vec![]);
+}
+
+#[test]
+fn cancelling_a_translation_keeps_the_transcript_and_stores_no_translation() {
+    let (rig, id) = taglish(translator(), 8_192);
+    rig.llm.hold_from(0);
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the translation to start", || !rig.llm.prompts().is_empty());
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    assert_eq!(
+        job.state,
+        JobState::Running {
+            stage: Stage::Translate
+        }
+    );
+    dory.pipeline().cancel(job.id).unwrap();
+    wait_for(&dory, &id, JobState::Cancelled);
+    assert!(dory.library().transcript(&id).unwrap().is_some());
+    assert_eq!(dory.library().translation(&id).unwrap(), None);
+    assert_eq!(dory.library().summary(&id).unwrap(), None);
+}
+
+#[test]
+fn a_missing_summary_model_blocks_translation_the_way_it_blocks_a_summary() {
+    let (rig, id) = taglish(translator(), 8_192);
+    let model: ModelId<Llm> = LLM.parse().unwrap();
+    rig.llm_provider
+        .set_availability(&model, Availability::NeedsProvision { bytes: None });
+    rig.store
+        .apply(vec![Change::SettingsReplaced(Settings {
+            llm: Choice::Pinned(model.clone()),
+            output_language: Some(english()),
+            ..Settings::default()
+        })])
+        .unwrap();
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    wait_for(
+        &dory,
+        &id,
+        JobState::Blocked {
+            stage: Stage::Translate,
+            blocker: Blocker::NeedsProvision {
+                model: model.erase(),
+                bytes: None,
+            },
+        },
+    );
+    assert!(dory.library().transcript(&id).unwrap().is_some());
+    assert_eq!(rig.llm.prompts(), vec![]);
+    assert_eq!(dory.library().translation(&id).unwrap(), None);
+}
+
+#[test]
+fn turning_the_summary_model_off_skips_translation_with_the_summary() {
+    let (rig, id) = taglish(translator(), 8_192);
+    let dory = rig.open();
+    dory.update_settings(|s| {
+        s.output_language = Some(english());
+        s.llm = Choice::Off;
+    })
+    .unwrap();
+    process(&dory, &id, Goal::ALL);
+    assert_eq!(rig.llm.prompts(), vec![]);
+    assert_eq!(dory.library().translation(&id).unwrap(), None);
+    assert_eq!(dory.library().summary(&id).unwrap(), None);
+}
+
+#[test]
+fn a_new_transcript_revision_makes_the_translation_stale_until_the_stage_replaces_it() {
+    let (rig, id) = taglish(translator(), 8_192);
+    let dory = rig.open();
+    set_output_language(&dory, Some(english()));
+    process(&dory, &id, Goal::ALL);
+    let first = dory.library().translation(&id).unwrap().unwrap();
+    assert_eq!(first.transcript_revision, Revision(1));
+
+    // Commit revision 2 by hand: the translation of revision 1 is still stored, and stale.
+    let mut next = dory.library().transcript(&id).unwrap().unwrap();
+    next.revision = Revision(2);
+    rig.store
+        .apply(vec![Change::TranscriptReplaced {
+            id: id.clone(),
+            transcript: next.clone(),
+        }])
+        .unwrap();
+    let stored = dory.library().translation(&id).unwrap().unwrap();
+    assert_eq!(
+        stored, first,
+        "a new revision does not touch the translation"
+    );
+    assert!(!stored.applies_to(&next));
+    assert_eq!(
+        TranslationFlag::derive(
+            Some((stored.transcript_revision, &stored.target)),
+            Some(next.revision),
+            Some(&english())
+        ),
+        TranslationFlag::Stale
+    );
+
+    // A re-transcribe makes revision 3 and the stage translates it afresh.
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    eventually("the re-transcribe and its translation", || {
+        let jobs = rig.store.jobs_for(&id).unwrap();
+        jobs.len() == 2 && jobs.iter().all(|j| j.state == JobState::Succeeded)
+    });
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert_eq!(transcript.revision, Revision(3));
+    let translation = dory.library().translation(&id).unwrap().unwrap();
+    assert!(translation.applies_to(&transcript));
+    assert_eq!(
+        TranslationFlag::derive(
+            Some((translation.transcript_revision, &translation.target)),
+            Some(transcript.revision),
+            Some(&english())
+        ),
+        TranslationFlag::Current
+    );
+    assert_eq!(translate_prompts(&rig).len(), 2);
+}
+
+#[test]
+fn a_summary_only_job_writes_in_the_output_language_without_translating() {
+    let (rig, id) = taglish(translator(), 8_192);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    assert_eq!(
+        translate_prompts(&rig).len(),
+        0,
+        "no target, no translation"
+    );
+
+    set_output_language(&dory, Some(english()));
+    dory.pipeline().enqueue(&id, Goal::SUMMARIZE).unwrap();
+    eventually("the second summary", || {
+        rig.llm.prompts().len() == 2
+            && rig
+                .store
+                .jobs_for(&id)
+                .unwrap()
+                .iter()
+                .all(|j| j.state == JobState::Succeeded)
+    });
+    assert_eq!(translate_prompts(&rig).len(), 0);
+    let summary_call = rig.llm.prompts().pop().unwrap();
+    assert!(summary_call.system.contains("BCP 47 tag en"));
+    assert!(
+        summary_call.user.contains("Sige, ako na bahala."),
+        "no translation exists, so the spoken lines are summarized"
+    );
+}
+
+#[test]
+fn an_engine_that_detects_nothing_still_labels_segments_with_the_pinned_language() {
+    let transcribe_in = |pinned: &str| {
+        let rig = Rig::with_model(
+            FakeTranscriber::new().with_segments(
+                Channel::Mixed,
+                &[
+                    (0, 900, 0, "Sige, ako na bahala."),
+                    (1_000, 1_900, 0, "Salamat po."),
+                ],
+            ),
+            vec![stt(STT, DiarizationSupport::Native, None)],
+            llm(8_192),
+            translator(),
+        );
+        let id = rig.seed("pinned", ChannelLayout::Mixed, 3);
+        let dory = rig.open();
+        dory.library()
+            .set_language(&id, LanguagePref::Pinned(LangTag::parse(pinned).unwrap()))
+            .unwrap();
+        set_output_language(&dory, Some(english()));
+        process(&dory, &id, Goal::ALL);
+        (rig, dory, id)
+    };
+
+    let (rig, dory, id) = transcribe_in("tl");
+    let transcript = dory.library().transcript(&id).unwrap().unwrap();
+    assert!(
+        transcript
+            .segments
+            .iter()
+            .all(|s| s.language == LangTag::parse("tl").ok())
+    );
+    assert_eq!(translate_prompts(&rig).len(), 1);
+
+    let (rig, dory, id) = transcribe_in("en");
+    assert_eq!(translate_prompts(&rig), Vec::<String>::new());
+    assert_eq!(dory.library().translation(&id).unwrap(), None);
 }

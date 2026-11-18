@@ -571,3 +571,60 @@ fn assistants_are_added_listed_and_hidden_recordings_marked() {
             .success()
     );
 }
+
+#[test]
+fn an_output_language_translates_the_transcript_beside_the_original() {
+    let env = Env::new();
+    assert_eq!(
+        env.ok(&["output-language"]).trim(),
+        "output language: same as spoken"
+    );
+    assert_eq!(
+        env.ok(&["output-language", "fr"]).trim(),
+        "output language: fr"
+    );
+    let bad = env.run(&["output-language", "not_a_tag!"]);
+    assert!(!bad.status.success());
+
+    let mut child = env
+        .cmd(&["record", "--fake-capture", "3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take();
+    let out = child.wait_with_output().unwrap();
+    drop(stdin);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", text(&out.stderr));
+    let id = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("recorded "))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no recorded line in\n{stdout}"))
+        .to_owned();
+
+    let done = env.ok(&["process", &id, "--fake-engines"]);
+    assert!(done.contains("translate"), "the stage ran: {done}");
+
+    let shown = env.ok(&["show", &id]);
+    for want in [
+        "translated into fr by fake/llm",
+        "[0:00] Me: [fake translation] Hello from the fake microphone.",
+        "Speaker 1: [fake translation] Hello from the fake system audio.",
+    ] {
+        assert!(shown.contains(want), "missing {want:?} in\n{shown}");
+    }
+    let original = env.ok(&["show", &id, "--original"]);
+    assert!(
+        original.contains("[0:00] Me: Hello from the fake microphone."),
+        "{original}"
+    );
+    assert!(!original.contains("[fake translation]"), "{original}");
+
+    // Back to Same as spoken: the next job has no translate stage and the stored translation stays.
+    env.ok(&["output-language", "same"]);
+    let again = env.ok(&["process", &id, "--fake-engines"]);
+    assert!(!again.contains("translate"), "{again}");
+}

@@ -25,7 +25,7 @@ const USAGE: &str = "usage:
   dory-cli list
   dory-cli search TEXT
   dory-cli seed --recordings N --words N [--seed N]
-  dory-cli show ID [--languages]
+  dory-cli show ID [--languages] [--original]
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]
@@ -35,6 +35,7 @@ const USAGE: &str = "usage:
   dory-cli models provision stt|llm|diar MODEL_ID
   dory-cli languages [TAG...|--clear]
   dory-cli switch-recovery [on|off|auto]
+  dory-cli output-language [TAG|same]
   dory-cli assistants on|off|list
   dory-cli assistants add NAME --exposure titles|summaries|transcripts [--edits never|ask]
   dory-cli assistants exposure NAME titles|summaries|transcripts
@@ -82,6 +83,8 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| settings::languages(&c, &a))),
             Some("switch-recovery") => args::SwitchRecoveryArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| settings::switch_recovery(&c, &a))),
+            Some("output-language") => args::OutputLanguageArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::output_language(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
             Some("play") => {

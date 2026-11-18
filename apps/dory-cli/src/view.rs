@@ -4,7 +4,7 @@ use dory_core::app::{Budget, LightReason};
 use dory_core::domain::Channel;
 use dory_core::domain::{
     Blocker, ChannelLayout, Job, JobState, Ms, Segment, SpeakerId, SpeakerNames, Stage, Timestamp,
-    Transcript,
+    Transcript, Translation,
 };
 use dory_core::models::{Availability, Fit, Mismatch, UnavailableReason};
 
@@ -44,6 +44,7 @@ pub fn clock(ms: Ms) -> String {
 pub fn stage(stage: Stage) -> &'static str {
     match stage {
         Stage::Transcribe => "transcribe",
+        Stage::Translate => "translate",
         Stage::Summarize => "summarize",
     }
 }
@@ -204,8 +205,25 @@ pub fn speaker_label(turn: &Turn, transcript: &Transcript, names: &SpeakerNames)
     format!("Speaker {}", turn.speaker.0)
 }
 
-pub fn transcript_lines(transcript: &Transcript, names: &SpeakerNames) -> Vec<String> {
-    turns(&transcript.segments)
+/// The transcript as turns. With a translation that applies, each segment reads as translated,
+/// else as spoken.
+pub fn transcript_lines(
+    transcript: &Transcript,
+    names: &SpeakerNames,
+    translation: Option<&Translation>,
+) -> Vec<String> {
+    let shown: Vec<Segment> = transcript
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(ix, segment)| Segment {
+            text: translation
+                .map_or(segment.text.as_str(), |t| t.shown(ix, segment))
+                .to_owned(),
+            ..segment.clone()
+        })
+        .collect();
+    turns(&shown)
         .iter()
         .map(|turn| {
             let who = speaker_label(turn, transcript, names);
@@ -265,6 +283,7 @@ mod tests {
             speaker: SpeakerId(speaker),
             channel,
             text: text.into(),
+            language: None,
         }
     }
 
@@ -310,7 +329,7 @@ mod tests {
             segment(2, Channel::System, Some((65_000, 66_000)), "Hi."),
         ]);
         assert_eq!(
-            transcript_lines(&t, &SpeakerNames::default()),
+            transcript_lines(&t, &SpeakerNames::default(), None),
             ["[0:00] Me: Hello. Again.", "[1:05] Speaker 2: Hi."]
         );
     }
@@ -324,7 +343,7 @@ mod tests {
         let mut names = SpeakerNames::default();
         names.rename(Revision(1), SpeakerId(2), Some("Ana".into()));
         assert_eq!(
-            transcript_lines(&t, &names),
+            transcript_lines(&t, &names, None),
             ["Speaker 1: Chào.", "Ana: Okay."]
         );
     }

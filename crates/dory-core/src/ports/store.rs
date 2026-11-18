@@ -12,8 +12,8 @@ use super::{RawSegment, StoreError};
 use crate::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Fields,
     Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
-    RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange,
-    Timestamp, Transcript,
+    RecordingId, RecordingQuery, RecordingRow, Revision, Settings, SpeakerNames, Summary,
+    TimeRange, Timestamp, Transcript, Translation,
 };
 use crate::models::ModelRef;
 use crate::search::{Found, Query, Vocabulary};
@@ -61,6 +61,14 @@ pub trait StoreRead: Send + Sync {
     fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
     /// What the user asked the summary to focus on, if anything.
     fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError>;
+    /// The transcript written in the output language, if the recording has one. It may belong to
+    /// an older transcript revision: check [`Translation::applies_to`] before using it.
+    fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError>;
+    /// The segments one translation run has finished, in the order they were saved.
+    fn translation_batches(
+        &self,
+        key: &TranslationKey,
+    ) -> Result<Vec<TranslationBatch>, StoreError>;
 }
 
 pub trait Store: StoreRead {
@@ -119,6 +127,37 @@ pub enum Change {
     /// they built.
     CheckpointsCleared(RecordingId),
     Assistant(AssistantChange),
+    /// Keeps the spoken transcript as it is and stores this beside it, replacing the recording's
+    /// earlier translation, whatever revision or target that was for.
+    TranslationReplaced {
+        id: RecordingId,
+        translation: Translation,
+    },
+    /// Appends to the batches of the same run.
+    TranslationBatchSaved {
+        key: TranslationKey,
+        batch: TranslationBatch,
+    },
+    /// Every batch of the recording, whatever run made it. Committed with the translation they
+    /// built.
+    TranslationBatchesCleared(RecordingId),
+}
+
+/// The translation run a saved batch belongs to. A rerun reuses a batch only when every field
+/// matches, so a new transcript revision, another target, or another model starts over.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TranslationKey {
+    pub recording: RecordingId,
+    pub revision: Revision,
+    pub target: LangTag,
+    pub model: ModelRef,
+}
+
+/// What one finished batch of a translation run produced, so a rerun after a quit skips it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranslationBatch {
+    /// `(segment index, translated text)`.
+    pub texts: Vec<(usize, String)>,
 }
 
 /// The transcription run a checkpoint belongs to. A rerun reuses a checkpoint only when every

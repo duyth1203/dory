@@ -67,13 +67,14 @@ const MIGRATIONS: &[Migration] = &[
     Migration::sql(include_str!("schema_v5.sql")),
     Migration::sql(include_str!("schema_v6.sql")),
     Migration::sql(include_str!("schema_v7.sql")),
-    // v8 created the index and filled it here until v11, whose rebuild reads v9's translations
-    // and now fills it once for every older file.
+    // v8 created the index and filled it here until v11. The newest file's rebuild reads every
+    // table that feeds the index, so it fills the index once for every older file.
     Migration::sql(include_str!("schema_v8.sql")),
     Migration::sql(include_str!("schema_v9.sql")),
     Migration::sql(include_str!("schema_v10.sql")),
+    Migration::sql(include_str!("schema_v11.sql")),
     Migration {
-        sql: include_str!("schema_v11.sql"),
+        sql: include_str!("schema_v12.sql"),
         then: Some(search::rebuild),
     },
 ];
@@ -1538,6 +1539,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                     .map_err(db)?
                     .execute([id.as_str()])
                     .map_err(db)?;
+                search::reindex(tx, id)?;
             }
             Ok(None)
         }

@@ -328,7 +328,7 @@ fn v4_to_v5_keeps_every_row() {
         .unwrap();
     }
     let store = SqliteStore::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 11);
+    assert_eq!(store.schema_version().unwrap(), 12);
     let rows = store
         .assistant_recordings(&query(None, Exposure::Titles))
         .unwrap();

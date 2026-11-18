@@ -511,7 +511,8 @@ impl Assistant {
 
     /// Where `query` matched `found`, as the app's sidebar shows it: a title hit marks the title,
     /// and a conversation hit takes the first matching turn, translated before spoken, else
-    /// summary line, else speaker name, out of only the fields the grant reads.
+    /// summary line, translated before written, else speaker name, out of only the fields the
+    /// grant reads.
     fn matched(
         &self,
         grant: &Grant,
@@ -558,14 +559,20 @@ impl Assistant {
                 .collect(),
             _ => Vec::new(),
         };
-        let blocks = match fields.summary {
-            true => self
-                .store
-                .summary(&r.id)
-                .map_err(|e| self.lib(e))?
-                .map(|s| search::summary_blocks(&s.markdown))
-                .unwrap_or_default(),
-            false => Vec::new(),
+        let (translated_blocks, blocks) = match fields.summary {
+            true => (
+                self.store
+                    .summary_translation(&r.id)
+                    .map_err(|e| self.lib(e))?
+                    .map(|t| search::summary_blocks(&t.markdown))
+                    .unwrap_or_default(),
+                self.store
+                    .summary(&r.id)
+                    .map_err(|e| self.lib(e))?
+                    .map(|s| search::summary_blocks(&s.markdown))
+                    .unwrap_or_default(),
+            ),
+            false => (Vec::new(), Vec::new()),
         };
         let translated: Vec<&str> = match turns.iter().any(|t| t.translated.is_some()) {
             true => turns.iter().map(|t| t.text.as_str()).collect(),
@@ -579,11 +586,13 @@ impl Assistant {
                     .map_or(t.text.as_str(), |t| &t.original)
             })
             .collect();
+        let translated_blocks: Vec<&str> = translated_blocks.iter().map(String::as_str).collect();
         let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
         let excerpt = search::excerpt_within(
             query,
             &translated,
             &spoken,
+            &translated_blocks,
             &blocks,
             &speakers,
             SNIPPET_CHARS,

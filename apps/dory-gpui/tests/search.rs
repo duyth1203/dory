@@ -1472,3 +1472,143 @@ fn filling_the_search_shows_the_query_in_the_field_and_searches_it(cx: &mut Test
         );
     });
 }
+
+#[gpui_kit::test]
+fn a_match_in_the_summary_translation_is_marked_on_the_translated_summary(cx: &mut TestAppContext) {
+    use dory_core::domain::{LangTag, SummaryTranslation};
+    use dory_gpui::app::SummaryVersion;
+    let spanish = LangTag::parse("es").unwrap();
+    let extra = vec![
+        Change::SummaryTranslationWanted {
+            id: id_of(SUMMARY_ONLY),
+            target: spanish.clone(),
+        },
+        Change::SummaryTranslated {
+            id: id_of(SUMMARY_ONLY),
+            translation: SummaryTranslation {
+                target: spanish,
+                produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+                markdown: "## Notas\n\n- Kilimanjaro y el Serengueti salieron.\n".into(),
+            },
+        },
+    ];
+    let (window, app, _) = open_corpus_with(extra, cx);
+    let version = |app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, cx| {
+            app.session().unwrap().read(cx).summary_version()
+        })
+    };
+    let show = |app: &Entity<AppState>, shown: SummaryVersion, cx: &mut TestAppContext| {
+        app.update(cx, |app, cx| {
+            let session = app.session().unwrap().clone();
+            session.update(cx, |s, cx| s.set_summary_version(shown, cx));
+        });
+        settle(window, cx);
+    };
+
+    open_hit(SUMMARY_ONLY, "serengueti", &app, window, cx);
+    app.read_with(cx, |app, _| {
+        let excerpt = &app.snippets[&id_of(SUMMARY_ONLY)];
+        assert_eq!(
+            (excerpt.source, excerpt.snippet.text.as_str()),
+            (Source::Summary, "Kilimanjaro y el Serengueti salieron."),
+            "the sidebar quotes the translation"
+        );
+    });
+    assert_eq!(tab(&app, cx), DetailTab::Summary);
+    assert_eq!(
+        version(&app, cx),
+        SummaryVersion::Translated,
+        "a hit only in the translation opens on it"
+    );
+    assert_eq!(current(&app, cx), Some((0, 1, Place::Summary)));
+    assert_eq!(summary_marks(window, cx), ["Serengueti"]);
+
+    show(&app, SummaryVersion::Original, cx);
+    assert!(
+        summary_marks(window, cx).is_empty(),
+        "the summary as written holds no mark of a translated match"
+    );
+    assert_eq!(current(&app, cx), None, "nothing is left to step through");
+    show(&app, SummaryVersion::Translated, cx);
+    assert_eq!(
+        summary_marks(window, cx),
+        ["Serengueti"],
+        "back on the translation"
+    );
+
+    open_hit(SUMMARY_ONLY, "twice", &app, window, cx);
+    assert_eq!(
+        version(&app, cx),
+        SummaryVersion::Original,
+        "a hit only in the summary as written opens on it"
+    );
+    assert_eq!(summary_marks(window, cx), ["twice"]);
+
+    show(&app, SummaryVersion::Translated, cx);
+    open_hit(SUMMARY_ONLY, "kilimanjaro", &app, window, cx);
+    assert_eq!(
+        version(&app, cx),
+        SummaryVersion::Translated,
+        "a hit in both stays on the version shown"
+    );
+    assert_eq!(summary_marks(window, cx), ["Kilimanjaro"]);
+}
+
+#[gpui_kit::test]
+fn find_next_brings_back_the_summary_version_that_holds_the_match(cx: &mut TestAppContext) {
+    use dory_core::domain::{LangTag, SummaryTranslation};
+    use dory_gpui::app::SummaryVersion;
+    let spanish = LangTag::parse("es").unwrap();
+    let extra = vec![
+        Change::SummaryTranslationWanted {
+            id: id_of(TALK),
+            target: spanish.clone(),
+        },
+        Change::SummaryTranslated {
+            id: id_of(TALK),
+            translation: SummaryTranslation {
+                target: spanish,
+                produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+                markdown: "## Notas\n\n- Welcome: la hoja de ruta pasa al Q3.\n".into(),
+            },
+        },
+    ];
+    let (window, app, _) = open_corpus_with(extra, cx);
+    let version = |app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, cx| {
+            app.session().unwrap().read(cx).summary_version()
+        })
+    };
+    let places = |app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, cx| {
+            let session = app.session().unwrap().read(cx);
+            let found = session.found().unwrap();
+            found.all().iter().map(|m| m.place).collect::<Vec<_>>()
+        })
+    };
+    open_hit(TALK, "welcome", &app, window, cx);
+    assert_eq!(tab(&app, cx), DetailTab::Transcript, "the turn comes first");
+    assert_eq!(version(&app, cx), SummaryVersion::Translated);
+    assert_eq!(places(&app, cx), [Place::Turn(0), Place::Summary]);
+
+    app.update(cx, |app, cx| {
+        let session = app.session().unwrap().clone();
+        session.update(cx, |s, cx| {
+            s.set_summary_version(SummaryVersion::Original, cx)
+        });
+    });
+    settle(window, cx);
+    assert_eq!(
+        places(&app, cx),
+        [Place::Turn(0)],
+        "the summary as written holds no match"
+    );
+    step(window, true, cx);
+    assert_eq!(
+        version(&app, cx),
+        SummaryVersion::Translated,
+        "Find Next shows the summary version that holds the match"
+    );
+    assert_eq!(places(&app, cx), [Place::Turn(0), Place::Summary]);
+}

@@ -55,7 +55,7 @@ fn every_contract_case_runs_on_sqlite_by_name() {
 }
 
 /// The schema version this build migrates to.
-const LATEST: u32 = 11;
+const LATEST: u32 = 12;
 
 #[test]
 fn state_survives_closing_and_reopening_the_database() {
@@ -784,6 +784,59 @@ fn a_version_10_database_indexes_the_translations_it_already_holds() {
         Vec::<String>::new(),
         "a translation of an older revision stays out"
     );
+    drop(store);
+    let reopened = SqliteStore::open(&path).unwrap();
+    assert_eq!(found(&reopened, "approved"), ["now"], "after a reopen");
+}
+
+#[test]
+fn a_version_11_database_indexes_the_summary_translations_it_already_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for sql in [
+            include_str!("../src/sqlite/schema_v1.sql"),
+            include_str!("../src/sqlite/schema_v2.sql"),
+            include_str!("../src/sqlite/schema_v3.sql"),
+            include_str!("../src/sqlite/schema_v4.sql"),
+            include_str!("../src/sqlite/schema_v5.sql"),
+            include_str!("../src/sqlite/schema_v6.sql"),
+            include_str!("../src/sqlite/schema_v7.sql"),
+            include_str!("../src/sqlite/schema_v8.sql"),
+            include_str!("../src/sqlite/schema_v9.sql"),
+            include_str!("../src/sqlite/schema_v10.sql"),
+            include_str!("../src/sqlite/schema_v11.sql"),
+        ] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(&format!(
+            "PRAGMA user_version = 11;
+             INSERT INTO recordings (id, title, created_at, layout) VALUES
+                 ('now', 'Weekly', 2, 'mic_system'),
+                 ('old', 'Retro', 1, 'mic_system');
+             INSERT INTO summaries (recording_id, markdown, language, produced_by, transcript_revision)
+                 VALUES ('now', '## Mga punto\n- Aprubado na ang badyet', 'tl', 'ollama/gemma4:e4b', 1),
+                        ('old', '## Mga punto\n- Kumusta', 'tl', 'ollama/gemma4:e4b', 1);
+             INSERT INTO summary_translations (recording_id, target, produced_by, markdown)
+                 VALUES ('now', 'en', 'ollama/gemma4:e4b', '## Points\n- The budget is approved');
+             INSERT INTO search_keys (key, recording_id) VALUES (1, 'now'), (2, 'old');
+             INSERT INTO search (rowid, title, speakers, summary, transcript) VALUES
+                 (1, 'weekly ', '', 'mga punto aprubado na ang badyet ', ''),
+                 (2, 'retro ', '', 'mga punto kumusta ', '');
+             UPDATE search_meta SET tokens_version = {TOKENS_VERSION}, generation = 5;"
+        ))
+        .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), LATEST);
+    assert_eq!(
+        found(&store, "approved"),
+        ["now"],
+        "a stored summary translation becomes findable"
+    );
+    assert_eq!(found(&store, "aprubado"), ["now"], "the written words stay");
+    assert_eq!(found(&store, "kumusta"), ["old"]);
     drop(store);
     let reopened = SqliteStore::open(&path).unwrap();
     assert_eq!(found(&reopened, "approved"), ["now"], "after a reopen");

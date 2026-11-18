@@ -817,5 +817,10 @@ mod tests {
         assert!(transcript.starts_with("You translate lines of a meeting transcript into"));
         assert!(summary.starts_with("You translate lines of a meeting summary into"));
         assert!(summary.contains("same numbers") && summary.contains("Markdown emphasis"));
+        let tagalog = summary_system_prompt(&tag("tl"));
+        assert!(
+            tagalog.contains("into Tagalog (BCP 47 tag tl)"),
+            "{tagalog}"
+        );
     }
 }

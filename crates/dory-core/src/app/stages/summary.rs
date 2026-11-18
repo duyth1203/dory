@@ -67,33 +67,43 @@ fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
             "a short phrase in that language".to_owned(),
         ),
     };
+    let task = "A task someone will do is an action item, not a decision, even when the meeting \
+                calls it a decision.";
     let sections = format!(
         "Write the whole summary in {language}{included}. Use Markdown with three sections in this order: \
          key points, decisions, and action items. Start each section with a \"## \" heading and \
-         add no title.{headings} Keep each key point to one short line and merge points that \
-         repeat. List every decision and every action item, each once, with its owner and due \
-         date when the input names them. Under a section with nothing to report, write {none} \
-         that says there is none."
+         add no title.{headings} Write at most eight key points, one short line each, and never \
+         repeat a line. List every decision and every action item, each once, with its owner and \
+         due date when the input names them. {task} Under a section with nothing to report, \
+         write {none} that says there is none."
     );
-    let notes = format!(
-        "Write in {language}. Keep every key point, decision, and action item with its owner, \
-         and every name, number, and date. Use short bullet points and no headings."
-    );
+    // Action items come first so that a note the output cap cuts short loses key points instead.
+    let notes = |copy: &str| {
+        format!(
+            "Write in {language}.{copy} First list every action item, one short bullet each with \
+             its owner and due date. Then list every decision, one short bullet each. {task} Then \
+             add at most five short bullets of key points, each said once. Keep every name, \
+             number, and date. Use no headings."
+        )
+    };
+    let every = "Take the action items from every part, not only the last.";
     match prompt {
         Prompt::SummaryOfTranscript => format!(
             "You summarize meeting transcripts. {sections} Use only what the transcript says."
         ),
         Prompt::SummaryOfNotes => format!(
             "You summarize a meeting from notes taken on its consecutive parts, in order. \
-             {sections} Use only what the notes say."
+             {sections} {every} Use only what the notes say."
         ),
         Prompt::NotesOfTranscript => format!(
-            "You take notes on one part of a meeting transcript. {notes} Use only what the \
-             transcript says."
+            "You take notes on one part of a meeting transcript. {} Use only what the transcript \
+             says.",
+            notes(" Do not copy the transcript.")
         ),
         Prompt::NotesOfNotes => format!(
             "You combine notes taken on consecutive parts of one meeting into one set of notes, \
-             dropping repeats. {notes} Use only what the notes say."
+             dropping repeats. {} {every} Use only what the notes say.",
+            notes("")
         ),
     }
 }
@@ -453,6 +463,88 @@ mod tests {
             notes.contains("Write in the language the meeting was held in. "),
             "{notes}"
         );
+    }
+
+    /// Asked to keep every key point, name, number, and date, Apple Intelligence copied the
+    /// transcript line by line into its notes until the 512-token cap cut them off, and kept 38
+    /// of the 74 action items in 18 chunks of 800 to 3,000 tokens. Asked for the action items
+    /// first and at most five key points, it kept all 74 in notes a third as long.
+    #[test]
+    fn notes_list_action_items_first_and_few_key_points() {
+        for prompt in [Prompt::NotesOfTranscript, Prompt::NotesOfNotes] {
+            let system = system_prompt(prompt, None);
+            let at = |text: &str| {
+                system
+                    .find(text)
+                    .unwrap_or_else(|| panic!("{prompt:?} lacks {text:?}: {system}"))
+            };
+            assert!(
+                at("every action item") < at("every decision")
+                    && at("every decision") < at("at most five short bullets of key points"),
+                "{prompt:?}: {system}"
+            );
+        }
+        let transcript = system_prompt(Prompt::NotesOfTranscript, None);
+        assert!(
+            transcript.contains("Do not copy the transcript."),
+            "{transcript}"
+        );
+    }
+
+    /// The test meeting closes each item with "Okay, decision made. Daniel will finish the usage
+    /// report by Thursday." Apple filed such tasks under decisions and wrote that there were no
+    /// action items, and Gemma did the same on short meetings.
+    #[test]
+    fn a_task_is_an_action_item_even_when_called_a_decision() {
+        for prompt in [
+            Prompt::SummaryOfTranscript,
+            Prompt::SummaryOfNotes,
+            Prompt::NotesOfTranscript,
+            Prompt::NotesOfNotes,
+        ] {
+            let system = system_prompt(prompt, None);
+            assert!(
+                system.contains(
+                    "A task someone will do is an action item, not a decision, even when the \
+                     meeting calls it a decision."
+                ),
+                "{prompt:?}: {system}"
+            );
+        }
+    }
+
+    /// Given three notes that held all 18 action items, Apple's summary listed only the last
+    /// note's 4. Told to take them from every part, it listed 17 or 18 in 3 of 4 runs.
+    #[test]
+    fn a_pass_over_notes_takes_action_items_from_every_part() {
+        for prompt in [Prompt::SummaryOfNotes, Prompt::NotesOfNotes] {
+            let system = system_prompt(prompt, None);
+            assert!(
+                system.contains("Take the action items from every part, not only the last."),
+                "{prompt:?}: {system}"
+            );
+        }
+        for prompt in [Prompt::SummaryOfTranscript, Prompt::NotesOfTranscript] {
+            assert!(
+                !system_prompt(prompt, None).contains("every part"),
+                "{prompt:?}"
+            );
+        }
+    }
+
+    /// Apple wrote one key point about 85 times on the 15-minute slice, until the output cap
+    /// left no room for the action items.
+    #[test]
+    fn the_summary_caps_key_points_and_repeats_none() {
+        for prompt in [Prompt::SummaryOfTranscript, Prompt::SummaryOfNotes] {
+            let system = system_prompt(prompt, None);
+            assert!(
+                system.contains(
+                    "Write at most eight key points, one short line each, and never repeat a line."
+                ),
+                "{prompt:?}: {system}"
+            );
+        }
     }
 
     #[test]

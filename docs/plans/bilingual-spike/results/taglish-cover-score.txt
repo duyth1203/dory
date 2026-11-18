@@ -1,0 +1,8 @@
+first | 36.2% | 76% | 26% | 0/24
+cover | 35.9% | 76% | 29% | 0/24
+RTFx with re-decodes 2.9; windows with a gap 4/24; gaps 6
+gap languages Counter({'en': 6})
+  concat.0.wav tl [(4.0, 6.0, 'en'), (11.0, 13.0, 'en')] | aman, wala ako. At hindi ako. directly involved Sa kalunos-lunos na ang aking mga pag-aalala ay nasa pamilya ng biktima.
+  concat.14.wav tl [(10.3, 12.7, 'en')] | lagi mong naririnig ang tunog ng mga turista at nagtitinda ang at liwanag ay katulad. Diet, nannisand, will. Mga kwento.
+  concat.18.wav tl [(8.7, 11.0, 'en'), (12.6, 15.2, 'en')] | . Maraming mga hotel ang mayroong. What do you mean? Tapuwed ang upuan. Thean. Then. Net present. Nito sa loob ng silid.
+  concat.20.wav tl [(7.2, 9.3, 'en')] | Ang nasa hangganan ng regyon sa Hilaga at sa Timog at Kanlulan ay ang karagatan. Avedictor seen.

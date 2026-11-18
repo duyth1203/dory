@@ -12,8 +12,8 @@ use super::{RawSegment, StoreError};
 use crate::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Fields,
     Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
-    RecordingId, RecordingQuery, RecordingRow, Settings, SpeakerNames, Summary, TimeRange,
-    Timestamp, Transcript,
+    RecordingId, RecordingQuery, RecordingRow, Revision, Settings, SpeakerNames, Summary,
+    SummaryTranslation, TimeRange, Timestamp, Transcript, Translation,
 };
 use crate::models::ModelRef;
 use crate::search::{Found, Query, Vocabulary};
@@ -61,6 +61,23 @@ pub trait StoreRead: Send + Sync {
     fn previous_summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
     /// What the user asked the summary to focus on, if anything.
     fn summary_instruction(&self, id: &RecordingId) -> Result<Option<String>, StoreError>;
+    /// The transcript written in the output language, if the recording has one. It may belong to
+    /// an older transcript revision: check [`Translation::applies_to`] before using it.
+    fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError>;
+    /// The segments one translation run has finished, in the order they were saved.
+    fn translation_batches(
+        &self,
+        key: &TranslationKey,
+    ) -> Result<Vec<TranslationBatch>, StoreError>;
+    /// The summary translated on request. Any translation read describes the summary now
+    /// stored: the store drops it whenever the summary is written or restored.
+    fn summary_translation(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<SummaryTranslation>, StoreError>;
+    /// The language the user last asked the summary to be translated into, until a translation
+    /// into it is stored or the summary changes. The translate-summary stage reads its target here.
+    fn summary_translation_wanted(&self, id: &RecordingId) -> Result<Option<LangTag>, StoreError>;
 }
 
 pub trait Store: StoreRead {
@@ -86,13 +103,28 @@ pub enum Change {
         id: RecordingId,
         names: SpeakerNames,
     },
-    /// Keeps the summary it replaces as the one previous summary.
+    /// Keeps the summary it replaces as the one previous summary, and drops the summary's
+    /// translation and any wish for one.
     SummaryReplaced {
         id: RecordingId,
         summary: Summary,
     },
-    /// Swaps the current and the previous summary, so restoring twice undoes itself.
+    /// Swaps the current and the previous summary, so restoring twice undoes itself. Like
+    /// `SummaryReplaced`, it drops the summary's translation and any wish for one.
     SummaryRestored(RecordingId),
+    /// Records the language the user asked the summary to be translated into, replacing an
+    /// earlier wish. A translation already stored stays until the new one replaces it.
+    SummaryTranslationWanted {
+        id: RecordingId,
+        target: LangTag,
+    },
+    /// Stores the translation and ends the wish. It applies only while a wish for its target
+    /// stands: a summary written meanwhile took the wish with it, and this change then does
+    /// nothing, so a translation never sits under a summary it was not made from.
+    SummaryTranslated {
+        id: RecordingId,
+        translation: SummaryTranslation,
+    },
     /// `None` clears it. Used by every later summary of the recording.
     SummaryInstructionSet {
         id: RecordingId,
@@ -119,6 +151,37 @@ pub enum Change {
     /// they built.
     CheckpointsCleared(RecordingId),
     Assistant(AssistantChange),
+    /// Keeps the spoken transcript as it is and stores this beside it, replacing the recording's
+    /// earlier translation, whatever revision or target that was for.
+    TranslationReplaced {
+        id: RecordingId,
+        translation: Translation,
+    },
+    /// Appends to the batches of the same run.
+    TranslationBatchSaved {
+        key: TranslationKey,
+        batch: TranslationBatch,
+    },
+    /// Every batch of the recording, whatever run made it. Committed with the translation they
+    /// built.
+    TranslationBatchesCleared(RecordingId),
+}
+
+/// The translation run a saved batch belongs to. A rerun reuses a batch only when every field
+/// matches, so a new transcript revision, another target, or another model starts over.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TranslationKey {
+    pub recording: RecordingId,
+    pub revision: Revision,
+    pub target: LangTag,
+    pub model: ModelRef,
+}
+
+/// What one finished batch of a translation run produced, so a rerun after a quit skips it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TranslationBatch {
+    /// `(segment index, translated text)`.
+    pub texts: Vec<(usize, String)>,
 }
 
 /// The transcription run a checkpoint belongs to. A rerun reuses a checkpoint only when every

@@ -1,0 +1,12 @@
+first | 28.7% | 69% | 75% | 3/11
+cover | 10.2% | 87% | 95% | 1/11
+RTFx with re-decodes 2.8; windows with a gap 8/11; gaps 8
+gap languages Counter({'en': 5, 'tl': 2, 'es': 1})
+  pure_tl0.wav tl [(22.8, 25.0, 'es')] | ngganan kung saan ninanais ito ng Palestina batay sa mga hangganan bago ang digmaan sa gitnang silangan noong 1667. todo
+  pure_tl2.wav tl [(18.6, 21.4, 'en')] | an ng pagsulong na may makabuluhang pagbabago sa loob ng ating organisasyon sa halip na pagtanggal ng sertifikasyon. you
+  pure_tl3.wav tl [(14.8, 17.2, 'en')] | hindi madali sapagkat ang paggawi ng tagapagmaneho ay hindi maaaring matansya ng mayroong 100% kasiguraduhan. Thank you.
+  mix_tl3_en0.wav tl [(14.8, 27.6, 'en')] | t the weekly sync First item is the mobile release, the beta build is ready, and we plan to ship it to testers on Friday
+  mix_en2_tl3.wav tl [(25.8, 28.3, 'en')] | o ay hindi madali sapagkat ang paggawi ng tagapagmaneho ay hindi maaaring matansya ng mayroong 100% kasiguraduhan. Okay.
+  mix_tl1_en3.wav en [(19.0, 29.9, 'en')] | e design team wants feedback on the new onboarding screens. Can everyone send comments by Wednesday? That's all from me.
+  mix_en1_tl3.wav tl [(8.4, 26.2, 'tl')] | Tropico ay hindi madali sapagkat ang paggawi ng tagapagmaneho ay hindi maaaring matansya ng mayroong 100% kasiguraduhan.
+  mix_en_tl3_en.wav tl [(4.9, 26.8, 'tl')] | Trapiko ay hindi madali sapagkat ang paggawi ng tagapagmaneho ay hindi maaaring matansya ng mayroong 100% kasiguraduhan.

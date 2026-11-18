@@ -49,6 +49,9 @@ unsafe_op_in_unsafe_fn = "deny"
 [workspace.lints.clippy]
 dbg_macro = "deny"
 
+[patch.crates-io]
+sherpa-onnx = { path = "vendor/sherpa-onnx" }
+
 [profile.release]
 # Until P7 proves the accessibility tree stable, a panic in a view unwinds instead of aborting.
 panic = "unwind"

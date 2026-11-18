@@ -91,7 +91,7 @@ env = { DORY_MCP_KEY = "<key>" }
 | `get_recording` | One meeting's title, date, duration, whether it has a transcript and summary, and its speakers at the `summaries` level. |
 | `get_summary` | One meeting's summary: key points, decisions, and action items. Needs `summaries`. |
 | `list_action_items` | The action items of one meeting, or of recent meetings since a day. Needs `summaries`. |
-| `get_transcript` | One meeting's transcript as speaker turns with times, a page at a time. Needs `transcripts`. |
+| `get_transcript` | One meeting's transcript as speaker turns with times, a page at a time. Needs `transcripts`. A translated meeting reads in the output language, and each translated turn shows the language it was spoken in and the original words. |
 
 Dory also offers two prompts and three kinds of resources. In Claude Code, prompts show up as `/mcp__dory__prepare_one_on_one` and `/mcp__dory__draft_follow_up_email`, and you attach a resource by typing `@dory:` and picking it. Both need the `summaries` level.
 

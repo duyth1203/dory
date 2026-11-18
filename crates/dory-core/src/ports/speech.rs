@@ -23,6 +23,9 @@ pub struct TranscribeRequest<'a> {
     /// Threads the engine may compute with. An engine that holds a thread pool rebuilds it when
     /// this changes; the pace policy's hold bounds how often.
     pub threads: u8,
+    /// One `RawSegment` per sentence, each with its own range. Set only for an engine whose caps
+    /// say `sentence_times`; others ignore it.
+    pub sentence_times: bool,
 }
 
 pub trait SegmentSink {

@@ -848,6 +848,11 @@ impl Machine for FakeMachine {
 pub struct FakeTranscriber {
     segments: HashMap<Channel, Vec<RawSegment>>,
     detected: Option<LangTag>,
+    /// The language call `i` reports, which wins over `detected`.
+    detected_per_call: Vec<LangTag>,
+    /// A call on Auto keeps only the segments that start in the first half of its clip, the way
+    /// Whisper keeps one language and drops a turn in the other.
+    drops_second_half: bool,
     /// Calls from this index on wait until they are cancelled.
     hold_from: AtomicUsize,
     running: AtomicBool,
@@ -859,6 +864,8 @@ impl Default for FakeTranscriber {
         Self {
             segments: HashMap::new(),
             detected: None,
+            detected_per_call: Vec::new(),
+            drops_second_half: false,
             hold_from: AtomicUsize::new(usize::MAX),
             running: AtomicBool::new(false),
             calls: Mutex::new(Vec::new()),
@@ -875,6 +882,7 @@ pub struct TranscribeCall {
     pub language: LanguagePref,
     pub diarize: bool,
     pub threads: u8,
+    pub sentence_times: bool,
 }
 
 impl FakeTranscriber {
@@ -896,8 +904,45 @@ impl FakeTranscriber {
         self
     }
 
+    /// Like [`Self::with_segments`], with each segment detected as `language`.
+    pub fn with_segments_in(
+        mut self,
+        channel: Channel,
+        language: &str,
+        segments: &[(u64, u64, u16, &str)],
+    ) -> Self {
+        let language = LangTag::parse(language).expect("a valid language tag");
+        self = self.with_segments(channel, segments);
+        for segment in self
+            .segments
+            .entry(channel)
+            .or_default()
+            .iter_mut()
+            .rev()
+            .take(segments.len())
+        {
+            segment.language = Some(language.clone());
+        }
+        self
+    }
+
     pub fn detecting(mut self, language: &str) -> Self {
         self.detected = Some(LangTag::parse(language).expect("a valid language tag"));
+        self
+    }
+
+    /// Call `i` reports the `i`th language, the way a multilingual engine hears each window.
+    pub fn detecting_each(mut self, languages: &[&str]) -> Self {
+        self.detected_per_call = languages
+            .iter()
+            .map(|l| LangTag::parse(l).expect("a valid language tag"))
+            .collect();
+        self
+    }
+
+    /// A call on Auto drops the segments that start in the second half of its clip.
+    pub fn dropping_second_half(mut self) -> Self {
+        self.drops_second_half = true;
         self
     }
 
@@ -937,6 +982,7 @@ impl Transcriber for FakeTranscriber {
                 language: req.language.clone(),
                 diarize: req.diarize,
                 threads: req.threads,
+                sentence_times: req.sentence_times,
             });
             calls.len() - 1
         };
@@ -944,6 +990,11 @@ impl Transcriber for FakeTranscriber {
         while index >= self.hold_from.load(Ordering::SeqCst) && !cancel.is_cancelled() {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        let heard_until = if self.drops_second_half && req.language == LanguagePref::Auto {
+            Ms(origin.0 + req.clip.duration.0 / 2)
+        } else {
+            end
+        };
         let result = if cancel.is_cancelled() {
             Err(EngineError::Cancelled)
         } else {
@@ -952,7 +1003,7 @@ impl Transcriber for FakeTranscriber {
                 .get(&req.clip.channel)
                 .into_iter()
                 .flatten()
-                .filter(|s| s.range.start() >= origin && s.range.start() < end)
+                .filter(|s| s.range.start() >= origin && s.range.start() < heard_until)
                 .map(|s| RawSegment {
                     range: TimeRange::new(
                         Ms(s.range.start().0 - origin.0),
@@ -968,7 +1019,11 @@ impl Transcriber for FakeTranscriber {
                 sink.progress(Fraction::new((i + 1) as f32 / total));
             }
             Ok(TranscribeOutcome {
-                detected_language: self.detected.clone(),
+                detected_language: self
+                    .detected_per_call
+                    .get(index)
+                    .or(self.detected.as_ref())
+                    .cloned(),
             })
         };
         self.running.store(false, Ordering::SeqCst);
@@ -982,6 +1037,8 @@ type Reply = Box<dyn Fn(&CompletionRequest<'_>) -> String + Send + Sync>;
 /// and keeps the prompts. Tokens are words.
 pub struct FakeLanguageModel {
     reply: Reply,
+    /// Calls from this index on wait until they are cancelled.
+    hold_from: AtomicUsize,
     prompts: Mutex<Vec<Completion>>,
 }
 
@@ -1004,8 +1061,20 @@ impl FakeLanguageModel {
     ) -> Self {
         Self {
             reply: Box::new(reply),
+            hold_from: AtomicUsize::new(usize::MAX),
             prompts: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A model that answers each prompt with `answer(system, user)`.
+    pub fn answering(answer: impl Fn(&str, &str) -> String + Send + Sync + 'static) -> Self {
+        Self::replying(move |req| answer(req.system, req.user))
+    }
+
+    /// Holds the call with index `call`, counted over every call so far, and every later one,
+    /// until it is cancelled.
+    pub fn hold_from(&self, call: usize) {
+        self.hold_from.store(call, Ordering::SeqCst);
     }
 
     pub fn prompts(&self) -> Vec<Completion> {
@@ -1027,11 +1096,21 @@ impl LanguageModel for FakeLanguageModel {
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);
         }
-        lock(&self.prompts).push(Completion {
-            system: req.system.to_owned(),
-            user: req.user.to_owned(),
-            max_output_tokens: req.max_output_tokens,
-        });
+        let index = {
+            let mut prompts = lock(&self.prompts);
+            prompts.push(Completion {
+                system: req.system.to_owned(),
+                user: req.user.to_owned(),
+                max_output_tokens: req.max_output_tokens,
+            });
+            prompts.len() - 1
+        };
+        while index >= self.hold_from.load(Ordering::SeqCst) {
+            if cancel.is_cancelled() {
+                return Err(EngineError::Cancelled);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
         let reply = (self.reply)(req);
         for piece in reply.split_inclusive(' ') {
             sink.text(piece);
@@ -1113,6 +1192,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
             diarization,
             max_input: None,
             window: None,
+            sentence_times: false,
         },
         recommended: false,
         rank: 0,

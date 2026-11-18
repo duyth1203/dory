@@ -25,7 +25,7 @@ const USAGE: &str = "usage:
   dory-cli list
   dory-cli search TEXT
   dory-cli seed --recordings N --words N [--seed N]
-  dory-cli show ID
+  dory-cli show ID [--languages] [--original] [--summary-translation]
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]
@@ -34,6 +34,8 @@ const USAGE: &str = "usage:
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID
   dory-cli models provision stt|llm|diar MODEL_ID
   dory-cli languages [TAG...|--clear]
+  dory-cli switch-recovery [on|off|auto]
+  dory-cli output-language [TAG|same]
   dory-cli assistants on|off|list
   dory-cli assistants add NAME --exposure titles|summaries|transcripts [--edits never|ask]
   dory-cli assistants exposure NAME titles|summaries|transcripts
@@ -43,6 +45,7 @@ const USAGE: &str = "usage:
   dory-cli assistants prune
   dory-cli private ID on|off
   dory-cli summary restore ID
+  dory-cli translate-summary ID TAG [--fake-engines]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
 The --fake-* flags and seed write fake audio or fake recordings, so they need $DORY_DATA_DIR set.
@@ -79,6 +82,10 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| settings::add(&c, &a))),
             Some("languages") => args::LanguagesArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| settings::languages(&c, &a))),
+            Some("switch-recovery") => args::SwitchRecoveryArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::switch_recovery(&c, &a))),
+            Some("output-language") => args::OutputLanguageArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::output_language(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
             Some("play") => {
@@ -86,6 +93,8 @@ fn main() -> ExitCode {
             }
             Some("process") => args::ProcessArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::run(&c, &a))),
+            Some("translate-summary") => args::TranslateSummaryArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| process::translate_summary(&c, &a))),
             Some("assistants") => assistants::AssistantsArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| assistants::run(&c, &a))),
             Some("private") => assistants::PrivateArgs::parse(rest)

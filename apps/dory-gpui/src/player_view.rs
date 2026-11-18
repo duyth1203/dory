@@ -117,6 +117,9 @@ pub(crate) fn run_fix(
         Fix::ChooseSpeechModel => {
             crate::settings_window::open_at(app, crate::settings_window::Pane::Transcription, cx)
         }
+        Fix::AddMeetingLanguages => {
+            crate::settings_window::open_at(app, crate::settings_window::Pane::Transcription, cx)
+        }
         Fix::FreeUpSpace => {
             crate::settings_window::open_at(app, crate::settings_window::Pane::Storage, cx)
         }

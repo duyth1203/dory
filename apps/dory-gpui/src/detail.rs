@@ -33,8 +33,8 @@ use std::time::Instant;
 
 use chrono::{Local, TimeZone};
 use dory_core::domain::{
-    ChannelLayout, Goal, Recording, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
-    Transcript,
+    ChannelLayout, Goal, LangTag, Recording, RecordingId, RecordingRow, Segment, Stage,
+    SummaryFlag, Transcript,
 };
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -52,7 +52,9 @@ use crate::a11y;
 use crate::actions::{
     CopySummary, CopyTranscript, ExportMarkdown, ExportSrt, ExportText, FindNext, FindPrevious,
 };
-use crate::app::{AppState, Detail, DetailTab, Loadable, Saved, Session};
+use crate::app::{
+    AppState, Detail, DetailTab, Loadable, Saved, Session, Shown, SummaryVersion, TranscriptText,
+};
 use crate::find::Place;
 use crate::fonts;
 use crate::icons::{self, Icon};
@@ -194,6 +196,10 @@ pub struct DetailPane {
     summary: Entity<SummaryText>,
     page: ScrollHandle,
     tab_focus: [FocusHandle; 2],
+    /// The Original and Translated buttons.
+    text_focus: [FocusHandle; 2],
+    /// The summary's Original and Translated buttons.
+    summary_focus: [FocusHandle; 2],
     title_focus: FocusHandle,
     title_edit: Option<TitleEdit>,
     /// What this frame lays out by.
@@ -262,6 +268,8 @@ impl DetailPane {
             summary,
             page,
             tab_focus: [cx.focus_handle(), cx.focus_handle()],
+            text_focus: [cx.focus_handle(), cx.focus_handle()],
+            summary_focus: [cx.focus_handle(), cx.focus_handle()],
             title_focus: cx.focus_handle(),
             title_edit: None,
             pinning: Pinning::default(),
@@ -476,11 +484,14 @@ impl DetailPane {
         .into_any_element()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn tab_row(
         &self,
         tab: DetailTab,
         title: Option<String>,
         detail: &Detail,
+        shown: Shown,
+        translate: Translate<'_>,
         summarizing: Option<Option<u64>>,
         readout: Option<String>,
         theme: &Theme,
@@ -554,6 +565,10 @@ impl DetailPane {
                             .menu("Subtitles (SRT)", Box::new(ExportSrt))
                     }),
             )
+            .children(
+                (tab == DetailTab::Summary && detail.summary.is_some())
+                    .then(|| translate_button(&action, detail, &translate, theme)),
+            )
             .child(
                 Button::new("more")
                     .ghost()
@@ -602,6 +617,14 @@ impl DetailPane {
                         None,
                     )),
             )
+            .children(
+                (tab == DetailTab::Transcript && detail.translated_turns.is_some())
+                    .then(|| self.text_switch(detail, shown.transcript, theme)),
+            )
+            .children(
+                (tab == DetailTab::Summary && detail.summary_translation.is_some())
+                    .then(|| self.summary_switch(detail, shown.summary, theme)),
+            )
             .child(div().flex_1())
             .children(readout.map(|readout| self.find_group(readout, &action, theme)))
             .child(actions)
@@ -645,6 +668,187 @@ impl DetailPane {
             .child(step("find-next", "Next", "Next match", Box::new(FindNext)))
             .into_any_element()
     }
+
+    /// The Original / Translated switch in the transcript's header. Translated is first
+    /// chosen, and the choice is what the list, Copy, and Export show.
+    fn text_switch(&self, detail: &Detail, text: TranscriptText, theme: &Theme) -> AnyElement {
+        let written_in = detail
+            .translation
+            .as_ref()
+            .map(|t| crate::languages::name(&t.target));
+        let session = self.session.clone();
+        self.switch(
+            ("transcript-text", "Transcript text"),
+            [
+                ("text-original", "Original"),
+                ("text-translated", "Translated"),
+            ],
+            &self.text_focus,
+            detail.translated(text),
+            [
+                Some("The transcript as it was spoken".to_owned()),
+                written_in.map(|name| format!("The transcript written in {name}")),
+            ],
+            move |translated, cx| {
+                let text = if translated {
+                    TranscriptText::Translated
+                } else {
+                    TranscriptText::Spoken
+                };
+                session.update(cx, |s, cx| s.set_text(text, cx))
+            },
+            theme,
+        )
+    }
+
+    /// The same switch in the summary's header, once the summary has a translation.
+    fn summary_switch(
+        &self,
+        detail: &Detail,
+        version: SummaryVersion,
+        theme: &Theme,
+    ) -> AnyElement {
+        let written_in = detail
+            .summary_translation
+            .as_ref()
+            .map(|t| crate::languages::name(&t.target));
+        let session = self.session.clone();
+        self.switch(
+            ("summary-text", "Summary text"),
+            [
+                ("summary-original", "Original"),
+                ("summary-translated", "Translated"),
+            ],
+            &self.summary_focus,
+            detail.summary_translated(version),
+            [
+                Some("The summary as it was written".to_owned()),
+                written_in.map(|name| format!("The summary written in {name}")),
+            ],
+            move |translated, cx| {
+                let version = if translated {
+                    SummaryVersion::Translated
+                } else {
+                    SummaryVersion::Original
+                };
+                session.update(cx, |s, cx| s.set_summary_version(version, cx))
+            },
+            theme,
+        )
+    }
+
+    /// A two-button Original / Translated radio group. `pick` gets `true` for Translated.
+    #[allow(clippy::too_many_arguments)]
+    fn switch(
+        &self,
+        (id, label): (&'static str, &'static str),
+        ids: [(&'static str, &'static str); 2],
+        focus: &[FocusHandle; 2],
+        translated: bool,
+        descriptions: [Option<String>; 2],
+        pick: impl Fn(bool, &mut App) + Clone + 'static,
+        theme: &Theme,
+    ) -> AnyElement {
+        let option = |ix: usize| {
+            let (id, label) = ids[ix];
+            let is_translated = ix == 1;
+            let selected = translated == is_translated;
+            let pick = pick.clone();
+            let el = a11y::focusable(
+                a11y::node(id, Role::RadioButton, label),
+                &focus[ix],
+                theme,
+                selected,
+            )
+            .aria_toggled(if selected {
+                gpui_kit::accesskit::Toggled::True
+            } else {
+                gpui_kit::accesskit::Toggled::False
+            })
+            .aria_position_in_set(ix + 1)
+            .aria_size_of_set(2)
+            .on_click(move |_, _, cx| pick(is_translated, cx))
+            .cursor_pointer()
+            .min_h(theme.text(26.).max(px(24.)))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .text_size(theme.text(13.))
+            .rounded(px(6.));
+            let el = match &descriptions[ix] {
+                Some(description) => el.aria_description(description.clone()),
+                None => el,
+            };
+            if selected {
+                el.bg(theme.accent)
+                    .text_color(theme.on_accent)
+                    .font_weight(FontWeight::SEMIBOLD)
+            } else {
+                el.text_color(theme.text_secondary)
+            }
+            .child(label)
+        };
+        a11y::node(id, Role::RadioGroup, label)
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme.control_border)
+            .child(option(0))
+            .child(option(1))
+            .into_any_element()
+    }
+}
+
+/// What the Summary tab's **Translate…** button needs to know.
+#[derive(Clone, Copy)]
+struct Translate<'a> {
+    /// The meeting languages, which the menu lists first.
+    meeting: &'a [LangTag],
+    /// A translation is being made, so the button says so and offers nothing.
+    busy: bool,
+}
+
+/// **Translate…** at the right of the Summary tab's action row. Its menu lists the meeting
+/// languages, a separator, then every other language, without the summary's own, and checks the
+/// one the summary is translated into now.
+fn translate_button<B: Fn(&'static str, &str) -> Button>(
+    action: &B,
+    detail: &Detail,
+    translate: &Translate<'_>,
+    theme: &Theme,
+) -> AnyElement {
+    if translate.busy {
+        return action("translate", "Translating…")
+            .accessibility_label("Translating the summary")
+            .into_any_element();
+    }
+    let written = detail.summary.as_ref().and_then(|s| s.language.as_ref());
+    let choices = menus::translate_choices(translate.meeting, written);
+    let current = detail
+        .summary_translation
+        .as_ref()
+        .map(|t| t.target.clone());
+    action("translate", "Translate…")
+        .accessibility_label("Translate summary")
+        .child(Icon::ChevronDown.view(12., theme.accent_text))
+        .dropdown_menu(move |menu, _, _| {
+            choices
+                .iter()
+                .cloned()
+                .fold(menu, |menu, choice| match choice {
+                    Some((name, action)) => {
+                        let checked = current
+                            .as_ref()
+                            .is_some_and(|c| c.primary() == action.target.primary());
+                        menu.menu_with_check(name, checked, Box::new(action))
+                    }
+                    None => menu.separator(),
+                })
+        })
+        .into_any_element()
 }
 
 /// A one- or two-line state in place of the tabs. Its label is its text, for VoiceOver.
@@ -1124,10 +1328,20 @@ impl Render for DetailPane {
                     window.request_animation_frame();
                 }
                 let dots = summarizing.then(|| motion::looping(window, cx).then(motion::clock_ms));
+                let (text, meeting) = (
+                    self.session.read(cx).shown(),
+                    self.app.read(cx).settings().meeting_languages.clone(),
+                );
+                let translating = matches!(phase, Some(Phase::TranslatingSummary { .. }));
                 let row = self.tab_row(
                     tab,
                     stuck.then_some(shown),
                     &detail,
+                    text,
+                    Translate {
+                        meeting: &meeting,
+                        busy: translating,
+                    },
                     dots,
                     readout.clone(),
                     &theme,
@@ -1145,7 +1359,12 @@ impl Render for DetailPane {
                 let page = match tab {
                     DetailTab::Summary => {
                         let fix = match &phase {
-                            Some(Phase::Failed(problem)) if problem.stage() == Stage::Summarize => {
+                            Some(Phase::Failed(problem))
+                                if matches!(
+                                    problem.stage(),
+                                    Stage::Summarize | Stage::TranslateSummary
+                                ) =>
+                            {
                                 problem.fix().and_then(|fix| {
                                     self.summary_fix(&detail.recording.id, &fix, &theme)
                                 })
@@ -1155,6 +1374,7 @@ impl Render for DetailPane {
                         summary_view::summary(
                             &detail,
                             phase.as_ref(),
+                            text.summary,
                             &self.summary,
                             fix.map(IntoElement::into_any_element),
                             &theme,
@@ -1299,6 +1519,10 @@ mod tests {
             summary: sample.summary(),
             names: Default::default(),
             turns: Vec::new(),
+            translation: None,
+            translated_turns: None,
+            summary_translation: None,
+            translating_into: None,
         }
     }
 

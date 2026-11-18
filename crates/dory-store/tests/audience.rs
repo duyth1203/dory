@@ -34,6 +34,7 @@ fn meeting(id: &str, at: i64, title: &str, transcript: &str, summary: &str) -> V
                     speaker: SpeakerId(1),
                     channel: Channel::System,
                     text: transcript.into(),
+                    language: None,
                 }],
                 detected_languages: vec![],
                 produced_by: model.clone(),
@@ -327,7 +328,7 @@ fn v4_to_v5_keeps_every_row() {
         .unwrap();
     }
     let store = SqliteStore::open(&path).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 8);
+    assert_eq!(store.schema_version().unwrap(), 10);
     let rows = store
         .assistant_recordings(&query(None, Exposure::Titles))
         .unwrap();

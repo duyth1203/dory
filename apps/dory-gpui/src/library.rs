@@ -175,6 +175,8 @@ pub enum RowStatus {
         percent: Percent,
         light: bool,
     },
+    /// Writing the transcript in the output language.
+    Translating,
     Summarizing,
     Done,
     NeedsAttention,
@@ -221,6 +223,7 @@ impl RowStatus {
                 percent,
                 light: true,
             } => format!("{}%, light", percent.get()),
+            RowStatus::Translating => "Translating".into(),
             RowStatus::Summarizing => "Summarizing".into(),
             RowStatus::Done => "Done".into(),
             RowStatus::NeedsAttention => "Needs attention".into(),
@@ -234,9 +237,10 @@ impl RowStatus {
             RowStatus::Stopped => Glyph::StopCircle,
             RowStatus::Saving => Glyph::DotsCircle,
             RowStatus::Queued { .. } => Glyph::Clock,
-            RowStatus::Preparing | RowStatus::Transcribing { .. } | RowStatus::Summarizing => {
-                Glyph::Dots
-            }
+            RowStatus::Preparing
+            | RowStatus::Transcribing { .. }
+            | RowStatus::Translating
+            | RowStatus::Summarizing => Glyph::Dots,
             RowStatus::Done => Glyph::Check,
             RowStatus::NeedsAttention => Glyph::Triangle,
         }
@@ -248,6 +252,7 @@ impl RowStatus {
             RowStatus::Saving
             | RowStatus::Preparing
             | RowStatus::Transcribing { .. }
+            | RowStatus::Translating
             | RowStatus::Summarizing => Tone::Accent,
             RowStatus::NeedsAttention => Tone::Attention,
             RowStatus::ReadyToTranscribe

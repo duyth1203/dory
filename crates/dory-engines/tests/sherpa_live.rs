@@ -3,6 +3,8 @@
 //! `DORY_SHERPA_MODELS=<dir with one folder per model> DORY_SHERPA_WAV=<16 kHz mono wav>
 //! cargo test -p dory-engines --test sherpa_live -- --ignored --nocapture`
 //!
+//! `whisper_reports_the_language_it_heard` also takes `DORY_SHERPA_EXPECT_LANG`, the tag the clip is in.
+//!
 //! Set `DORY_SHERPA_LANG` to a tag such as `en` to pin the language instead of detecting it, and
 //! `DORY_SHERPA_ONLY` to a model name to run just that one.
 
@@ -68,6 +70,7 @@ fn installed_models_transcribe_a_wav() {
             diarize: false,
             hint: None,
             threads: 4,
+            sentence_times: false,
         };
         match engine.transcribe(&request, &mut sink, &cancel) {
             Err(EngineError::UnsupportedLanguage(lang)) => {
@@ -98,6 +101,51 @@ fn installed_models_transcribe_a_wav() {
         ran += 1;
     }
     assert!(ran > 0, "no model is installed under {}", models.display());
+}
+
+#[test]
+#[ignore = "needs DORY_SHERPA_MODELS with Whisper installed and DORY_SHERPA_WAV"]
+fn whisper_reports_the_language_it_heard() {
+    let models = PathBuf::from(std::env::var("DORY_SHERPA_MODELS").expect("DORY_SHERPA_MODELS"));
+    let wav = PathBuf::from(std::env::var("DORY_SHERPA_WAV").expect("DORY_SHERPA_WAV"));
+    let sherpa = Sherpa::new(&models, Sherpa::RELEASES);
+    let clip = Clip::new(
+        wav,
+        Channel::Mixed,
+        Ms(0),
+        Ms(0),
+        Activity::Unmeasured,
+        None,
+    );
+    let cancel = CancelToken::new();
+    let whisper = sherpa
+        .catalog()
+        .into_iter()
+        .find(|e| {
+            e.id.name().starts_with("whisper") && sherpa.availability(&e.id) == Availability::Ready
+        })
+        .expect("a Whisper model installed under DORY_SHERPA_MODELS");
+    let engine = sherpa.open(&whisper.id, &cancel).unwrap();
+    let mut sink = Collect::default();
+    let request = TranscribeRequest {
+        clip: &clip,
+        language: LanguagePref::Auto,
+        diarize: false,
+        hint: None,
+        threads: 4,
+        sentence_times: false,
+    };
+    let outcome = engine.transcribe(&request, &mut sink, &cancel).unwrap();
+    println!(
+        "{}: heard {:?} in {} segments",
+        whisper.id,
+        outcome.detected_language,
+        sink.0.len()
+    );
+    let heard = outcome.detected_language.expect("a language");
+    if let Ok(want) = std::env::var("DORY_SHERPA_EXPECT_LANG") {
+        assert_eq!(heard, LangTag::parse(&want).unwrap());
+    }
 }
 
 /// Seconds of 16-bit mono audio, from the data chunk size.

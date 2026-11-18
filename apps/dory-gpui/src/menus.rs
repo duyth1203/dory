@@ -51,6 +51,11 @@ pub struct MenuState {
     pub book_offered: bool,
     /// The meeting languages, which Re-transcribe in… offers.
     pub languages: Vec<LangTag>,
+    /// The language the selected recording's summary is written in, which Translate Summary…
+    /// leaves out.
+    pub summary_language: Option<LangTag>,
+    /// A translation of the selected recording's summary is being made.
+    pub translating_summary: bool,
 }
 
 /// Where the text scale sits, so View > Bigger and Smaller grey out at the ends (A11Y-7).
@@ -119,6 +124,16 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
         theme: app.prefs.shown_theme(),
         book_offered: app.prefs.book_offered,
         languages: app.settings().meeting_languages.clone(),
+        summary_language: detail
+            .as_ref()
+            .and_then(|d| d.summary.as_ref())
+            .and_then(|s| s.language.clone()),
+        translating_summary: app.selection.id().is_some_and(|id| {
+            matches!(
+                app.phase_of(id),
+                Some(crate::processing::Phase::TranslatingSummary { .. })
+            )
+        }),
     }
 }
 
@@ -203,6 +218,17 @@ pub fn build(state: MenuState) -> Vec<Menu> {
                             Some((name, action)) => {
                                 MenuItem::action(name, action).disabled(!state.has_selection)
                             }
+                            None => MenuItem::separator(),
+                        }),
+                ),
+            ),
+            MenuItem::submenu(
+                Menu::new("Translate Summary…").items(
+                    translate_choices(&state.languages, state.summary_language.as_ref())
+                        .into_iter()
+                        .map(|choice| match choice {
+                            Some((name, action)) => MenuItem::action(name, action)
+                                .disabled(!state.has_summary || state.translating_summary),
                             None => MenuItem::separator(),
                         }),
                 ),
@@ -383,6 +409,20 @@ pub fn recording_menu(
         .separator()
         .menu("Rename", Box::new(Rename))
         .menu("Move to Trash", Box::new(MoveToTrash))
+}
+
+/// **Translate…** and **Recording > Translate Summary…**: the meeting languages, a separator
+/// (`None`), then every other language, each with the action that asks for it.
+pub fn translate_choices(
+    meeting: &[LangTag],
+    written: Option<&LangTag>,
+) -> Vec<Option<(String, TranslateSummaryTo)>> {
+    languages::translate_choices(meeting, written)
+        .into_iter()
+        .map(|choice| {
+            choice.map(|target| (languages::name(&target), TranslateSummaryTo { target }))
+        })
+        .collect()
 }
 
 /// Automatic, a separator (`None`), then each meeting language: the Language options of

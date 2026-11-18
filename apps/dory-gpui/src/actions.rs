@@ -2,7 +2,7 @@
 //! `shell.rs` handles each one at the window root so it fires whatever has focus, and views
 //! dispatch them instead of declaring their own. A later phase adds its commands here.
 
-use dory_core::domain::LanguagePref;
+use dory_core::domain::{LangTag, LanguagePref};
 
 gpui_kit::actions!(
     dory,
@@ -70,6 +70,14 @@ impl RetranscribeIn {
             _ => false,
         }
     }
+}
+
+/// **Translate Summary…** for the selected recording: its summary in `target`, beside the
+/// original.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct TranslateSummaryTo {
+    pub target: LangTag,
 }
 
 /// What a Processing window row's ⋯ menu does to its job (UX-15).

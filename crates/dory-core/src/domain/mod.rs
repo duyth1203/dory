@@ -10,6 +10,7 @@ mod settings;
 mod summary_sections;
 mod time;
 mod transcript;
+mod translation;
 mod waveform;
 
 pub use assistant::{
@@ -28,8 +29,9 @@ pub use media::{Channel, ChannelLayout, Ms};
 pub use recording::{
     Recording, RecordingEdit, RecordingQuery, RecordingRow, SummaryFlag, TakeContainer, TakeInfo,
 };
-pub use settings::{Processing, Settings};
+pub use settings::{Processing, Recovery, Settings};
 pub use summary_sections::{Sections, list_items, sections};
 pub use time::{Fraction, TimeRange, Timestamp};
-pub use transcript::{Segment, SpeakerId, SpeakerNames, Summary, Transcript};
+pub use transcript::{BILINGUAL_SHARE, Segment, SpeakerId, SpeakerNames, Summary, Transcript};
+pub use translation::{SummaryRefusal, SummaryTranslation, Translation, TranslationFlag};
 pub use waveform::{BUCKETS, LevelMeter, Levels, Waveform};

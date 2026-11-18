@@ -79,6 +79,10 @@ pub enum Mismatch {
     NoDiarization,
     #[error("input is longer than the model accepts")]
     InputTooLong,
+    /// A run sent the model real speech and it recognized no word, as Parakeet does on a language
+    /// it was not trained on. Only a finished run can tell, so no fit rule returns it.
+    #[error("heard speech but recognized no words")]
+    NothingRecognized,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,6 +110,9 @@ pub struct SttCaps {
     /// silence up to this length and checkpoints after each. `None` runs the whole clip in one call,
     /// for engines whose speaker ids only hold within one call.
     pub window: Option<Ms>,
+    /// Asked for them, the engine returns one segment per sentence with its own time, so the core
+    /// can see which speech a window left without text.
+    pub sentence_times: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,6 +251,7 @@ mod tests {
             diarization,
             max_input: max_input.map(Ms),
             window: None,
+            sentence_times: false,
         }
     }
 

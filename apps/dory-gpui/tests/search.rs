@@ -353,6 +353,7 @@ fn calls_about_kilimanjaro(
                     speaker: SpeakerId(1),
                     channel: Channel::System,
                     text: format!("We talked about kilimanjaro on call {n}."),
+                    language: None,
                 }],
                 detected_languages: Vec::new(),
                 produced_by: ModelRef::parse("fake/sample").unwrap(),
@@ -531,6 +532,7 @@ fn segment(speaker: u16, channel: Channel, range: Option<(u64, u64)>, text: &str
         speaker: SpeakerId(speaker),
         channel,
         text: text.to_owned(),
+        language: None,
     }
 }
 
@@ -1303,4 +1305,52 @@ fn a_link_address_in_the_summary_is_not_a_match(cx: &mut TestAppContext) {
         let found = app.session().unwrap().read(cx).found().unwrap();
         assert_eq!(found.in_summary().1, Some(1), "the second mark");
     });
+}
+
+#[gpui_kit::test]
+fn matches_are_marked_on_the_spoken_text_and_stepping_brings_it_back(cx: &mut TestAppContext) {
+    use dory_core::domain::Translation;
+    use dory_gpui::app::TranscriptText;
+    let transcript = corpus_transcript(TALK).expect("a transcript");
+    let translation = Translation {
+        target: dory_core::domain::LangTag::parse("en").unwrap(),
+        transcript_revision: transcript.revision,
+        produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+        texts: vec![Some("Nothing here matches.".into()); transcript.segments.len()],
+    };
+    let extra = vec![Change::TranslationReplaced {
+        id: id_of(TALK),
+        translation,
+    }];
+    let (window, app, _) = open_corpus_with(extra, cx);
+    let text = |app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, cx| app.session().unwrap().read(cx).text())
+    };
+    open_hit(TALK, "roadmap", &app, window, cx);
+    assert_eq!(
+        text(&app, cx),
+        TranscriptText::Spoken,
+        "a hit opens on the spoken text, where its matches are"
+    );
+    assert!(
+        described(window, 1, cx).is_some_and(|d| d.contains("Search match")),
+        "the matching turn is marked"
+    );
+
+    app.update(cx, |app, cx| {
+        let session = app.session().unwrap().clone();
+        session.update(cx, |s, cx| s.set_text(TranscriptText::Translated, cx));
+    });
+    settle(window, cx);
+    assert!(
+        !described(window, 1, cx).is_some_and(|d| d.contains("Search match")),
+        "marks follow the spoken text, so the translation carries none"
+    );
+
+    step(window, true, cx);
+    assert_eq!(
+        text(&app, cx),
+        TranscriptText::Spoken,
+        "Find Next shows the text it found the match in"
+    );
 }

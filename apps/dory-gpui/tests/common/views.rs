@@ -233,6 +233,8 @@ fn library(views: &mut Vec<View>, scale: f32, window_size: (f32, f32), cx: &mut 
     app.update(cx, |app, cx| app.set_tab(DetailTab::Transcript, cx));
     views.push(frame("transcript tab", window, cx));
     app.update(cx, |app, cx| app.set_tab(DetailTab::Summary, cx));
+    select(super::TRANSLATED_SUMMARY, &app, cx);
+    views.push(frame("translated summary tab", window, cx));
     select("Hiring debrief", &app, cx);
     views.push(frame("needs attention", window, cx));
     select("Weekly sync", &app, cx);

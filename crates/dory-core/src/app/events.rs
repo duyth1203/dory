@@ -112,7 +112,7 @@ impl Event {
 }
 
 /// The events a committed change list announces.
-/// Checkpoints announce nothing: they are the pipeline's own bookkeeping, and stage progress
+/// Checkpoints and saved translation batches announce nothing: they are the pipeline's own bookkeeping, and stage progress
 /// already tells a UI how far a run got.
 pub fn change_events(changes: &[Change]) -> Vec<Event> {
     changes
@@ -123,14 +123,19 @@ pub fn change_events(changes: &[Change]) -> Vec<Event> {
             Change::RecordingDeleted(id) => Some(Event::RecordingDeleted(id.clone())),
             Change::TranscriptReplaced { id, .. } => Some(Event::TranscriptChanged(id.clone())),
             Change::SpeakerNamesReplaced { id, .. } => Some(Event::SpeakerNamesChanged(id.clone())),
-            Change::SummaryReplaced { id, .. } | Change::SummaryRestored(id) => {
-                Some(Event::SummaryChanged(id.clone()))
-            }
+            Change::SummaryReplaced { id, .. }
+            | Change::SummaryRestored(id)
+            | Change::SummaryTranslationWanted { id, .. }
+            | Change::SummaryTranslated { id, .. } => Some(Event::SummaryChanged(id.clone())),
             Change::SummaryInstructionSet { id, .. } => Some(Event::RecordingChanged(id.clone())),
             Change::JobEnqueued { id, .. } => Some(Event::JobEnqueued(id.clone())),
             Change::Job { job, .. } => Some(Event::JobChanged(*job)),
             Change::SettingsReplaced(_) => Some(Event::SettingsChanged),
-            Change::CheckpointSaved { .. } | Change::CheckpointsCleared(_) => None,
+            Change::TranslationReplaced { id, .. } => Some(Event::TranscriptChanged(id.clone())),
+            Change::CheckpointSaved { .. }
+            | Change::CheckpointsCleared(_)
+            | Change::TranslationBatchSaved { .. }
+            | Change::TranslationBatchesCleared(_) => None,
             Change::Assistant(AssistantChange::RecordingHidden { id, .. }) => {
                 Some(Event::RecordingChanged(id.clone()))
             }

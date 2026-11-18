@@ -22,9 +22,22 @@ use crate::Providers;
 pub const FAKE_STT: &str = "fake/stt";
 pub const FAKE_LLM: &str = "fake/llm";
 
+/// Put in front of every line the fake engines translate.
+pub const TRANSLATED: &str = "[fake translation] ";
 const SUMMARY: &str = "## Fake summary\n- The fake engines wrote this.";
 const CHUNK: Duration = Duration::from_millis(100);
 const TONE_AMPLITUDE: f32 = 0.25;
+
+/// What the fake summary model answers a translation request with: every numbered line, marked.
+fn translate(user: &str) -> String {
+    user.lines()
+        .map(|line| match line.split_once("] ") {
+            Some((n, text)) => format!("{n}] {TRANSLATED}{text}"),
+            None => line.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 pub(crate) fn providers() -> Providers {
     let mic = [
@@ -51,7 +64,13 @@ pub(crate) fn providers() -> Providers {
     let llm: Arc<dyn ModelProvider<Llm>> = Arc::new(FakeLlmProvider::new(
         "fake",
         vec![llm_entry(FAKE_LLM)],
-        Arc::new(FakeLanguageModel::new(SUMMARY)),
+        Arc::new(FakeLanguageModel::answering(|system, user| {
+            if system.contains("You translate") {
+                translate(user)
+            } else {
+                SUMMARY.to_owned()
+            }
+        })),
     ));
     Providers {
         stt: vec![stt],

@@ -1,12 +1,13 @@
-//! `process`: queues the pipeline for a recording and follows it to the end.
+//! `process` queues the pipeline for a recording and follows it to the end. `translate-summary`
+//! does the same for the translation of the recording's summary.
 
 use std::time::Duration;
 
 use dory::Config;
-use dory_core::app::Event;
-use dory_core::domain::{Goal, JobState};
+use dory_core::app::{Dory, DoryError, Event, Subscription};
+use dory_core::domain::{Goal, Job, JobState, SummaryRefusal};
 
-use crate::args::ProcessArgs;
+use crate::args::{ProcessArgs, TranslateSummaryArgs};
 use crate::{open, view};
 
 const TICK: Duration = Duration::from_millis(25);
@@ -36,7 +37,7 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
             },
         )
         .map_err(crate::chain)?;
-    let mut job = view::latest_job(dory.library().jobs(&args.id).map_err(crate::chain)?)
+    let job = view::latest_job(dory.library().jobs(&args.id).map_err(crate::chain)?)
         .ok_or("the job was not queued")?;
     if matches!(job.state, JobState::Blocked { .. }) {
         // An earlier run blocked it. This run's engines may be what it was waiting for.
@@ -44,6 +45,24 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
         dory.pipeline().unblock(job.id).map_err(crate::chain)?;
     }
 
+    follow(&dory, &events, job)?;
+
+    let lib = dory.library();
+    let segments = lib
+        .transcript(&args.id)
+        .map_err(crate::chain)?
+        .map_or(0, |t| t.segments.len());
+    let summary = lib.summary(&args.id).map_err(crate::chain)?;
+    println!(
+        "{} transcript segments, summary {}",
+        segments,
+        summary.map_or("none".into(), |s| format!("{} chars", s.markdown.len()))
+    );
+    Ok(())
+}
+
+/// Prints the job's progress and state changes until it finishes, and fails with what stopped it.
+fn follow(dory: &Dory, events: &Subscription, mut job: Job) -> Result<(), String> {
     let mut shown = None;
     let mut last_progress = None;
     let mut last_budget = None;
@@ -99,17 +118,55 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
             JobState::Queued | JobState::Running { .. } => std::thread::sleep(TICK),
         }
     }
+    Ok(())
+}
 
-    let lib = dory.library();
-    let segments = lib
-        .transcript(&args.id)
+pub fn translate_summary(config: &Config, args: &TranslateSummaryArgs) -> Result<(), String> {
+    let dory = open(config, args.fake_engines)?;
+    let events = dory.events();
+    let started = std::time::Instant::now();
+    // A job that a blocker held resumes by itself once the engine is back, when this run opens
+    // the library. It is the translation asked for, so this run follows it to the end.
+    match dory
+        .library()
+        .translate_summary(&args.id, args.target.clone())
+    {
+        Err(DoryError::SummaryRefused(SummaryRefusal::InProgress))
+            if dory
+                .library()
+                .summary_translation_wanted(&args.id)
+                .map_err(crate::chain)?
+                .as_ref()
+                == Some(&args.target) =>
+        {
+            println!("a translation of this summary is running, following it");
+        }
+        done => done.map_err(crate::chain)?,
+    }
+    let job = dory
+        .library()
+        .jobs(&args.id)
         .map_err(crate::chain)?
-        .map_or(0, |t| t.segments.len());
-    let summary = lib.summary(&args.id).map_err(crate::chain)?;
+        .into_iter()
+        .filter(|job| job.goal == Goal::TRANSLATE_SUMMARY)
+        .max_by_key(|job| job.id)
+        .ok_or("the job was not queued")?;
+    if matches!(job.state, JobState::Blocked { .. }) {
+        println!("job {} was blocked, trying it again", job.id.0);
+        dory.pipeline().unblock(job.id).map_err(crate::chain)?;
+    }
+    follow(&dory, &events, job)?;
+    let translation = dory
+        .library()
+        .summary_translation(&args.id)
+        .map_err(crate::chain)?
+        .ok_or("the job finished without a translation")?;
     println!(
-        "{} transcript segments, summary {}",
-        segments,
-        summary.map_or("none".into(), |s| format!("{} chars", s.markdown.len()))
+        "translated into {} by {} in {:.1} s",
+        translation.target,
+        translation.produced_by,
+        started.elapsed().as_secs_f64()
     );
+    println!("{}", translation.markdown);
     Ok(())
 }

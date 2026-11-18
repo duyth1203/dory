@@ -10,12 +10,23 @@ use crate::models::{KindTag, Mismatch, ModelRef, Unavailable};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
     Transcribe,
+    /// Writes the transcript in the output language. Only jobs queued while an output language
+    /// is set have it in their goal.
+    Translate,
     Summarize,
+    /// Translates the stored summary into the language the user asked for. Only a job made for
+    /// that has it in its goal, and it is that job's one stage.
+    TranslateSummary,
 }
 
 impl Stage {
     /// Stages run in this order.
-    pub const ORDER: [Stage; 2] = [Stage::Transcribe, Stage::Summarize];
+    pub const ORDER: [Stage; 4] = [
+        Stage::Transcribe,
+        Stage::Translate,
+        Stage::Summarize,
+        Stage::TranslateSummary,
+    ];
 }
 
 /// How many times a stage may start before an interruption fails the job instead of requeueing
@@ -26,34 +37,64 @@ pub const MAX_ATTEMPTS: u8 = 3;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Goal {
     transcribe: bool,
+    translate: bool,
     summarize: bool,
+    translate_summary: bool,
 }
 
 impl Goal {
     pub const ALL: Goal = Goal {
         transcribe: true,
+        translate: false,
         summarize: true,
+        translate_summary: false,
     };
     pub const TRANSCRIBE: Goal = Goal {
         transcribe: true,
+        translate: false,
         summarize: false,
+        translate_summary: false,
     };
     pub const SUMMARIZE: Goal = Goal {
         transcribe: false,
+        translate: false,
         summarize: true,
+        translate_summary: false,
+    };
+    /// Only the summary's translation. It never mixes with another stage, so a job that runs it
+    /// leaves the transcript and the summary alone.
+    pub const TRANSLATE_SUMMARY: Goal = Goal {
+        transcribe: false,
+        translate: false,
+        summarize: false,
+        translate_summary: true,
     };
 
     pub fn new(transcribe: bool, summarize: bool) -> Option<Goal> {
         (transcribe || summarize).then_some(Goal {
             transcribe,
+            translate: false,
             summarize,
+            translate_summary: false,
         })
+    }
+
+    /// The same goal, with the translate stage when `translate` and the goal transcribes. A job
+    /// that only summarizes reads the transcript and translation already stored, so it never
+    /// translates.
+    pub fn translating(self, translate: bool) -> Goal {
+        Goal {
+            translate: translate && self.transcribe,
+            ..self
+        }
     }
 
     pub fn wants(self, stage: Stage) -> bool {
         match stage {
             Stage::Transcribe => self.transcribe,
+            Stage::Translate => self.translate,
             Stage::Summarize => self.summarize,
+            Stage::TranslateSummary => self.translate_summary,
         }
     }
 }
@@ -956,5 +997,52 @@ mod tests {
             .and_then(|j| j.on(&JobEvent::Interrupted))
             .unwrap();
         assert_eq!(interrupted.state, JobState::Queued);
+    }
+
+    #[test]
+    fn translating_adds_a_stage_between_transcribe_and_summarize_only_to_a_transcribing_goal() {
+        let tr = Stage::Translate;
+        let goal = Goal::ALL.translating(true);
+        assert!(goal.wants(tr));
+        let mut j = job(goal, &[], JobState::Queued);
+        let mut seen = Vec::new();
+        while let Some(stage) = j.next_stage() {
+            seen.push(stage);
+            j = j
+                .on(&JobEvent::Started { stage })
+                .and_then(|j| j.on(&JobEvent::StageDone { stage }))
+                .unwrap();
+        }
+        assert_eq!(seen, [T, tr, S]);
+        assert_eq!(j.state, JobState::Succeeded);
+
+        assert_eq!(Goal::ALL.translating(false), Goal::ALL);
+        assert_eq!(Goal::SUMMARIZE.translating(true), Goal::SUMMARIZE);
+        assert!(Goal::TRANSCRIBE.translating(true).wants(tr));
+    }
+
+    #[test]
+    fn translating_the_summary_is_a_job_of_one_stage_that_no_other_goal_has() {
+        let only = Stage::TranslateSummary;
+        for goal in [Goal::ALL, Goal::TRANSCRIBE, Goal::SUMMARIZE] {
+            assert!(!goal.wants(only), "{goal:?}");
+            assert!(!goal.translating(true).wants(only), "{goal:?}");
+        }
+        let goal = Goal::TRANSLATE_SUMMARY;
+        assert_eq!(
+            goal.translating(true),
+            goal,
+            "the output language adds nothing"
+        );
+        for stage in [T, Stage::Translate, S] {
+            assert!(!goal.wants(stage), "{stage:?}");
+        }
+        let mut j = job(goal, &[], JobState::Queued);
+        assert_eq!(j.next_stage(), Some(only));
+        j = j
+            .on(&JobEvent::Started { stage: only })
+            .and_then(|j| j.on(&JobEvent::StageDone { stage: only }))
+            .unwrap();
+        assert_eq!(j.state, JobState::Succeeded);
     }
 }

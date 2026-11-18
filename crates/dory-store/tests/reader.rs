@@ -6,7 +6,7 @@ use dory_core::domain::{
 use dory_core::ports::{Change, Store, StoreError, StoreRead};
 use dory_store::{SqliteReader, SqliteStore};
 
-const LATEST: u32 = 8;
+const LATEST: u32 = 10;
 
 fn recording(id: &str) -> Recording {
     Recording {

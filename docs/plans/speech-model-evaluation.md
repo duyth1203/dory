@@ -70,8 +70,8 @@ The bench lands as its own PR, outside the GPUI stack. It can start before GPUI 
    - Earnings-22, for long-form audio up to an hour.
    - A 2-hour file made by joining AMI meetings, for the long-file path.
    - The FLEURS test split for each named language, or the eight default languages until they are named.
-   - A code-switching set of at least 5 of the operator's own recordings in which speakers change language mid-meeting, under `fixtures/private/`.
-5. Add 5 of the operator's own recordings with hand-corrected transcripts under `fixtures/private/`. Add `fixtures/private/` to `.gitignore`. These never leave the Mac.
+   - The code-switching sets are public, not the operator's recordings (see the 2026-11-17 note below). `scripts/bilingual-fixtures.sh` builds them under `fixtures/public/`, and `bilingual-bench` scores them.
+5. The operator's own recordings are not used, for privacy, so there is no `fixtures/private/` set and no hand-corrected transcript of a real meeting. The code-switching step is decided on the public sets in `docs/plans/bilingual.md` Appendix F. The turn-switch set is eleven clips built from the test library's own takes, and the Taglish set is 24 CS-FLEURS `tgl_eng` clips.
 
 ## Measure under one protocol
 
@@ -97,7 +97,7 @@ The bench lands as its own PR, outside the GPUI stack. It can start before GPUI 
 1. Drop any candidate whose license forbids commercial use or whose runtime cannot run in-process or as a bundled native sidecar.
 2. Drop any candidate whose peak RSS exceeds 3 GB, so Dory and Ollama fit together on a 16 GB Mac.
 3. Drop any candidate that does not cover every named language. Drop any candidate whose AMI WER, AMI cpWER, or FLEURS error rate in any named language is worse than Whisper large-v3-turbo's.
-4. Drop any candidate that picks the wrong language on more than 2% of segments in the code-switching set.
+4. Drop any candidate that picks the wrong language on more than 2% of windows or chunks in the public turn-switch and Taglish sets (`bilingual-bench`'s wrong-language column).
 5. Among the rest, the default is the fastest by warm RTFx on the 2-hour file. A candidate within 10% of the fastest's speed wins if its cpWER is at least 1 point better.
 6. Offer at most two more models in Settings. One is smaller for 8 GB Macs. The other is Parakeet as an English and European fast path, if it lost the default slot only on language coverage.
 7. For summaries, write the summary in the meeting's main language. Add "summary uses the meeting's language" to the E5 rubric, and include at least 3 non-English transcripts among the 10. Switch the default from `gemma4:e4b` only if the new model scores at least 0.5 rubric points higher and finishes a 2-hour transcript in under 60 seconds on the M3 Pro.
@@ -122,8 +122,12 @@ The operator's meetings are Tagalog and English. Sona's repo is gone, so the bak
 - Qwen3-ASR spells Tagalog phonetically ("tukomento" for "dokumento"), so its errors are real misrecognitions, not a scoring artifact. It is dropped from the catalog. It loses on Tagalog by 31 points and adds nothing for English.
 - Parakeet stays the recommended row for meetings whose languages it covers, because it is about five times faster than Whisper for 1 point more English error.
 - Whisper turbo is what Auto picks once Tagalog is a meeting language.
-- FLEURS is read speech, not meetings. Taglish code-switching inside one sentence is not measured. One code-switch sample in the sherpa agent's live test showed Whisper on auto turning non-English parts into repeated English. Measuring real Taglish meeting audio is the next step before calling this final.
+- FLEURS is read speech, not meetings. Taglish code-switching inside one sentence is not measured. One code-switch sample in the sherpa agent's live test showed Whisper on auto turning non-English parts into repeated English. Real Taglish meeting audio will not be measured (see the next section).
 - 945 Tagalog and 921 English reference words. The Tagalog gap is far outside run-to-run noise. The English differences of 1 point are not.
+
+## The operator's own recordings are not used (2026-11-17)
+
+The operator declined to share meeting recordings, for privacy, so no recording of theirs is scored and no reference transcript of a real meeting is made. The public sets in `docs/plans/bilingual.md` Appendix F replace this plan's code-switching step. They are the turn-switch set, built from the test library's own takes, and 24 CS-FLEURS `tgl_eng` clips (CC BY-NC 4.0, downloaded by checksum and never committed). `scripts/bilingual-fixtures.sh` rebuilds both on any Mac, and `cargo run --release -p dory-engines --example bilingual-bench -- score <folder>` scores them through the `Transcriber` port with word errors, wrong-language rate, dropped turns, and RTFx. The gap this leaves is that no real Taglish is measured. The CS-FLEURS speech is synthetic, with a voice change at every switch.
 
 ## What is not verified yet
 

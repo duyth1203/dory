@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use dory_core::domain::{
-    Channel, Recording, RecordingId, RecordingRow, SpeakerId, SpeakerNames, Summary, TimeRange,
-    Transcript,
+    Channel, LangTag, Recording, RecordingId, RecordingRow, SpeakerId, SpeakerNames, Summary,
+    SummaryTranslation, TimeRange, Transcript, Translation,
 };
 use dory_core::ports::StoreError;
 use dory_core::search::Query;
@@ -21,7 +21,85 @@ pub struct Detail {
     pub transcript: Option<Transcript>,
     pub summary: Option<Summary>,
     pub names: SpeakerNames,
+    /// The turns as spoken.
     pub turns: Vec<Turn>,
+    /// The transcript translated into the output language, when this recording has a translation
+    /// of the transcript now stored that changes any text.
+    pub translation: Option<Translation>,
+    /// The same turns, written in the output language. Present exactly when `translation` is, and
+    /// the same length as `turns`, so a turn number means the same turn in both.
+    pub translated_turns: Option<Vec<Turn>>,
+    /// The summary translated on request. It always describes `summary`, because the store drops
+    /// it whenever a summary is written or restored.
+    pub summary_translation: Option<SummaryTranslation>,
+    /// The language a translation of the summary is being made in, while one is.
+    pub translating_into: Option<LangTag>,
+}
+
+/// Which text of a translated summary the Summary tab shows, and so what Copy Summary and Export
+/// put out. Only a recording with a summary translation has a choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SummaryVersion {
+    /// The translation, as soon as there is one.
+    #[default]
+    Translated,
+    Original,
+}
+
+/// What each tab shows. Copy and Export put out the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    pub transcript: TranscriptText,
+    pub summary: SummaryVersion,
+}
+
+impl From<TranscriptText> for Shown {
+    fn from(transcript: TranscriptText) -> Shown {
+        Shown {
+            transcript,
+            ..Shown::default()
+        }
+    }
+}
+
+/// Which text of a translated transcript the transcript tab shows, and so what Copy and Export
+/// put out. Only a recording with a translation has a choice.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TranscriptText {
+    /// The translation, as soon as there is one.
+    #[default]
+    Translated,
+    Spoken,
+}
+
+impl Detail {
+    /// The turns `text` asks for. A recording with no translation only has what was spoken.
+    pub fn shown(&self, text: TranscriptText) -> &[Turn] {
+        match (text, &self.translated_turns) {
+            (TranscriptText::Translated, Some(translated)) => translated,
+            _ => &self.turns,
+        }
+    }
+
+    /// Whether `text` ends up showing the translation.
+    pub fn translated(&self, text: TranscriptText) -> bool {
+        text == TranscriptText::Translated && self.translated_turns.is_some()
+    }
+
+    /// The summary's Markdown as `version` asks for it: the translation when there is one and it
+    /// is asked for, else what was written. `None` without a summary.
+    pub fn shown_summary(&self, version: SummaryVersion) -> Option<&str> {
+        let summary = self.summary.as_ref()?;
+        Some(match (&self.summary_translation, version) {
+            (Some(translation), SummaryVersion::Translated) => &translation.markdown,
+            _ => &summary.markdown,
+        })
+    }
+
+    /// Whether `version` ends up showing the summary's translation.
+    pub fn summary_translated(&self, version: SummaryVersion) -> bool {
+        version == SummaryVersion::Translated && self.summary_translation.is_some()
+    }
 }
 
 pub enum Loadable {
@@ -40,26 +118,107 @@ pub struct Turn {
     /// `None` for transcripts imported from the old app, which have no times and cannot seek.
     pub range: Option<TimeRange>,
     pub text: String,
+    /// The language the turn was spoken in, in a translated turn too. `None` when unknown.
+    pub language: Option<LangTag>,
+    /// The spoken language's name, set only where it tells the reader something: the transcript
+    /// is bilingual and this turn is not in its main language. `None` everywhere else.
+    pub tag: Option<SharedString>,
+    /// Set on a translated turn: the languages its translated segments were spoken in, which may
+    /// be none when the engine did not say. `None` on a turn as spoken.
+    pub translated_from: Option<Vec<LangTag>>,
 }
 
-/// Groups segments into turns. The local user on the mic channel reads "Me", as in the CLI.
+impl Turn {
+    /// What VoiceOver adds to a translated turn: "translated from Tagalog".
+    pub fn translated_note(&self) -> Option<String> {
+        let from = self.translated_from.as_ref()?;
+        let names: Vec<String> = from.iter().map(crate::languages::primary_name).collect();
+        Some(match names.as_slice() {
+            [] => "translated".to_owned(),
+            names => format!(
+                "translated from {}",
+                crate::languages::name_list(names, "and")
+            ),
+        })
+    }
+}
+
+/// Groups segments into turns, a new turn at each change of speaker or language. The local user
+/// on the mic channel reads "Me", as in the CLI.
 pub fn turns(transcript: &Transcript, names: &SpeakerNames) -> Vec<Turn> {
+    group(transcript, names, None)
+}
+
+/// The same turns with each translated segment as translated. Turns split on the spoken speaker
+/// and language alone, as in [`turns`], so turn `n` here is turn `n` there.
+pub fn translated_turns(
+    transcript: &Transcript,
+    names: &SpeakerNames,
+    translation: &Translation,
+) -> Vec<Turn> {
+    group(transcript, names, Some(translation))
+}
+
+fn group(
+    transcript: &Transcript,
+    names: &SpeakerNames,
+    translation: Option<&Translation>,
+) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
-    for segment in &transcript.segments {
+    let main = transcript.main_language().cloned().or_else(|| {
+        let (tag, _) = transcript.language_shares().into_iter().next()?;
+        Some(tag)
+    });
+    let tagged = transcript.is_bilingual();
+    for (ix, segment) in transcript.segments.iter().enumerate() {
+        let translated = translation.and_then(|t| t.text(ix));
+        let text = translated.unwrap_or(&segment.text);
+        // Every translated segment marks its turn, and the languages it was spoken in ride along.
+        let marked = |turn: &mut Turn| {
+            if translated.is_some() {
+                let from = turn.translated_from.get_or_insert_with(Vec::new);
+                if let Some(language) = &segment.language
+                    && !from.iter().any(|l| l.primary() == language.primary())
+                {
+                    from.push(language.clone());
+                }
+            }
+        };
         match turns.last_mut() {
-            Some(turn) if turn.speaker == segment.speaker => {
+            Some(turn)
+                if turn.speaker == segment.speaker
+                    && turn.language.as_ref().map(LangTag::primary)
+                        == segment.language.as_ref().map(LangTag::primary) =>
+            {
                 turn.text.push(' ');
-                turn.text.push_str(&segment.text);
+                turn.text.push_str(text);
                 if let (Some(range), Some(next)) = (turn.range, segment.range) {
                     turn.range = TimeRange::new(range.start(), next.end().max(range.end()));
                 }
+                marked(turn);
             }
-            _ => turns.push(Turn {
-                speaker: segment.speaker,
-                label: speaker_label(segment.speaker, segment.channel, transcript, names),
-                range: segment.range,
-                text: segment.text.clone(),
-            }),
+            _ => {
+                let mut turn = Turn {
+                    speaker: segment.speaker,
+                    label: speaker_label(segment.speaker, segment.channel, transcript, names),
+                    range: segment.range,
+                    text: text.to_owned(),
+                    language: segment.language.clone(),
+                    tag: segment
+                        .language
+                        .as_ref()
+                        .filter(|language| {
+                            tagged
+                                && main
+                                    .as_ref()
+                                    .is_some_and(|m| m.primary() != language.primary())
+                        })
+                        .map(|language| crate::languages::primary_name(language).into()),
+                    translated_from: None,
+                };
+                marked(&mut turn);
+                turns.push(turn);
+            }
         }
     }
     turns
@@ -101,6 +260,8 @@ pub struct Session {
     loaded: Loadable,
     player: Entity<PlayerHandle>,
     error: Option<SharedString>,
+    text: TranscriptText,
+    summary_version: SummaryVersion,
     generation: u64,
     query: Option<Query>,
     found: Option<Matches>,
@@ -139,6 +300,8 @@ impl Session {
             loaded: Loadable::Loading,
             player,
             error: None,
+            text: TranscriptText::default(),
+            summary_version: SummaryVersion::default(),
             generation: 0,
             query,
             found: None,
@@ -170,6 +333,45 @@ impl Session {
 
     pub fn player(&self) -> &Entity<PlayerHandle> {
         &self.player
+    }
+
+    /// Which text of a translated transcript the tab shows, and Copy and Export use.
+    pub fn text(&self) -> TranscriptText {
+        self.text
+    }
+
+    pub fn set_text(&mut self, text: TranscriptText, cx: &mut Context<Self>) {
+        if self.text != text {
+            self.text = text;
+            cx.notify();
+        }
+    }
+
+    /// Which text of a translated summary the Summary tab shows, and Copy Summary and Export use.
+    pub fn summary_version(&self) -> SummaryVersion {
+        self.summary_version
+    }
+
+    /// What both tabs show, which Copy and Export put out.
+    pub fn shown(&self) -> Shown {
+        Shown {
+            transcript: self.text,
+            summary: self.summary_version,
+        }
+    }
+
+    pub fn set_summary_version(&mut self, version: SummaryVersion, cx: &mut Context<Self>) {
+        if self.summary_version == version {
+            return;
+        }
+        self.summary_version = version;
+        let markdown = self
+            .detail()
+            .and_then(|d| d.shown_summary(version).map(str::to_owned))
+            .unwrap_or_default();
+        self.summary
+            .update(cx, |state, cx| state.set_text(&markdown, cx));
+        cx.notify();
     }
 
     /// The last write that failed, for the detail pane to show. Cleared by the next write.
@@ -214,6 +416,10 @@ impl Session {
         let found = self.found.as_mut()?;
         let at = found.step(delta).clone();
         let spoken = found.spoken(&detail.turns);
+        // Matches are found in what was spoken and written, so stepping shows those texts, where
+        // they are marked.
+        self.text = TranscriptText::Spoken;
+        self.set_summary_version(SummaryVersion::Original, cx);
         self.reveal += 1;
         cx.notify();
         Some(Moved { at, spoken })
@@ -225,9 +431,19 @@ impl Session {
     fn rematch(&mut self, jump: bool, cx: &mut Context<Self>) {
         let kept = self.found.take();
         self.counted = None;
+        // A search opens on what was written, as it does on what was spoken. The summary's text
+        // view then renders again and this runs once more over the written text.
+        if jump
+            && self.query.is_some()
+            && self
+                .detail()
+                .is_some_and(|d| d.summary_translated(self.summary_version))
+        {
+            self.set_summary_version(SummaryVersion::Original, cx);
+        }
         if let (Some(query), Some(detail)) = (self.query.clone(), self.detail()) {
             let rendered = self.summary.read(cx).rendered_text();
-            let ready = rendered.source() == markdown_of(&detail);
+            let ready = rendered.source() == self.shown_markdown(&detail);
             let summary = if ready { rendered.as_str() } else { "" };
             let title = crate::library::given_title(&detail.recording).unwrap_or_default();
             let turns: Vec<&str> = detail.turns.iter().map(|t| t.text.as_str()).collect();
@@ -242,6 +458,7 @@ impl Session {
                 self.jump_pending |= jump;
             }
             if jump && self.found.is_some() {
+                self.text = TranscriptText::Spoken;
                 self.reveal += 1;
             }
         }
@@ -313,13 +530,18 @@ impl Session {
                 };
                 let markdown = this
                     .detail()
-                    .map(|d| markdown_of(&d).to_owned())
+                    .map(|d| this.shown_markdown(&d).to_owned())
                     .unwrap_or_default();
                 this.summary
                     .update(cx, |state, cx| state.set_text(&markdown, cx));
                 this.rematch(first, cx);
             });
         }));
+    }
+
+    /// The summary's Markdown as the tab shows it, empty without a summary.
+    fn shown_markdown<'a>(&self, detail: &'a Detail) -> &'a str {
+        detail.shown_summary(self.summary_version).unwrap_or("")
     }
 
     fn write(
@@ -341,11 +563,6 @@ impl Session {
     }
 }
 
-/// The summary's Markdown, empty without a summary.
-fn markdown_of(detail: &Detail) -> &str {
-    detail.summary.as_ref().map_or("", |s| s.markdown.as_str())
-}
-
 fn read_detail(
     dory: &dory_core::app::Dory,
     id: &RecordingId,
@@ -356,15 +573,158 @@ fn read_detail(
     };
     let transcript = library.transcript(id)?;
     let names = library.speaker_names(id)?;
+    let grouped = std::time::Instant::now();
     let turns = transcript
         .as_ref()
         .map(|t| turns(t, &names))
         .unwrap_or_default();
+    eprintln!(
+        "turns ms={:.3} turns={}",
+        grouped.elapsed().as_secs_f64() * 1000.0,
+        turns.len()
+    );
+    let translation = match &transcript {
+        Some(transcript) => library
+            .translation(id)?
+            .filter(|t| t.applies_to(transcript) && t.has_text()),
+        None => None,
+    };
+    let translated_turns = transcript
+        .as_ref()
+        .zip(translation.as_ref())
+        .map(|(transcript, translation)| translated_turns(transcript, &names, translation));
     Ok(Some(Detail {
         recording,
         transcript,
         summary: library.summary(id)?,
         names,
         turns,
+        translation,
+        translated_turns,
+        summary_translation: library.summary_translation(id)?,
+        translating_into: library.summary_translation_wanted(id)?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dory_core::domain::{Ms, Revision, Segment};
+    use dory_core::models::ModelRef;
+
+    fn tag(code: &str) -> LangTag {
+        LangTag::parse(code).unwrap()
+    }
+
+    /// One 10 s segment per entry, in order: (speaker, language).
+    fn transcript(lines: &[(u16, &str)]) -> Transcript {
+        let segments = lines
+            .iter()
+            .zip(0u64..)
+            .map(|((speaker, language), n)| Segment {
+                range: TimeRange::new(Ms(n * 10_000), Ms(n * 10_000 + 10_000)),
+                speaker: SpeakerId(*speaker),
+                channel: Channel::System,
+                text: format!("line {n}"),
+                language: Some(tag(language)),
+            })
+            .collect();
+        let mut t = Transcript {
+            revision: Revision(1),
+            segments,
+            detected_languages: Vec::new(),
+            produced_by: ModelRef::parse("sona/whisper-small").unwrap(),
+        };
+        t.detected_languages = t
+            .language_shares()
+            .into_iter()
+            .map(|(tag, _)| tag)
+            .collect();
+        t
+    }
+
+    fn shown(turns: &[Turn]) -> Vec<(u16, Option<&str>, Option<&str>)> {
+        turns
+            .iter()
+            .map(|t| {
+                (
+                    t.speaker.0,
+                    t.language.as_ref().map(LangTag::as_str),
+                    t.tag.as_deref(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_language_change_splits_a_turn_of_one_speaker() {
+        let t = transcript(&[(1, "tl"), (1, "tl"), (1, "en"), (1, "en-US"), (2, "en")]);
+        let turns = turns(&t, &SpeakerNames::default());
+        assert_eq!(
+            turns.iter().map(|t| t.text.as_str()).collect::<Vec<_>>(),
+            ["line 0 line 1", "line 2 line 3", "line 4"]
+        );
+    }
+
+    #[test]
+    fn only_a_bilingual_transcripts_minority_turns_are_tagged() {
+        let bilingual = transcript(&[(1, "tl"), (1, "tl"), (1, "en"), (2, "tl"), (2, "tl")]);
+        assert_eq!(
+            shown(&turns(&bilingual, &SpeakerNames::default())),
+            [
+                (1, Some("tl"), None),
+                (1, Some("en"), Some("English")),
+                (2, Some("tl"), None)
+            ],
+            "the main language is never tagged"
+        );
+        let mut lines = vec![(1, "tl"); 11];
+        lines.push((1, "en"));
+        let greeting = transcript(&lines);
+        assert!(!greeting.is_bilingual());
+        assert!(
+            turns(&greeting, &SpeakerNames::default())
+                .iter()
+                .all(|t| t.tag.is_none()),
+            "one English line in two minutes of Tagalog is not a second language"
+        );
+    }
+
+    #[test]
+    fn a_meeting_in_one_language_or_with_none_known_has_no_tags() {
+        let one = transcript(&[(1, "en"), (2, "en")]);
+        let mut unknown = transcript(&[(1, "tl"), (1, "en")]);
+        for segment in &mut unknown.segments {
+            segment.language = None;
+        }
+        for t in [&one, &unknown] {
+            assert!(
+                turns(t, &SpeakerNames::default())
+                    .iter()
+                    .all(|t| t.tag.is_none())
+            );
+        }
+    }
+
+    #[test]
+    fn translated_turns_split_and_tag_exactly_as_spoken_turns_do() {
+        let t = transcript(&[(1, "tl"), (1, "en"), (1, "tl")]);
+        let translation = Translation {
+            target: tag("en"),
+            transcript_revision: t.revision,
+            produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+            texts: vec![Some("zero".into()), None, Some("two".into())],
+        };
+        let names = SpeakerNames::default();
+        let spoken = turns(&t, &names);
+        let translated = translated_turns(&t, &names, &translation);
+        assert_eq!(shown(&spoken), shown(&translated));
+        assert_eq!(
+            translated
+                .iter()
+                .map(|t| t.text.as_str())
+                .collect::<Vec<_>>(),
+            ["zero", "line 1", "two"]
+        );
+    }
 }

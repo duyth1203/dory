@@ -356,8 +356,13 @@ pub fn checkbox(
                 .child(Icon::Check.view(12., theme.on_accent))
         })
         .when(!on, |b| {
-            b.bg(theme.control_bg).border_color(theme.radio_border)
+            b.bg(theme.control_bg).border_color(if option.enabled {
+                theme.radio_border
+            } else {
+                theme.divider
+            })
         })
+        .when(!option.enabled, |b| b.opacity(0.5))
         .when(ring, |b| b.child(ring_around(px(RADIO), false, theme)));
     layout(
         row,

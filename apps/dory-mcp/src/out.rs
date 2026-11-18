@@ -262,20 +262,38 @@ pub fn summary(s: &SummaryView) -> CallToolResult {
 }
 
 fn turn_line(t: &Turn) -> String {
-    format!(
-        "{}{}: {}",
+    let language = t
+        .language
+        .as_ref()
+        .map_or(String::new(), |tag| format!(" ({tag})"));
+    let line = format!(
+        "{}{}{language}: {}",
         clock(t.start),
         clean(&t.speaker),
         clean(&t.text)
-    )
+    );
+    match &t.translated {
+        None => line,
+        Some(translated) => format!(
+            "{line}\n    (translated from {}; original: {})",
+            translated
+                .from
+                .as_ref()
+                .map_or("an unknown language".to_owned(), ToString::to_string),
+            clean(&translated.original)
+        ),
+    }
 }
 
 pub fn transcript_text(p: &TranscriptPage) -> String {
     let end = p.first + p.turns.len() as u32;
-    let head = format!(
+    let mut head = format!(
         "transcript id={} revision={} turns={}-{} of {}",
         p.id, p.revision.0, p.first, end, p.total
     );
+    if let Some(target) = &p.translated_into {
+        head.push_str(&format!(" translated_into={target}"));
+    }
     let body = p.turns.iter().map(turn_line).collect::<Vec<_>>().join("\n");
     let mut text = fence(&head, &body, &nonce());
     if let Some(next) = &p.next {
@@ -293,6 +311,9 @@ pub fn transcript(p: &TranscriptPage) -> CallToolResult {
         "revision": p.revision.0,
         "first_turn": p.first,
         "turns_on_page": p.turns.len(),
+        "translated_into": p.translated_into.as_ref().map(ToString::to_string),
+        "translated_turns_on_page": p.turns.iter().filter(|t| t.translated.is_some()).count(),
+        "turn_languages": p.turns.iter().map(|t| t.language.as_ref().map(ToString::to_string)).collect::<Vec<_>>(),
         "total_turns": p.total,
         "next_cursor": p.next.map(|c| c.to_string()),
     }));

@@ -2,7 +2,7 @@
 //! these methods; only this module tree reaches the facade.
 
 use dory_core::app::DoryError;
-use dory_core::domain::{Goal, LanguagePref, RecordingId, Settings};
+use dory_core::domain::{Goal, LangTag, LanguagePref, RecordingId, Settings};
 use dory_core::ports::capture::{Access, CaptureCaps, Source};
 use gpui_kit::Context;
 
@@ -160,6 +160,25 @@ impl AppState {
         });
         self.report(done, cx);
         self.say(notice, cx);
+    }
+
+    /// **Translate…** and **Recording > Translate Summary…**: asks the core for the selected
+    /// recording's summary in `target`. The core refuses when there is no summary, when it is
+    /// already written in `target`, or when a translation is running, and the refusal shows as
+    /// the status line. The new translation is shown as soon as it lands.
+    pub fn translate_selected_summary(&mut self, target: LangTag, cx: &mut Context<Self>) {
+        let Some(id) = self.selection.id().cloned() else {
+            return;
+        };
+        if let Some(session) = self.session() {
+            session.update(cx, |session, cx| {
+                session.set_summary_version(crate::app::SummaryVersion::Translated, cx)
+            });
+        }
+        let done = self.core.run(cx, move |dory| {
+            dory.library().translate_summary(&id, target)
+        });
+        self.report(done, cx);
     }
 
     pub fn retranscribe_selection(&mut self, language: LanguagePref, cx: &mut Context<Self>) {

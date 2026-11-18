@@ -20,7 +20,7 @@ mod models;
 mod pace;
 mod pipeline;
 mod recorder;
-mod stages;
+pub mod stages;
 mod writer;
 
 use std::any::Any;
@@ -46,9 +46,10 @@ use pipeline::{Nudge, PipelineHandle};
 use recorder::{Msg, RecorderHandle, commit_sealed};
 
 use crate::domain::{
-    AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LanguagePref, Priority,
-    Processing, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Settings,
-    SpeakerId, SpeakerNames, Summary, TakeContainer, Transcript, Waveform,
+    AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LangTag, LanguagePref,
+    Priority, Processing, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow,
+    Settings, SpeakerId, SpeakerNames, Stage, Summary, SummaryRefusal, SummaryTranslation,
+    TakeContainer, Transcript, Translation, Waveform,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -172,6 +173,8 @@ pub enum DoryError {
     #[error(transparent)]
     Invalid(#[from] InvalidInput),
     #[error(transparent)]
+    SummaryRefused(#[from] SummaryRefusal),
+    #[error(transparent)]
     Trash(#[from] TrashError),
     #[error("{0} is already in the library")]
     Exists(RecordingId),
@@ -192,6 +195,8 @@ pub struct Trashed {
     recording: Recording,
     transcript: Option<Transcript>,
     summary: Option<Summary>,
+    translation: Option<Translation>,
+    summary_translation: Option<SummaryTranslation>,
     names: SpeakerNames,
     receipt: TrashReceipt,
 }
@@ -581,8 +586,65 @@ impl Library<'_> {
         self.dory.reader.summary(id)
     }
 
+    /// The transcript in the output language, if the recording has one. Check
+    /// [`Translation::applies_to`] against the transcript before showing it.
+    pub fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        self.dory.reader.translation(id)
+    }
+
+    /// The summary translated on request, if the recording has one. It always describes the
+    /// summary now stored.
+    pub fn summary_translation(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<SummaryTranslation>, StoreError> {
+        self.dory.reader.summary_translation(id)
+    }
+
+    /// The language a translation of the summary is being made in, while it is.
+    pub fn summary_translation_wanted(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<LangTag>, StoreError> {
+        self.dory.reader.summary_translation_wanted(id)
+    }
+
     pub fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
         self.dory.reader.speaker_names(id)
+    }
+
+    /// Asks for the summary in `target`, beside the original, and puts the job at the front of
+    /// the queue because the user is waiting. A translation already stored stays until the new
+    /// one replaces it. Refused with [`SummaryRefusal`] when there is no summary, when it is
+    /// already written in `target`, or when a translation of it is running.
+    pub fn translate_summary(&self, id: &RecordingId, target: LangTag) -> Result<(), DoryError> {
+        let store = &self.dory.db.store;
+        if store.recording(id)?.is_none() {
+            return Err(StoreError::NotFound(id.to_string()).into());
+        }
+        if let Some(refusal) = SummaryTranslation::refusal(store.summary(id)?.as_ref(), &target) {
+            return Err(refusal.into());
+        }
+        let running = store.jobs_for(id)?.iter().any(|job| {
+            job.goal.wants(Stage::TranslateSummary) && matches!(job.state, JobState::Running { .. })
+        });
+        if running {
+            return Err(SummaryRefusal::InProgress.into());
+        }
+        self.dory.db.apply(vec![
+            Change::SummaryTranslationWanted {
+                id: id.clone(),
+                target,
+            },
+            Change::JobEnqueued {
+                id: id.clone(),
+                goal: Goal::TRANSLATE_SUMMARY,
+                priority: Priority::Front,
+                at: self.dory.clock.now(),
+            },
+        ])?;
+        self.dory.pipeline.nudge.wake();
+        Ok(())
     }
 
     pub fn jobs(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError> {
@@ -673,6 +735,8 @@ impl Library<'_> {
         }
         let transcript = store.transcript(id)?;
         let summary = store.summary(id)?;
+        let translation = store.translation(id)?;
+        let summary_translation = store.summary_translation(id)?;
         let names = store.speaker_names(id)?;
         let receipt = dory.trash.move_to_trash(&dory.takes.files(id)?)?;
         if let Err(error) = dory.db.apply(vec![Change::RecordingDeleted(id.clone())]) {
@@ -683,6 +747,8 @@ impl Library<'_> {
             recording,
             transcript,
             summary,
+            translation,
+            summary_translation,
             names,
             receipt,
         })
@@ -705,6 +771,8 @@ impl Library<'_> {
             recording,
             transcript,
             summary,
+            translation,
+            summary_translation,
             names,
             receipt,
         } = trashed;
@@ -724,6 +792,23 @@ impl Library<'_> {
             changes.push(Change::SummaryReplaced {
                 id: id.clone(),
                 summary,
+            });
+            // After the summary, which would otherwise drop it.
+            if let Some(translation) = summary_translation {
+                changes.push(Change::SummaryTranslationWanted {
+                    id: id.clone(),
+                    target: translation.target.clone(),
+                });
+                changes.push(Change::SummaryTranslated {
+                    id: id.clone(),
+                    translation,
+                });
+            }
+        }
+        if let Some(translation) = translation {
+            changes.push(Change::TranslationReplaced {
+                id: id.clone(),
+                translation,
             });
         }
         if names != SpeakerNames::default() {
@@ -1014,6 +1099,7 @@ impl Pipeline<'_> {
         goal: Goal,
         priority: Priority,
     ) -> Result<(), DoryError> {
+        let goal = self.dory.db.store.settings()?.goal_for(goal);
         self.dory.db.apply(vec![Change::JobEnqueued {
             id: id.clone(),
             goal,
@@ -1204,6 +1290,24 @@ impl LibraryReader {
 
     pub fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError> {
         self.store.summary(id)
+    }
+
+    pub fn translation(&self, id: &RecordingId) -> Result<Option<Translation>, StoreError> {
+        self.store.translation(id)
+    }
+
+    pub fn summary_translation(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<SummaryTranslation>, StoreError> {
+        self.store.summary_translation(id)
+    }
+
+    pub fn summary_translation_wanted(
+        &self,
+        id: &RecordingId,
+    ) -> Result<Option<LangTag>, StoreError> {
+        self.store.summary_translation_wanted(id)
     }
 
     pub fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {

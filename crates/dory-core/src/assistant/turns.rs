@@ -1,11 +1,11 @@
 //! A transcript as speaker turns, a page at a time.
 //!
-//! Consecutive segments by the same speaker merge into one turn of at most [`MAX_TURN_CHARS`], so
+//! Consecutive segments by the same speaker in the same language merge into one turn of at most [`MAX_TURN_CHARS`], so
 //! any page budget of at least that size holds at least one turn. A cursor names the transcript
 //! revision and the next turn, so a page from a transcript that changed since is refused rather
 //! than spliced into the new one.
 
-use crate::domain::{Ms, Revision, SpeakerNames, Transcript};
+use crate::domain::{LangTag, Ms, Revision, SpeakerNames, Transcript, Translation};
 
 pub const MAX_TURN_CHARS: usize = 4_000;
 pub const DEFAULT_PAGE_CHARS: usize = 20_000;
@@ -17,7 +17,23 @@ pub struct Turn {
     /// `None` for transcripts imported without times.
     pub start: Option<Ms>,
     pub end: Option<Ms>,
+    /// The language the turn was spoken in, whether or not it was translated. `None` when the
+    /// engine did not say.
+    pub language: Option<LangTag>,
+    /// What the assistant should read: the translation when the turn was translated, else what
+    /// was spoken.
     pub text: String,
+    /// Set when `text` is a translation.
+    pub translated: Option<Translated>,
+}
+
+/// What a translated turn was before it was translated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Translated {
+    /// The language the turn was heard in, when the engine said.
+    pub from: Option<LangTag>,
+    /// The spoken text.
+    pub original: String,
 }
 
 /// Where the next page starts.
@@ -69,29 +85,62 @@ fn pieces(text: &str, max: usize) -> Vec<String> {
     out
 }
 
-/// Every turn of a transcript, speakers named as the summary names them.
-pub fn turns(transcript: &Transcript, names: &SpeakerNames) -> Vec<Turn> {
+/// Whether two segments were spoken in the same language: `en` and `en-US` are, and an unknown
+/// language only matches itself.
+fn same_language(a: Option<&LangTag>, b: Option<&LangTag>) -> bool {
+    a.map(LangTag::primary) == b.map(LangTag::primary)
+}
+
+/// Every turn of a transcript, speakers named as the summary names them. With a translation
+/// that applies, a translated segment reads as translated and carries what was spoken. A turn
+/// ends when the speaker or the language changes, so a turn has one language, and a turn
+/// merges only within one kind: untranslated text, or text translated from one language.
+pub fn turns(
+    transcript: &Transcript,
+    names: &SpeakerNames,
+    translation: Option<&Translation>,
+) -> Vec<Turn> {
+    let translation = translation.filter(|t| t.applies_to(transcript));
     let mut out: Vec<Turn> = Vec::new();
-    for segment in &transcript.segments {
+    for (ix, segment) in transcript.segments.iter().enumerate() {
         let speaker = names.label(segment, transcript.revision);
         let start = segment.range.map(|r| r.start());
         let end = segment.range.map(|r| r.end());
-        for piece in pieces(&segment.text, MAX_TURN_CHARS) {
+        let translated = translation.and_then(|t| t.text(ix));
+        let from = translated.map(|_| segment.language.clone());
+        let spoken = translated.map(|_| segment.text.trim());
+        for (n, piece) in pieces(translated.unwrap_or(&segment.text), MAX_TURN_CHARS)
+            .into_iter()
+            .enumerate()
+        {
+            // The spoken text rides with the first piece of its segment.
+            let original = spoken.filter(|_| n == 0);
             match out.last_mut() {
                 Some(last)
                     if last.speaker == speaker
+                        && same_language(last.language.as_ref(), segment.language.as_ref())
+                        && last.translated.as_ref().map(|t| &t.from) == from.as_ref()
                         && last.text.chars().count() + 1 + piece.chars().count()
                             <= MAX_TURN_CHARS =>
                 {
                     last.text.push(' ');
                     last.text.push_str(&piece);
                     last.end = end.or(last.end);
+                    if let (Some(t), Some(original)) = (&mut last.translated, original) {
+                        t.original.push(' ');
+                        t.original.push_str(original);
+                    }
                 }
                 _ => out.push(Turn {
                     speaker: speaker.clone(),
                     start,
                     end,
+                    language: segment.language.clone(),
                     text: piece,
+                    translated: from.clone().map(|from| Translated {
+                        from,
+                        original: original.unwrap_or_default().to_owned(),
+                    }),
                 }),
             }
         }
@@ -99,9 +148,16 @@ pub fn turns(transcript: &Transcript, names: &SpeakerNames) -> Vec<Turn> {
     out
 }
 
-/// The size a turn takes on a page: its text, its speaker, and room for its time stamp.
+/// The size a turn takes on a page: its text, what it was before translation, its speaker, and
+/// room for its time stamp.
 fn cost(turn: &Turn) -> usize {
-    turn.text.chars().count() + turn.speaker.chars().count() + 16
+    turn.text.chars().count()
+        + turn
+            .translated
+            .as_ref()
+            .map_or(0, |t| t.original.chars().count())
+        + turn.speaker.chars().count()
+        + 16
 }
 
 /// The turns from `from` that fit in `budget`, and where the next page starts. A page always
@@ -139,6 +195,7 @@ mod tests {
                     speaker: SpeakerId(*speaker),
                     channel: Channel::System,
                     text: (*text).to_owned(),
+                    language: None,
                 })
                 .collect(),
             detected_languages: vec![],
@@ -156,7 +213,7 @@ mod tests {
         ]);
         let mut names = SpeakerNames::default();
         names.rename(Revision(3), SpeakerId(2), Some("Ana".into()));
-        let all = turns(&t, &names);
+        let all = turns(&t, &names, None);
         let summary: Vec<_> = all
             .iter()
             .map(|t| (t.speaker.as_str(), t.text.as_str(), t.start, t.end))
@@ -171,7 +228,93 @@ mod tests {
         );
         let mut stale = SpeakerNames::default();
         stale.rename(Revision(2), SpeakerId(2), Some("Ana".into()));
-        assert_eq!(turns(&t, &stale)[1].speaker, "Speaker 2");
+        assert_eq!(turns(&t, &stale, None)[1].speaker, "Speaker 2");
+    }
+
+    #[test]
+    fn a_translated_turn_reads_as_translated_and_keeps_what_was_spoken() {
+        let mut t = transcript(&[
+            (1, Some((0, 1000)), "Ship it."),
+            (2, Some((1000, 2000)), "Sige."),
+            (2, Some((2000, 3000)), "Ako na."),
+            (2, Some((3000, 4000)), "Okay then."),
+        ]);
+        let tl = LangTag::parse("tl").unwrap();
+        t.segments[1].language = Some(tl.clone());
+        t.segments[2].language = Some(tl.clone());
+        t.segments[3].language = Some(LangTag::parse("en").unwrap());
+        let translation = Translation {
+            target: LangTag::parse("en").unwrap(),
+            transcript_revision: t.revision,
+            produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+            texts: vec![None, Some("Sure.".into()), Some("I'll do it.".into()), None],
+        };
+        let all = turns(&t, &SpeakerNames::default(), Some(&translation));
+        let spoken: Vec<(&str, &str)> = all
+            .iter()
+            .map(|t| (t.speaker.as_str(), t.text.as_str()))
+            .collect();
+        assert_eq!(
+            spoken,
+            [
+                ("Speaker 1", "Ship it."),
+                ("Speaker 2", "Sure. I'll do it."),
+                ("Speaker 2", "Okay then."),
+            ],
+            "translated and spoken text never share a turn"
+        );
+        let from: Vec<Option<(Option<LangTag>, &str)>> = all
+            .iter()
+            .map(|t| {
+                t.translated
+                    .as_ref()
+                    .map(|x| (x.from.clone(), x.original.as_str()))
+            })
+            .collect();
+        assert_eq!(from, [None, Some((Some(tl), "Sige. Ako na.")), None]);
+        let mismatched = Translation {
+            transcript_revision: Revision(99),
+            ..translation
+        };
+        assert_eq!(
+            turns(&t, &SpeakerNames::default(), Some(&mismatched)),
+            turns(&t, &SpeakerNames::default(), None),
+            "a translation of another revision is ignored"
+        );
+    }
+
+    #[test]
+    fn a_change_of_language_ends_a_turn_of_one_speaker() {
+        let mut t = transcript(&[
+            (1, Some((0, 1000)), "Sige."),
+            (1, Some((1000, 2000)), "Ako na."),
+            (1, Some((2000, 3000)), "Okay then."),
+            (1, Some((3000, 4000)), "Done."),
+            (2, Some((4000, 5000)), "Salamat."),
+        ]);
+        for (segment, tag) in t.segments.iter_mut().zip(["tl", "tl", "en", "en-US", "tl"]) {
+            segment.language = Some(LangTag::parse(tag).unwrap());
+        }
+        let all = turns(&t, &SpeakerNames::default(), None);
+        let got: Vec<(&str, Option<&str>, &str)> = all
+            .iter()
+            .map(|t| {
+                (
+                    t.speaker.as_str(),
+                    t.language.as_ref().map(LangTag::as_str),
+                    t.text.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("Speaker 1", Some("tl"), "Sige. Ako na."),
+                ("Speaker 1", Some("en"), "Okay then. Done."),
+                ("Speaker 2", Some("tl"), "Salamat."),
+            ],
+            "en and en-US are one language"
+        );
     }
 
     #[test]
@@ -179,6 +322,7 @@ mod tests {
         let all = turns(
             &transcript(&[(1, None, "old"), (1, None, "text")]),
             &SpeakerNames::default(),
+            None,
         );
         assert_eq!(all.len(), 1);
         assert_eq!((all[0].start, all[0].end), (None, None));
@@ -190,6 +334,7 @@ mod tests {
         let all = turns(
             &transcript(&[(1, None, &long), (1, None, "tail")]),
             &SpeakerNames::default(),
+            None,
         );
         assert!(all.len() >= 4, "{}", all.len());
         assert!(all.iter().all(|t| t.text.chars().count() <= MAX_TURN_CHARS));
@@ -205,7 +350,7 @@ mod tests {
             .zip(0u64..)
             .map(|(t, i)| ((i % 3) as u16, Some((i * 10, i * 10 + 10)), t.as_str()))
             .collect();
-        let all = turns(&transcript(&borrowed), &SpeakerNames::default());
+        let all = turns(&transcript(&borrowed), &SpeakerNames::default(), None);
         for budget in [MAX_TURN_CHARS, DEFAULT_PAGE_CHARS, MAX_PAGE_CHARS] {
             let mut seen = 0;
             let mut from = Some(0);

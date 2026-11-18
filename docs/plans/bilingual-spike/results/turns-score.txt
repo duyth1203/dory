@@ -1,0 +1,14 @@
+11 clips, 264 s of audio
+variant | WER | Tagalog words kept | English words kept | clips turned into English | RTFx
+--- | --- | --- | --- | --- | ---
+whole window, auto | 13.6% | 87% | 86% | 1/11 | 1.2
+whole window, pinned tl | 11.8% | 97% | 79% | 0/11 | 1.2
+whole window, pinned en | 42.9% | 31% | 88% | 6/11 | 1.1
+6 s chunks, auto | 6.9% | 92% | 100% | 0/11 | 0.4
+6 s chunks, pinned tl | 7.7% | 92% | 100% | 0/11 | 0.5
+6 s chunks, tl unless auto hears en | 6.9% | 92% | 100% | 0/11 | 0.3
+best of auto and pinned tl per window (oracle) | 11.8% | 97% | 79% | 0/11 | 0.6
+best of pinned tl and pinned en per window (oracle) | 11.8% | 97% | 79% | 0/11 | 0.6
+
+whole-clip language guesses: {'tl': 8, 'en': 3}
+chunk language guesses (63 chunks): {'tl': 39, 'en': 24}

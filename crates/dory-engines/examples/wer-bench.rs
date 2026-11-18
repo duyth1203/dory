@@ -104,6 +104,7 @@ fn main() {
                 diarize: false,
                 hint: None,
                 threads: 4,
+                sentence_times: false,
             };
             let mut sink = Collect::default();
             let started = Instant::now();

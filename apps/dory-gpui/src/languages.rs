@@ -95,6 +95,63 @@ pub fn description(meeting: &[LangTag], choice: &LanguagePref) -> String {
     }
 }
 
+/// Settings > Transcription > the output language: the popup's first item, and what the setting
+/// holds when there is no target.
+pub const SAME_AS_SPOKEN: &str = "Same as spoken";
+
+/// "Same as spoken" or the language's name, as the popup and the menu read.
+pub fn output_label(choice: Option<&LangTag>) -> String {
+    choice.map_or_else(|| SAME_AS_SPOKEN.to_owned(), name)
+}
+
+/// What the output-language popup offers after "Same as spoken": every language Dory names, by
+/// its English name.
+pub fn output_choices() -> Vec<LangTag> {
+    let mut all: Vec<&Language> = LANGUAGES.iter().collect();
+    all.sort_by_key(|lang| fold(lang.english));
+    all.into_iter()
+        .filter_map(|lang| LangTag::parse(lang.code).ok())
+        .collect()
+}
+
+/// The line under the output-language row: what the choice does, and what it leaves alone.
+pub fn output_description(choice: Option<&LangTag>) -> String {
+    match choice {
+        None => "Each transcript and summary stays in the language it was spoken in.".into(),
+        Some(tag) => format!(
+            "Dory translates new recordings into {} and writes their summaries in {}, using \
+             your summary model on this Mac. The spoken transcript is kept, and recordings \
+             you already have do not change.",
+            name(tag),
+            name(tag)
+        ),
+    }
+}
+
+/// What **Translate…** offers for a summary written in `written`: the meeting languages, a
+/// separator (`None`), then every other language Dory names by its English name. The summary's
+/// own language is never offered, whichever list it is in, and no language is offered twice.
+pub fn translate_choices(meeting: &[LangTag], written: Option<&LangTag>) -> Vec<Option<LangTag>> {
+    let skip = |tag: &LangTag| written.is_some_and(|w| w.primary() == tag.primary());
+    let mut first: Vec<LangTag> = Vec::new();
+    for tag in meeting {
+        if !skip(tag) && !first.iter().any(|t| t.primary() == tag.primary()) {
+            first.push(tag.clone());
+        }
+    }
+    let rest: Vec<LangTag> = output_choices()
+        .into_iter()
+        .filter(|tag| !skip(tag) && !first.iter().any(|t| t.primary() == tag.primary()))
+        .collect();
+    let separator = (!first.is_empty() && !rest.is_empty()).then_some(None);
+    first
+        .into_iter()
+        .map(Some)
+        .chain(separator)
+        .chain(rest.into_iter().map(Some))
+        .collect()
+}
+
 pub const KEEP_ONE: &str = "Keep at least one meeting language.";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -394,6 +451,94 @@ mod tests {
             name_list(&names(&["Tagalog", "English", "French"]), "and"),
             "Tagalog, English, and French"
         );
+    }
+
+    #[test]
+    fn the_output_choices_are_every_language_by_english_name() {
+        let choices = output_choices();
+        assert_eq!(choices.len(), LANGUAGES.len());
+        let names: Vec<String> = choices.iter().map(name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_by_key(|n| fold(n));
+        assert_eq!(names, sorted);
+        assert!(choices.contains(&tag("en")));
+        assert_eq!(output_label(None), "Same as spoken");
+        assert_eq!(output_label(Some(&tag("tl"))), "Tagalog");
+    }
+
+    #[test]
+    fn translate_offers_the_meeting_languages_then_every_other_language_but_the_summarys_own() {
+        let names = |choices: Vec<Option<LangTag>>| -> Vec<Option<String>> {
+            choices.iter().map(|c| c.as_ref().map(name)).collect()
+        };
+        let got = names(translate_choices(&[tag("tl"), tag("en")], Some(&tag("tl"))));
+        assert_eq!(got.first(), Some(&Some("English".to_owned())));
+        assert_eq!(
+            got.get(1),
+            Some(&None),
+            "a separator follows the meeting languages"
+        );
+        assert!(
+            !got.contains(&Some("Tagalog".to_owned())),
+            "not the summary's own language"
+        );
+        let others: Vec<&String> = got[2..].iter().flatten().collect();
+        assert_eq!(others.len(), LANGUAGES.len() - 2);
+        assert!(
+            !others.contains(&&"English".to_owned()),
+            "no language twice"
+        );
+        let mut sorted: Vec<String> = others.iter().map(|n| (*n).clone()).collect();
+        sorted.sort_by_key(|n| fold(n));
+        assert_eq!(
+            others.iter().map(|n| (*n).clone()).collect::<Vec<_>>(),
+            sorted
+        );
+
+        let all = translate_choices(&[tag("tl"), tag("en")], None);
+        assert_eq!(all[..2], [Some(tag("tl")), Some(tag("en"))]);
+        assert_eq!(all[2], None);
+        assert_eq!(all.iter().flatten().count(), LANGUAGES.len());
+    }
+
+    #[test]
+    fn translate_has_no_separator_without_meeting_languages_or_without_others() {
+        let none = translate_choices(&[], Some(&tag("en-US")));
+        assert!(none.iter().all(Option::is_some));
+        assert_eq!(none.len(), LANGUAGES.len() - 1, "en-US is English");
+        let only = translate_choices(&[tag("tl")], Some(&tag("tl")));
+        assert!(
+            only.iter().all(Option::is_some),
+            "the meeting list gave nothing to separate"
+        );
+        assert_eq!(
+            translate_choices(&[tag("fr-CA"), tag("fr")], None)[0],
+            Some(tag("fr-CA"))
+        );
+        assert_eq!(
+            translate_choices(&[tag("fr-CA"), tag("fr")], None)
+                .iter()
+                .flatten()
+                .filter(|t| t.primary() == "fr")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_description_says_what_stays_and_what_changes() {
+        assert_eq!(
+            output_description(None),
+            "Each transcript and summary stays in the language it was spoken in."
+        );
+        let english = output_description(Some(&tag("en")));
+        for want in [
+            "into English",
+            "summaries in English",
+            "spoken transcript is kept",
+        ] {
+            assert!(english.contains(want), "{english}");
+        }
     }
 
     #[test]

@@ -1189,15 +1189,16 @@ pub(crate) fn find<T>(
 }
 
 /// What each speaker said in one go: consecutive segments of one speaker, joined by a space.
-fn turn_texts(transcript: &Transcript) -> Vec<String> {
+fn turn_texts(transcript: &Transcript, translation: Option<&Translation>) -> Vec<String> {
     let mut turns: Vec<(SpeakerId, String)> = Vec::new();
-    for segment in &transcript.segments {
+    for (ix, segment) in transcript.segments.iter().enumerate() {
+        let said = translation.map_or(segment.text.as_str(), |t| t.shown(ix, segment));
         match turns.last_mut() {
             Some((speaker, text)) if *speaker == segment.speaker => {
                 text.push(' ');
-                text.push_str(&segment.text);
+                text.push_str(said);
             }
-            _ => turns.push((segment.speaker, segment.text.clone())),
+            _ => turns.push((segment.speaker, said.to_owned())),
         }
     }
     turns.into_iter().map(|(_, text)| text).collect()
@@ -1250,7 +1251,8 @@ impl LibraryReader {
     }
 
     /// The line to show under each of `ids`, a hit of `query`, in the same order: where in the
-    /// transcript it first matches, else in the summary, else in a speaker name. `None` for a
+    /// transcript it first matches, its translation before what was spoken, else in the summary,
+    /// else in a speaker name. `None` for a
     /// recording that has been deleted since the search, or that holds no word of the query.
     pub fn snippets(
         &self,
@@ -1262,7 +1264,17 @@ impl LibraryReader {
                 let transcript = self.store.transcript(id)?;
                 let names = self.store.speaker_names(id)?;
                 let summary = self.store.summary(id)?;
-                let turns = transcript.as_ref().map(turn_texts).unwrap_or_default();
+                let translation = self.store.translation(id)?;
+                let spoken = transcript
+                    .as_ref()
+                    .map(|t| turn_texts(t, None))
+                    .unwrap_or_default();
+                let translated = match (&transcript, &translation) {
+                    (Some(t), Some(translation)) if translation.applies_to(t) => {
+                        turn_texts(t, Some(translation))
+                    }
+                    _ => Vec::new(),
+                };
                 let speakers: Vec<&str> = transcript.as_ref().map_or_else(Vec::new, |t| {
                     t.speakers()
                         .into_iter()
@@ -1273,9 +1285,16 @@ impl LibraryReader {
                     .as_ref()
                     .map(|s| search::summary_blocks(&s.markdown))
                     .unwrap_or_default();
-                let turns: Vec<&str> = turns.iter().map(String::as_str).collect();
+                let spoken: Vec<&str> = spoken.iter().map(String::as_str).collect();
+                let translated: Vec<&str> = translated.iter().map(String::as_str).collect();
                 let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-                Ok(search::excerpt(query, &turns, &blocks, &speakers))
+                Ok(search::excerpt(
+                    query,
+                    &translated,
+                    &spoken,
+                    &blocks,
+                    &speakers,
+                ))
             })
             .collect()
     }

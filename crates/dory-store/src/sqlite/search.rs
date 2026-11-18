@@ -4,8 +4,8 @@
 //!
 //! A row holds the core's folded tokens joined by spaces, never the raw text, so FTS5 only splits
 //! on spaces and the index agrees with `dory_core::search` on every word. Every write that changes
-//! searchable text calls [`reindex`] inside its own transaction, so the index commits with the
-//! text. Queries quote every token, so a typed "or" or "near" is a word, never FTS syntax.
+//! searchable text, a translation included, calls [`reindex`] inside its own transaction, so the
+//! index commits with the text. Queries quote every token, so a typed "or" or "near" is a word, never FTS syntax.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -15,7 +15,7 @@ use dory_core::ports::StoreError;
 use dory_core::search::{Clause, Query, TOKENS_VERSION, Vocabulary, tokens};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::db;
+use super::{codec, db};
 
 /// Appends the folded words of `text` to `out`, each followed by a space.
 fn push_words(out: &mut String, text: &str) {
@@ -26,7 +26,9 @@ fn push_words(out: &mut String, text: &str) {
 }
 
 /// The recording's folded words per index column: title, speakers, summary, transcript. Speaker
-/// names count only when they were given for the current transcript revision.
+/// names count only when they were given for the current transcript revision. The transcript
+/// column holds what was spoken, then the translated segments of a translation that applies, so
+/// a grant that reads the transcript reads its translation too.
 fn row_words(conn: &Connection, id: &str) -> Result<[String; 4], StoreError> {
     let (title, names_revision) = conn
         .prepare_cached("SELECT title, names_revision FROM recordings WHERE id = ?1")
@@ -70,6 +72,7 @@ fn row_words(conn: &Connection, id: &str) -> Result<[String; 4], StoreError> {
     }
 
     let mut transcript = String::new();
+    let mut segments = 0;
     {
         let mut stmt = conn
             .prepare_cached("SELECT text FROM segments WHERE recording_id = ?1 ORDER BY idx")
@@ -77,9 +80,41 @@ fn row_words(conn: &Connection, id: &str) -> Result<[String; 4], StoreError> {
         let mut rows = stmt.query([id]).map_err(db)?;
         while let Some(row) = rows.next().map_err(db)? {
             push_words(&mut transcript, &row.get::<_, String>(0).map_err(db)?);
+            segments += 1;
+        }
+    }
+    if let Some(texts) = translated_texts(conn, id, transcript_revision, segments)? {
+        for text in texts.iter().flatten() {
+            push_words(&mut transcript, text);
         }
     }
     Ok([title_words, speakers, summary, transcript])
+}
+
+/// The texts of the recording's translation when it applies to the stored transcript, as
+/// `Translation::applies_to` decides: made from this revision, one text per segment.
+fn translated_texts(
+    conn: &Connection,
+    id: &str,
+    revision: Option<i64>,
+    segments: usize,
+) -> Result<Option<Vec<Option<String>>>, StoreError> {
+    let Some(revision) = revision else {
+        return Ok(None);
+    };
+    let Some(texts) = conn
+        .prepare_cached(
+            "SELECT texts FROM translations WHERE recording_id = ?1 AND transcript_revision = ?2",
+        )
+        .map_err(db)?
+        .query_row(params![id, revision], |row| row.get::<_, String>(0))
+        .optional()
+        .map_err(db)?
+    else {
+        return Ok(None);
+    };
+    let texts = codec::translation_texts_from_db(&texts)?;
+    Ok((texts.len() == segments).then_some(texts))
 }
 
 /// Writes the index row of one recording, whose key exists and whose old row is gone.
@@ -136,7 +171,7 @@ pub(super) fn forget(tx: &Connection, id: &RecordingId) -> Result<(), StoreError
 }
 
 /// Indexes every recording from scratch with this build's tokens, in the caller's transaction.
-/// The v8 migration runs it, and so does an open that finds an index built by another
+/// The v11 migration runs it, and so does an open that finds an index built by another
 /// [`TOKENS_VERSION`]. A crash before the commit leaves the old state, so the next open runs it
 /// again.
 pub(super) fn rebuild(tx: &Connection) -> Result<(), StoreError> {

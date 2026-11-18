@@ -1354,3 +1354,92 @@ fn matches_are_marked_on_the_spoken_text_and_stepping_brings_it_back(cx: &mut Te
         "Find Next shows the text it found the match in"
     );
 }
+
+#[gpui_kit::test]
+fn a_match_in_the_translation_is_marked_on_the_translated_text(cx: &mut TestAppContext) {
+    use dory_core::domain::Translation;
+    use dory_gpui::app::TranscriptText;
+    let transcript = corpus_transcript(TALK).expect("a transcript");
+    let translation = Translation {
+        target: dory_core::domain::LangTag::parse("es").unwrap(),
+        transcript_revision: transcript.revision,
+        produced_by: ModelRef::parse("ollama/gemma4:e4b").unwrap(),
+        texts: vec![
+            None,
+            Some("La hoja de ruta se retrasa.".into()),
+            None,
+            Some("Elementos de la hoja de ruta.".into()),
+        ],
+    };
+    let extra = vec![Change::TranslationReplaced {
+        id: id_of(TALK),
+        translation,
+    }];
+    let (window, app, _) = open_corpus_with(extra, cx);
+    let text = |app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, cx| app.session().unwrap().read(cx).text())
+    };
+    let marked_words = |app: &Entity<AppState>, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, cx| {
+            let session = app.session().unwrap().read(cx);
+            let detail = session.detail().unwrap();
+            let turns = detail.shown(session.text());
+            session
+                .found()
+                .unwrap()
+                .all()
+                .iter()
+                .filter_map(|m| match m.place {
+                    Place::Turn(ix) => Some(turns[ix].text[m.span.clone()].to_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    open_hit(TALK, "hoja", &app, window, cx);
+    app.read_with(cx, |app, _| {
+        let excerpt = &app.snippets[&id_of(TALK)];
+        assert_eq!(excerpt.source, Source::Transcript);
+        assert!(
+            excerpt.snippet.text.contains("La hoja de ruta"),
+            "the sidebar quotes the translation: {}",
+            excerpt.snippet.text
+        );
+    });
+    assert_eq!(
+        text(&app, cx),
+        TranscriptText::Translated,
+        "a hit in the translation opens on the translated text"
+    );
+    assert_eq!(current(&app, cx), Some((0, 2, Place::Turn(1))));
+    assert_eq!(
+        marked_words(&app, cx),
+        ["hoja", "hoja"],
+        "spans point into the translated turns"
+    );
+    for (turn, marked) in [(0, false), (1, true), (2, false), (3, true)] {
+        assert_eq!(
+            described(window, turn, cx).is_some_and(|d| d.contains("Search match")),
+            marked,
+            "turn {turn}"
+        );
+    }
+
+    app.update(cx, |app, cx| {
+        let session = app.session().unwrap().clone();
+        session.update(cx, |s, cx| s.set_text(TranscriptText::Spoken, cx));
+    });
+    settle(window, cx);
+    assert!(
+        !described(window, 1, cx).is_some_and(|d| d.contains("Search match")),
+        "the spoken text carries no marks of a translated match"
+    );
+    step(window, true, cx);
+    assert_eq!(
+        text(&app, cx),
+        TranscriptText::Translated,
+        "Find Next shows the text it found the match in"
+    );
+    assert_eq!(current(&app, cx), Some((1, 2, Place::Turn(3))));
+    assert!(described(window, 3, cx).is_some_and(|d| d.contains("Search match")));
+}

@@ -510,8 +510,8 @@ impl Assistant {
     }
 
     /// Where `query` matched `found`, as the app's sidebar shows it: a title hit marks the title,
-    /// and a conversation hit takes the first matching turn, else summary line, else speaker
-    /// name, out of only the fields the grant reads.
+    /// and a conversation hit takes the first matching turn, translated before spoken, else
+    /// summary line, else speaker name, out of only the fields the grant reads.
     fn matched(
         &self,
         grant: &Grant,
@@ -540,9 +540,14 @@ impl Assistant {
             Some(_) => self.store.speaker_names(&r.id).map_err(|e| self.lib(e))?,
             None => SpeakerNames::default(),
         };
+        let translation = match (&transcript, fields.transcript) {
+            (Some(_), true) => self.store.translation(&r.id).map_err(|e| self.lib(e))?,
+            _ => None,
+        };
+        // The turns as get_transcript reads them, so a turn cursor lands on the same turn. A hit
+        // is quoted from a translation first, then from what was spoken.
         let turns = match (&transcript, fields.transcript) {
-            // The index holds what was spoken, so hits are shown as spoken.
-            (Some(t), true) => turns::turns(t, &names, None),
+            (Some(t), true) => turns::turns(t, &names, translation.as_ref()),
             _ => Vec::new(),
         };
         let speakers: Vec<&str> = match (&transcript, fields.speakers) {
@@ -562,9 +567,27 @@ impl Assistant {
                 .unwrap_or_default(),
             false => Vec::new(),
         };
-        let texts: Vec<&str> = turns.iter().map(|t| t.text.as_str()).collect();
+        let translated: Vec<&str> = match turns.iter().any(|t| t.translated.is_some()) {
+            true => turns.iter().map(|t| t.text.as_str()).collect(),
+            false => Vec::new(),
+        };
+        let spoken: Vec<&str> = turns
+            .iter()
+            .map(|t| {
+                t.translated
+                    .as_ref()
+                    .map_or(t.text.as_str(), |t| &t.original)
+            })
+            .collect();
         let blocks: Vec<&str> = blocks.iter().map(String::as_str).collect();
-        let excerpt = search::excerpt_within(query, &texts, &blocks, &speakers, SNIPPET_CHARS);
+        let excerpt = search::excerpt_within(
+            query,
+            &translated,
+            &spoken,
+            &blocks,
+            &speakers,
+            SNIPPET_CHARS,
+        );
         let snippet = excerpt.map(|e| {
             let turn = match (e.source, &transcript) {
                 (Source::Transcript, Some(t)) => turns.get(e.item).map(|turn| TurnAt {

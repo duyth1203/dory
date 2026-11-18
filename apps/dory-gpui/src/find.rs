@@ -191,6 +191,11 @@ impl Matches {
         &self.at[start..end]
     }
 
+    /// Whether any match is in a transcript turn.
+    pub fn in_turns(&self) -> bool {
+        self.at.iter().any(|m| matches!(m.place, Place::Turn(_)))
+    }
+
     pub fn in_title(&self) -> &[MatchAt] {
         self.within(Place::Title)
     }

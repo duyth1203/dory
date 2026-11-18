@@ -234,6 +234,62 @@ fn models_lists_each_kind_and_the_fakes_when_asked() {
     );
 }
 
+/// The indented lines under one kind's title in `dory-cli models`, with the indent kept.
+fn kind_lines<'a>(models: &'a str, title: &str) -> Vec<&'a str> {
+    models
+        .lines()
+        .skip_while(|l| *l != title)
+        .skip(1)
+        .take_while(|l| l.starts_with(' ') || l.starts_with('*'))
+        .collect()
+}
+
+#[test]
+fn models_lists_each_kind_in_the_order_auto_tries_it() {
+    let env = Env::new();
+    env.ok(&["languages", "en"]);
+    let models = |env: &Env| {
+        let out = env
+            .cmd(&["models", "--fake-engines"])
+            .env("DORY_FAKE_ROWS", "locale-first")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        text(&out.stdout)
+    };
+
+    let english = models(&env);
+    let speech = kind_lines(&english, "speech to text");
+    assert_eq!(speech[0], "  Auto uses fake/en-locale-stt", "{english}");
+    assert!(
+        speech[1].starts_with("  1 fake/en-locale-stt  "),
+        "{english}"
+    );
+    assert!(speech[2].starts_with("  2 fake/stt  "), "{english}");
+    let summaries = kind_lines(&english, "summaries");
+    assert_eq!(summaries[0], "  Auto uses fake/llm", "{english}");
+    assert!(summaries[1].starts_with("  1 fake/llm  "), "{english}");
+    assert!(
+        summaries[2].starts_with("  2 fake/en-only-llm  "),
+        "{english}"
+    );
+    assert_eq!(
+        kind_lines(&english, "speakers"),
+        ["  Auto skips this step", "  (none registered)"],
+        "{english}"
+    );
+
+    env.ok(&["languages", "--clear"]);
+    let any = models(&env);
+    let speech = kind_lines(&any, "speech to text");
+    assert_eq!(speech[0], "  Auto uses fake/stt", "{any}");
+    assert!(speech[1].starts_with("  1 fake/stt  "), "{any}");
+    assert!(
+        speech[2].starts_with("  - fake/en-locale-stt  ") && speech[2].contains("does not fit"),
+        "a row that cannot take the meeting is out of Auto's order:\n{any}"
+    );
+}
+
 #[test]
 fn meeting_languages_steer_auto_away_from_models_without_them() {
     let env = Env::new();

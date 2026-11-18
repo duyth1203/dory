@@ -1350,6 +1350,10 @@ impl LibraryReader {
         self.store.assistant_access()
     }
 
+    pub fn settings(&self) -> Result<Settings, StoreError> {
+        self.store.settings()
+    }
+
     /// Every model of kind `K`, probed now, with how it fits the default settings.
     pub fn models<K: AppKind>(
         &self,

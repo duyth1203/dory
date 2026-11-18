@@ -19,7 +19,7 @@ pub use fit::{
     Diar, DiarCaps, DiarNeeds, DiarizationNeed, DiarizationSupport, Fit, KindTag, LangSupport, Llm,
     LlmCaps, LlmNeeds, Mismatch, ModelKind, Stt, SttCaps, SttNeeds, run_language,
 };
-pub use resolve::{Choice, ModelStatus, Resolution, resolve};
+pub use resolve::{Choice, ModelStatus, Resolution, auto_order, resolve};
 
 const MAX_ID_LEN: usize = 128;
 

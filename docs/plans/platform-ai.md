@@ -371,7 +371,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 **You see.**
 
 - [ ] `docs/plans/speech-model-evaluation.md` gains a table with WER, RTFx, CPU-seconds, rubric, and recall for all five engines on macOS 26.5 and 27.
-- [ ] `dory-cli models` shows the order the rule chose.
+- [x] `dory-cli models` shows the order the rule chose.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -386,7 +386,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 - [ ] Lane 4. Summarize the 10 rubric transcripts with Gemma and Apple. Save `rubric.tsv`. Pass when every transcript has both summaries and a score.
 - [ ] Lane 5. Score action-item recall on `Two hour planning` for both summary engines. Save `recall.txt`. Pass when both numbers are recorded with the transcript engine named.
 - [ ] Lane 6. Operator lane. Repeat lanes 2 to 5 for Apple on a Mac running macOS 27. Save `macos27.tsv`. Pass when every Apple number has a macOS 27 value or a recorded reason it could not run.
-- [ ] Lane 7. Run `dory-cli models` on a copy after the rule is applied. Save `order.txt`. Pass when the order matches the decision row.
+- [x] Lane 7. Run `dory-cli models` on a copy after the rule is applied. Save `order.txt`. Pass when the order matches the decision row.
 - [ ] Lane 8. Run the Taglish recording on Auto after the change. Save `taglish.txt`. Pass when Whisper and Gemma still handle it.
 - [ ] Lane 9. Run the English weekly sync on Auto after the change, with `dory-cli languages en`. Save `english.txt`. Pass when the chosen engines match the rule.
 - [ ] Lane 10. Operator lane. Unplug the Mac at full charge, transcribe `Two hour planning` with Apple Speech and then with Parakeet, and summarize it with Apple Intelligence and then Gemma, recording `pmset -g batt` before and after each and the CPU-seconds of each run including system services. Save `battery.txt`. Pass when every run has a battery drop and CPU-seconds recorded.

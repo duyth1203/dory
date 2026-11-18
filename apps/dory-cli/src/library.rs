@@ -3,7 +3,9 @@
 use dory::{Config, LibraryReader};
 use dory_core::app::{AppKind, ModelRow};
 use dory_core::domain::{Job, JobState, RecordingQuery, RecordingRow, TakeContainer};
-use dory_core::models::{Diar, Llm, Stt};
+use dory_core::models::{
+    Choice, Diar, Llm, ModelId, ModelKind, ModelStatus, Resolution, Stt, auto_order, resolve,
+};
 use dory_core::search::{Correction, Found};
 
 use crate::args::{ImportArgs, ListArgs, ModelsArgs, SearchArgs, ShowArgs};
@@ -213,17 +215,34 @@ pub fn models(config: &Config, args: &ModelsArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Lists a kind's models in the order `Auto` tries them for the library's settings, numbered,
+/// with the ones that cannot do the job last under `-`. `*` marks a pinned model.
 fn print_kind<K: AppKind>(lib: &LibraryReader, title: &str, about: bool) -> Result<(), String> {
     println!("{title}");
     let rows: Vec<ModelRow<K>> = block_on(lib.models::<K>()).map_err(crate::chain)?;
+    let needs = K::listing_needs(&lib.settings().map_err(crate::chain)?);
+    let statuses: Vec<ModelStatus<K>> = rows.iter().map(|r| r.status.clone()).collect();
+    println!(
+        "  {}",
+        auto_line(&resolve(&Choice::Auto, &statuses, &needs))
+    );
     if rows.is_empty() {
         println!("  (none registered)");
     }
-    for row in &rows {
+    let order: Vec<&ModelId<K>> = auto_order(&statuses, &needs)
+        .into_iter()
+        .map(|s| &s.entry.id)
+        .collect();
+    let place = |row: &ModelRow<K>| order.iter().position(|id| **id == row.status.entry.id);
+    let mut listed: Vec<(Option<usize>, &ModelRow<K>)> =
+        rows.iter().map(|row| (place(row), row)).collect();
+    listed.sort_by_key(|(place, _)| place.unwrap_or(usize::MAX));
+    for (place, row) in listed {
         let entry = &row.status.entry;
         println!(
-            "{} {}  {}  {}  {}",
+            "{} {} {}  {}  {}  {}",
             if row.chosen { "*" } else { " " },
+            place.map_or_else(|| "-".to_owned(), |p| (p + 1).to_string()),
             entry.id,
             entry.display_name,
             view::availability(&row.status.availability),
@@ -234,6 +253,15 @@ fn print_kind<K: AppKind>(lib: &LibraryReader, title: &str, about: bool) -> Resu
         }
     }
     Ok(())
+}
+
+/// What `Auto` picks now. A pinned choice may differ.
+fn auto_line<K: ModelKind>(resolution: &Resolution<K>) -> String {
+    match resolution {
+        Resolution::Use(id) => format!("Auto uses {id}"),
+        Resolution::Skip => "Auto skips this step".into(),
+        Resolution::Blocked(blocker) => format!("Auto waits: {}", view::blocker(blocker).0),
+    }
 }
 
 #[cfg(test)]

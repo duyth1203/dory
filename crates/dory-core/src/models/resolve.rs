@@ -111,12 +111,36 @@ fn no_model(kind: KindTag) -> Blocker {
     Blocker::NoModel { kind }
 }
 
+/// The models `Auto` prefers for `needs`, best first, without those that cannot do the job.
+///
+/// The order leaves availability out, so it is the order the catalog's `recommended` and `rank`
+/// set. `Auto` uses the first Ready model in it, and when none is Ready, waits on the first one
+/// that can be downloaded, which is what [`resolve`] picks.
+pub fn auto_order<'a, K: ModelKind>(
+    statuses: &'a [ModelStatus<K>],
+    needs: &K::Needs,
+) -> Vec<&'a ModelStatus<K>> {
+    let mut fitting: Vec<_> = statuses
+        .iter()
+        .map(|s| (s, K::fit(&s.entry.caps, needs)))
+        .filter(|(_, fit)| !matches!(fit, Fit::No(_)))
+        .collect();
+    fitting.sort_by_key(|(s, fit)| ranking(s, fit));
+    fitting.into_iter().map(|(s, _)| s).collect()
+}
+
 fn preference<K: ModelKind>(
     status: &ModelStatus<K>,
     fit: &Fit,
-) -> (u8, u8, bool, Reverse<i16>, ModelId<K>) {
+) -> (u8, (u8, bool, Reverse<i16>, ModelId<K>)) {
+    (status.availability.rank(), ranking(status, fit))
+}
+
+fn ranking<K: ModelKind>(
+    status: &ModelStatus<K>,
+    fit: &Fit,
+) -> (u8, bool, Reverse<i16>, ModelId<K>) {
     (
-        status.availability.rank(),
         fit.rank(),
         !status.entry.recommended,
         Reverse(status.entry.rank),
@@ -352,6 +376,29 @@ mod tests {
         assert_eq!(
             resolve(&Choice::Auto, &rows, &needs(LanguagePref::Auto)),
             use_("a/limited")
+        );
+    }
+
+    #[test]
+    fn auto_uses_the_first_ready_model_in_its_order() {
+        let mut first = row("a/first", down());
+        first.recommended = true;
+        let mut locale = row("a/locale", Availability::Ready);
+        locale.fixed_locale = true;
+        locale.rank = 9;
+        let rows = statuses(&[row("a/second", Availability::Ready), locale, first]);
+        let order: Vec<String> = auto_order(&rows, &needs(LanguagePref::Auto))
+            .iter()
+            .map(|s| s.entry.id.to_string())
+            .collect();
+        assert_eq!(
+            order,
+            ["a/first", "a/second"],
+            "recommended first whatever it needs, and no model that cannot do the job"
+        );
+        assert_eq!(
+            resolve(&Choice::Auto, &rows, &needs(LanguagePref::Auto)),
+            use_("a/second")
         );
     }
 

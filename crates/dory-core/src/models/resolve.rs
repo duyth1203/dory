@@ -202,6 +202,7 @@ mod tests {
                             max_input: None,
                             window: None,
                             sentence_times: false,
+                            lead_in: Ms(0),
                         },
                         recommended: r.recommended,
                         rank: r.rank,

@@ -23,6 +23,10 @@ use super::ffi::{self, SpeechEvent};
 const RANK: i16 = 20;
 /// Ten-minute windows give long meetings checkpoints to resume from.
 const WINDOW: Ms = Ms(600_000);
+/// SpeechTranscriber misreads more names in the first minute of a window it starts cold. Thirty
+/// seconds of the audio before each window brings windowed runs above one whole-file call on the
+/// two-hour take (docs/plans/decisions.tsv, 2026-11-18).
+const LEAD_IN: Ms = Ms(30_000);
 
 /// The locale each language installs and runs when the meeting names only the language. A
 /// language missing here defaults to its first locale.
@@ -154,6 +158,7 @@ fn entry(row: &Row) -> ModelEntry<Stt> {
             max_input: None,
             window: Some(WINDOW),
             sentence_times: false,
+            lead_in: LEAD_IN,
         },
         recommended: false,
         rank: RANK,
@@ -198,11 +203,15 @@ fn availability(row: &Row, states: impl IntoIterator<Item = AssetState>) -> Avai
     }
 }
 
-/// The installed locale that runs a meeting in `wanted`: the exact locale when it is installed,
-/// else the row's default, else any installed locale of the language.
+/// The installed locale that runs a meeting in `wanted`. A meeting whose first window already ran
+/// keeps that window's locale while it is installed. Otherwise the exact locale when it is
+/// installed, else the row's default, else any installed locale of the language. A kept locale
+/// whose assets went away falls back too, because failing would block on a download that installs
+/// only the row's default.
 fn choose_locale(
     row: &Row,
     wanted: &LangTag,
+    kept: Option<&LangTag>,
     installed: &[LangTag],
 ) -> Result<LangTag, EngineError> {
     if wanted.primary() != row.language.as_str() {
@@ -210,7 +219,8 @@ fn choose_locale(
     }
     installed
         .iter()
-        .find(|l| *l == wanted)
+        .find(|l| Some(*l) == kept)
+        .or_else(|| installed.iter().find(|l| *l == wanted))
         .or_else(|| installed.iter().find(|l| **l == row.default))
         .or_else(|| installed.first())
         .cloned()
@@ -379,8 +389,8 @@ impl Transcriber for AppleSpeechEngine {
             LanguagePref::Pinned(tag) => tag.clone(),
             LanguagePref::Auto => self.row.language.clone(),
         };
-        let locale = choose_locale(&self.row, &wanted, &self.installed)?;
-        let locale = CString::new(locale.as_str()).expect("a language tag has no NUL");
+        let ran_in = choose_locale(&self.row, &wanted, req.locale.as_ref(), &self.installed)?;
+        let locale = CString::new(ran_in.as_str()).expect("a language tag has no NUL");
         let path = CString::new(req.clip.path.as_os_str().as_bytes()).map_err(|_| {
             EngineError::InputRejected(format!("{} has a NUL byte", req.clip.path.display()))
         })?;
@@ -407,7 +417,9 @@ impl Transcriber for AppleSpeechEngine {
             return Err(error);
         }
         sink.progress(Fraction::new(1.0));
-        Ok(TranscribeOutcome::default())
+        Ok(TranscribeOutcome {
+            detected_language: Some(ran_in),
+        })
     }
 }
 
@@ -542,17 +554,38 @@ mod tests {
             ("en", &tags(&["en-AU", "en-IN"])[..], "en-AU"),
         ];
         for (wanted, installed, want) in cases {
-            let got = choose_locale(&row, &tag(wanted), installed).unwrap();
+            let got = choose_locale(&row, &tag(wanted), None, installed).unwrap();
             assert_eq!(got.as_str(), want, "{wanted}");
         }
         assert!(matches!(
-            choose_locale(&row, &tag("de"), &all),
+            choose_locale(&row, &tag("de"), None, &all),
             Err(EngineError::UnsupportedLanguage(t)) if t == tag("de")
         ));
         assert!(matches!(
-            choose_locale(&row, &tag("en"), &[]),
+            choose_locale(&row, &tag("en"), None, &[]),
             Err(EngineError::ModelMissing(_))
         ));
+    }
+
+    #[test]
+    fn a_meeting_keeps_the_locale_its_first_window_ran_in() {
+        let row = english();
+        let all = row.locales.clone();
+        let us = tag("en-US");
+        for wanted in ["en", "en-GB"] {
+            let got = choose_locale(&row, &tag(wanted), Some(&us), &all).unwrap();
+            assert_eq!(got, us, "{wanted}");
+        }
+        assert_eq!(
+            choose_locale(&row, &tag("en"), Some(&us), &tags(&["en-AU", "en-GB"])).unwrap(),
+            tag("en-AU"),
+            "a kept locale whose assets went away falls back as if none were kept"
+        );
+        assert_eq!(
+            choose_locale(&row, &tag("en-GB"), Some(&tag("de-DE")), &all).unwrap(),
+            tag("en-GB"),
+            "a kept tag of another language is never installed for this row"
+        );
     }
 
     #[test]

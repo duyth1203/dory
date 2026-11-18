@@ -613,6 +613,39 @@ fn importing_a_flac_copies_it_in_unchanged() {
     );
 }
 
+/// At 16 kHz the clip is the take's own samples: no resampling, and no gain from scaling a
+/// sample into float and back with two different constants.
+#[test]
+fn a_16_khz_clip_holds_the_takes_samples_exactly() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("ramp.wav");
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let ramp: Vec<i16> = (i16::MIN..=i16::MAX).step_by(3).chain([i16::MAX]).collect();
+    let mut writer = hound::WavWriter::create(&source, spec).unwrap();
+    for s in &ramp {
+        writer.write_sample(*s).unwrap();
+    }
+    writer.finalize().unwrap();
+
+    let takes = FsTakes::new(dir.path().join("takes"));
+    let id = rid("ramp");
+    takes.import(&id, &source).unwrap();
+    let clip = takes.clip(&id, Channel::Mixed, None).unwrap();
+    let got: Vec<i16> = hound::WavReader::open(&clip.path)
+        .unwrap()
+        .samples::<i16>()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(got.len(), ramp.len());
+    let changed = got.iter().zip(&ramp).filter(|(a, b)| a != b).count();
+    assert_eq!(changed, 0, "{changed} of {} samples changed", ramp.len());
+}
+
 #[test]
 fn importing_garbage_fails_without_leaving_a_take() {
     let dir = tempfile::tempdir().unwrap();

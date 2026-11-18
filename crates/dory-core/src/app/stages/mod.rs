@@ -165,6 +165,8 @@ struct WindowCx<'a> {
     /// Decode again the speech a window leaves without text, per `windows::recovers`.
     recover: bool,
     meeting: &'a [LangTag],
+    /// `SttCaps::lead_in`.
+    lead_in: Ms,
 }
 
 fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
@@ -271,6 +273,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
             cx.settings.switch_recovery,
         ),
         meeting: &cx.settings.meeting_languages,
+        lead_in: caps.lead_in,
     };
     let total = runs
         .iter()
@@ -291,6 +294,8 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let mut segments = Vec::new();
     let mut speech = Ms(0);
     let mut words = 0;
+    // Set by the meeting's first window, saved or decoded now, so a resume keeps it too.
+    let mut locale: Option<Option<LangTag>> = None;
     for run in &runs {
         let mut raw = Vec::new();
         for span in &run.windows {
@@ -303,9 +308,13 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
                 }
                 None => {
                     progress.start_window((cx.pace)());
-                    transcribe_window(&wx, run, *span, &mut progress)?
+                    let kept = locale.as_ref().and_then(Option::as_ref);
+                    transcribe_window(&wx, run, *span, kept, &mut progress)?
                 }
             };
+            locale.get_or_insert_with(|| {
+                kept_locale(pinned.as_ref(), checkpoint.detected_language.as_ref())
+            });
             progress.finished(span.len());
             speech = Ms(speech.0 + windows::speech_time(&run.whole.activity, *span).0);
             words += checkpoint
@@ -377,10 +386,11 @@ fn transcribe_window(
     wx: &WindowCx<'_>,
     run: &ClipRun,
     span: TimeRange,
+    locale: Option<&LangTag>,
     progress: &mut Progress<'_>,
 ) -> Result<Checkpoint, StageError> {
     let started = std::time::Instant::now();
-    let first = decode(wx, run, span, wx.language, progress, Call::First)?;
+    let first = decode(wx, run, span, wx.language, locale, progress, Call::First)?;
     let heard = first.heard.clone();
     let (checkpoint, recovered) = if wx.recover {
         let first = settled(wx, run, span, first, progress)?;
@@ -389,7 +399,7 @@ fn transcribe_window(
         let chose = first.heard.clone();
         let mut segments = first.tagged();
         let recovered = windows::recover(&speech, &said, |stretch| {
-            let again = decode(wx, run, stretch, wx.language, progress, Call::Again)?;
+            let again = decode(wx, run, stretch, wx.language, locale, progress, Call::Again)?;
             let again = settled(wx, run, stretch, again, progress)?;
             let said = again.segments.iter().map(|s| s.range).collect();
             segments.extend(again.tagged());
@@ -415,6 +425,7 @@ fn transcribe_window(
     };
     log_window(
         wx.language,
+        locale,
         heard.as_ref(),
         &checkpoint,
         recovered,
@@ -460,26 +471,30 @@ enum Call {
     Again,
 }
 
-/// Sends `span` of the clip to the engine.
+/// Sends `span` of the clip to the engine, after up to the engine's lead-in of the audio before it.
 fn decode(
     wx: &WindowCx<'_>,
     run: &ClipRun,
     span: TimeRange,
     language: &LanguagePref,
+    locale: Option<&LangTag>,
     progress: &mut Progress<'_>,
     call: Call,
 ) -> Result<Decoded, StageError> {
+    let from = Ms(span.start().0.saturating_sub(wx.lead_in.0)).max(run.whole.origin);
+    let sent = TimeRange::new(from, span.end()).expect("the lead-in ends where the span starts");
     let fetched;
-    let clip = if span.start() == Ms(0) && span.end() == run.whole.duration {
+    let clip = if sent.start() == Ms(0) && sent.end() == run.whole.duration {
         &run.whole
     } else {
-        fetched = wx.takes.slice(&run.whole, span).map_err(failed)?;
+        fetched = wx.takes.slice(&run.whole, sent).map_err(failed)?;
         &fetched
     };
     let threads = progress.budget.threads();
     let mut sink = Drafts {
         plan: run.plan,
         origin: clip.origin,
+        span,
         window: (call == Call::First).then_some(span.len()),
         live: call == Call::First && !wx.recover,
         progress,
@@ -492,6 +507,7 @@ fn decode(
         hint: wx.hint,
         threads,
         sentence_times: wx.recover,
+        locale: locale.cloned(),
     };
     let outcome = wx
         .stt
@@ -501,6 +517,14 @@ fn decode(
         segments: sink.raw,
         heard: outcome.detected_language,
     })
+}
+
+/// The locale a pinned meeting keeps once its first window heard `heard`: that tag, when it is a
+/// variant of the pinned language. An automatic meeting keeps none, because each window may be
+/// in another language.
+fn kept_locale(pinned: Option<&LangTag>, heard: Option<&LangTag>) -> Option<LangTag> {
+    let (pinned, heard) = (pinned?, heard?);
+    (pinned.primary() == heard.primary()).then(|| heard.clone())
 }
 
 /// Decodes `span` again pinned to a meeting language when the engine heard one outside them.
@@ -515,7 +539,7 @@ fn settled(
         Settle::Keep => Ok(decoded),
         Settle::Redo(tag) => {
             let pinned = LanguagePref::Pinned(tag.clone());
-            let again = decode(wx, run, span, &pinned, progress, Call::Again)?;
+            let again = decode(wx, run, span, &pinned, None, progress, Call::Again)?;
             Ok(Decoded {
                 heard: Some(tag),
                 ..again
@@ -548,6 +572,7 @@ pub fn settle_language(heard: Option<&LangTag>, meeting: &[LangTag]) -> Settle {
 /// took, which language the engine reported for it, and which language its text was kept in.
 fn log_window(
     language: &LanguagePref,
+    locale: Option<&LangTag>,
     heard: Option<&LangTag>,
     checkpoint: &Checkpoint,
     recovered: usize,
@@ -565,7 +590,8 @@ fn log_window(
         .as_ref()
         .map_or(heard, LangTag::as_str);
     let (start, end) = (checkpoint.span.start().0, checkpoint.span.end().0);
-    eprintln!("window ms={} lang={wanted}", elapsed.as_millis());
+    let kept = locale.map(|l| format!(" locale={l}")).unwrap_or_default();
+    eprintln!("window ms={} lang={wanted}{kept}", elapsed.as_millis());
     eprintln!("language heard={heard} window={start}-{end}");
     eprintln!("language chose={chose} heard={heard} window={start}-{end} recovered={recovered}");
 }
@@ -666,6 +692,9 @@ fn publish_draft(db: &Db, job: &Job, plan: ClipPlan, segment: RawSegment) {
 struct Drafts<'p, 'a> {
     plan: ClipPlan,
     origin: Ms,
+    /// What the call transcribes, on the take's time axis. The clip may start earlier, by the
+    /// engine's lead-in, and a sentence centered before the span belongs to the window before.
+    span: TimeRange,
     /// The window this call reports progress through, if any.
     window: Option<Ms>,
     /// Publish each segment as a draft as it comes.
@@ -677,8 +706,11 @@ struct Drafts<'p, 'a> {
 
 impl SegmentSink for Drafts<'_, '_> {
     fn progress(&mut self, fraction: Fraction) {
-        if let Some(window) = self.window {
-            self.progress.within(window, fraction);
+        if let Some(window) = self.window.filter(|w| w.0 > 0) {
+            let lead = self.span.start().0 - self.origin.0;
+            let heard = (lead + window.0) as f64;
+            let into = (f64::from(fraction.get()) * heard - lead as f64).max(0.0) / window.0 as f64;
+            self.progress.within(window, Fraction::new(into as f32));
         }
     }
 
@@ -687,6 +719,10 @@ impl SegmentSink for Drafts<'_, '_> {
             range: segment.range.shifted(self.origin),
             ..segment
         };
+        let middle = (segment.range.start().0 + segment.range.end().0) / 2;
+        if middle < self.span.start().0 {
+            return;
+        }
         if self.live {
             publish_draft(
                 self.progress.db,

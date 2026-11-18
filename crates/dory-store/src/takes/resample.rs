@@ -27,8 +27,11 @@ fn resample_err(e: impl std::fmt::Display) -> TakeError {
     TakeError::Decode(format!("resampling failed: {e}"))
 }
 
+/// The inverse of reading a sample as `s / 32768`, so a 16 kHz take reaches the engine unchanged.
 pub(crate) fn to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
+    (sample * 32768.0)
+        .round()
+        .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
 }
 
 impl Downsampler {

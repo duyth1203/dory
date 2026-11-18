@@ -67,6 +67,7 @@ mod tests {
                 max_input: Some(Ms(1)),
                 window: None,
                 sentence_times: false,
+                lead_in: Ms(0),
             },
             recommended: false,
             rank: 0,

@@ -883,6 +883,7 @@ pub struct TranscribeCall {
     pub diarize: bool,
     pub threads: u8,
     pub sentence_times: bool,
+    pub locale: Option<LangTag>,
 }
 
 impl FakeTranscriber {
@@ -997,6 +998,7 @@ impl Transcriber for FakeTranscriber {
                 diarize: req.diarize,
                 threads: req.threads,
                 sentence_times: req.sentence_times,
+                locale: req.locale.clone(),
             });
             calls.len() - 1
         };
@@ -1245,6 +1247,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
             max_input: None,
             window: None,
             sentence_times: false,
+            lead_in: Ms(0),
         },
         recommended: false,
         rank: 0,

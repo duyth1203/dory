@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "dory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossbeam-channel",
  "dory-assistants",
@@ -1730,7 +1730,7 @@ dependencies = [
 
 [[package]]
 name = "dory-assistants"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dory-core",
  "libc",
@@ -1740,7 +1740,7 @@ dependencies = [
 
 [[package]]
 name = "dory-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ctrlc",
  "dory",
@@ -1750,7 +1750,7 @@ dependencies = [
 
 [[package]]
 name = "dory-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "crossbeam-channel",
@@ -1762,7 +1762,7 @@ dependencies = [
 
 [[package]]
 name = "dory-engines"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bzip2 0.6.1",
  "dory-core",
@@ -1779,7 +1779,7 @@ dependencies = [
 
 [[package]]
 name = "dory-gpui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-channel",
  "block2 0.6.2",
@@ -1799,7 +1799,7 @@ dependencies = [
 
 [[package]]
 name = "dory-macos"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2 0.6.2",
  "ctrlc",
@@ -1820,7 +1820,7 @@ dependencies = [
 
 [[package]]
 name = "dory-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dory",
  "dory-core",
@@ -1835,7 +1835,7 @@ dependencies = [
 
 [[package]]
 name = "dory-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "claxon",
  "dory-core",

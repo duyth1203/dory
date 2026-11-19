@@ -50,11 +50,16 @@ fi
 cargo build --release -p dory-gpui
 cargo build --release -p dory-mcp
 
+# macOS 26 draws the app icon from Assets.car (CFBundleIconName in Info.plist) and frames an
+# icon it only finds as an .icns in a grey tile.
+icon="$target/icon"
+scripts/compile-icon.sh "$icon"
+
 mkdir -p "$out"
 rm -rf "$out/Dory.app"
-config="$(python3 - "$target/release" "$out" "$version" "$identity" <<'PY'
+config="$(python3 - "$target/release" "$out" "$version" "$identity" "$icon" <<'PY'
 import json, os, sys
-binaries_dir, out, version, identity = sys.argv[1:]
+binaries_dir, out, version, identity, icon = sys.argv[1:]
 print(json.dumps({
     "productName": "Dory",
     "version": version,
@@ -66,7 +71,8 @@ print(json.dumps({
         {"path": "dory-mcp", "main": False},
     ],
     "formats": ["app"],
-    "icons": ["apps/dory-gpui/Dory.icns"],
+    "icons": [os.path.join(os.path.abspath(icon), "Dory.icns")],
+    "resources": [{"src": os.path.join(os.path.abspath(icon), "Assets.car"), "target": "Assets.car"}],
     "macos": {
         "minimumSystemVersion": "26.0",
         "infoPlistPath": "apps/dory-gpui/Info.plist",

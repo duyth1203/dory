@@ -6,6 +6,7 @@
   <key>CFBundleName</key><string>Dory</string>
   <key>CFBundleDisplayName</key><string>Dory</string>
   <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconName</key><string>Dory</string>
   <key>LSMinimumSystemVersion</key><string>26.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key>

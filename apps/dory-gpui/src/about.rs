@@ -19,8 +19,8 @@ pub const HEIGHT: f32 = 640.;
 const TITLEBAR: f32 = 40.;
 
 const LUCIDE_VERSION: &str = include_str!("../assets/icons/VERSION");
-/// The app icon at 128 pt, rendered at 2x from `Dory.icns`, so it keeps the icon grid and the
-/// transparent corners that `scripts/make-icon.sh` cuts from `icon/source.png`.
+/// The app icon at 128 pt, the 2x image `scripts/make-icon.sh` gets from actool's rendering of
+/// `icon/Dory.icon`, so it has the system's squircle and transparent corners.
 pub const ICON_PNG: &[u8] = include_bytes!("../assets/about/dory-icon.png");
 pub const ICON_SIZE: f32 = 128.;
 const LUCIDE_LICENSE: &str = include_str!("../assets/icons/LICENSE");

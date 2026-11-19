@@ -51,7 +51,7 @@ The new code follows `docs/architecture/hexagonal.md`. Read it before you touch 
 - `crates/dory-core` holds the domain, ports, recorder state machine, model selection, and the frame ring that capture adapters push into.
 - `crates/dory-store` holds the SQLite store, file takes, and legacy import. `crates/dory-macos` holds the macOS 26 adapters. `crates/dory` is the composition root, the only crate that names adapters. `apps/dory-cli` is the headless driving adapter and test harness. The capture harness is `crates/dory-macos/examples/dory-capture`.
 - App data lives in `~/Library/Application Support/com.dory.app/v2`. The old app's folder one level up is only read, by the importer and the legacy cleanup.
-- `apps/dory-gpui/Info.plist`, `Dory.entitlements`, and `Dory.icns` feed the bundle.
+- `apps/dory-gpui/Info.plist`, `Dory.entitlements`, and `Dory.icns` feed the bundle. The app icon's source is the Icon Composer document `apps/dory-gpui/icon/Dory.icon`: `scripts/make-icon.sh` rebuilds it and `Dory.icns` from `icon/source.png`, and `scripts/bundle-macos.sh` compiles it into `Assets.car`, which macOS 26 needs to draw the icon without a grey frame.
 
 ## Git
 

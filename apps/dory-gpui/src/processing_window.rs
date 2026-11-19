@@ -58,6 +58,22 @@ pub fn install(cx: &mut App) {
         KeyBinding::new("cmd-w", CloseWindow, Some(CONTEXT)),
         KeyBinding::new("cmd-z", UndoTrash, Some(CONTEXT)),
     ]);
+    cx.on_window_closed(|cx, _| restack(cx)).detach();
+}
+
+/// Floats the window above the main window while Settings is closed. Settings is a normal
+/// window, which never comes above a floating one, so the queue drops to the normal level while
+/// Settings is open.
+pub fn restack(cx: &mut App) {
+    let Some((handle, view)) = cx.try_global::<Open>().map(|open| (open.0, open.1.clone())) else {
+        return;
+    };
+    let floating = crate::settings_window::current_window(cx)
+        .is_none_or(|settings| !cx.windows().contains(&settings));
+    let _ = handle.update(cx, |_, window, cx| {
+        crate::platform::set_floating(window, floating);
+        view.update(cx, |view, _| view.floating = floating);
+    });
 }
 
 /// The open Processing window's view, for tests and the launch hook.
@@ -69,8 +85,10 @@ pub fn current_window(cx: &App) -> Option<AnyWindowHandle> {
     cx.try_global::<Open>().map(|open| open.0)
 }
 
-/// Opens the Processing window, or brings it forward when it is open.
+/// Opens the Processing window, or brings it forward when it is open. The menu bar's
+/// Processing Queue… runs this while another app is frontmost, which hides this panel.
 pub fn open(app: &Entity<AppState>, cx: &mut App) {
+    cx.activate(true);
     if let Some(handle) = current_window(cx)
         && handle
             .update(cx, |_, window, _| window.activate_window())
@@ -100,7 +118,10 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
         crate::platform::print_window_id(window);
         cx.new(|cx| ProcessingWindow::new(owner, window, cx))
     }) {
-        Ok((handle, view)) => cx.set_global(Open(handle, view)),
+        Ok((handle, view)) => {
+            cx.set_global(Open(handle, view));
+            restack(cx);
+        }
         Err(error) => app.update(cx, |app, cx| {
             app.say(format!("Could not open the Processing window: {error}"), cx)
         }),
@@ -140,6 +161,8 @@ pub struct ProcessingWindow {
     last: Queue,
     /// When the Undo toast appeared, for its entrance.
     toast_at: Option<Instant>,
+    /// Above the main window; see [`restack`].
+    floating: bool,
     _observe: Subscription,
     _bounds: Subscription,
 }
@@ -190,6 +213,7 @@ impl ProcessingWindow {
             focus: HashMap::new(),
             last,
             toast_at: None,
+            floating: true,
             _observe: observe,
             _bounds: bounds,
         };
@@ -199,6 +223,11 @@ impl ProcessingWindow {
 
     pub fn queue(&self) -> &Queue {
         &self.last
+    }
+
+    /// Whether the window floats above Dory's other windows.
+    pub fn floats(&self) -> bool {
+        self.floating
     }
 
     fn focus_for(&mut self, key: String, part: &'static str, cx: &mut App) -> FocusHandle {

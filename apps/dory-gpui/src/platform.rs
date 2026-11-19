@@ -33,29 +33,50 @@ pub fn force_appearance(appearance: Appearance) {
 #[cfg(not(target_os = "macos"))]
 pub fn force_appearance(_: Appearance) {}
 
-/// Prints `window-id: <NSWindow windowNumber>`, so `scripts/visual-pass.sh` can capture this
-/// window alone with `screencapture -l`.
 #[cfg(target_os = "macos")]
-pub fn print_window_id(window: &Window) {
+fn ns_window(window: &Window) -> Option<objc2::rc::Retained<objc2_app_kit::NSWindow>> {
     use objc2_app_kit::NSView;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
-    let Ok(handle) = HasWindowHandle::window_handle(window) else {
-        return;
-    };
+    let handle = HasWindowHandle::window_handle(window).ok()?;
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
-        return;
+        return None;
     };
     // SAFETY: GPUI's AppKit handle points at the window's content `NSView`, which lives as long
     // as `window`, and this runs on the main thread, where GPUI calls window code.
     let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
-    if let Some(ns_window) = view.window() {
+    view.window()
+}
+
+/// Prints `window-id: <NSWindow windowNumber>`, so `scripts/visual-pass.sh` can capture this
+/// window alone with `screencapture -l`.
+#[cfg(target_os = "macos")]
+pub fn print_window_id(window: &Window) {
+    if let Some(ns_window) = ns_window(window) {
         eprintln!("window-id: {}", ns_window.windowNumber());
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn print_window_id(_: &Window) {}
+
+/// Moves `window` to AppKit's floating level, above the app's normal windows, or back among them.
+/// GPUI sets the level only when a window opens.
+#[cfg(target_os = "macos")]
+pub fn set_floating(window: &Window, floating: bool) {
+    use objc2_app_kit::{NSFloatingWindowLevel, NSNormalWindowLevel};
+
+    if let Some(ns_window) = ns_window(window) {
+        ns_window.setLevel(if floating {
+            NSFloatingWindowLevel
+        } else {
+            NSNormalWindowLevel
+        });
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_floating(_: &Window, _: bool) {}
 
 #[cfg(target_os = "macos")]
 pub fn system_accent() -> Option<Hsla> {

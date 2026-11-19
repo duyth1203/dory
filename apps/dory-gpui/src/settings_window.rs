@@ -293,7 +293,11 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
         crate::platform::print_window_id(window);
         cx.new(|cx| SettingsWindow::new(owner, window, cx))
     }) {
-        Ok((handle, view)) => cx.set_global(Open(handle, view)),
+        Ok((handle, view)) => {
+            cx.set_global(Open(handle, view));
+            // Deferred: the queue's own Processing Settings… runs inside the queue's window.
+            cx.defer(crate::processing_window::restack);
+        }
         Err(error) => app.update(cx, |app, cx| {
             app.say(format!("Could not open Settings: {error}"), cx)
         }),

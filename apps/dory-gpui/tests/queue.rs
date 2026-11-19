@@ -7,7 +7,7 @@ use dory_core::domain::{Goal, Job, JobEvent, JobId, JobState, Priority, Stage, T
 use dory_core::ports::{Change, Store as _};
 use dory_gpui::app::AppState;
 use dory_gpui::library::Selection;
-use dory_gpui::{fixtures, notify, processing_window, set_up_summaries, surface};
+use dory_gpui::{fixtures, notify, processing_window, set_up_summaries, settings_window, surface};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, ElementId, Entity, Role, TestAppContext,
     test::TestWindowExt as _,
@@ -399,4 +399,54 @@ fn the_first_in_line_cannot_move_up(cx: &mut TestAppContext) {
     focus_row(window, "queue-job-1", cx);
     press(window, "alt-up", cx);
     assert_eq!(order(&app, cx), [1, 2, 3], "the first in line stays first");
+}
+
+fn floats(cx: &mut TestAppContext) -> bool {
+    cx.update(|cx| processing_window::current(cx).unwrap().read(cx).floats())
+}
+
+fn front(cx: &mut TestAppContext) -> Option<AnyWindowHandle> {
+    cx.update(|cx| cx.active_window())
+}
+
+/// Settings is a normal window, so a queue left floating covers it.
+#[gpui_kit::test]
+fn processing_settings_comes_to_the_front_over_the_queue(cx: &mut TestAppContext) {
+    let (_, app) = open_with(cx, dory_on(sample_store()));
+    let queue = open_window(&app, cx);
+    assert!(floats(cx), "the queue floats over the main window");
+
+    click(queue, "queue-settings", cx);
+    let settings = cx
+        .update(|cx| settings_window::current_window(cx))
+        .expect("Settings opened");
+    let pane = cx.update(|cx| settings_window::current(cx).unwrap().read(cx).pane());
+    assert_eq!(pane, settings_window::Pane::Transcription);
+    assert!(!floats(cx), "the queue no longer floats over Settings");
+
+    cx.update_window(queue, |_, window, _| window.activate_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(front(cx), Some(queue));
+    click(queue, "queue-settings", cx);
+    assert_eq!(
+        front(cx),
+        Some(settings),
+        "an open Settings comes forward too"
+    );
+    assert!(!floats(cx));
+
+    cx.update_window(settings, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(floats(cx), "the queue floats again once Settings closes");
+}
+
+#[gpui_kit::test]
+fn a_queue_opened_over_settings_does_not_float(cx: &mut TestAppContext) {
+    let (_, app) = open_with(cx, dory_on(sample_store()));
+    cx.update(|cx| settings_window::open(&app, cx));
+    cx.run_until_parked();
+    open_window(&app, cx);
+    assert!(!floats(cx), "Settings stays reachable above the queue");
 }

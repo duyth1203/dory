@@ -164,6 +164,17 @@ Platform AI P5's rule, applied to these numbers:
 
 The order stays P2's and P3's. `crates/dory/tests/catalog_order.rs` pins it. The decision waits for the operator's go on platform AI Appendix G, question 1. Every macOS 27 number is an operator lane, and so is the battery lane. The catalog's Parakeet and Whisper pros and cons now quote these English WERs (5.2% and 4.5%) and the app-path speeds (about 13 and 4 times real time). Whisper's Tagalog 14.6% is still the 2026-11-16 number, scored against the normalized references.
 
+Re-run on 2026-11-19 after the summary fix (`dory_core` notes and summary prompts, the summary pass's output room, and `tidy`; commits 7d79de1 to 6dd7335). The method is the same: the same 10 transcripts on a clone of the rubric library, a release `dory-cli` at 2ad7091, and two new blind passes with new A/B seeds. Both halves of the rule moved, so the result is the same:
+
+| Summary engine | Rubric, 8 English transcripts | Action items kept, 2-hour summary | Wall time, 2-hour summary |
+|---|---|---|---|
+| Gemma 4 E4B | 4.53 (was 3.95) | 39 of 40 | 212 s |
+| Apple Intelligence | 3.92 (was 3.73) | 37 of 40 (was 3) | 231 s |
+
+- **Apple Intelligence still stays below Gemma.** It now keeps 37 of Gemma's 39 items, 95%, which passes the 90% half. Its rubric score is 0.61 behind Gemma's, which fails the 0.25 half. Gemma gained more than Apple from the same prompts. Its short slices stopped filing action items as decisions, so 2 minutes went from 3.88 to 5.0 and 15 minutes from 3.50 to 4.50.
+- Apple's weak spot moved to the 5- to 30-minute slices. Both judges found it listing only the first or last few of 12 to 34 assignments there, and inventing items on the 5-minute slice. On the 2-hour summary it was cut off mid-line and invented one owner.
+- The two passes agreed on 56 of 72 criterion scores, and their overall scores differed by 0.22 on average and by 0.50 at most. That is looser than the first run's 0.11. Different judges scored the two runs, so a change of about 0.25 on one transcript is within judge noise. A gap of 0.61 over 8 transcripts is not.
+
 ## What is not verified yet
 
 - A research agent reported a 404 for Sona's GitHub repository on 2026-11-15. This run did not re-check it. If it holds, Sona's supported engines and its future are unknown, which raises the value of moving off it. `scripts/pre_build.py` downloads Sona release `v0.2.1`, so check that the download URL still works before E0.

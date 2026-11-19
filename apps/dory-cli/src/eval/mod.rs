@@ -144,9 +144,9 @@ fn run_case(
         .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    let reference = score::words(&case.reference);
+    let reference = case.reference.as_deref().map(score::words);
     let hypothesis = score::words(&spoken);
-    let (terms, absent_terms) = score::term_hits(&case.terms, &reference, &hypothesis);
+    let (terms, absent_terms) = score::term_hits(&case.terms, reference.as_deref(), &hypothesis);
 
     let summary = library.summary(&id).map_err(chain)?;
     let scored = match &summary {
@@ -159,7 +159,7 @@ fn run_case(
         case: case.name.clone(),
         stt: transcript.produced_by.to_string(),
         llm: summary.map(|s| s.produced_by.to_string()),
-        wer: score::word_errors(&reference, &hypothesis),
+        wer: reference.map(|r| score::word_errors(&r, &hypothesis)),
         terms,
         absent_terms,
         summary: scored,

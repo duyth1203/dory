@@ -1,0 +1,42 @@
+# Each item sentence exactly, with the owner as the meeting spells it. The meeting says
+# each one four times, so 160 in all.
+Maria will finish the billing dashboard *4
+Daniel will finish the onboarding emails *4
+Priya will finish the Android crash *4
+Kenji will finish the search index *4
+Sofia will finish the pricing page *4
+Omar will finish the data export *4
+Lina will finish the audit log *4
+Thomas will finish the help center *4
+Aisha will finish the payment retry *4
+Marco will finish the sign in flow *4
+Maria will finish the release checklist *4
+Daniel will finish the usage report *4
+Priya will finish the partner API *4
+Kenji will finish the cache layer *4
+Sofia will finish the support macros *4
+Omar will finish the trial limits *4
+Lina will finish the invoice template *4
+Thomas will finish the status page *4
+Aisha will finish the referral program *4
+Marco will finish the mobile widgets *4
+Maria will finish the Q3 budget *4
+Daniel will finish the hiring plan *4
+Priya will finish the design tokens *4
+Kenji will finish the beta survey *4
+Sofia will finish the sales deck *4
+Omar will finish the backup policy *4
+Lina will finish the latency alerts *4
+Thomas will finish the feature flags *4
+Aisha will finish the accessibility review *4
+Marco will finish the translation files *4
+Maria will finish the roadmap draft *4
+Daniel will finish the security patch *4
+Priya will finish the analytics events *4
+Kenji will finish the team offsite *4
+Sofia will finish the vendor contract *4
+Omar will finish the load test *4
+Lina will finish the docs site *4
+Thomas will finish the privacy notice *4
+Aisha will finish the dark mode *4
+Marco will finish the legacy importer *4

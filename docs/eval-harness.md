@@ -4,8 +4,8 @@
 
 ## What it measures
 
-- **Word error rate.** The transcript against a hand-corrected reference. Substitutions, deletions, and insertions are counted separately. The corpus rate is the summed errors over the summed reference words, so a long case weighs more than a short one.
-- **Term recall.** How many of the names and jargon words in `terms.txt` the transcript got right. Each occurrence in the reference counts once. The transcript earns at most as many hits as the reference has.
+- **Word error rate.** The transcript against a hand-corrected reference, when the case has one. Substitutions, deletions, and insertions are counted separately. The corpus rate is the summed errors over the summed reference words, so a long case weighs more than a short one.
+- **Term recall.** How many of the names and jargon words in `terms.txt` the transcript got right. Each occurrence counts once, from the reference or from the term's own count. The transcript earns at most as many hits as the reference has.
 - **Summary recall.** How many of the action items and decisions in `expected.txt` appear in the summary, and how many bullets match nothing expected. Action items are read from the Action Items section and decisions from the Decisions section. A summary that lacks the three sections is read as one list and flagged unstructured. Each bullet pairs with at most one expected item, so a summary that repeats an item finds it once and counts the copy as extra.
 - **Time.** Seconds spent in the transcribe stage and in the summarize stage, and the transcribe time per second of audio.
 
@@ -18,7 +18,7 @@ A case is a folder:
 ```
 standup/
   take.m4a          exactly one audio file
-  reference.txt     the transcript, corrected by hand
+  reference.txt     optional, the transcript corrected by hand
   terms.txt         optional, one term per line
   expected.txt      optional, one gold item per line
   language          optional, one BCP-47 tag
@@ -26,9 +26,9 @@ standup/
 
 The audio can be `wav`, `flac`, `mp3`, `m4a`, `aac`, `ogg`, `opus`, `aif`, `aiff`, `caf`, `mp4`, or `webm`. Dory reads `wav` and `flac` itself and decodes the rest with ffmpeg.
 
-`reference.txt` is plain words. Leave out speaker names and timestamps.
+`reference.txt` is plain words. Leave out speaker names and timestamps. A meeting too long to correct by hand can go without one. Word error rate is then not scored, and every term needs a count. A case needs at least one of `reference.txt`, `terms.txt`, and `expected.txt`.
 
-`terms.txt` lists names and jargon. A term may be several words. Blank lines and lines that start with `#` are ignored. A term the reference never says is reported and not scored, because it is probably a typo.
+`terms.txt` lists names and jargon. A term may be several words. Blank lines and lines that start with `#` are ignored. A term the reference never says is reported and not scored, because it is probably a typo. A term may end in `*N` to say the meeting says it `N` times, as in `Maria will finish the billing dashboard *4`. The count then replaces counting it in the reference.
 
 `expected.txt` lists what a good summary must contain:
 
@@ -42,7 +42,7 @@ A comma separates concepts, and every concept must appear in the same bullet. A 
 
 `language` pins the transcription language. Without it the recording keeps the language preference it was imported with.
 
-`dory-cli eval` takes one case folder, or a folder of case folders. Each subfolder with a `reference.txt` is a case, run in name order.
+`dory-cli eval` takes one case folder, or a folder of case folders. Each subfolder with a `reference.txt`, `terms.txt`, or `expected.txt` is a case, run in name order.
 
 ## Running it
 
@@ -67,6 +67,10 @@ The options:
 - `--fake-engines` runs the fake engines, for checking the harness itself. `scripts/eval-smoke.sh` does this with one case made by `say`.
 
 A case that blocks or fails prints its error and the run goes on. The command exits with an error at the end if any case failed.
+
+## The planning meeting case
+
+`scripts/fixtures/two-hour-planning.sh [CASES_DIR] [LIBRARY]` builds a case from the test library's "Two hour planning", a 132-minute meeting with 40 action items, each said four times. It copies the gold files from `scripts/fixtures/two-hour-planning/` and links the library's take as the audio, reading the library only. The case has no reference. Its terms are the 160 exact item sentences, and its expected items need the owner and the item in one bullet.
 
 ## Building a case from a real recording
 

@@ -34,15 +34,32 @@ pub struct Expected {
     pub line: String,
 }
 
+/// A name or phrase the transcript should get right, as written in `terms.txt`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Term {
+    pub text: String,
+    /// How often the meeting says it, from a trailing `*N`. `None` counts it in the reference.
+    pub count: Option<usize>,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct Case {
     pub name: String,
     pub audio: PathBuf,
-    pub reference: String,
+    /// `None` for a meeting too long to correct by hand. Word errors are then not scored, and
+    /// every term carries its own count.
+    pub reference: Option<String>,
     /// Pins the transcription language. `None` keeps the recording's own preference.
     pub language: Option<LangTag>,
-    pub terms: Vec<String>,
+    pub terms: Vec<Term>,
     pub expected: Vec<Expected>,
+}
+
+/// A folder holding any of these is a case.
+const CASE_FILES: [&str; 3] = ["reference.txt", "terms.txt", "expected.txt"];
+
+fn is_case(dir: &Path) -> bool {
+    CASE_FILES.iter().any(|file| dir.join(file).is_file())
 }
 
 impl Case {
@@ -58,19 +75,32 @@ impl Case {
                 Err(e) => Err(in_case(format!("cannot read {file}: {e}"))),
             }
         };
-        let reference =
-            read("reference.txt")?.ok_or_else(|| in_case("reference.txt is missing".into()))?;
-        if words(&reference).is_empty() {
+        let reference = read("reference.txt")?;
+        if reference.as_deref().is_some_and(|r| words(r).is_empty()) {
             return Err(in_case("reference.txt has no words".into()));
         }
         let terms = match read("terms.txt")? {
             Some(text) => parse_terms(&text).map_err(&in_case)?,
             None => Vec::new(),
         };
+        if reference.is_none()
+            && let Some(term) = terms.iter().find(|t| t.count.is_none())
+        {
+            return Err(in_case(format!(
+                "terms.txt: {:?} needs a count such as \"*4\", because there is no reference.txt to count it in",
+                term.text
+            )));
+        }
         let expected = match read("expected.txt")? {
             Some(text) => parse_expected(&text).map_err(&in_case)?,
             None => Vec::new(),
         };
+        if reference.is_none() && terms.is_empty() && expected.is_empty() {
+            return Err(in_case(format!(
+                "nothing to score: add one of {}",
+                CASE_FILES.join(", ")
+            )));
+        }
         let language = match read("language")? {
             Some(text) => {
                 Some(LangTag::parse(text.trim()).map_err(|e| in_case(format!("language: {e}")))?)
@@ -89,10 +119,10 @@ impl Case {
     }
 }
 
-/// The case folders under `root`, sorted by name: `root` itself when it holds `reference.txt`,
-/// else each subfolder that does.
+/// The case folders under `root`, sorted by name: `root` itself when it is a case, else each
+/// subfolder that is.
 pub fn discover(root: &Path) -> Result<Vec<PathBuf>, String> {
-    if root.join("reference.txt").is_file() {
+    if is_case(root) {
         return Ok(vec![root.to_path_buf()]);
     }
     let entries = std::fs::read_dir(root)
@@ -100,13 +130,14 @@ pub fn discover(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut found: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.join("reference.txt").is_file())
+        .filter(|path| is_case(path))
         .collect();
     found.sort();
     if found.is_empty() {
         return Err(format!(
-            "{} holds no case: a case folder has a reference.txt, and so does each folder inside a folder of cases",
-            root.display()
+            "{} holds no case: a case folder has one of {}, and so does each folder inside a folder of cases",
+            root.display(),
+            CASE_FILES.join(", ")
         ));
     }
     Ok(found)
@@ -148,15 +179,27 @@ fn content_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
         .filter(|(_, line)| !line.is_empty() && !line.starts_with('#'))
 }
 
-/// One term per line. A term with no word in it can never match, so it is an error.
-pub fn parse_terms(text: &str) -> Result<Vec<String>, String> {
+/// One term per line, optionally ending in `*N` for how often the meeting says it. A term with
+/// no word in it can never match, so it is an error.
+pub fn parse_terms(text: &str) -> Result<Vec<Term>, String> {
     content_lines(text)
         .map(|(n, line)| {
-            if words(line).is_empty() {
-                Err(format!("terms.txt line {n}: {line:?} has no words"))
-            } else {
-                Ok(line.to_owned())
+            let (text, count) = match line.rsplit_once('*') {
+                Some((text, count)) => {
+                    let count = count.trim().parse::<usize>().ok().filter(|&c| c > 0).ok_or_else(
+                        || format!("terms.txt line {n}: {line:?} ends in a count that is not a whole number above 0"),
+                    )?;
+                    (text.trim(), Some(count))
+                }
+                None => (line, None),
+            };
+            if words(text).is_empty() {
+                return Err(format!("terms.txt line {n}: {line:?} has no words"));
             }
+            Ok(Term {
+                text: text.to_owned(),
+                count,
+            })
         })
         .collect()
 }
@@ -207,17 +250,53 @@ mod tests {
         Concept(alternatives.iter().map(|a| words(a)).collect())
     }
 
+    fn term(text: &str, count: Option<usize>) -> Term {
+        Term {
+            text: text.to_owned(),
+            count,
+        }
+    }
+
     #[test]
     fn terms_skip_blank_and_comment_lines() {
         let terms = parse_terms("# names\nOmar\n\n  Lena Park  \n#Skipped\nKubernetes\n").unwrap();
-        assert_eq!(terms, ["Omar", "Lena Park", "Kubernetes"]);
+        assert_eq!(
+            terms,
+            [
+                term("Omar", None),
+                term("Lena Park", None),
+                term("Kubernetes", None)
+            ]
+        );
         assert!(parse_terms("").unwrap().is_empty());
     }
 
     #[test]
-    fn a_term_with_no_word_names_its_line() {
-        let error = parse_terms("Omar\n\n---\n").unwrap_err();
-        assert!(error.starts_with("terms.txt line 3"), "{error}");
+    fn a_term_may_end_in_how_often_it_is_said() {
+        let terms = parse_terms("Maria will finish the billing dashboard *4\nOmar*1\n").unwrap();
+        assert_eq!(
+            terms,
+            [
+                term("Maria will finish the billing dashboard", Some(4)),
+                term("Omar", Some(1))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bad_term_names_its_line() {
+        for (text, line) in [
+            ("Omar\n\n---\n", 3),
+            ("Omar *0\n", 1),
+            ("Omar *four\n", 1),
+            ("*4\n", 1),
+        ] {
+            let error = parse_terms(text).unwrap_err();
+            assert!(
+                error.starts_with(&format!("terms.txt line {line}")),
+                "{text:?} gave {error}"
+            );
+        }
     }
 
     #[test]
@@ -287,16 +366,33 @@ mod tests {
         assert_eq!(case.name, "standup");
         assert_eq!(case.audio, dir.join("take.WAV"));
         assert_eq!(case.language, Some(LangTag::parse("fil-PH").unwrap()));
-        assert_eq!(case.terms, ["Omar"]);
+        assert_eq!(case.reference.as_deref(), Some("Omar ships Friday."));
+        assert_eq!(case.terms, [term("Omar", None)]);
         assert_eq!(case.expected.len(), 1);
     }
 
     #[test]
-    fn a_case_needs_exactly_one_audio_file_and_a_reference() {
+    fn a_case_without_a_reference_needs_counted_terms_or_expected_items() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path();
+        std::fs::write(dir.join("take.flac"), b"").unwrap();
         let error = Case::load(dir).unwrap_err();
-        assert!(error.contains("reference.txt is missing"), "{error}");
+        assert!(error.contains("nothing to score"), "{error}");
+        std::fs::write(dir.join("terms.txt"), "Omar *2\nLena\n").unwrap();
+        let error = Case::load(dir).unwrap_err();
+        assert!(error.contains("\"Lena\" needs a count"), "{error}");
+        std::fs::write(dir.join("terms.txt"), "Omar *2\n").unwrap();
+        let case = Case::load(dir).unwrap();
+        assert_eq!(case.reference, None);
+        std::fs::remove_file(dir.join("terms.txt")).unwrap();
+        std::fs::write(dir.join("expected.txt"), "action: omar\n").unwrap();
+        assert!(Case::load(dir).is_ok());
+    }
+
+    #[test]
+    fn a_case_needs_exactly_one_audio_file() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path();
         std::fs::write(dir.join("reference.txt"), "hello").unwrap();
         let error = Case::load(dir).unwrap_err();
         assert!(
@@ -326,7 +422,7 @@ mod tests {
             std::fs::create_dir(root.join(name)).unwrap();
         }
         std::fs::write(root.join("b/reference.txt"), "x").unwrap();
-        std::fs::write(root.join("a/reference.txt"), "x").unwrap();
+        std::fs::write(root.join("a/expected.txt"), "action: x").unwrap();
         assert_eq!(discover(root).unwrap(), [root.join("a"), root.join("b")]);
         assert_eq!(discover(&root.join("a")).unwrap(), [root.join("a")]);
     }

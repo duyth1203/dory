@@ -1,0 +1,45 @@
+# The 40 action items of the test library's "Two hour planning", each
+# "<owner> will finish the <item> by <day>" and said four times. An item counts only
+# with its owner in the same bullet. Owner alternatives are spellings of the same name,
+# because the meeting's spellings are guesses; item alternatives are spellings the
+# speech engines wrote in the platform AI spike (docs/plans/platform-ai.md, Appendix A).
+action: maria, billing
+action: daniel, onboarding emails|onboarding email
+action: priya|pria|prya, android
+action: kenji, search index|search indexes
+action: sofia|sophia, pricing
+action: omar, data export|data exports
+action: lina|leena, audit|ordered log|order log
+action: thomas, help center|help centre
+action: aisha|ayesha|aysha, payment retry|payment retries|payment retried
+action: marco|marko, sign in|signin
+action: maria, release checklist
+action: daniel, usage report|usage reports
+action: priya|pria|prya, partner api
+action: kenji, cache|cash
+action: sofia|sophia, support macros|support macro
+action: omar, trial limits|trial limit
+action: lina|leena, invoice template|invoice templates
+action: thomas, status page
+action: aisha|ayesha|aysha, referral
+action: marco|marko, widgets|widget
+action: maria, budget
+action: daniel, hiring
+action: priya|pria|prya, design tokens|design token
+action: kenji, beta survey
+action: sofia|sophia, sales deck
+action: omar, backup|backups
+action: lina|leena, latency
+action: thomas, feature flags|feature flag
+action: aisha|ayesha|aysha, accessibility
+action: marco|marko, translation files|translation file
+action: maria, roadmap
+action: daniel, security patch|security patches
+action: priya|pria|prya, analytics
+action: kenji, offsite|off site|of site
+action: sofia|sophia, vendor
+action: omar, load test|load tests|load testing
+action: lina|leena, docs site|doc site|dock site
+action: thomas, privacy notice
+action: aisha|ayesha|aysha, dark mode
+action: marco|marko, legacy importer|legacy import

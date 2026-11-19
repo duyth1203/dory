@@ -10,7 +10,8 @@ pub struct Outcome {
     pub stt: String,
     /// The model that wrote the summary, when there is one.
     pub llm: Option<String>,
-    pub wer: WordErrors,
+    /// `None` when the case has no reference.
+    pub wer: Option<WordErrors>,
     pub terms: TermHits,
     /// Terms the reference never says, so they could not be scored.
     pub absent_terms: Vec<String>,
@@ -34,6 +35,20 @@ fn found_of(score: &SectionScore) -> String {
         "{}/{} (+{} extra)",
         score.found, score.expected, score.extra
     )
+}
+
+fn word_errors(wer: Option<&WordErrors>) -> String {
+    match wer {
+        Some(w) => format!(
+            "WER {} (S {} D {} I {} of {})",
+            percent(w.rate()),
+            w.substitutions,
+            w.deletions,
+            w.insertions,
+            w.reference
+        ),
+        None => "WER not scored".to_owned(),
+    }
 }
 
 fn seconds(secs: Option<f64>) -> String {
@@ -63,13 +78,9 @@ pub fn case_line(o: &Outcome) -> String {
         None => "summary not scored".to_owned(),
     };
     format!(
-        "{}  WER {} (S {} D {} I {} of {})  terms {}/{} ({})  {summary}  stt {}{}  llm {}",
+        "{}  {}  terms {}/{} ({})  {summary}  stt {}{}  llm {}",
         o.case,
-        percent(o.wer.rate()),
-        o.wer.substitutions,
-        o.wer.deletions,
-        o.wer.insertions,
-        o.wer.reference,
+        word_errors(o.wer.as_ref()),
         o.terms.found,
         o.terms.expected,
         percent(o.terms.recall()),
@@ -82,9 +93,7 @@ pub fn case_line(o: &Outcome) -> String {
 /// The corpus line and the models used. Rates come from summed counts, so a long case weighs
 /// more than a short one.
 pub fn totals(outcomes: &[Outcome]) -> Vec<String> {
-    let wer = outcomes
-        .iter()
-        .fold(WordErrors::default(), |a, o| a + o.wer);
+    let wer = outcomes.iter().filter_map(|o| o.wer).reduce(|a, b| a + b);
     let terms = outcomes
         .iter()
         .fold(TermHits::default(), |a, o| a + o.terms);
@@ -123,13 +132,9 @@ pub fn totals(outcomes: &[Outcome]) -> Vec<String> {
     };
     vec![
         format!(
-            "total ({} cases)  WER {} (S {} D {} I {} of {})  terms {}/{} ({})  {summary}  stt {}{}  llm {}",
+            "total ({} cases)  {}  terms {}/{} ({})  {summary}  stt {}{}  llm {}",
             outcomes.len(),
-            percent(wer.rate()),
-            wer.substitutions,
-            wer.deletions,
-            wer.insertions,
-            wer.reference,
+            word_errors(wer.as_ref()),
             terms.found,
             terms.expected,
             percent(terms.recall()),
@@ -171,11 +176,11 @@ pub fn tsv_row(run_at: &str, label: &str, o: &Outcome) -> String {
         cell(&o.case),
         cell(&o.stt),
         cell(o.llm.as_deref().unwrap_or("")),
-        o.wer.reference.to_string(),
-        number(o.wer.rate().map(|r| format!("{r:.4}"))),
-        o.wer.substitutions.to_string(),
-        o.wer.deletions.to_string(),
-        o.wer.insertions.to_string(),
+        number(o.wer.map(|w| w.reference)),
+        number(o.wer.and_then(|w| w.rate()).map(|r| format!("{r:.4}"))),
+        number(o.wer.map(|w| w.substitutions)),
+        number(o.wer.map(|w| w.deletions)),
+        number(o.wer.map(|w| w.insertions)),
         o.terms.expected.to_string(),
         o.terms.found.to_string(),
         actions_expected,
@@ -201,12 +206,12 @@ mod tests {
             case: case.into(),
             stt: "sherpa/a".into(),
             llm: Some("ollama/g".into()),
-            wer: WordErrors {
+            wer: Some(WordErrors {
                 reference,
                 substitutions: errors,
                 deletions: 0,
                 insertions: 0,
-            },
+            }),
             terms: TermHits {
                 expected: 4,
                 found: 3,
@@ -271,6 +276,22 @@ mod tests {
     }
 
     #[test]
+    fn a_case_without_a_reference_leaves_word_errors_out_of_the_totals() {
+        let mut long = outcome("long", 0, 0);
+        long.wer = None;
+        assert!(case_line(&long).contains("long  WER not scored  terms"));
+        let lines = totals(&[outcome("short", 5, 10), long]);
+        assert!(
+            lines[0].contains("WER 50.0% (S 5 D 0 I 0 of 10)"),
+            "{}",
+            lines[0]
+        );
+        let mut only = outcome("only", 0, 0);
+        only.wer = None;
+        assert!(totals(&[only])[0].contains("WER not scored"));
+    }
+
+    #[test]
     fn a_tsv_row_lines_up_with_the_header() {
         let row = tsv_row("2026-11-19 10:00:00", "base\tline", &outcome("a b", 5, 100));
         let cells: Vec<&str> = row.split('\t').collect();
@@ -288,11 +309,12 @@ mod tests {
         o.summary = None;
         o.llm = None;
         o.stt_secs = None;
+        o.wer = None;
         let row = tsv_row("t", "", &o);
         let cells: Vec<&str> = row.split('\t').collect();
         assert_eq!(cells.len(), TSV_HEADER.split('\t').count());
         assert_eq!(cells[4], "");
-        assert_eq!(cells[6], "");
+        assert!(cells[5..10].iter().all(|c| c.is_empty()));
         assert!(cells[12..19].iter().all(|c| c.is_empty()));
         assert_eq!(cells[19], "");
     }

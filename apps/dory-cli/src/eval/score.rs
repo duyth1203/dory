@@ -5,7 +5,7 @@ use std::ops::Add;
 use dory_core::domain::{Sections, list_items, sections};
 use dory_core::search::tokens;
 
-use super::case::{Concept, Expected, Kind};
+use super::case::{Concept, Expected, Kind, Term};
 
 /// The words of `text` as the search index sees them, so scoring and search agree on case,
 /// accents, and punctuation.
@@ -128,23 +128,25 @@ impl Add for TermHits {
     }
 }
 
-/// Counts each term's non-overlapping occurrences as a folded word sequence. A term the
-/// reference says `n` times is expected `n` times, and the transcript earns at most `n` of them,
-/// so saying it more often than the reference does never hides a miss elsewhere. A term the
+/// Counts each term's non-overlapping occurrences as a folded word sequence. A term said `n`
+/// times, by its own count or else by the reference, is expected `n` times, and the transcript
+/// earns at most `n` of them, so saying it more often never hides a miss elsewhere. A term the
 /// reference never says counts for nothing and comes back in the list, because it is probably a
 /// typo in `terms.txt`.
 pub fn term_hits(
-    terms: &[String],
-    reference: &[String],
+    terms: &[Term],
+    reference: Option<&[String]>,
     hypothesis: &[String],
 ) -> (TermHits, Vec<String>) {
     let mut hits = TermHits::default();
     let mut absent = Vec::new();
     for term in terms {
-        let needle = words(term);
-        let wanted = occurrences(reference, &needle);
+        let needle = words(&term.text);
+        let wanted = term
+            .count
+            .unwrap_or_else(|| reference.map_or(0, |r| occurrences(r, &needle)));
         if wanted == 0 {
-            absent.push(term.clone());
+            absent.push(term.text.clone());
             continue;
         }
         hits.expected += wanted;
@@ -400,12 +402,21 @@ mod tests {
         assert!((rate - mean_of_rates).abs() > 0.1);
     }
 
+    fn terms(texts: &[&str]) -> Vec<Term> {
+        texts
+            .iter()
+            .map(|text| Term {
+                text: (*text).to_owned(),
+                count: None,
+            })
+            .collect()
+    }
+
     #[test]
     fn terms_are_counted_as_word_sequences_and_capped_at_the_reference() {
         let reference = w("Omar met Lena Park. Omar left. Lena Park stayed.");
         let heard = w("omar met lena park omar omar omar left lena stayed");
-        let terms = ["Omar".to_owned(), "Lena Park".to_owned()];
-        let (hits, absent) = term_hits(&terms, &reference, &heard);
+        let (hits, absent) = term_hits(&terms(&["Omar", "Lena Park"]), Some(&reference), &heard);
         assert_eq!((hits.expected, hits.found), (4, 3));
         assert!(absent.is_empty());
         assert_eq!(hits.recall(), Some(0.75));
@@ -413,17 +424,40 @@ mod tests {
 
     #[test]
     fn a_term_the_reference_never_says_is_listed_and_not_counted() {
-        let terms = ["Kubernetes".to_owned(), "Omar".to_owned()];
-        let (hits, absent) = term_hits(&terms, &w("Omar spoke"), &w("omar spoke"));
+        let (hits, absent) = term_hits(
+            &terms(&["Kubernetes", "Omar"]),
+            Some(&w("Omar spoke")),
+            &w("omar spoke"),
+        );
         assert_eq!((hits.expected, hits.found), (1, 1));
         assert_eq!(absent, ["Kubernetes"]);
         assert_eq!(TermHits::default().recall(), None);
     }
 
     #[test]
+    fn a_counted_term_needs_no_reference_and_is_capped_at_its_count() {
+        let counted = [Term {
+            text: "Maria will finish the billing dashboard".to_owned(),
+            count: Some(2),
+        }];
+        let heard = w(
+            "Maria will finish the billing dashboard. Maria will finish the billing \
+                       dashboard. Maria will finish the billing dashboard. Mario will finish",
+        );
+        let (hits, absent) = term_hits(&counted, None, &heard);
+        assert_eq!((hits.expected, hits.found), (2, 2));
+        assert!(absent.is_empty());
+        let (hits, _) = term_hits(
+            &counted,
+            None,
+            &w("Mario will finish the billing dashboard"),
+        );
+        assert_eq!((hits.expected, hits.found), (2, 0));
+    }
+
+    #[test]
     fn term_occurrences_do_not_overlap() {
-        let terms = ["a a".to_owned()];
-        let (hits, _) = term_hits(&terms, &w("a a a a a"), &w("a a a a a"));
+        let (hits, _) = term_hits(&terms(&["a a"]), Some(&w("a a a a a")), &w("a a a a a"));
         assert_eq!((hits.expected, hits.found), (2, 2));
     }
 

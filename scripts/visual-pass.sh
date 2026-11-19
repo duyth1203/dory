@@ -38,6 +38,7 @@ if [ ${#views[@]} -eq 0 ]; then
     summaries:U1 summaries:U2 summaries:U3
     "recording:Weekly sync" "recording:Weekly sync:transcript"
     "recording:Pulong sa Tagalog" "recording:Pulong sa Tagalog:transcript"
+    "recording:Pulong sa Tagalog:translate-open"
     "recording:Two hour planning" "recording:Two hour planning:transcript"
     "phase:P1:Weekly sync" "phase:P2:Weekly sync" "phase:P3a:Weekly sync" "phase:P3b:Weekly sync"
     "phase:P4:Weekly sync" "phase:P5:Weekly sync" "phase:P6:Weekly sync" "phase:P7:Weekly sync"

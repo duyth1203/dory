@@ -443,8 +443,9 @@ pub fn recording_menu(
     .menu("Move to Trash", Box::new(MoveToTrash))
 }
 
-/// **Translate…** and **Recording > Translate Summary…**: the meeting languages, a separator
-/// (`None`), then every other language, each with the action that asks for it.
+/// **Recording > Translate Summary…**: the meeting languages, a separator (`None`), then every
+/// other language, each with the action that asks for it. The **Translate…** combobox lists the
+/// same, through `languages::Offer::translate`.
 pub fn translate_choices(
     meeting: &[LangTag],
     written: Option<&LangTag>,

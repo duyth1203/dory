@@ -9,7 +9,8 @@
 //!   `:theme` on General scrolled to the Theme section as a search would, and an optional
 //!   trailing `:min-height` for Settings at its shortest
 //! - `about`
-//! - `recording:<title>` and `recording:<title>:transcript`
+//! - `recording:<title>` and `recording:<title>:transcript`, and `recording:<title>:translate-open`
+//!   for the Summary tab with the **Translate…** combobox popover open
 //! - `phase:<P1, P2, P3a, P3b, P4, P5, P6, P7, or P8>[:<title>]`, on that recording or the
 //!   newest
 //! - `explainer`, the first speech model's info popover in Settings › Transcription, and
@@ -54,6 +55,8 @@ pub enum View {
     Recording {
         title: String,
         tab: DetailTab,
+        /// The Summary tab's **Translate…** popover is open.
+        translate_open: bool,
     },
     /// `ix` indexes [`fixtures::card_phases`]. No title means the newest recording.
     Phase {
@@ -204,10 +207,13 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
         });
     }
     if let Some(rest) = trimmed.strip_prefix("recording:") {
-        // A title may hold colons ("1:1 with Sam"), so only a trailing `:transcript` is a tab.
-        let (title, tab) = match rest.strip_suffix(":transcript") {
-            Some(title) => (title, DetailTab::Transcript),
-            None => (rest, DetailTab::Summary),
+        // A title may hold colons ("1:1 with Sam"), so only a known trailing word is a tab.
+        let (title, tab, translate_open) = if let Some(title) = rest.strip_suffix(":transcript") {
+            (title, DetailTab::Transcript, false)
+        } else if let Some(title) = rest.strip_suffix(":translate-open") {
+            (title, DetailTab::Summary, true)
+        } else {
+            (rest, DetailTab::Summary, false)
         };
         if title.is_empty() {
             return Err(bad());
@@ -215,6 +221,7 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
         return Ok(View::Recording {
             title: title.to_owned(),
             tab,
+            translate_open,
         });
     }
     if let Some(rest) = trimmed.strip_prefix("phase:") {
@@ -414,12 +421,25 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
         }
         View::Recording { .. } | View::Phase { .. } => {
             let done = Rc::new(Cell::new(false));
+            let handle = window.window_handle();
             // Deferred, so the launch selection rule in `prefs::watch` has run first.
             let try_select = move |app: Entity<AppState>, cx: &mut App| {
                 let (view, done) = (view.clone(), done.clone());
                 cx.defer(move |cx| {
                     if !done.get() && app.read(cx).is_loaded() {
                         done.set(select(&view, &app, cx));
+                        if done.get()
+                            && matches!(
+                                view,
+                                View::Recording {
+                                    translate_open: true,
+                                    ..
+                                }
+                            )
+                        {
+                            // After the shell has made the detail pane for the selection.
+                            cx.defer(move |cx| open_translate(handle, cx));
+                        }
                     }
                 });
             };
@@ -432,6 +452,22 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
             .detach();
         }
     }
+}
+
+/// Opens **Translate…** in the main window's detail pane.
+fn open_translate(handle: gpui_kit::AnyWindowHandle, cx: &mut App) {
+    let _ = handle.update(cx, |_, window, cx| {
+        let detail = gpui_kit::base::Root::read(window, cx)
+            .view()
+            .clone()
+            .downcast::<crate::shell::Shell>()
+            .ok()
+            .and_then(|shell| shell.read(cx).detail().cloned());
+        match detail {
+            Some(detail) => detail.update(cx, |detail, cx| detail.open_translate(window, cx)),
+            None => eprintln!("show: no detail pane to open Translate… in"),
+        }
+    });
 }
 
 /// Selects the recording `view` names. False when the rows do not list it yet.
@@ -539,14 +575,24 @@ mod tests {
             view("recording:1:1 with Sam"),
             Ok(Some(View::Recording {
                 title: "1:1 with Sam".into(),
-                tab: DetailTab::Summary
+                tab: DetailTab::Summary,
+                translate_open: false
+            }))
+        );
+        assert_eq!(
+            view("recording:Weekly sync:translate-open"),
+            Ok(Some(View::Recording {
+                title: "Weekly sync".into(),
+                tab: DetailTab::Summary,
+                translate_open: true
             }))
         );
         assert_eq!(
             view("recording:Weekly sync:transcript"),
             Ok(Some(View::Recording {
                 title: "Weekly sync".into(),
-                tab: DetailTab::Transcript
+                tab: DetailTab::Transcript,
+                translate_open: false
             }))
         );
         let labels: Vec<&str> = fixtures::card_phases()

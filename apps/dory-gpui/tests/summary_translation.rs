@@ -1,5 +1,5 @@
 //! Translating a summary on demand, through a real window over a real `Dory`: the **Translate…**
-//! menu and **Recording > Translate Summary…**, the Original / Translated switch and the note
+//! combobox and **Recording > Translate Summary…**, the Original / Translated switch and the note
 //! under it, Copy and Export putting out what is shown, and the translation going away when the
 //! summary is written again.
 
@@ -441,12 +441,12 @@ fn writing_the_summary_again_takes_the_switch_away_and_brings_translate_back(
     });
 }
 
-/// The labels of the menu items drawn now, from the top down.
-fn menu_labels(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<String> {
+/// The options the translate combobox lists now, from the top down.
+fn options(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<String> {
     with_window(window, cx, |window, _| {
         let mut items: Vec<_> = gpui_kit::base::test_support::snapshots(window)
             .into_iter()
-            .filter(|el| el.role() == Some(Role::MenuItem))
+            .filter(|el| el.role() == Some(Role::ListBoxOption))
             .collect();
         items.sort_by(|a, b| a.bounds().top().partial_cmp(&b.bounds().top()).unwrap());
         items
@@ -456,10 +456,10 @@ fn menu_labels(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<String> 
     })
 }
 
-#[gpui_kit::test]
-fn the_translate_menu_lists_the_meeting_languages_first_and_asks_for_the_one_picked(
+/// Opens Design review's summary with Tagalog and French as the meeting languages.
+fn open_with_french(
     cx: &mut TestAppContext,
-) {
+) -> (AnyWindowHandle, Entity<AppState>, Arc<FakeLanguageModel>) {
     cx.executor().allow_parking();
     let model = translator();
     let (window, app) = open(store(false), model.clone(), cx);
@@ -473,30 +473,130 @@ fn the_translate_menu_lists_the_meeting_languages_first_and_asks_for_the_one_pic
         app.read_with(cx, |app, _| app.settings().meeting_languages.len() == 2)
     });
     show(&app, cx);
+    (window, app, model)
+}
+
+#[gpui_kit::test]
+fn translate_searches_the_languages_and_asks_for_the_one_picked(cx: &mut TestAppContext) {
+    let (window, _app, model) = open_with_french(cx);
+    with_window(window, cx, |window, _| {
+        let field = window.find("translate");
+        assert_eq!(field.role(), Some(Role::ComboBox));
+        assert_eq!(field.label(), Some("Translate summary"));
+        assert_eq!(field.expanded(), Some(false));
+    });
     with_window(window, cx, |window, cx| window.click("translate", cx));
-    let labels = menu_labels(window, cx);
+    with_window(window, cx, |window, _| {
+        assert!(window.try_find("translate-popover").is_some());
+        assert_eq!(window.find("translate").expanded(), Some(true));
+        assert_eq!(window.find("language-search").focused(), Some(true));
+        assert_eq!(window.find("language-options").role(), Some(Role::ListBox));
+    });
+    let labels = options(window, cx);
     assert_eq!(
         labels.first().map(String::as_str),
         Some("French"),
-        "{labels:?}"
+        "the meeting languages come first: {labels:?}"
     );
     assert!(
         !labels.iter().any(|l| l == "Tagalog"),
         "the summary's language is left out"
     );
-    assert!(labels.iter().any(|l| l == "English"));
     assert_eq!(labels.len(), languages::LANGUAGES.len() - 1);
+    let mut rest = labels[1..].to_vec();
+    rest.sort_by_key(|n| languages::fold(n));
+    assert_eq!(labels[1..], rest[..], "the rest is alphabetical");
 
+    with_window(window, cx, |window, cx| window.input("germ", cx));
+    assert_eq!(
+        options(window, cx),
+        ["German", "Low German", "Swiss German"],
+        "typing filters the list"
+    );
     with_window(window, cx, |window, cx| {
-        window.press("down", cx);
+        window.press("escape", cx);
+        window.click("translate", cx);
+        window.input("deutsch", cx);
+    });
+    assert_eq!(options(window, cx), ["German"], "its own name finds it");
+    with_window(window, cx, |window, cx| window.press("enter", cx));
+    until(cx, "the German translation to be asked for", |_| {
+        !model.prompts().is_empty()
+    });
+    assert!(
+        model.prompts()[0].system.contains("BCP 47 tag de"),
+        "{}",
+        model.prompts()[0].system
+    );
+    with_window(window, cx, |window, _| {
+        assert!(
+            window.try_find("translate-popover").is_none(),
+            "picking closes it"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn translate_opens_from_the_keyboard_and_stays_in_a_small_window(cx: &mut TestAppContext) {
+    let (window, _app, model) = open_with_french(cx);
+    let (w, h) = dory_gpui::prefs::MIN_WINDOW_SIZE;
+    cx.simulate_window_resize(window, gpui_kit::size(gpui_kit::px(w), gpui_kit::px(h)));
+    let focused = |cx: &mut TestAppContext| {
+        with_window(window, cx, |window, _| {
+            window.find("translate").focused() == Some(true)
+        })
+    };
+    for _ in 0..80 {
+        if focused(cx) {
+            break;
+        }
+        with_window(window, cx, |window, cx| window.press("tab", cx));
+    }
+    assert!(focused(cx), "Tab reaches Translate…");
+    with_window(window, cx, |window, cx| window.press("down", cx));
+    let (viewport, popover, list, button) = with_window(window, cx, |window, cx| {
+        window.render_frame(cx);
+        (
+            window.viewport_size(),
+            window.find("translate-popover").bounds(),
+            window.find("language-options-scroll").bounds(),
+            window.find("translate").bounds(),
+        )
+    });
+    assert!(
+        popover.left() >= gpui_kit::px(0.)
+            && popover.top() >= gpui_kit::px(0.)
+            && popover.right() <= viewport.width
+            && popover.bottom() <= viewport.height,
+        "the popover {popover:?} fits the {viewport:?} window"
+    );
+    assert!(
+        popover.bottom() <= button.top() || popover.top() >= button.bottom(),
+        "the popover {popover:?} leaves the button {button:?} in view"
+    );
+    assert!(
+        list.size.height > gpui_kit::px(0.) && list.bottom() <= popover.bottom(),
+        "the list scrolls inside the popover"
+    );
+
+    with_window(window, cx, |window, cx| window.press("escape", cx));
+    with_window(window, cx, |window, _| {
+        assert!(
+            window.try_find("translate-popover").is_none(),
+            "Esc closes it"
+        );
+        assert_eq!(
+            window.find("translate").focused(),
+            Some(true),
+            "focus returns to the button"
+        );
+    });
+    with_window(window, cx, |window, cx| {
+        window.press("enter", cx);
         window.press("enter", cx);
     });
     until(cx, "the French translation to be asked for", |_| {
         !model.prompts().is_empty()
     });
-    assert!(
-        model.prompts()[0].system.contains("BCP 47 tag fr"),
-        "{}",
-        model.prompts()[0].system
-    );
+    assert!(model.prompts()[0].system.contains("BCP 47 tag fr"));
 }

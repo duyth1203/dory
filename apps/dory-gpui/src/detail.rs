@@ -33,8 +33,8 @@ use std::time::Instant;
 
 use chrono::{Local, TimeZone};
 use dory_core::domain::{
-    ChannelLayout, Goal, LangTag, Recording, RecordingId, RecordingRow, Segment, Stage,
-    SummaryFlag, Transcript,
+    ChannelLayout, Goal, Recording, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
+    Transcript,
 };
 
 use gpui_kit::component::Disableable as _;
@@ -56,6 +56,7 @@ use crate::actions::{
 use crate::app::{
     AppState, Detail, DetailTab, Loadable, Saved, Session, Shown, SummaryVersion, TranscriptText,
 };
+use crate::combobox::LanguageCombobox;
 use crate::export::{ExportFormat, Has};
 use crate::find::Place;
 use crate::fonts;
@@ -196,6 +197,8 @@ pub struct DetailPane {
     player: Entity<PlayerView>,
     transcript: Entity<TranscriptView>,
     summary: Entity<SummaryText>,
+    /// **Translate…** in the Summary tab's action row.
+    translate: Entity<LanguageCombobox>,
     page: ScrollHandle,
     tab_focus: [FocusHandle; 2],
     /// The Original and Translated buttons.
@@ -253,6 +256,8 @@ impl DetailPane {
         let transcript =
             cx.new(|cx| TranscriptView::new(session.clone(), page.clone(), window, cx));
         let summary = cx.new(|cx| SummaryText::new(session.clone(), page.clone(), cx));
+        let translate =
+            cx.new(|cx| LanguageCombobox::translate(app.clone(), session.clone(), window, cx));
         let revealed = [
             cx.subscribe(
                 &transcript,
@@ -268,6 +273,7 @@ impl DetailPane {
             player,
             transcript,
             summary,
+            translate,
             page,
             tab_focus: [cx.focus_handle(), cx.focus_handle()],
             text_focus: [cx.focus_handle(), cx.focus_handle()],
@@ -287,6 +293,12 @@ impl DetailPane {
             seen: 0,
             _reveals: revealed,
         }
+    }
+
+    /// Opens **Translate…**, for the launch previews in `show`.
+    pub fn open_translate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.translate
+            .update(cx, |translate, cx| translate.open(window, cx));
     }
 
     /// When the session starts showing a match, shows the tab that match is on. Opening a hit
@@ -500,7 +512,7 @@ impl DetailPane {
         title: Option<String>,
         detail: &Detail,
         shown: Shown,
-        translate: Translate<'_>,
+        translating: bool,
         summarizing: Option<Option<u64>>,
         readout: Option<String>,
         phase: Option<&Phase>,
@@ -614,8 +626,15 @@ impl DetailPane {
                 }),
             )
             .children(
-                (tab == DetailTab::Summary && detail.summary.is_some())
-                    .then(|| translate_button(&action, detail, &translate, theme)),
+                (tab == DetailTab::Summary && detail.summary.is_some()).then(|| {
+                    if translating {
+                        action("translate", "Translating…")
+                            .accessibility_label("Translating the summary")
+                            .into_any_element()
+                    } else {
+                        self.translate.clone().into_any_element()
+                    }
+                }),
             );
         let actions = div()
             .flex()
@@ -857,55 +876,6 @@ impl DetailPane {
             .child(option(1))
             .into_any_element()
     }
-}
-
-/// What the Summary tab's **Translate…** button needs to know.
-#[derive(Clone, Copy)]
-struct Translate<'a> {
-    /// The meeting languages, which the menu lists first.
-    meeting: &'a [LangTag],
-    /// A translation is being made, so the button says so and offers nothing.
-    busy: bool,
-}
-
-/// **Translate…** at the right of the Summary tab's action row. Its menu lists the meeting
-/// languages, a separator, then every other language, without the summary's own, and checks the
-/// one the summary is translated into now.
-fn translate_button<B: Fn(&'static str, &str) -> Button>(
-    action: &B,
-    detail: &Detail,
-    translate: &Translate<'_>,
-    theme: &Theme,
-) -> AnyElement {
-    if translate.busy {
-        return action("translate", "Translating…")
-            .accessibility_label("Translating the summary")
-            .into_any_element();
-    }
-    let written = detail.summary.as_ref().and_then(|s| s.language.as_ref());
-    let choices = menus::translate_choices(translate.meeting, written);
-    let current = detail
-        .summary_translation
-        .as_ref()
-        .map(|t| t.target.clone());
-    action("translate", "Translate…")
-        .accessibility_label("Translate summary")
-        .child(Icon::ChevronDown.view(12., theme.accent_text))
-        .dropdown_menu(move |menu, _, _| {
-            choices
-                .iter()
-                .cloned()
-                .fold(menu, |menu, choice| match choice {
-                    Some((name, action)) => {
-                        let checked = current
-                            .as_ref()
-                            .is_some_and(|c| c.primary() == action.target.primary());
-                        menu.menu_with_check(name, checked, Box::new(action))
-                    }
-                    None => menu.separator(),
-                })
-        })
-        .into_any_element()
 }
 
 /// A one- or two-line state in place of the tabs. Its label is its text, for VoiceOver.
@@ -1385,20 +1355,14 @@ impl Render for DetailPane {
                     window.request_animation_frame();
                 }
                 let dots = summarizing.then(|| motion::looping(window, cx).then(motion::clock_ms));
-                let (text, meeting) = (
-                    self.session.read(cx).shown(),
-                    self.app.read(cx).settings().meeting_languages.clone(),
-                );
+                let text = self.session.read(cx).shown();
                 let translating = matches!(phase, Some(Phase::TranslatingSummary { .. }));
                 let row = self.tab_row(
                     tab,
                     stuck.then_some(shown),
                     &detail,
                     text,
-                    Translate {
-                        meeting: &meeting,
-                        busy: translating,
-                    },
+                    translating,
                     dots,
                     readout.clone(),
                     phase.as_ref(),

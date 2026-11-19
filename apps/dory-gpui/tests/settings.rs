@@ -1261,7 +1261,7 @@ fn the_combobox_works_from_the_keyboard_alone(cx: &mut TestAppContext) {
         })
         .unwrap()
     };
-    let (first, last) = (rows[0].code, rows[rows.len() - 1].code);
+    let (first, last) = (rows[0].tag.as_str(), rows[rows.len() - 1].tag.as_str());
     assert!(!shown(last, cx), "the list is longer than it shows");
     press(window, "up", cx);
     assert!(

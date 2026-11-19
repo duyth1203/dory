@@ -1,7 +1,7 @@
 //! The languages Dory knows by name, and the one rule that turns the meeting languages into the
 //! Language choices (`docs/design/settings-icons-blur.md` section 4.1). Settings > Transcription >
-//! Language, Re-transcribe in…, and the meeting-languages combobox all read this module, so they
-//! never disagree. Everything here is pure.
+//! Language, Re-transcribe in…, Translate…, and the language combobox all read this module, so
+//! they never disagree. Everything here is pure.
 
 use dory_core::domain::{LangTag, LanguagePref, Settings};
 
@@ -216,61 +216,129 @@ pub fn fold(text: &str) -> String {
     out
 }
 
-/// How well `query` names a language, best first; `None` when it does not.
-fn rank(query: &str, lang: &Language) -> Option<u8> {
-    let english = fold(lang.english);
-    let native = fold(lang.native);
+/// One row of a language combobox: the tag a pick asks for, by the names a search matches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Row {
+    pub tag: LangTag,
+    /// "French", or "French (CA)" for `fr-CA`.
+    pub english: String,
+    /// The language's own name, when Dory knows the language.
+    pub native: Option<&'static str>,
+}
+
+impl Row {
+    pub fn of(tag: LangTag) -> Row {
+        Row {
+            english: name(&tag),
+            native: find(tag.as_str())
+                .or_else(|| find(tag.primary()))
+                .map(|lang| lang.native),
+            tag,
+        }
+    }
+
+    /// The own name, when it says something the English name does not.
+    pub fn native_hint(&self) -> Option<&'static str> {
+        self.native.filter(|native| *native != self.english)
+    }
+}
+
+/// What a language combobox lists before a search, in order. The first `lead` rows, the meeting
+/// languages on **Translate…**, sit above a divider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Offer {
+    pub rows: Vec<Row>,
+    pub lead: usize,
+}
+
+impl Offer {
+    /// Every language Dory names, alphabetical by English name: the meeting-languages combobox.
+    pub fn every() -> Offer {
+        Offer {
+            rows: output_choices().into_iter().map(Row::of).collect(),
+            lead: 0,
+        }
+    }
+
+    /// [`translate_choices`], with its separator as the divider.
+    pub fn translate(meeting: &[LangTag], written: Option<&LangTag>) -> Offer {
+        let choices = translate_choices(meeting, written);
+        let lead = choices.iter().position(Option::is_none).unwrap_or(0);
+        Offer {
+            rows: choices.into_iter().flatten().map(Row::of).collect(),
+            lead,
+        }
+    }
+
+    /// Matches the English name, the language's own name, and the tag, ignoring case and
+    /// accents, and keeps the offer's order so the list never jumps while the user picks.
+    pub fn search(&self, query: &str) -> Matches {
+        let query = fold(query.trim());
+        let ranked: Vec<(usize, u8)> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, row)| {
+                if query.is_empty() {
+                    Some((ix, 1))
+                } else {
+                    rank(&query, row).map(|r| (ix, r))
+                }
+            })
+            .collect();
+        let best = ranked
+            .iter()
+            .enumerate()
+            .min_by_key(|(at, (_, r))| (*r, *at))
+            .map(|(at, _)| at);
+        Matches {
+            lead: ranked.iter().filter(|(ix, _)| *ix < self.lead).count(),
+            rows: ranked
+                .into_iter()
+                .map(|(ix, _)| self.rows[ix].clone())
+                .collect(),
+            best,
+        }
+    }
+}
+
+/// How well `query` names a row, best first; `None` when it does not.
+fn rank(query: &str, row: &Row) -> Option<u8> {
+    let code = fold(row.tag.as_str());
+    let english = fold(&row.english);
+    let native = fold(row.native.unwrap_or_default());
     let starts_a_word = |text: &str| {
         text.split(|c: char| !c.is_alphanumeric())
             .any(|word| word.starts_with(query))
     };
-    if lang.code == query {
+    if code == query {
         Some(0)
     } else if english.starts_with(query) {
         Some(1)
-    } else if native.starts_with(query) {
+    } else if !native.is_empty() && native.starts_with(query) {
         Some(2)
     } else if starts_a_word(&english) || starts_a_word(&native) {
         Some(3)
-    } else if lang.code.starts_with(query) {
+    } else if code.starts_with(query) {
         Some(4)
     } else {
         None
     }
 }
 
-/// The combobox's list for a search: every match in alphabetical order, so the list never
-/// jumps while the user picks, and the best match to highlight.
+/// The combobox's list for a search: every match in the offer's order, how many of them come
+/// from its lead, and the best match to highlight.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Matches {
-    pub rows: Vec<&'static Language>,
+    pub rows: Vec<Row>,
+    pub lead: usize,
     pub best: Option<usize>,
 }
 
-/// Matches the English name, the language's own name, and the ISO code, ignoring case and
-/// accents. "ge" finds German, Georgian, Swiss German, and Low German; "de" finds German.
+/// Searches [`Offer::every`]. "ge" finds German, Georgian, Swiss German, and Low German; "de"
+/// finds German.
 pub fn search(query: &str) -> Matches {
-    let query = fold(query.trim());
-    let mut ranked: Vec<(&'static Language, u8)> = LANGUAGES
-        .iter()
-        .filter_map(|lang| {
-            if query.is_empty() {
-                Some((lang, 1))
-            } else {
-                rank(&query, lang).map(|r| (lang, r))
-            }
-        })
-        .collect();
-    ranked.sort_by_key(|a| fold(a.0.english));
-    let best = ranked
-        .iter()
-        .enumerate()
-        .min_by_key(|(ix, (_, r))| (*r, *ix))
-        .map(|(ix, _)| ix);
-    Matches {
-        rows: ranked.into_iter().map(|(lang, _)| lang).collect(),
-        best,
-    }
+    Offer::every().search(query)
 }
 
 #[cfg(test)]
@@ -398,8 +466,8 @@ mod tests {
         assert_eq!(settings.meeting_languages, tags(&["fr", "de", "af"]));
     }
 
-    fn found(query: &str) -> Vec<&'static str> {
-        search(query).rows.iter().map(|l| l.english).collect()
+    fn found(query: &str) -> Vec<String> {
+        search(query).rows.into_iter().map(|r| r.english).collect()
     }
 
     #[test]
@@ -430,7 +498,7 @@ mod tests {
     #[test]
     fn the_best_match_is_highlighted_in_an_alphabetical_list() {
         let matches = search("en");
-        let names: Vec<&str> = matches.rows.iter().map(|l| l.english).collect();
+        let names: Vec<&str> = matches.rows.iter().map(|r| r.english.as_str()).collect();
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted, "the list stays alphabetical");
@@ -507,6 +575,49 @@ mod tests {
         assert_eq!(all[..2], [Some(tag("tl")), Some(tag("en"))]);
         assert_eq!(all[2], None);
         assert_eq!(all.iter().flatten().count(), LANGUAGES.len());
+    }
+
+    #[test]
+    fn the_translate_offer_searches_the_meeting_languages_first_and_keeps_regions() {
+        let offer = Offer::translate(&[tag("fr-CA"), tag("tl"), tag("en")], Some(&tag("tl")));
+        assert_eq!(
+            offer.lead, 2,
+            "French (CA) and English sit above the divider"
+        );
+        assert_eq!(offer.rows[0].tag, tag("fr-CA"));
+        assert_eq!(offer.rows[0].english, "French (CA)");
+        assert_eq!(offer.rows[0].native, Some("Français"));
+
+        let all = offer.search("");
+        assert_eq!(
+            (all.rows.len(), all.lead, all.best),
+            (offer.rows.len(), 2, Some(0))
+        );
+
+        let en = offer.search("en");
+        assert_eq!(
+            en.rows[0].english, "English",
+            "the meeting language stays first"
+        );
+        assert_eq!(en.lead, 1, "French (CA) does not match");
+        assert_eq!(en.rows[en.best.unwrap()].english, "English");
+        let rest: Vec<&str> = en.rows[1..].iter().map(|r| r.english.as_str()).collect();
+        let mut sorted = rest.clone();
+        sorted.sort_by_key(|n| fold(n));
+        assert_eq!(rest, sorted, "the rest stays alphabetical");
+
+        let fr = offer.search("francais");
+        assert_eq!(
+            fr.rows.len(),
+            1,
+            "French is offered once, as the meeting language"
+        );
+        assert_eq!((fr.rows[0].tag.as_str(), fr.lead), ("fr-CA", 1));
+        assert!(
+            offer.search("tagalog").rows.is_empty(),
+            "not the summary's own language"
+        );
+        assert_eq!(Offer::every().lead, 0);
     }
 
     #[test]

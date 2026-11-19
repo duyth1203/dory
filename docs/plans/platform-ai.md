@@ -96,67 +96,67 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Files.**
 
-- [ ] Edit `crates/dory-core/src/models/fit.rs` and `crates/dory-core/src/models/mod.rs`.
-- [ ] Edit `crates/dory-core/src/app/models.rs` (`listing_needs` for both kinds).
-- [ ] Edit `crates/dory-core/src/app/stages/mod.rs` and `crates/dory-core/src/app/events.rs`.
-- [ ] Edit `crates/dory-core/src/ports/error.rs`.
-- [ ] Edit `crates/dory-store/src/sqlite/codec.rs`, `apps/dory-cli/src/view.rs`, `apps/dory-gpui/src/processing.rs`, and `apps/dory-gpui/src/models_view.rs`, for the new `UnavailableReason` variant only.
-- [ ] Edit `crates/dory/src/fake.rs`.
-- [ ] Edit `crates/dory-core/tests/pipeline.rs`.
-- [ ] Create `scripts/fixtures/taglish.sh`.
+- [x] Edit `crates/dory-core/src/models/fit.rs` and `crates/dory-core/src/models/mod.rs`.
+- [x] Edit `crates/dory-core/src/app/models.rs` (`listing_needs` for both kinds).
+- [x] Edit `crates/dory-core/src/app/stages/mod.rs` and `crates/dory-core/src/app/events.rs`.
+- [x] Edit `crates/dory-core/src/ports/error.rs`.
+- [x] Edit `crates/dory-store/src/sqlite/codec.rs`, `apps/dory-cli/src/view.rs`, `apps/dory-gpui/src/processing.rs`, and `apps/dory-gpui/src/models_view.rs`, for the new `UnavailableReason` variant only.
+- [x] Edit `crates/dory/src/fake.rs`.
+- [x] Edit `crates/dory-core/tests/pipeline.rs`.
+- [x] Create `scripts/fixtures/taglish.sh`.
 
 **Build.**
 
-- [ ] Replace `LlmNeeds::language` with `LlmNeeds { main: Option<LangTag>, all: Vec<LangTag> }`. `all` is the union of the recording's pinned language, `Settings::meeting_languages`, and `transcript.detected_languages`. Today the sherpa engines report no language (`crates/dory-engines/src/sherpa/engine.rs` returns `language: None` and a default outcome), so `detected_languages` is empty and the settings carry the signal. `listing_needs` fills `all` the same way from settings, so Settings shows the fit the job will get.
-- [ ] `Llm::fit` returns `Yes` for a model whose `LlmCaps::languages` is `LangSet::Any`. A model with a limited language set fits only when `all` is not empty and every tag in it is supported. It returns `No(LanguageUnsupported)` for a tag outside the set, and `No(LanguagesUnknown)` when `all` is empty, with the text "needs your meeting languages set in Settings". This holds for `Auto` and `Pinned` alike. Apple accepts a Taglish transcript with no meeting languages set and summarizes only the English half (P2 live lane 4), and the sherpa engines detect no language, so Settings is the only guard. Gemma's `LangSet::Any` keeps it fitting every meeting.
-- [ ] Let a `FixedLocale` speech model fit `Auto` when `SttNeeds::expected` is not empty and every tag in it shares one primary language that the row covers. Add `pub fn run_language(caps: &SttCaps, needs: &SttNeeds) -> LanguagePref` in `fit.rs`, which returns `Pinned(<that language>)` for such a row and `needs.language` otherwise. The transcribe stage uses it for `TranscribeRequest::language` and `CheckpointKey::language`. An empty expected list keeps today's `No(AutoLanguageUnsupported)`.
-- [ ] Add `EngineError::Busy(String)`, classed `Transient`, for an engine that asks the caller to come back later. It is retried up to `MAX_ATTEMPTS` (3), and each retry reruns the whole summary, because the summary stage keeps no checkpoints.
-- [ ] Add `UnavailableReason::Preparing { detail: String }` for a model the OS is still downloading. A job blocked on it is rechecked by the triggers that free a job blocked on a stopped Ollama today, which are launch, a finished download, and Check again (`pipeline::unblock_all`). Add the variant to the store's JSON codec, the CLI view, and the GPUI processing and model views.
-- [ ] Fall back on `Auto`. When a summary engine chosen by `Auto` fails with `UnsupportedLanguage` or `InputRejected`, the stage re-resolves with that model excluded and restarts the summary from the transcript. It publishes a new `Event::DraftReset` first, so the UI drops the draft the first model streamed. Notes from two models never mix, and `produced_by` names the model that wrote the summary. A `Pinned` choice fails as it does today.
-- [ ] Add two fake rows to `crates/dory/src/fake.rs`, `fake/en-only-llm` (languages `en`, context 4096) and `fake/en-locale-stt` (`FixedLocale` English), and three knobs honored only when `DORY_DATA_DIR` is set. `DORY_FAKE_LLM=reject-language|busy:<n>` makes the fake summary engine fail that way, `DORY_FAKE_STT_LANGS=en,tl` sets the languages the fake transcriber detects, and `DORY_FAKE_ROWS=limited` keeps only the two limited rows in the fake catalogs.
-- [ ] Write `scripts/fixtures/taglish.sh`, which joins the `Weekly sync` and `Pulong sa Tagalog` takes into one FLAC with ffmpeg's concat filter and prints its path.
+- [x] Replace `LlmNeeds::language` with `LlmNeeds { main: Option<LangTag>, all: Vec<LangTag> }`. `all` is the union of the recording's pinned language, `Settings::meeting_languages`, and `transcript.detected_languages`. Today the sherpa engines report no language (`crates/dory-engines/src/sherpa/engine.rs` returns `language: None` and a default outcome), so `detected_languages` is empty and the settings carry the signal. `listing_needs` fills `all` the same way from settings, so Settings shows the fit the job will get. Done differently: `all` became `spoken`, and the language the summary is written in no longer makes a meeting's languages known (2026-11-18).
+- [x] `Llm::fit` returns `Yes` for a model whose `LlmCaps::languages` is `LangSet::Any`. A model with a limited language set fits only when `all` is not empty and every tag in it is supported. It returns `No(LanguageUnsupported)` for a tag outside the set, and `No(LanguagesUnknown)` when `all` is empty, with the text "needs your meeting languages set in Settings". This holds for `Auto` and `Pinned` alike. Apple accepts a Taglish transcript with no meeting languages set and summarizes only the English half (P2 live lane 4), and the sherpa engines detect no language, so Settings is the only guard. Gemma's `LangSet::Any` keeps it fitting every meeting.
+- [x] Let a `FixedLocale` speech model fit `Auto` when `SttNeeds::expected` is not empty and every tag in it shares one primary language that the row covers. Add `pub fn run_language(caps: &SttCaps, needs: &SttNeeds) -> LanguagePref` in `fit.rs`, which returns `Pinned(<that language>)` for such a row and `needs.language` otherwise. The transcribe stage uses it for `TranscribeRequest::language` and `CheckpointKey::language`. An empty expected list keeps today's `No(AutoLanguageUnsupported)`.
+- [x] Add `EngineError::Busy(String)`, classed `Transient`, for an engine that asks the caller to come back later. It is retried up to `MAX_ATTEMPTS` (3), and each retry reruns the whole summary, because the summary stage keeps no checkpoints.
+- [x] Add `UnavailableReason::Preparing { detail: String }` for a model the OS is still downloading. A job blocked on it is rechecked by the triggers that free a job blocked on a stopped Ollama today, which are launch, a finished download, and Check again (`pipeline::unblock_all`). Add the variant to the store's JSON codec, the CLI view, and the GPUI processing and model views.
+- [x] Fall back on `Auto`. When a summary engine chosen by `Auto` fails with `UnsupportedLanguage` or `InputRejected`, the stage re-resolves with that model excluded and restarts the summary from the transcript. It publishes a new `Event::DraftReset` first, so the UI drops the draft the first model streamed. Notes from two models never mix, and `produced_by` names the model that wrote the summary. A `Pinned` choice fails as it does today.
+- [x] Add two fake rows to `crates/dory/src/fake.rs`, `fake/en-only-llm` (languages `en`, context 4096) and `fake/en-locale-stt` (`FixedLocale` English), and three knobs honored only when `DORY_DATA_DIR` is set. `DORY_FAKE_LLM=reject-language|busy:<n>` makes the fake summary engine fail that way, `DORY_FAKE_STT_LANGS=en,tl` sets the languages the fake transcriber detects, and `DORY_FAKE_ROWS=limited` keeps only the two limited rows in the fake catalogs.
+- [x] Write `scripts/fixtures/taglish.sh`, which joins the `Weekly sync` and `Pulong sa Tagalog` takes into one FLAC with ffmpeg's concat filter and prints its path. Done differently: the script joins the takes with afconvert and Python's wave module, not ffmpeg.
 
 **You see.**
 
-- [ ] `DORY_DATA_DIR=<copy> dory-cli models --fake-engines` after `dory-cli languages en tl` lists `fake/en-only-llm` as `does not fit: does not support this language`, and after `dory-cli languages en` lists it as fitting.
-- [ ] With `DORY_FAKE_STT_LANGS=en,tl`, `dory-cli process <id> --summary --fake-engines` on Auto never calls `fake/en-only-llm` and uses `fake/llm`.
+- [x] `DORY_DATA_DIR=<copy> dory-cli models --fake-engines` after `dory-cli languages en tl` lists `fake/en-only-llm` as `does not fit: does not support this language`, and after `dory-cli languages en` lists it as fitting.
+- [x] With `DORY_FAKE_STT_LANGS=en,tl`, `dory-cli process <id> --summary --fake-engines` on Auto never calls `fake/en-only-llm` and uses `fake/llm`.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-core/src/models/fit.rs` tests gain `an_llm_must_read_every_known_language`, `a_limited_llm_needs_known_languages`, `a_fixed_locale_row_fits_auto_for_one_language`, `a_fixed_locale_row_never_fits_two_languages`, and `run_language_pins_the_one_language`. Run `cargo test -p dory-core models::fit`.
-- [ ] `crates/dory-core/src/models/resolve.rs` tests gain `auto_prefers_a_ready_fallback_over_an_unreachable_server`. Run `cargo test -p dory-core models::resolve`.
-- [ ] `crates/dory-core/tests/pipeline.rs` gains `auto_summary_falls_back_when_the_engine_rejects_the_language`, `the_draft_resets_on_fallback`, `a_pinned_summary_does_not_fall_back`, `busy_is_retried_then_fails_after_max_attempts`, and `preparing_unblocks_on_check_again`. Run `cargo test -p dory-core --test pipeline`.
-- [ ] `crates/dory-store` codec tests gain `preparing_round_trips`. Run `cargo test -p dory-store`.
-- [ ] `crates/dory-core/src/app/stages/summary.rs` keeps its map-reduce tests green and gains `a_4096_context_summarizes_a_two_hour_transcript` with a word counter. Run `cargo test -p dory-core stages::summary`.
+- [x] `crates/dory-core/src/models/fit.rs` tests gain `an_llm_must_read_every_known_language`, `a_limited_llm_needs_known_languages`, `a_fixed_locale_row_fits_auto_for_one_language`, `a_fixed_locale_row_never_fits_two_languages`, and `run_language_pins_the_one_language`. Run `cargo test -p dory-core models::fit`.
+- [x] `crates/dory-core/src/models/resolve.rs` tests gain `auto_prefers_a_ready_fallback_over_an_unreachable_server`. Run `cargo test -p dory-core models::resolve`.
+- [x] `crates/dory-core/tests/pipeline.rs` gains `auto_summary_falls_back_when_the_engine_rejects_the_language`, `the_draft_resets_on_fallback`, `a_pinned_summary_does_not_fall_back`, `busy_is_retried_then_fails_after_max_attempts`, and `preparing_unblocks_on_check_again`. Run `cargo test -p dory-core --test pipeline`.
+- [x] `crates/dory-store` codec tests gain `preparing_round_trips`. Run `cargo test -p dory-store`.
+- [x] `crates/dory-core/src/app/stages/summary.rs` keeps its map-reduce tests green and gains `a_4096_context_summarizes_a_two_hour_transcript` with a word counter. Run `cargo test -p dory-core stages::summary`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. With Ollama running, pin `sherpa/whisper-turbo`, set Auto for summaries, and run `dory-cli process <weekly id> --summary` at trunk and head. Save `regression.txt` with both `dory-cli show` outputs. Pass when both summaries come from `ollama/gemma4:e4b` with the same three headings and the same transcript `produced_by`.
-- [ ] Lane 2. Fake engines with `DORY_FAKE_STT_LANGS=en,tl` and `dory-cli models choose llm auto` on the weekly sync. Save `fake-taglish.txt`. Pass when the summary's `produced_by` is `fake/llm` and the job log never names `fake/en-only-llm`.
-- [ ] Lane 3. Same as lane 2 with `DORY_FAKE_ROWS=limited`. Save `fake-taglish-blocked.txt`. Pass when the summary step is blocked with "does not support this language" and no summary is stored.
-- [ ] Lane 4. Pin `fake/en-only-llm` with `DORY_FAKE_STT_LANGS=en,tl`. Save `fake-pinned.txt`. Pass when the job is blocked as incompatible and no fallback ran.
-- [ ] Lane 5. Run `dory-cli languages en`, then `dory-cli process <weekly id> --fake-engines` with Auto speech and `DORY_FAKE_ROWS=limited`. Save `fixed-locale-auto.txt`. Pass when `fake/en-locale-stt` is chosen and its checkpoint key names `en`.
-- [ ] Lane 6. Run `dory-cli languages en tl` and the same command. Save `fixed-locale-two.txt`. Pass when `fake/en-locale-stt` is not chosen and the step is blocked with a language sentence.
-- [ ] Lane 7. Clear meeting languages with `dory-cli languages --clear` and run the same command. Save `fixed-locale-unknown.txt`. Pass when `fake/en-locale-stt` is not chosen.
-- [ ] Lane 8. Run `dory-cli languages en`, then set `DORY_FAKE_LLM=reject-language` on Auto with `fake/en-only-llm` ranked first. Save `fallback.txt`. Pass when the summary's `produced_by` is `fake/llm`, the event log shows one `DraftReset`, and the stored summary holds no text from the first model.
-- [ ] Lane 9. Set `DORY_FAKE_LLM=busy:2`, then `busy:5`. Save `busy.txt`. Pass when the first job finishes after two retries and the second fails after three attempts with a retryable message.
-- [ ] Lane 10. With real engines, build `taglish.flac`, add it with `dory-cli add`, run `dory-cli languages en tl`, and process it on Auto with Ollama running. Save `taglish-real.txt`. Pass when Whisper transcribes it and Gemma summarizes it, exactly as on trunk.
+- [x] Lane 1. Regression lane against trunk. With Ollama running, pin `sherpa/whisper-turbo`, set Auto for summaries, and run `dory-cli process <weekly id> --summary` at trunk and head. Save `regression.txt` with both `dory-cli show` outputs. Pass when both summaries come from `ollama/gemma4:e4b` with the same three headings and the same transcript `produced_by`.
+- [x] Lane 2. Fake engines with `DORY_FAKE_STT_LANGS=en,tl` and `dory-cli models choose llm auto` on the weekly sync. Save `fake-taglish.txt`. Pass when the summary's `produced_by` is `fake/llm` and the job log never names `fake/en-only-llm`.
+- [x] Lane 3. Same as lane 2 with `DORY_FAKE_ROWS=limited`. Save `fake-taglish-blocked.txt`. Pass when the summary step is blocked with "does not support this language" and no summary is stored. Done differently: the lane sets meeting languages to en first, because the limited speech row needs one language to transcribe at all.
+- [x] Lane 4. Pin `fake/en-only-llm` with `DORY_FAKE_STT_LANGS=en,tl`. Save `fake-pinned.txt`. Pass when the job is blocked as incompatible and no fallback ran.
+- [x] Lane 5. Run `dory-cli languages en`, then `dory-cli process <weekly id> --fake-engines` with Auto speech and `DORY_FAKE_ROWS=limited`. Save `fixed-locale-auto.txt`. Pass when `fake/en-locale-stt` is chosen and its checkpoint key names `en`.
+- [x] Lane 6. Run `dory-cli languages en tl` and the same command. Save `fixed-locale-two.txt`. Pass when `fake/en-locale-stt` is not chosen and the step is blocked with a language sentence.
+- [x] Lane 7. Clear meeting languages with `dory-cli languages --clear` and run the same command. Save `fixed-locale-unknown.txt`. Pass when `fake/en-locale-stt` is not chosen.
+- [x] Lane 8. Run `dory-cli languages en`, then set `DORY_FAKE_LLM=reject-language` on Auto with `fake/en-only-llm` ranked first. Save `fallback.txt`. Pass when the summary's `produced_by` is `fake/llm`, the event log shows one `DraftReset`, and the stored summary holds no text from the first model.
+- [x] Lane 9. Set `DORY_FAKE_LLM=busy:2`, then `busy:5`. Save `busy.txt`. Pass when the first job finishes after two retries and the second fails after three attempts with a retryable message.
+- [x] Lane 10. With real engines, build `taglish.flac`, add it with `dory-cli add`, run `dory-cli languages en tl`, and process it on Auto with Ollama running. Save `taglish-real.txt`. Pass when Whisper transcribes it and Gemma summarizes it, exactly as on trunk.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. Wall time of `dory-cli models` on a migrated copy, which resolves every kind over the whole catalog.
-- [ ] Probe. `hyperfine --warmup 3 --runs 30 'dory-cli models'` on trunk and head release builds, interleaved trunk, head, trunk, head.
-- [ ] Baseline. Record the trunk median first.
-- [ ] Rule. Head fails if the median is more than 10 percent or 5 ms above trunk, whichever is larger.
+- [x] Metric. Wall time of `dory-cli models` on a migrated copy, which resolves every kind over the whole catalog.
+- [x] Probe. `hyperfine --warmup 3 --runs 30 'dory-cli models'` on trunk and head release builds, interleaved trunk, head, trunk, head.
+- [x] Baseline. Record the trunk median first.
+- [x] Rule. Head fails if the median is more than 10 percent or 5 ms above trunk, whichever is larger.
 
 **Review gate.** None. P1 is not review-gated.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends P1 to the stack with base `feat/gpui-rewrite`. The operator lands it.
+- [ ] Root's clean verdict at the exact head SHA. Open: one adversarial review covered P1 to P4, and its findings were fixed (2026-11-17). No clean verdict at an exact SHA.
+- [ ] Bugbot triage done. Open: no PR yet, so no Bugbot.
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. Open: rebased onto 808e6a6 with the gates rerun, but no patch-id check logged.
+- [ ] The root appends P1 to the stack with base `feat/gpui-rewrite`. The operator lands it. Open: merged locally into `feat/gpui-rewrite` in 67c50fb, with no PR stack.
 
 ## Summarize with Apple Intelligence (P2)
 
@@ -164,66 +164,66 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Files.**
 
-- [ ] Create `crates/dory-macos/build.rs`, `crates/dory-macos/swift/DoryAI.swift`, `crates/dory-macos/src/ai/mod.rs`, `crates/dory-macos/src/ai/ffi.rs`, and `crates/dory-macos/src/ai/foundation_models.rs`.
-- [ ] Edit `crates/dory-macos/Cargo.toml` and `crates/dory-macos/src/lib.rs`.
-- [ ] Edit `crates/dory/src/lib.rs` and `crates/dory/Cargo.toml`.
-- [ ] Edit `scripts/bundle-macos.sh` and `apps/dory-gpui/bundle.sh` (build prerequisites only).
-- [ ] Edit `docs/architecture/hexagonal.md` (the adapter rows and the Swift paragraph).
-- [ ] Create `crates/dory-macos/tests/foundation_models_live.rs` and `crates/dory/tests/providers.rs`.
+- [x] Create `crates/dory-macos/build.rs`, `crates/dory-macos/swift/DoryAI.swift`, `crates/dory-macos/src/ai/mod.rs`, `crates/dory-macos/src/ai/ffi.rs`, and `crates/dory-macos/src/ai/foundation_models.rs`.
+- [x] Edit `crates/dory-macos/Cargo.toml` and `crates/dory-macos/src/lib.rs`.
+- [x] Edit `crates/dory/src/lib.rs` and `crates/dory/Cargo.toml`.
+- [x] Edit `scripts/bundle-macos.sh` and `apps/dory-gpui/bundle.sh` (build prerequisites only).
+- [x] Edit `docs/architecture/hexagonal.md` (the adapter rows and the Swift paragraph).
+- [x] Create `crates/dory-macos/tests/foundation_models_live.rs` and `crates/dory/tests/providers.rs`.
 
 **Build.**
 
-- [ ] Write `DoryAI.swift` as `@_cdecl` functions over a small C ABI, per Appendix E. Every call blocks the calling Rust thread, takes a `DoryTask` handle that another thread can cancel, and reports text pieces through a `(context, callback)` pair. Swift owns every string it returns until Rust calls `dory_string_free`.
-- [ ] Write `build.rs` to compile it with `xcrun swiftc -parse-as-library -emit-library -static -target arm64-apple-macosx26.0`, link `FoundationModels` and `Foundation`, and add `-rpath /usr/lib/swift`. It runs only for `target_os = "macos"`. The spike's build took 3.7 seconds and the binary linked only system Swift libraries (Appendix A, finding 8).
-- [ ] Keep every `unsafe` line in `crates/dory-macos/src/ai/ffi.rs`. `foundation_models.rs` is safe Rust over it.
-- [ ] Add `dory_macos::FoundationModels`, a `ModelProvider<Llm>` with provider id `apple` and one row, `apple/foundation-model`, shown as "Apple Intelligence". Its caps read `contextSize` and `supportedLanguages` at runtime. `recommended` is false and `rank` is below Gemma's, so Gemma wins when both are Ready and Apple wins when Gemma is not Ready.
-- [ ] Map availability per Appendix E. `appleIntelligenceNotEnabled` and `deviceNotEligible` are `NotEligible` with their own sentences, `modelNotReady` is `Preparing`, and macOS below 26.4 is `OsTooOld { required: "macOS 26.4" }`, because `contextSize` and `tokenCount` need 26.4.
-- [ ] Count tokens without calling Apple per line. `count_tokens` returns `ceil(utf8_bytes / 2.7)`, which stayed above Apple's `tokenCount` on every fixture in the spike, while a `tokenCount` call costs 37 to 378 ms and adds 8 tokens of its own (Appendix A, finding 6).
-- [ ] Run each completion in a fresh `LanguageModelSession` with `.permissiveContentTransformations` guardrails, `temperature` from the request, and `maximumResponseTokens` from `max_output_tokens`. A process-wide mutex serializes Dory's calls.
-- [ ] Map Apple's errors per Appendix E. `rateLimited` and `concurrentRequests` become `Busy`, `unsupportedLanguageOrLocale` becomes `UnsupportedLanguage`, `guardrailViolation`, `refusal`, and `exceededContextWindowSize` become `InputRejected`, and `assetsUnavailable` becomes `ModelMissing`.
-- [ ] Register the provider in `crates/dory/src/lib.rs` under `#[cfg(target_os = "macos")]` and the `app` feature, so `dory-mcp` and builds without `app` link no Swift.
-- [ ] Honor `DORY_APPLE=off|ineligible|preparing|old-os` only when `DORY_DATA_DIR` is set, for lanes.
-- [ ] Make `scripts/bundle-macos.sh` fail early with one sentence when `xcrun swiftc` or the 26.4 SDK is missing. The bundle keeps two executables and no dylibs. Entitlements do not change.
+- [x] Write `DoryAI.swift` as `@_cdecl` functions over a small C ABI, per Appendix E. Every call blocks the calling Rust thread, takes a `DoryTask` handle that another thread can cancel, and reports text pieces through a `(context, callback)` pair. Swift owns every string it returns until Rust calls `dory_string_free`.
+- [x] Write `build.rs` to compile it with `xcrun swiftc -parse-as-library -emit-library -static -target arm64-apple-macosx26.0`, link `FoundationModels` and `Foundation`, and add `-rpath /usr/lib/swift`. It runs only for `target_os = "macos"`. The spike's build took 3.7 seconds and the binary linked only system Swift libraries (Appendix A, finding 8). Done differently: the bridge builds behind a feature with MACOSX_DEPLOYMENT_TARGET=26.0, and the rpath flag turned out to have no effect (2026-11-17).
+- [x] Keep every `unsafe` line in `crates/dory-macos/src/ai/ffi.rs`. `foundation_models.rs` is safe Rust over it.
+- [x] Add `dory_macos::FoundationModels`, a `ModelProvider<Llm>` with provider id `apple` and one row, `apple/foundation-model`, shown as "Apple Intelligence". Its caps read `contextSize` and `supportedLanguages` at runtime. `recommended` is false and `rank` is below Gemma's, so Gemma wins when both are Ready and Apple wins when Gemma is not Ready.
+- [x] Map availability per Appendix E. `appleIntelligenceNotEnabled` and `deviceNotEligible` are `NotEligible` with their own sentences, `modelNotReady` is `Preparing`, and macOS below 26.4 is `OsTooOld { required: "macOS 26.4" }`, because `contextSize` and `tokenCount` need 26.4. Done differently: Apple Intelligence turned off maps to the new `UnavailableReason::TurnedOff` (2026-11-17).
+- [x] Count tokens without calling Apple per line. `count_tokens` returns `ceil(utf8_bytes / 2.7)`, which stayed above Apple's `tokenCount` on every fixture in the spike, while a `tokenCount` call costs 37 to 378 ms and adds 8 tokens of its own (Appendix A, finding 6).
+- [x] Run each completion in a fresh `LanguageModelSession` with `.permissiveContentTransformations` guardrails, `temperature` from the request, and `maximumResponseTokens` from `max_output_tokens`. A process-wide mutex serializes Dory's calls.
+- [x] Map Apple's errors per Appendix E. `rateLimited` and `concurrentRequests` become `Busy`, `unsupportedLanguageOrLocale` becomes `UnsupportedLanguage`, `guardrailViolation`, `refusal`, and `exceededContextWindowSize` become `InputRejected`, and `assetsUnavailable` becomes `ModelMissing`.
+- [x] Register the provider in `crates/dory/src/lib.rs` under `#[cfg(target_os = "macos")]` and the `app` feature, so `dory-mcp` and builds without `app` link no Swift.
+- [x] Honor `DORY_APPLE=off|ineligible|preparing|old-os` only when `DORY_DATA_DIR` is set, for lanes.
+- [x] Make `scripts/bundle-macos.sh` fail early with one sentence when `xcrun swiftc` or the 26.4 SDK is missing. The bundle keeps two executables and no dylibs. Entitlements do not change.
 
 **You see.**
 
-- [ ] `dory-cli models` lists `apple/foundation-model  Apple Intelligence  ready  fits` on this Mac, and "Apple Intelligence is turned off" with `DORY_APPLE=off`.
-- [ ] With Ollama stopped, `dory-cli process <weekly id> --summary` writes a three-section summary whose `produced_by` is `apple/foundation-model`.
+- [x] `dory-cli models` lists `apple/foundation-model  Apple Intelligence  ready  fits` on this Mac, and "Apple Intelligence is turned off" with `DORY_APPLE=off`.
+- [x] With Ollama stopped, `dory-cli process <weekly id> --summary` writes a three-section summary whose `produced_by` is `apple/foundation-model`.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-macos/src/ai/foundation_models.rs` tests gain `availability_maps_every_apple_state`, `errors_map_to_engine_errors`, and `the_estimate_never_undercounts`, which checks `count_tokens` against recorded `tokenCount` values from Appendix A. Run `cargo test -p dory-macos ai::`.
-- [ ] `crates/dory-macos/tests/foundation_models_live.rs` gains `a_short_summary_round_trips` and `cancel_stops_a_completion_within_two_seconds`, both `#[ignore]` unless `DORY_APPLE_LIVE=1`, because CI Macs may lack Apple Intelligence. Run `DORY_APPLE_LIVE=1 cargo test -p dory-macos --test foundation_models_live -- --ignored`.
-- [ ] `crates/dory/tests/providers.rs` gains `apple_rows_appear_only_with_the_app_feature`. Run `cargo test -p dory --test providers`.
+- [x] `crates/dory-macos/src/ai/foundation_models.rs` tests gain `availability_maps_every_apple_state`, `errors_map_to_engine_errors`, and `the_estimate_never_undercounts`, which checks `count_tokens` against recorded `tokenCount` values from Appendix A. Run `cargo test -p dory-macos ai::`.
+- [x] `crates/dory-macos/tests/foundation_models_live.rs` gains `a_short_summary_round_trips` and `cancel_stops_a_completion_within_two_seconds`, both `#[ignore]` unless `DORY_APPLE_LIVE=1`, because CI Macs may lack Apple Intelligence. Run `DORY_APPLE_LIVE=1 cargo test -p dory-macos --test foundation_models_live -- --ignored`.
+- [x] `crates/dory/tests/providers.rs` gains `apple_rows_appear_only_with_the_app_feature`. Run `cargo test -p dory --test providers`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Stop Ollama and run `dory-cli process <weekly id> --summary` at trunk and head. Save `regression.txt` with both `dory-cli show` outputs. Pass when trunk's job is blocked on the unreachable Ollama and head writes a summary with three sections and `produced_by` `apple/foundation-model`.
-- [ ] Lane 2. Start Ollama with Gemma ready and run the same command at head. Save `gemma-wins.txt`. Pass when `produced_by` is `ollama/gemma4:e4b`.
-- [ ] Lane 3. Transcribe `Two hour planning` with Parakeet, then pin `apple/foundation-model` and run the summary. Save `long-apple.md` and `long-apple.txt` with the wall time. Pass when the job finishes with no error, the summary has all three sections, and `scripts/score-summary.py`'s recall is recorded beside the spike's 4 of 40 (Appendix A, finding 5). Recall is recorded, not gated, because P2 does not change the prompts.
-- [ ] Lane 4. Add the Taglish recording, transcribe it with Whisper, and summarize it on Auto with Ollama stopped, first after `dory-cli languages en tl`, then after `dory-cli languages --clear`. Save `taglish.txt` with `TGOnDeviceInferenceProviderService` CPU time before and after each. Pass when the first run never calls Apple (its CPU time does not grow) and the second is refused by Apple, falls back, and ends blocked on Ollama with no summary stored.
-- [ ] Lane 5. Pin Apple on the Taglish recording. Save `taglish-pinned.txt`. Pass when the job is blocked with "Apple Intelligence doesn't support Tagalog" and no partial summary is stored.
-- [ ] Lane 6. Run `dory-cli models` with each `DORY_APPLE` value. Save `states.txt`. Pass when each prints its own sentence and fix, per Appendix E.
-- [ ] Lane 7. Start the long summary in the app and press Cancel after 20 seconds. Save `cancel.txt` with `ps` samples of `TGOnDeviceInferenceProviderService` CPU time every second and `cancel.png`. Pass when its CPU time stops growing within 2 seconds and the job reads as cancelled.
-- [ ] Lane 8. Background lane. Open the bundled app with `open -g --env DORY_DATA_DIR=<copy>` with Ollama stopped, keep another app in front, and queue the long summary. Save `background.txt` with each pass's result and `background.png` of Dory's window after. Pass when the summary finishes, and any `Busy` retries are counted in the file (Appendix C, risk 2).
-- [ ] Lane 9. Bundle with `scripts/bundle-macos.sh`, then run `codesign --verify --deep --strict`, `otool -L` on both executables, and the app on a copy. Save `bundle.txt` and `bundle-summary.png`. Pass when the signature verifies, `dory-gpui` links only `/usr/lib/swift` and system frameworks, `dory-mcp` links no Swift, and the app, opened with `open --env DORY_DATA_DIR=<copy>`, writes an Apple summary.
-- [ ] Lane 10. Operator lane. The operator turns Apple Intelligence off in System Settings, Apple Intelligence & Siri, runs `dory-cli models` and `dory-cli show <weekly id>`, then turns it back on and runs `dory-cli models` again. Save `ai-off.txt`. Pass when the row reads "Apple Intelligence is turned off" with the fix, the stored summary still says `apple/foundation-model`, and the row is Ready again after.
+- [x] Lane 1. Regression lane against trunk. Stop Ollama and run `dory-cli process <weekly id> --summary` at trunk and head. Save `regression.txt` with both `dory-cli show` outputs. Pass when trunk's job is blocked on the unreachable Ollama and head writes a summary with three sections and `produced_by` `apple/foundation-model`.
+- [x] Lane 2. Start Ollama with Gemma ready and run the same command at head. Save `gemma-wins.txt`. Pass when `produced_by` is `ollama/gemma4:e4b`.
+- [x] Lane 3. Transcribe `Two hour planning` with Parakeet, then pin `apple/foundation-model` and run the summary. Save `long-apple.md` and `long-apple.txt` with the wall time. Pass when the job finishes with no error, the summary has all three sections, and `scripts/score-summary.py`'s recall is recorded beside the spike's 4 of 40 (Appendix A, finding 5). Recall is recorded, not gated, because P2 does not change the prompts.
+- [x] Lane 4. Add the Taglish recording, transcribe it with Whisper, and summarize it on Auto with Ollama stopped, first after `dory-cli languages en tl`, then after `dory-cli languages --clear`. Save `taglish.txt` with `TGOnDeviceInferenceProviderService` CPU time before and after each. Pass when the first run never calls Apple (its CPU time does not grow) and the second is refused by Apple, falls back, and ends blocked on Ollama with no summary stored. Done differently: Taglish failed at first, because Apple accepts it. After the unknown-languages fix the rerun passed, with Apple never called (2026-11-17).
+- [x] Lane 5. Pin Apple on the Taglish recording. Save `taglish-pinned.txt`. Pass when the job is blocked with "Apple Intelligence doesn't support Tagalog" and no partial summary is stored. Done differently: the job blocked without the sentence at first. The 2026-11-18 fix names the language ("does not support Tagalog"), not re-run live.
+- [x] Lane 6. Run `dory-cli models` with each `DORY_APPLE` value. Save `states.txt`. Pass when each prints its own sentence and fix, per Appendix E.
+- [ ] Lane 7. Start the long summary in the app and press Cancel after 20 seconds. Save `cancel.txt` with `ps` samples of `TGOnDeviceInferenceProviderService` CPU time every second and `cancel.png`. Pass when its CPU time stops growing within 2 seconds and the job reads as cancelled. Open: the Cancel click in the app was not run. The live test `cancel_stops_a_completion_within_two_seconds` passes.
+- [x] Lane 8. Background lane. Open the bundled app with `open -g --env DORY_DATA_DIR=<copy>` with Ollama stopped, keep another app in front, and queue the long summary. Save `background.txt` with each pass's result and `background.png` of Dory's window after. Pass when the summary finishes, and any `Busy` retries are counted in the file (Appendix C, risk 2).
+- [x] Lane 9. Bundle with `scripts/bundle-macos.sh`, then run `codesign --verify --deep --strict`, `otool -L` on both executables, and the app on a copy. Save `bundle.txt` and `bundle-summary.png`. Pass when the signature verifies, `dory-gpui` links only `/usr/lib/swift` and system frameworks, `dory-mcp` links no Swift, and the app, opened with `open --env DORY_DATA_DIR=<copy>`, writes an Apple summary.
+- [ ] Lane 10. Operator lane. The operator turns Apple Intelligence off in System Settings, Apple Intelligence & Siri, runs `dory-cli models` and `dory-cli show <weekly id>`, then turns it back on and runs `dory-cli models` again. Save `ai-off.txt`. Pass when the row reads "Apple Intelligence is turned off" with the fix, the stored summary still says `apple/foundation-model`, and the row is Ready again after. Open: operator lane, not run yet.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. Wall time of the summary stage on the `Two hour planning` transcript, and the app's cold launch to first window.
-- [ ] Probe. Run the summary on head with Apple pinned and on trunk with Gemma, three runs each, interleaved, with nothing else running, per `pstack/skills/benchmark-checklist/SKILL.md`. Time launch with `hyperfine --runs 10` on trunk and head bundles.
-- [ ] Baseline. Record trunk's Gemma summary time and launch time first.
-- [ ] Rule. Head fails if the Apple summary median is above trunk's Gemma median, because the fallback must not make users wait longer than the model it stands in for, or if launch is more than 5 percent slower than trunk. Under contention the spike measured 458 seconds for Apple and 511.6 for Gemma (Appendix A, finding 5).
+- [ ] Metric. Wall time of the summary stage on the `Two hour planning` transcript, and the app's cold launch to first window. Open: the summary time is measured, app launch time is not.
+- [ ] Probe. Run the summary on head with Apple pinned and on trunk with Gemma, three runs each, interleaved, with nothing else running, per `pstack/skills/benchmark-checklist/SKILL.md`. Time launch with `hyperfine --runs 10` on trunk and head bundles. Open: summaries ran interleaved, 5 Apple and 3 Gemma, but launch was not timed.
+- [ ] Baseline. Record trunk's Gemma summary time and launch time first. Open: trunk's Gemma median is 152.2 s, with no launch baseline.
+- [ ] Rule. Head fails if the Apple summary median is above trunk's Gemma median, because the fallback must not make users wait longer than the model it stands in for, or if launch is more than 5 percent slower than trunk. Under contention the spike measured 458 seconds for Apple and 511.6 for Gemma (Appendix A, finding 5). Open: failed, Apple 274.1 s against Gemma 152.2 s. Apple stays the fallback by the 2026-11-17 decision.
 
 **Review gate.** None. P2 is not review-gated.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends P2 to the stack with base P1's branch. The operator lands it.
+- [ ] Root's clean verdict at the exact head SHA. Open: one adversarial review covered P1 to P4, and its findings were fixed (2026-11-17). No clean verdict at an exact SHA.
+- [ ] Bugbot triage done. Open: no PR yet, so no Bugbot.
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. Open: no rebase or patch-id check logged.
+- [ ] The root appends P2 to the stack with base P1's branch. The operator lands it. Open: merged locally into `feat/gpui-rewrite` in 67c50fb, with no PR stack.
 
 ## Transcribe with Apple Speech (P3)
 
@@ -231,58 +231,58 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Files.**
 
-- [ ] Edit `crates/dory-macos/swift/DoryAI.swift`, `crates/dory-macos/src/ai/ffi.rs`, and `crates/dory-macos/src/ai/mod.rs`.
-- [ ] Create `crates/dory-macos/src/ai/speech.rs` and `crates/dory-macos/tests/speech_live.rs`.
-- [ ] Edit `crates/dory/src/lib.rs`.
-- [ ] Edit `apps/dory-gpui/src/models_view.rs` (grouping the per-language rows only).
+- [x] Edit `crates/dory-macos/swift/DoryAI.swift`, `crates/dory-macos/src/ai/ffi.rs`, and `crates/dory-macos/src/ai/mod.rs`.
+- [x] Create `crates/dory-macos/src/ai/speech.rs` and `crates/dory-macos/tests/speech_live.rs`.
+- [x] Edit `crates/dory/src/lib.rs`.
+- [x] Edit `apps/dory-gpui/src/models_view.rs` (grouping the per-language rows only).
 
 **Build.**
 
-- [ ] Add `dory_macos::AppleSpeech`, a `ModelProvider<Stt>` with provider id `apple` and one row per primary language that `SpeechTranscriber.supportedLocales` returns, `apple/speech-en` through `apple/speech-zh`, shown as "Apple Speech (English)" and so on. One row per language keeps availability honest, because each language has its own downloaded assets and `availability` takes no locale.
-- [ ] Give each row `SttCaps { languages: FixedLocale { tags: <its locales> }, diarization: None, max_input: None, window: Some(Ms(600_000)) }`. The 10-minute window gives checkpoints and resume points on long meetings, and diarization stays the separate diarizer's job. `recommended` is false and `rank` is below Parakeet's.
-- [ ] Map assets to availability. Installed is `Ready`, supported but absent is `NeedsProvision { bytes: None }`, and an unsupported language is not listed at all.
-- [ ] Implement `provision` with `AssetInventory.assetInstallationRequest`, reporting its `Progress` through `ProvisionSink`. When the 5-locale reservation limit is hit, fail with "Dory can keep 5 Apple Speech languages. Remove one to add another."
-- [ ] Implement `transcribe` over `SpeechAnalyzer` with `SpeechTranscriber` and the `audioTimeRange` attribute, reading the clip's file and range with `AVAudioFile`. Map each result to a `RawSegment` with clip-relative times and the pinned language. Cancel with `cancelAndFinishNow`.
-- [ ] Group the per-language rows in `models_view.rs` under one "Apple Speech" heading, and hide rows whose fit is `No` unless one is pinned.
+- [x] Add `dory_macos::AppleSpeech`, a `ModelProvider<Stt>` with provider id `apple` and one row per primary language that `SpeechTranscriber.supportedLocales` returns, `apple/speech-en` through `apple/speech-zh`, shown as "Apple Speech (English)" and so on. One row per language keeps availability honest, because each language has its own downloaded assets and `availability` takes no locale.
+- [x] Give each row `SttCaps { languages: FixedLocale { tags: <its locales> }, diarization: None, max_input: None, window: Some(Ms(600_000)) }`. The 10-minute window gives checkpoints and resume points on long meetings, and diarization stays the separate diarizer's job. `recommended` is false and `rank` is below Parakeet's. Done differently: Apple rows also set a 30-second lead-in before each window (2026-11-18).
+- [x] Map assets to availability. Installed is `Ready`, supported but absent is `NeedsProvision { bytes: None }`, and an unsupported language is not listed at all.
+- [x] Implement `provision` with `AssetInventory.assetInstallationRequest`, reporting its `Progress` through `ProvisionSink`. When the 5-locale reservation limit is hit, fail with "Dory can keep 5 Apple Speech languages. Remove one to add another." Done differently: the limit is read from `maximumReservedLocales`, with 5 as the fallback, and was not tried at the limit.
+- [x] Implement `transcribe` over `SpeechAnalyzer` with `SpeechTranscriber` and the `audioTimeRange` attribute, reading the clip's file and range with `AVAudioFile`. Map each result to a `RawSegment` with clip-relative times and the pinned language. Cancel with `cancelAndFinishNow`.
+- [x] Group the per-language rows in `models_view.rs` under one "Apple Speech" heading, and hide rows whose fit is `No` unless one is pinned.
 
 **You see.**
 
-- [ ] After `dory-cli languages en`, `dory-cli models` lists `apple/speech-en  Apple Speech (English)  ready  fits`.
-- [ ] With `apple/speech-en` pinned, `dory-cli process <weekly id>` writes 16 timed segments, and `dory-cli show` names `apple/speech-en`.
+- [x] After `dory-cli languages en`, `dory-cli models` lists `apple/speech-en  Apple Speech (English)  ready  fits`.
+- [x] With `apple/speech-en` pinned, `dory-cli process <weekly id>` writes 16 timed segments, and `dory-cli show` names `apple/speech-en`.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `crates/dory-macos/src/ai/speech.rs` tests gain `rows_group_locales_by_language`, `asset_states_map_to_availability`, and `segments_are_clip_relative`. Run `cargo test -p dory-macos ai::speech`.
-- [ ] `crates/dory-macos/tests/speech_live.rs` gains `the_weekly_sync_transcribes` and `cancel_stops_within_two_seconds`, `#[ignore]` unless `DORY_APPLE_LIVE=1`. Run `DORY_APPLE_LIVE=1 cargo test -p dory-macos --test speech_live -- --ignored`.
+- [x] `crates/dory-macos/src/ai/speech.rs` tests gain `rows_group_locales_by_language`, `asset_states_map_to_availability`, and `segments_are_clip_relative`. Run `cargo test -p dory-macos ai::speech`.
+- [x] `crates/dory-macos/tests/speech_live.rs` gains `the_weekly_sync_transcribes` and `cancel_stops_within_two_seconds`, `#[ignore]` unless `DORY_APPLE_LIVE=1`. Run `DORY_APPLE_LIVE=1 cargo test -p dory-macos --test speech_live -- --ignored`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Run `dory-cli languages en` and `dory-cli process <weekly id>` on Auto at trunk and head. Save `regression.txt`. Pass when both pick `sherpa/parakeet-tdt-0.6b-v3` and their segments are byte-identical.
-- [ ] Lane 2. Pin `apple/speech-en` and transcribe `Two hour planning`. Save `long-apple.txt` with wall time, segment count, and `scripts/score-items.py` output. Pass when it finishes, every segment has a time range inside the take, and the score is at least the spike's 105 of 160 (Appendix A, finding 3).
-- [ ] Lane 3. Rename `models/sherpa` in the lane copy so no sherpa model is Ready, set `dory-cli languages en`, and run the weekly sync on Auto. Save `fresh-install.txt`. Pass when Auto picks `apple/speech-en` and the transcript is written with no download.
-- [ ] Lane 4. Run `dory-cli languages en tl` and the weekly sync on Auto. Save `two-languages.txt`. Pass when no Apple row is chosen.
-- [ ] Lane 5. Run `dory-cli languages tl` and `dory-cli models`. Save `tagalog.txt`. Pass when no Apple Speech row claims Tagalog.
-- [ ] Lane 6. Operator lane, because it installs German speech assets system-wide and they stay. Run `dory-cli languages de`, then `dory-cli models provision stt apple/speech-de`. Save `provision.txt` with the progress lines. Pass when progress rises to done and the row becomes Ready.
-- [ ] Lane 7. Start the long transcription in the app, quit the app at 12 minutes of audio processed, and open it again. Save `resume.txt` with the `checkpoints` rows before and after. Pass when `localspeechrecognition` CPU stops within 2 seconds of quitting and the second run starts from the first 10-minute checkpoint instead of from zero.
-- [ ] Lane 8. Transcribe a 5-second silent FLAC made with `ffmpeg -f lavfi -i anullsrc=r=16000:cl=mono -t 5 silent.flac`. Save `silent.txt`. Pass when the job finishes with an empty transcript and no hang.
-- [ ] Lane 9. Run `dory-cli languages en-GB` and transcribe the weekly sync on Auto with no sherpa model Ready. Save `en-gb.txt`. Pass when `apple/speech-en` is chosen, runs on the installed `en-GB` assets with no download, and writes 16 timed segments.
-- [ ] Lane 10. Open Settings, Speech in the GPUI app with meeting languages `en`. Save `speech-rows.png`. Pass when Apple Speech shows as one group with the English row Ready, and rows that do not fit are hidden.
+- [x] Lane 1. Regression lane against trunk. Run `dory-cli languages en` and `dory-cli process <weekly id>` on Auto at trunk and head. Save `regression.txt`. Pass when both pick `sherpa/parakeet-tdt-0.6b-v3` and their segments are byte-identical.
+- [ ] Lane 2. Pin `apple/speech-en` and transcribe `Two hour planning`. Save `long-apple.txt` with wall time, segment count, and `scripts/score-items.py` output. Pass when it finishes, every segment has a time range inside the take, and the score is at least the spike's 105 of 160 (Appendix A, finding 3). Open: scored 94, then 104 with the 30-second lead-in, against a bar of 105 (2026-11-18).
+- [x] Lane 3. Rename `models/sherpa` in the lane copy so no sherpa model is Ready, set `dory-cli languages en`, and run the weekly sync on Auto. Save `fresh-install.txt`. Pass when Auto picks `apple/speech-en` and the transcript is written with no download.
+- [x] Lane 4. Run `dory-cli languages en tl` and the weekly sync on Auto. Save `two-languages.txt`. Pass when no Apple row is chosen.
+- [x] Lane 5. Run `dory-cli languages tl` and `dory-cli models`. Save `tagalog.txt`. Pass when no Apple Speech row claims Tagalog.
+- [ ] Lane 6. Operator lane, because it installs German speech assets system-wide and they stay. Run `dory-cli languages de`, then `dory-cli models provision stt apple/speech-de`. Save `provision.txt` with the progress lines. Pass when progress rises to done and the row becomes Ready. Open: operator lane, not run yet.
+- [x] Lane 7. Start the long transcription in the app, quit the app at 12 minutes of audio processed, and open it again. Save `resume.txt` with the `checkpoints` rows before and after. Pass when `localspeechrecognition` CPU stops within 2 seconds of quitting and the second run starts from the first 10-minute checkpoint instead of from zero. Done differently: checked at the CLI with SIGTERM instead of quitting the app. The rerun skipped the 3 saved windows and wrote an identical transcript.
+- [x] Lane 8. Transcribe a 5-second silent FLAC made with `ffmpeg -f lavfi -i anullsrc=r=16000:cl=mono -t 5 silent.flac`. Save `silent.txt`. Pass when the job finishes with an empty transcript and no hang.
+- [x] Lane 9. Run `dory-cli languages en-GB` and transcribe the weekly sync on Auto with no sherpa model Ready. Save `en-gb.txt`. Pass when `apple/speech-en` is chosen, runs on the installed `en-GB` assets with no download, and writes 16 timed segments.
+- [x] Lane 10. Open Settings, Speech in the GPUI app with meeting languages `en`. Save `speech-rows.png`. Pass when Apple Speech shows as one group with the English row Ready, and rows that do not fit are hidden.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. Real-time factor and CPU-seconds, including the `localspeechrecognition` service, for `Two hour planning`.
-- [ ] Probe. Pin `apple/speech-en` at head and `sherpa/parakeet-tdt-0.6b-v3` at trunk, three runs each, interleaved, with nothing else running. Sample service CPU every second with the spike's sampler (Appendix A).
-- [ ] Baseline. Record trunk's Parakeet RTFx and CPU-seconds first. The spike measured 4.3 under heavy contention, against 14 on short clips in the 2026-11-16 run for Parakeet under load.
-- [ ] Rule. Head fails if Apple Speech is not at least twice Parakeet's RTFx, or uses more CPU-seconds than Parakeet. The spike measured RTFx 73 and 79 for Apple and 128 CPU-seconds.
+- [x] Metric. Real-time factor and CPU-seconds, including the `localspeechrecognition` service, for `Two hour planning`.
+- [x] Probe. Pin `apple/speech-en` at head and `sherpa/parakeet-tdt-0.6b-v3` at trunk, three runs each, interleaved, with nothing else running. Sample service CPU every second with the spike's sampler (Appendix A).
+- [x] Baseline. Record trunk's Parakeet RTFx and CPU-seconds first. The spike measured 4.3 under heavy contention, against 14 on short clips in the 2026-11-16 run for Parakeet under load.
+- [x] Rule. Head fails if Apple Speech is not at least twice Parakeet's RTFx, or uses more CPU-seconds than Parakeet. The spike measured RTFx 73 and 79 for Apple and 128 CPU-seconds.
 
 **Review gate.** None. P3 is not review-gated.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends P3 to the stack with base P2's branch. The operator lands it.
+- [ ] Root's clean verdict at the exact head SHA. Open: one adversarial review covered P1 to P4, and its findings were fixed (2026-11-17). No clean verdict at an exact SHA.
+- [ ] Bugbot triage done. Open: no PR yet, so no Bugbot.
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. Open: no rebase or patch-id check logged.
+- [ ] The root appends P3 to the stack with base P2's branch. The operator lands it. Open: merged locally into `feat/gpui-rewrite` in 67c50fb, with no PR stack.
 
 ## Show Apple Intelligence where users set up summaries (P4)
 
@@ -290,63 +290,63 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 
 **Files.**
 
-- [ ] Edit `apps/dory-gpui/src/set_up_summaries.rs`.
-- [ ] Edit `apps/dory-gpui/src/settings_window.rs`.
-- [ ] Edit `apps/dory-gpui/src/onboarding.rs`.
-- [ ] Edit `apps/dory-gpui/src/models_view.rs` (wording only).
-- [ ] Edit `apps/dory-gpui/tests/settings.rs`.
-- [ ] Create `apps/dory-gpui/tests/set_up_summaries.rs`.
+- [x] Edit `apps/dory-gpui/src/set_up_summaries.rs`.
+- [x] Edit `apps/dory-gpui/src/settings_window.rs`.
+- [x] Edit `apps/dory-gpui/src/onboarding.rs`.
+- [x] Edit `apps/dory-gpui/src/models_view.rs` (wording only).
+- [x] Edit `apps/dory-gpui/tests/settings.rs`.
+- [x] Create `apps/dory-gpui/tests/set_up_summaries.rs`.
 
 **Build.**
 
-- [ ] Add `Readiness::System { name }` to Set Up Summaries. When Auto resolves to a Ready Apple row, the dialog says "Summaries use Apple Intelligence on this Mac. Nothing to install." and offers "Use Gemma for long meetings" as the secondary path into today's two Ollama steps.
-- [ ] When Apple Intelligence is off, step 1 reads "Turn on Apple Intelligence" with an Open System Settings button that opens the Apple Intelligence & Siri pane by URL, and the Ollama path stays beside it. When the Mac is not eligible, the dialog is today's Ollama flow.
-- [ ] Show the "Ollama is not running" section in Settings only when the chosen or resolved summary model is an Ollama row.
-- [ ] Change onboarding's "Summaries are optional and need Ollama." to "Summaries run on this Mac with Apple Intelligence." when Apple is Ready, and keep today's sentence otherwise.
-- [ ] Fill each Apple row's `ModelAbout`. Apple Intelligence is good at "No download, private, and fast on short meetings" and watch out for "23 languages and no Tagalog. Meetings longer than a few minutes are summarized in parts and can lose action items." Apple Speech is good at "No download for English, and fast" and watch out for "One language per meeting, and no Tagalog".
+- [x] Add `Readiness::System { name }` to Set Up Summaries. When Auto resolves to a Ready Apple row, the dialog says "Summaries use Apple Intelligence on this Mac. Nothing to install." and offers "Use Gemma for long meetings" as the secondary path into today's two Ollama steps. Done differently: a `set_up_summaries::System` state replaces `Readiness::System` (2026-11-17).
+- [x] When Apple Intelligence is off, step 1 reads "Turn on Apple Intelligence" with an Open System Settings button that opens the Apple Intelligence & Siri pane by URL, and the Ollama path stays beside it. When the Mac is not eligible, the dialog is today's Ollama flow.
+- [x] Show the "Ollama is not running" section in Settings only when the chosen or resolved summary model is an Ollama row.
+- [x] Change onboarding's "Summaries are optional and need Ollama." to "Summaries run on this Mac with Apple Intelligence." when Apple is Ready, and keep today's sentence otherwise.
+- [x] Fill each Apple row's `ModelAbout`. Apple Intelligence is good at "No download, private, and fast on short meetings" and watch out for "23 languages and no Tagalog. Meetings longer than a few minutes are summarized in parts and can lose action items." Apple Speech is good at "No download for English, and fast" and watch out for "One language per meeting, and no Tagalog".
 
 **You see.**
 
-- [ ] On a copy with Ollama stopped and Apple Ready, Set Up Summaries opens on the System path with no install step.
-- [ ] With `DORY_APPLE=off`, it opens on "Turn on Apple Intelligence" with the Ollama path beside it.
+- [x] On a copy with Ollama stopped and Apple Ready, Set Up Summaries opens on the System path with no install step.
+- [x] With `DORY_APPLE=off`, it opens on "Turn on Apple Intelligence" with the Ollama path beside it.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] `apps/dory-gpui/tests/set_up_summaries.rs` gains `apple_ready_needs_no_setup`, `apple_off_offers_both_paths`, and `ineligible_shows_the_ollama_flow`. Run `cargo test -p dory-gpui --test set_up_summaries`.
-- [ ] `apps/dory-gpui/tests/settings.rs` gains `ollama_section_only_for_ollama_choices`. Run `cargo test -p dory-gpui --test settings`.
+- [x] `apps/dory-gpui/tests/set_up_summaries.rs` gains `apple_ready_needs_no_setup`, `apple_off_offers_both_paths`, and `ineligible_shows_the_ollama_flow`. Run `cargo test -p dory-gpui --test set_up_summaries`.
+- [x] `apps/dory-gpui/tests/settings.rs` gains `ollama_section_only_for_ollama_choices`. Run `cargo test -p dory-gpui --test settings`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `sonnet high` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. Open Set Up Summaries with Ollama stopped at trunk and head. Save `regression-trunk.png` and `regression-head.png`. Pass when trunk shows "Install Ollama" and head shows the System path.
-- [ ] Lane 2. Open Set Up Summaries with `DORY_APPLE=off`. Save `ai-off.png`. Pass when "Turn on Apple Intelligence" and the Ollama path both show, and VoiceOver reads both buttons by name through `app_ax_find`.
-- [ ] Lane 3. Press Open System Settings. Save `opens-settings.txt` with the frontmost app name after. Pass when System Settings is frontmost, and close it without changing anything.
-- [ ] Lane 4. Open Set Up Summaries with `DORY_APPLE=ineligible`. Save `ineligible.png`. Pass when it is today's Ollama flow with no Apple wording.
-- [ ] Lane 5. Open Set Up Summaries with `DORY_APPLE=preparing`. Save `preparing.png`. Pass when it says Apple is getting the model ready and offers no button that does nothing.
-- [ ] Lane 6. Choose "Use Gemma for long meetings" with Ollama running and Gemma absent. Save `gemma-path.png`. Pass when it lands on today's Download step.
-- [ ] Lane 7. Open Settings, Summary with Ollama stopped and Apple Ready. Save `settings-summary.png`. Pass when no "Ollama is not running" section shows and the Apple row reads Ready.
-- [ ] Lane 8. Pin Gemma with Ollama stopped and open Settings. Save `settings-ollama.png`. Pass when the "Ollama is not running" section shows, as on trunk.
-- [ ] Lane 9. Run onboarding on a fresh copy with Apple Ready. Save `onboarding.png`. Pass when the summary sentence names Apple Intelligence.
-- [ ] Lane 10. Open each Apple row's About in Settings. Save `about-apple.png`. Pass when the pros and cons match the Build box word for word.
+- [ ] Lane 1. Regression lane against trunk. Open Set Up Summaries with Ollama stopped at trunk and head. Save `regression-trunk.png` and `regression-head.png`. Pass when trunk shows "Install Ollama" and head shows the System path. Open: head passes, the trunk side was skipped with no trunk GPUI build.
+- [x] Lane 2. Open Set Up Summaries with `DORY_APPLE=off`. Save `ai-off.png`. Pass when "Turn on Apple Intelligence" and the Ollama path both show, and VoiceOver reads both buttons by name through `app_ax_find`.
+- [ ] Lane 3. Press Open System Settings. Save `opens-settings.txt` with the frontmost app name after. Pass when System Settings is frontmost, and close it without changing anything. Open: needs clicks, not verified live.
+- [x] Lane 4. Open Set Up Summaries with `DORY_APPLE=ineligible`. Save `ineligible.png`. Pass when it is today's Ollama flow with no Apple wording.
+- [x] Lane 5. Open Set Up Summaries with `DORY_APPLE=preparing`. Save `preparing.png`. Pass when it says Apple is getting the model ready and offers no button that does nothing.
+- [ ] Lane 6. Choose "Use Gemma for long meetings" with Ollama running and Gemma absent. Save `gemma-path.png`. Pass when it lands on today's Download step. Open: needs clicks, not verified live.
+- [x] Lane 7. Open Settings, Summary with Ollama stopped and Apple Ready. Save `settings-summary.png`. Pass when no "Ollama is not running" section shows and the Apple row reads Ready.
+- [x] Lane 8. Pin Gemma with Ollama stopped and open Settings. Save `settings-ollama.png`. Pass when the "Ollama is not running" section shows, as on trunk.
+- [x] Lane 9. Run onboarding on a fresh copy with Apple Ready. Save `onboarding.png`. Pass when the summary sentence names Apple Intelligence.
+- [x] Lane 10. Open each Apple row's About in Settings. Save `about-apple.png`. Pass when the pros and cons match the Build box word for word.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. Time from opening Set Up Summaries to its first settled frame, and Settings open time.
-- [ ] Probe. Ten opens each on trunk and head bundles, interleaved, timed from the click to the dialog's first accessibility element appearing, polled with `app_ax_find`.
-- [ ] Baseline. Record trunk's medians first.
-- [ ] Rule. Head fails if either median is more than 50 ms or 10 percent above trunk, whichever is larger, because the Apple availability probe is a 79 ms call that must not run on the UI thread.
+- [ ] Metric. Time from opening Set Up Summaries to its first settled frame, and Settings open time. Open: not run, because it times clicks.
+- [ ] Probe. Ten opens each on trunk and head bundles, interleaved, timed from the click to the dialog's first accessibility element appearing, polled with `app_ax_find`. Open: not run, because it times clicks.
+- [ ] Baseline. Record trunk's medians first. Open: not run, because it times clicks.
+- [ ] Rule. Head fails if either median is more than 50 ms or 10 percent above trunk, whichever is larger, because the Apple availability probe is a 79 ms call that must not run on the UI thread. Open: not run, because it times clicks.
 
 **Review gate.** The operator reviews before merge.
 
-- [ ] Copy lane 1, 2, 4, and 7 screenshots into `docs/plans/media/p4-review-<slug>.png`.
-- [ ] Record a 30 to 60 second video of Set Up Summaries in the System, off, and Gemma states. Save it as `docs/plans/media/p4-review.mp4`.
-- [ ] Post the screenshots and the video in chat. Stop at merge-ready. Wait for the operator's click.
+- [x] Copy lane 1, 2, 4, and 7 screenshots into `docs/plans/media/p4-review-<slug>.png`.
+- [ ] Record a 30 to 60 second video of Set Up Summaries in the System, off, and Gemma states. Save it as `docs/plans/media/p4-review.mp4`. Open: no video, because recording Dory's window alone needs clicks between states.
+- [ ] Post the screenshots and the video in chat. Stop at merge-ready. Wait for the operator's click. Open: the screenshots are saved, but no operator review was recorded before the 67c50fb merge.
 
 **Merge.**
 
-- [ ] Root's clean verdict at the exact head SHA.
-- [ ] Bugbot triage done.
-- [ ] Rebased onto current trunk after the verdict, patch-id unchanged.
-- [ ] The root appends P4 to the stack with base P3's branch. The operator lands it after the review.
+- [ ] Root's clean verdict at the exact head SHA. Open: one adversarial review covered P1 to P4, and its findings were fixed (2026-11-17). No clean verdict at an exact SHA.
+- [ ] Bugbot triage done. Open: no PR yet, so no Bugbot.
+- [ ] Rebased onto current trunk after the verdict, patch-id unchanged. Open: no rebase or patch-id check logged.
+- [ ] The root appends P4 to the stack with base P3's branch. The operator lands it after the review. Open: merged locally into `feat/gpui-rewrite` in 67c50fb, with no PR stack.
 
 ## Measure Apple models and set the Auto order (P5)
 
@@ -410,7 +410,7 @@ Live lanes run on the operator's Mac, an M3 Pro on macOS 26.5.2 with Apple Intel
 ## Close the program
 
 - [ ] Every box above is checked with its evidence.
-- [ ] `docs/architecture/hexagonal.md` names `dory_macos::FoundationModels` and `dory_macos::AppleSpeech` with the C ABI and the rows, as P2 and P3 left it.
+- [x] `docs/architecture/hexagonal.md` names `dory_macos::FoundationModels` and `dory_macos::AppleSpeech` with the C ABI and the rows, as P2 and P3 left it.
 - [ ] Reply to the operator with the report the execution playbook names.
 
 ## Appendix A. Prototype evidence

@@ -503,6 +503,68 @@ impl SwitchRecoveryArgs {
     }
 }
 
+/// `vocabulary` prints what the speech model is asked to favor. The other forms edit it. A term
+/// or a name is all the words given, joined with spaces, so `add Acme Corp` is one term.
+#[derive(Debug, PartialEq)]
+pub enum VocabularyArgs {
+    Show,
+    Add { text: String, strong: bool },
+    Remove { text: String },
+    Speakers(bool),
+    Hide { name: String },
+    Unhide { name: String },
+}
+
+impl VocabularyArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let Some((verb, rest)) = args.split_first() else {
+            return Ok(Self::Show);
+        };
+        let mut strong = false;
+        let mut words = Vec::new();
+        for arg in rest {
+            match arg.as_str() {
+                "--strong" if verb == "add" => strong = true,
+                flag if flag.starts_with("--") => {
+                    return Err(format!("vocabulary {verb} does not take {flag}"));
+                }
+                _ => words.push(arg.as_str()),
+            }
+        }
+        let text = words.join(" ");
+        let named = |what: &str| {
+            if text.trim().is_empty() {
+                Err(format!("vocabulary {verb} takes {what}"))
+            } else {
+                Ok(text.clone())
+            }
+        };
+        match verb.as_str() {
+            "add" => Ok(Self::Add {
+                text: named("the words of a term")?,
+                strong,
+            }),
+            "remove" => Ok(Self::Remove {
+                text: named("the words of a term")?,
+            }),
+            "hide" => Ok(Self::Hide {
+                name: named("a speaker name")?,
+            }),
+            "show" => Ok(Self::Unhide {
+                name: named("a speaker name")?,
+            }),
+            "speakers" => match words.as_slice() {
+                ["on"] => Ok(Self::Speakers(true)),
+                ["off"] => Ok(Self::Speakers(false)),
+                _ => Err("vocabulary speakers takes on or off".into()),
+            },
+            other => Err(format!(
+                "vocabulary takes add, remove, speakers, hide, or show, not {other:?}"
+            )),
+        }
+    }
+}
+
 /// `output-language` shows the language transcripts and summaries are written in. A tag sets it,
 /// and `same` goes back to writing in the language that was spoken.
 #[derive(Debug, PartialEq)]
@@ -810,6 +872,71 @@ mod tests {
         }
         assert!(SwitchRecoveryArgs::parse(&words("maybe")).is_err());
         assert!(SwitchRecoveryArgs::parse(&words("on off")).is_err());
+    }
+
+    #[test]
+    fn vocabulary_parses_each_form() {
+        let add = |text: &str, strong| VocabularyArgs::Add {
+            text: text.into(),
+            strong,
+        };
+        assert_eq!(VocabularyArgs::parse(&[]).unwrap(), VocabularyArgs::Show);
+        assert_eq!(
+            VocabularyArgs::parse(&words("add Lina")).unwrap(),
+            add("Lina", false)
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("add Acme Corp --strong")).unwrap(),
+            add("Acme Corp", true)
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("add --strong Priya")).unwrap(),
+            add("Priya", true)
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("remove Acme Corp")).unwrap(),
+            VocabularyArgs::Remove {
+                text: "Acme Corp".into()
+            }
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("speakers on")).unwrap(),
+            VocabularyArgs::Speakers(true)
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("speakers off")).unwrap(),
+            VocabularyArgs::Speakers(false)
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("hide Ana Maria")).unwrap(),
+            VocabularyArgs::Hide {
+                name: "Ana Maria".into()
+            }
+        );
+        assert_eq!(
+            VocabularyArgs::parse(&words("show Ana Maria")).unwrap(),
+            VocabularyArgs::Unhide {
+                name: "Ana Maria".into()
+            }
+        );
+    }
+
+    #[test]
+    fn vocabulary_refuses_what_it_cannot_read() {
+        for line in [
+            "add",
+            "add --strong",
+            "remove",
+            "remove Lina --strong",
+            "hide --strong Lina",
+            "speakers",
+            "speakers maybe",
+            "speakers on off",
+            "forget Lina",
+            "add Lina --loud",
+        ] {
+            assert!(VocabularyArgs::parse(&words(line)).is_err(), "{line}");
+        }
     }
 
     #[test]

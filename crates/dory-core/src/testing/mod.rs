@@ -884,6 +884,8 @@ pub struct TranscribeCall {
     pub threads: u8,
     pub sentence_times: bool,
     pub locale: Option<LangTag>,
+    /// The texts of `TranscribeRequest::vocabulary`, in order.
+    pub vocabulary: Vec<String>,
 }
 
 impl FakeTranscriber {
@@ -999,6 +1001,7 @@ impl Transcriber for FakeTranscriber {
                 threads: req.threads,
                 sentence_times: req.sentence_times,
                 locale: req.locale.clone(),
+                vocabulary: req.vocabulary.iter().map(|t| t.text.clone()).collect(),
             });
             calls.len() - 1
         };
@@ -1248,6 +1251,7 @@ pub fn stt_entry(id: &str, diarization: DiarizationSupport) -> ModelEntry<Stt> {
             window: None,
             sentence_times: false,
             lead_in: Ms(0),
+            vocabulary: false,
         },
         recommended: false,
         rank: 0,

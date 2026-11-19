@@ -3,8 +3,8 @@
 //! has no wildcard arm, so adding a variant stops compiling here until the format says what to do.
 
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobError, LangTag,
-    LanguagePref, Ms, Stage, TakeContainer, TimeRange,
+    Blocker, Boost, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobError, LangTag,
+    LanguagePref, Ms, Stage, TakeContainer, TimeRange, VocabularyTerm,
 };
 use dory_core::models::{
     Choice, KindTag, Mismatch, ModelId, ModelKind, ModelRef, Unavailable, UnavailableReason,
@@ -306,6 +306,27 @@ pub(crate) fn pref_to_setting(pref: &LanguagePref) -> String {
     }
 }
 
+/// One line of the `vocabulary` setting: the boost's letter, a tab, then the text.
+pub(crate) fn term_to_db(term: &VocabularyTerm) -> String {
+    let boost = match term.boost {
+        Boost::Normal => 'n',
+        Boost::Strong => 's',
+    };
+    format!("{boost}\t{}", term.text)
+}
+
+pub(crate) fn term_from_db(line: &str) -> Result<VocabularyTerm, StoreError> {
+    let (boost, text) = line
+        .split_once('\t')
+        .ok_or_else(|| corrupt(format!("vocabulary line {line:?} has no boost")))?;
+    let boost = match boost {
+        "n" => Boost::Normal,
+        "s" => Boost::Strong,
+        other => return Err(corrupt(format!("vocabulary boost is {other:?}"))),
+    };
+    Ok(VocabularyTerm::new(text, boost))
+}
+
 pub(crate) fn pref_from_setting(s: &str) -> Result<LanguagePref, StoreError> {
     match s {
         "auto" => Ok(LanguagePref::Auto),
@@ -541,6 +562,27 @@ pub(crate) fn raw_segments_from_db(s: &str) -> Result<Vec<RawSegment>, StoreErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_vocabulary_line_is_the_boost_letter_a_tab_and_the_text() {
+        let strong = VocabularyTerm::new("Đạt Nguyễn", Boost::Strong);
+        assert_eq!(term_to_db(&strong), "s\tĐạt Nguyễn");
+        assert_eq!(
+            term_to_db(&VocabularyTerm::new("Lina", Boost::Normal)),
+            "n\tLina"
+        );
+        assert_eq!(term_from_db(&term_to_db(&strong)).unwrap(), strong);
+    }
+
+    #[test]
+    fn an_unknown_boost_letter_or_a_line_without_one_is_corrupt() {
+        for line in ["x\tLina", "Lina", "\tLina", "ns\tLina"] {
+            assert!(
+                matches!(term_from_db(line), Err(StoreError::Corrupt(_))),
+                "{line:?}"
+            );
+        }
+    }
 
     #[test]
     fn preparing_round_trips() {

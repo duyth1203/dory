@@ -3,6 +3,7 @@
 mod catalog;
 mod engine;
 mod fetch;
+mod hotwords;
 #[cfg(test)]
 mod tests;
 
@@ -78,6 +79,7 @@ fn entry(model: &Model) -> ModelEntry<Stt> {
             window: Some(Ms(model.window_secs * 1000)),
             sentence_times: model.sentence_times,
             lead_in: Ms(0),
+            vocabulary: model.vocabulary,
         },
         recommended: model.recommended,
         rank: model.rank,

@@ -86,6 +86,10 @@ Keep cases outside the repo. They hold private audio.
 
 Give each run a `--label` and append every run to the same TSV. Each row has the label, the case, the models, the counts, and the times, so two runs of one case sit side by side in a spreadsheet. Change one thing between runs. Rerun the baseline when the audio or the reference changes, since the numbers only compare across runs of the same case files.
 
+## Speech vocabulary
+
+Eval transcribes with the data folder's speech vocabulary, like any recording. Set the eval folder's terms before a run with `dory-cli vocabulary add Lina` and `dory-cli vocabulary add Priya --strong`, and name the run for them in `--label`, because a run with and without terms is a different experiment. Speaker names from other recordings in that folder join the terms unless you turn them off with `dory-cli vocabulary speakers off`. Only the Parakeet model takes a vocabulary.
+
 ## Limits
 
 - Imported audio is one mixed channel. The mic and system split, and bleed removal, are not exercised.

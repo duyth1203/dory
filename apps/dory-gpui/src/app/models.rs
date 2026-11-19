@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use dory_core::app::{AppKind, ModelRow, TrashedOriginals};
-use dory_core::domain::Settings;
+use dory_core::domain::{Settings, VocabularyTerm};
 use dory_core::models::{Choice, ModelId, ModelRef};
 use dory_core::ports::ProvisionError;
 use dory_core::ports::capture::InputDevice;
@@ -18,6 +18,14 @@ impl AppState {
     pub fn read_settings(&self, cx: &App) -> Task<Result<Settings, String>> {
         self.core
             .run(cx, |dory| dory.settings().map_err(|e| e.to_string()))
+    }
+
+    /// What the speech engine is asked to favor: the user's terms, then the speaker names from the
+    /// library that are not hidden.
+    pub fn read_speech_vocabulary(&self, cx: &App) -> Task<Result<Vec<VocabularyTerm>, String>> {
+        self.core.run(cx, |dory| {
+            dory.speech_vocabulary().map_err(|e| e.to_string())
+        })
     }
 
     /// Validates and saves in one step. Blocked jobs are tried again, since the edit may fix them.

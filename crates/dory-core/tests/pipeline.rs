@@ -7,9 +7,10 @@ use std::time::Duration;
 
 use dory_core::app::{Dory, DoryError, Event, Options, Ports, Rerun};
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobEvent, JobState, LangSet,
-    LangTag, LanguagePref, Ms, Recording, RecordingId, Recovery, Revision, Segment, Settings,
-    SpeakerId, Stage, TimeRange, Timestamp, TranslationFlag,
+    Blocker, Boost, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobEvent, JobState,
+    LangSet, LangTag, LanguagePref, Ms, Recording, RecordingId, Recovery, Revision, Segment,
+    Settings, SpeakerId, SpeakerNames, Stage, TimeRange, Timestamp, TranslationFlag,
+    VocabularyTerm,
 };
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, KindTag, LangSupport, Llm, Mismatch, ModelEntry,
@@ -3247,4 +3248,63 @@ fn a_rerun_with_a_picked_model_waits_for_the_job_underway() {
             .unwrap()
             .is_some_and(|s| s.produced_by.as_str() == LLM)
     });
+}
+
+/// A recording whose speaker was renamed, a Settings term, and a second recording to transcribe.
+fn vocabulary_rig(engine_takes_vocabulary: bool) -> (Rig, RecordingId) {
+    let mut entry = stt(STT, DiarizationSupport::None, WINDOW);
+    entry.caps.vocabulary = engine_takes_vocabulary;
+    let rig = Rig::new(
+        FakeTranscriber::new().with_segments(Channel::Mic, &[(1_000, 2_000, 0, "hello")]),
+        vec![entry],
+        llm(8_192),
+    );
+    let earlier = rig.seed("earlier", ChannelLayout::MicOnly, 10);
+    let next = rig.seed("next", ChannelLayout::MicOnly, 10);
+    rig.store
+        .apply(vec![
+            Change::SpeakerNamesReplaced {
+                id: earlier,
+                names: SpeakerNames {
+                    for_revision: Revision(1),
+                    names: [(SpeakerId(1), "Lina".to_owned())].into(),
+                },
+            },
+            Change::SettingsReplaced(Settings {
+                vocabulary: vec![VocabularyTerm::new("Priya", Boost::Strong)],
+                ..Settings::default()
+            }),
+        ])
+        .unwrap();
+    (rig, next)
+}
+
+#[test]
+fn a_renamed_speaker_and_a_settings_term_reach_the_engine_on_the_next_recording() {
+    let (rig, next) = vocabulary_rig(true);
+    let dory = rig.open();
+    assert_eq!(
+        dory.speech_vocabulary().unwrap(),
+        [
+            VocabularyTerm::new("Priya", Boost::Strong),
+            VocabularyTerm::new("Lina", Boost::Normal)
+        ]
+    );
+    process(&dory, &next, Goal::TRANSCRIBE);
+    let calls = rig.transcriber.calls();
+    assert!(!calls.is_empty());
+    assert!(
+        calls.iter().all(|c| c.vocabulary == ["Priya", "Lina"]),
+        "every decode gets the terms, then the names: {calls:?}"
+    );
+}
+
+#[test]
+fn an_engine_without_vocabulary_gets_none() {
+    let (rig, next) = vocabulary_rig(false);
+    let dory = rig.open();
+    process(&dory, &next, Goal::TRANSCRIBE);
+    let calls = rig.transcriber.calls();
+    assert!(!calls.is_empty());
+    assert!(calls.iter().all(|c| c.vocabulary.is_empty()), "{calls:?}");
 }

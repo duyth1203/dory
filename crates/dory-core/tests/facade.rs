@@ -230,6 +230,9 @@ impl StoreRead for HookedStore {
     fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError> {
         self.inner.speaker_names(id)
     }
+    fn speaker_names_in_library(&self) -> Result<Vec<String>, StoreError> {
+        self.inner.speaker_names_in_library()
+    }
     fn job(&self, id: JobId) -> Result<Option<Job>, StoreError> {
         self.inner.job(id)
     }

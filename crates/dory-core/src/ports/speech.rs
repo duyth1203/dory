@@ -1,5 +1,5 @@
 use super::{CancelToken, Clip, EngineError};
-use crate::domain::{Fraction, LangTag, LanguagePref, TimeRange};
+use crate::domain::{Fraction, LangTag, LanguagePref, TimeRange, VocabularyTerm};
 
 /// A loaded speech engine. The core decides which clips to send and merges the results. The engine
 /// turns one clip into timed text.
@@ -31,6 +31,8 @@ pub struct TranscribeRequest<'a> {
     /// variant of the pinned language keeps to it, so a meeting never mixes en-US and en-GB.
     /// Engines that run no regional variant ignore it.
     pub locale: Option<LangTag>,
+    /// Terms the engine should favor. An engine whose caps say no vocabulary ignores it.
+    pub vocabulary: &'a [VocabularyTerm],
 }
 
 pub trait SegmentSink {

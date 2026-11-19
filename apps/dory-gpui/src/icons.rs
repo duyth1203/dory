@@ -72,6 +72,7 @@ icons! {
     Search => "search.svg",
     Settings => "settings.svg",
     Settings2 => "settings-2.svg",
+    SlidersHorizontal => "sliders-horizontal.svg",
     Square => "square.svg",
     TransportPause => "transport-pause.svg",
     TransportPlay => "transport-play.svg",

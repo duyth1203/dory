@@ -715,6 +715,7 @@ fn call(
         threads,
         sentence_times,
         locale: None,
+        vocabulary: &[],
     };
     let mut sink = Collect::default();
     let started = Instant::now();

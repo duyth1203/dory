@@ -171,6 +171,7 @@ fn main() {
                     threads: 4,
                     sentence_times: false,
                     locale: None,
+                    vocabulary: &[],
                 };
                 let mut sink = Collect::default();
                 let started = Instant::now();

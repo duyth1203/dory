@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use dory_core::domain::{LangTag, Ms};
+use dory_core::domain::{Boost, LangTag, Ms, VocabularyTerm};
 use dory_core::models::{Availability, ModelId, Stt};
 use dory_core::ports::{CancelToken, EngineError, ModelProvider, ProvisionError, ProvisionSink};
 use sha2::{Digest, Sha256};
@@ -17,6 +17,7 @@ use super::Sherpa;
 use super::catalog::{self, Archive, Layout, Model};
 use super::engine::{Built, Recipe, detected_language, engine_code, recognizer_config, segments};
 use super::fetch::hex;
+use super::hotwords::{bpe_vocab_path, ensure_bpe_vocab, hotwords_string};
 
 const ROOT: &str = "tiny-int8";
 
@@ -70,6 +71,7 @@ fn model(archive: &[u8], sha256: &str) -> Model {
         languages: &[("en", "en")],
         window_secs: 30,
         sentence_times: false,
+        vocabulary: false,
         recommended: false,
         rank: 0,
         summary: "",
@@ -373,6 +375,7 @@ fn recipe(whisper_language: Option<&'static str>, threads: u8) -> Recipe {
         whisper_language,
         threads,
         sentence_times: false,
+        beam: false,
     }
 }
 
@@ -684,6 +687,10 @@ fn the_recognizer_is_rebuilt_only_when_threads_the_whisper_language_or_sentence_
         sentence_times: true,
         ..recipe(Some("vi"), 4)
     };
+    let beam = Recipe {
+        beam: true,
+        ..recipe(None, 4)
+    };
     let windows = [
         recipe(None, 4),
         recipe(None, 4),
@@ -694,6 +701,8 @@ fn the_recognizer_is_rebuilt_only_when_threads_the_whisper_language_or_sentence_
         recipe(Some("vi"), 4),
         timed,
         timed,
+        beam,
+        beam,
     ];
     for want in windows {
         let got: &mut Recipe = built
@@ -711,7 +720,8 @@ fn the_recognizer_is_rebuilt_only_when_threads_the_whisper_language_or_sentence_
             recipe(None, 2),
             recipe(Some("vi"), 2),
             recipe(Some("vi"), 4),
-            timed
+            timed,
+            beam
         ]
     );
 }
@@ -729,4 +739,126 @@ fn a_failed_build_leaves_nothing_built_and_the_next_window_tries_again() {
         .copied();
     assert_eq!(got, Ok(recipe(None, 4)));
     assert_eq!(tries, 1);
+}
+
+fn term(text: &str, boost: Boost) -> VocabularyTerm {
+    VocabularyTerm::new(text, boost)
+}
+
+#[test]
+fn hotwords_join_with_slashes_and_only_a_strong_term_carries_a_score() {
+    assert_eq!(hotwords_string(&[]), "");
+    assert_eq!(hotwords_string(&[term("Lina", Boost::Normal)]), "Lina");
+    assert_eq!(
+        hotwords_string(&[
+            term("Lina", Boost::Normal),
+            term("Priya", Boost::Strong),
+            term("Acme Corp", Boost::Normal),
+            term("Kubernetes", Boost::Strong),
+        ]),
+        "Lina/Priya :6/Acme Corp/Kubernetes :6"
+    );
+    assert_eq!(
+        hotwords_string(&[
+            term("bad\0name", Boost::Normal),
+            term("Lina", Boost::Normal)
+        ]),
+        "Lina"
+    );
+}
+
+#[test]
+fn beam_search_with_hotwords_configures_only_a_transducer_that_was_asked_for_it() {
+    let dir = PathBuf::from("/models/parakeet");
+    let beam = Recipe {
+        beam: true,
+        ..recipe(None, 4)
+    };
+    let config = recognizer_config(Layout::Parakeet, &dir, beam);
+    assert_eq!(
+        config.decoding_method.as_deref(),
+        Some("modified_beam_search")
+    );
+    assert_eq!(config.model_config.modeling_unit.as_deref(), Some("bpe"));
+    assert_eq!(
+        config.model_config.bpe_vocab.as_deref(),
+        Some("/models/parakeet.bpe.vocab"),
+        "beside the model directory, which provisioning replaces"
+    );
+    assert_eq!(config.hotwords_score, 2.0);
+
+    let greedy = recognizer_config(Layout::Parakeet, &dir, recipe(None, 4));
+    assert_eq!(greedy.decoding_method, None);
+    assert_eq!(greedy.model_config.modeling_unit, None);
+    assert_eq!(greedy.model_config.bpe_vocab, None);
+    assert_eq!(greedy.hotwords_score, 0.0);
+
+    let whisper = recognizer_config(Layout::WhisperTurbo, &dir, beam);
+    assert_eq!(whisper.decoding_method, None, "Whisper never beams");
+    assert_eq!(whisper.model_config.bpe_vocab, None);
+}
+
+#[test]
+fn only_parakeet_reports_vocabulary_support() {
+    let sherpa = Sherpa::new("/m", Sherpa::RELEASES);
+    for entry in sherpa.catalog() {
+        assert_eq!(
+            entry.caps.vocabulary,
+            entry.id.name().starts_with("parakeet"),
+            "{}",
+            entry.id
+        );
+    }
+}
+
+#[test]
+fn the_bpe_vocab_is_made_once_from_tokens_beside_the_model_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("parakeet");
+    fs::create_dir(&dir).unwrap();
+    fs::write(
+        dir.join("tokens.txt"),
+        "<unk> 0\n\u{2581}the 1\n\u{2581} 2\nab 3\n",
+    )
+    .unwrap();
+
+    let path = ensure_bpe_vocab(&dir).unwrap();
+    assert_eq!(path, bpe_vocab_path(&dir));
+    assert_eq!(path, root.path().join("parakeet.bpe.vocab"));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "<unk>\t-1.0\n\u{2581}the\t-1.0\n\u{2581}\t-1.0\nab\t-1.0\n"
+    );
+    let mut left: Vec<_> = fs::read_dir(root.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    left.sort();
+    assert_eq!(
+        left,
+        ["parakeet", "parakeet.bpe.vocab"],
+        "no temporary file is left"
+    );
+    assert_eq!(
+        fs::read_dir(&dir).unwrap().count(),
+        1,
+        "nothing is written inside the model"
+    );
+
+    fs::write(&path, "kept").unwrap();
+    ensure_bpe_vocab(&dir).unwrap();
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "kept",
+        "an existing file is not rewritten"
+    );
+}
+
+#[test]
+fn a_missing_tokens_file_is_an_error_and_leaves_no_vocab() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("parakeet");
+    fs::create_dir(&dir).unwrap();
+    assert!(ensure_bpe_vocab(&dir).is_err());
+    assert!(!bpe_vocab_path(&dir).exists());
 }

@@ -68,6 +68,7 @@ mod tests {
                 window: None,
                 sentence_times: false,
                 lead_in: Ms(0),
+                vocabulary: false,
             },
             recommended: false,
             rank: 0,

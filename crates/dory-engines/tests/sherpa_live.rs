@@ -72,6 +72,7 @@ fn installed_models_transcribe_a_wav() {
             threads: 4,
             sentence_times: false,
             locale: None,
+            vocabulary: &[],
         };
         match engine.transcribe(&request, &mut sink, &cancel) {
             Err(EngineError::UnsupportedLanguage(lang)) => {
@@ -136,6 +137,7 @@ fn whisper_reports_the_language_it_heard() {
         threads: 4,
         sentence_times: false,
         locale: None,
+        vocabulary: &[],
     };
     let outcome = engine.transcribe(&request, &mut sink, &cancel).unwrap();
     println!(

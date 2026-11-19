@@ -79,6 +79,8 @@ Sizes: 12 in rows and status, 14 in buttons and tabs, 16 default, 18–22 in tra
 | Transcription pane | `captions` |
 | Summaries pane | `file-text` |
 | Storage pane | `hard-drive` |
+| Assistants pane | `bot` |
+| Advanced pane | `sliders-horizontal` |
 | Battery (Light) | `battery-medium` |
 
 Replace every hand-drawn glyph in the app with this set in one pass, so the two styles never mix in a build. The canvas mockups still use the older hand-drawn glyphs except in Settings. They will be updated, but this table is the reference until then.

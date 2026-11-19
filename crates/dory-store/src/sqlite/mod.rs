@@ -12,7 +12,7 @@ mod search;
 
 pub use reader::SqliteReader;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -40,7 +40,8 @@ use codec::{
     choice_to_db, class_to_db, container_from_db, container_to_db, corrupt, done_from_db,
     done_to_db, error_from_db, goal_from_db, goal_to_db, language_from_db, language_to_db,
     layout_from_db, layout_to_db, ms_from_db, parse_model_ref, pref_from_setting, pref_to_setting,
-    range_from_db, stage_from_db, stage_to_db, tags_from_db, tags_to_db, to_i64,
+    range_from_db, stage_from_db, stage_to_db, tags_from_db, tags_to_db, term_from_db, term_to_db,
+    to_i64,
 };
 
 /// A migration step SQL cannot do, run after the version's SQL in the same transaction.
@@ -678,6 +679,27 @@ impl StoreRead for $t {
         })
     }
 
+    fn speaker_names_in_library(&self) -> Result<Vec<String>, StoreError> {
+        self.read(|conn| {
+            let all = conn
+                .prepare_cached(
+                    "SELECT n.name FROM speaker_names n JOIN recordings r ON r.id = n.recording_id
+                     ORDER BY r.created_at DESC, r.id ASC, n.speaker ASC",
+                )
+                .map_err(db)?
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(db)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db)?;
+            let mut seen = HashSet::new();
+            Ok(all
+                .into_iter()
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty() && seen.insert(name.clone()))
+                .collect())
+        })
+    }
+
     fn job(&self, id: JobId) -> Result<Option<Job>, StoreError> {
         self.read(|conn| load_job(conn, id))
     }
@@ -780,6 +802,29 @@ impl StoreRead for $t {
                     "auto" => Recovery::Auto,
                     other => return Err(corrupt(format!("switch_recovery is {other:?}"))),
                 };
+            }
+            if let Some(v) = rows.get("vocabulary") {
+                settings.vocabulary = v
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(term_from_db)
+                    .collect::<Result<_, _>>()?;
+            }
+            if let Some(v) = rows.get("vocabulary_from_speakers") {
+                settings.vocabulary_from_speakers = match v.as_str() {
+                    "1" => true,
+                    "0" => false,
+                    other => {
+                        return Err(corrupt(format!("vocabulary_from_speakers is {other:?}")));
+                    }
+                };
+            }
+            if let Some(v) = rows.get("vocabulary_hidden_names") {
+                settings.vocabulary_hidden_names = v
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect();
             }
             Ok(settings)
         })
@@ -1813,6 +1858,28 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                         Recovery::Auto => "auto",
                     }
                     .to_owned(),
+                ),
+                (
+                    "vocabulary",
+                    settings
+                        .vocabulary
+                        .iter()
+                        .map(term_to_db)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+                (
+                    "vocabulary_from_speakers",
+                    if settings.vocabulary_from_speakers {
+                        "1"
+                    } else {
+                        "0"
+                    }
+                    .to_owned(),
+                ),
+                (
+                    "vocabulary_hidden_names",
+                    settings.vocabulary_hidden_names.join("\n"),
                 ),
             ] {
                 put.execute(params![key, value]).map_err(db)?;

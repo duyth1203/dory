@@ -33,6 +33,9 @@ pub trait StoreRead: Send + Sync {
     fn summary(&self, id: &RecordingId) -> Result<Option<Summary>, StoreError>;
     /// Empty names for a recording that has none.
     fn speaker_names(&self, id: &RecordingId) -> Result<SpeakerNames, StoreError>;
+    /// The names the user gave speakers in any recording: trimmed, never empty, each once as
+    /// typed, ordered by the newest recording that uses it (ties by recording id).
+    fn speaker_names_in_library(&self) -> Result<Vec<String>, StoreError>;
     fn job(&self, id: JobId) -> Result<Option<Job>, StoreError>;
     fn jobs_for(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError>;
     /// The next Queued job with `not_before <= now`: Front priority first, then lowest `place`

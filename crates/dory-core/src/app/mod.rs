@@ -51,7 +51,7 @@ use crate::domain::{
     AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LangTag, LanguagePref,
     Pace, Priority, Processing, Recording, RecordingEdit, RecordingId, RecordingQuery,
     RecordingRow, Settings, SpeakerId, SpeakerNames, Summary, SummaryRefusal, SummaryTranslation,
-    TakeContainer, Transcript, Translation, Underway, Waveform,
+    TakeContainer, Transcript, Translation, Underway, VocabularyTerm, Waveform, speech_vocabulary,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -391,6 +391,15 @@ impl Dory {
 
     pub fn settings(&self) -> Result<Settings, StoreError> {
         self.db.store.settings()
+    }
+
+    /// What the speech engine is asked to favor: the user's terms, then speaker names from the
+    /// library, as [`speech_vocabulary`] decides.
+    pub fn speech_vocabulary(&self) -> Result<Vec<VocabularyTerm>, DoryError> {
+        Ok(speech_vocabulary(
+            &self.db.store.settings()?,
+            &self.db.store.speaker_names_in_library()?,
+        ))
     }
 
     /// Reads the settings, applies `edit`, validates, and saves, with no other edit in between.
@@ -1444,6 +1453,14 @@ impl LibraryReader {
 
     pub fn settings(&self) -> Result<Settings, StoreError> {
         self.store.settings()
+    }
+
+    /// What the speech engine is asked to favor, as [`Dory::speech_vocabulary`].
+    pub fn speech_vocabulary(&self) -> Result<Vec<VocabularyTerm>, StoreError> {
+        Ok(speech_vocabulary(
+            &self.store.settings()?,
+            &self.store.speaker_names_in_library()?,
+        ))
     }
 
     /// The speech models a re-transcribe of `id` in its language can use, probed now. Off the

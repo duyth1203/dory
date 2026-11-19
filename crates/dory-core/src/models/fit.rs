@@ -131,6 +131,8 @@ pub struct SttCaps {
     /// from before the clip, and keeps only the sentences centered inside the window, so
     /// checkpoints and resume stay per window. Zero sends each window alone.
     pub lead_in: Ms,
+    /// The engine favors the terms in `TranscribeRequest::vocabulary`.
+    pub vocabulary: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -384,6 +386,7 @@ mod tests {
             window: None,
             sentence_times: false,
             lead_in: Ms(0),
+            vocabulary: false,
         }
     }
 

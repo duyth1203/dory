@@ -1,4 +1,5 @@
-use super::{Goal, InvalidInput, LangTag, LanguagePref};
+use super::vocabulary::{validate_hidden_names, validate_terms};
+use super::{Goal, InvalidInput, LangTag, LanguagePref, VocabularyTerm};
 use crate::models::{Choice, Diar, Llm, Stt};
 
 /// What the user chose. A model is a [`Choice`], never a path, so a removed model degrades to
@@ -26,6 +27,13 @@ pub struct Settings {
     pub processing: Processing,
     /// Whether transcription decodes again the speech a window's first pass left without text.
     pub switch_recovery: Recovery,
+    /// Names and terms the speech engine should get right. See `speech_vocabulary` for what the
+    /// engine is actually given.
+    pub vocabulary: Vec<VocabularyTerm>,
+    /// Add the names the user gave speakers in any recording to what the engine favors.
+    pub vocabulary_from_speakers: bool,
+    /// Speaker names left out of that, for a rename that is no name or a name that hurts.
+    pub vocabulary_hidden_names: Vec<String>,
 }
 
 /// How hard processing may work (UX-30). Automatic follows the Mac's power, heat, and the
@@ -71,6 +79,9 @@ impl Default for Settings {
             auto_process: true,
             processing: Processing::Auto,
             switch_recovery: Recovery::default(),
+            vocabulary: Vec::new(),
+            vocabulary_from_speakers: true,
+            vocabulary_hidden_names: Vec::new(),
         }
     }
 }
@@ -96,7 +107,9 @@ impl Settings {
     pub fn validate(&self) -> Result<(), InvalidInput> {
         self.stt.validate()?;
         self.llm.validate()?;
-        self.diar.validate()
+        self.diar.validate()?;
+        validate_terms(&self.vocabulary)?;
+        validate_hidden_names(&self.vocabulary_hidden_names)
     }
 }
 
@@ -141,6 +154,25 @@ mod tests {
         };
         assert_eq!(chosen.chosen_meeting_languages(), english.as_slice());
         assert_eq!(Llm::listing_needs(&chosen).spoken, english);
+    }
+
+    #[test]
+    fn the_vocabulary_is_checked_with_the_rest_of_the_settings() {
+        use crate::domain::Boost;
+        let default = Settings::default();
+        assert!(default.vocabulary.is_empty());
+        assert!(default.vocabulary_from_speakers);
+        assert!(default.vocabulary_hidden_names.is_empty());
+        let bad_term = Settings {
+            vocabulary: vec![VocabularyTerm::new("AC/DC", Boost::Normal)],
+            ..Settings::default()
+        };
+        assert!(bad_term.validate().is_err());
+        let bad_hidden = Settings {
+            vocabulary_hidden_names: vec!["two\nlines".into()],
+            ..Settings::default()
+        };
+        assert!(bad_hidden.validate().is_err());
     }
 
     #[test]

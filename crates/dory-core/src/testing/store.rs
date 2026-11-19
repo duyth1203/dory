@@ -36,7 +36,7 @@
 //!   second save of the same run and span replaces the first. Clearing drops every run of one
 //!   recording, and so does deleting the recording. Saving for a missing recording is `NotFound`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::domain::{
@@ -449,6 +449,18 @@ impl StoreRead for MemStore {
             .unwrap_or_default())
     }
 
+    fn speaker_names_in_library(&self) -> Result<Vec<String>, StoreError> {
+        let state = self.state();
+        let mut seen = HashSet::new();
+        Ok(state
+            .newest_first()
+            .into_iter()
+            .flat_map(|e| e.names.names.values())
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty() && seen.insert(name.clone()))
+            .collect())
+    }
+
     fn job(&self, id: JobId) -> Result<Option<Job>, StoreError> {
         Ok(self.state().jobs.get(&id).cloned())
     }
@@ -644,6 +656,7 @@ mod contract {
         LanguagePref, Ms, Processing, Recovery, Revision, Segment, SpeakerId, Stage, TakeContainer,
         TakeInfo, TimeRange,
     };
+    use crate::domain::{Boost, VocabularyTerm};
     use crate::models::{Choice, KindTag, ModelRef};
     use crate::ports::{Checkpoint, CheckpointKey, RawSegment};
     use crate::ports::{TranslationBatch, TranslationKey};
@@ -675,6 +688,10 @@ mod contract {
         ),
         ("speaker_names_round_trip_and_default_empty", speaker_names),
         ("settings_round_trip", settings_round_trip),
+        (
+            "speaker_names_in_library_are_distinct_newest_recording_first",
+            speaker_names_in_library,
+        ),
         ("delete_cascades_and_is_idempotent", delete_cascades),
         (
             "list_is_newest_first_with_limit",
@@ -1304,6 +1321,47 @@ mod contract {
         assert_eq!(store.speaker_names(&id).unwrap(), SpeakerNames::default());
     }
 
+    fn name_speakers(store: &dyn Store, id: &str, names: &[(u16, &str)]) {
+        store
+            .apply(vec![Change::SpeakerNamesReplaced {
+                id: rid(id),
+                names: SpeakerNames {
+                    for_revision: Revision(1),
+                    names: names
+                        .iter()
+                        .map(|(speaker, name)| (SpeakerId(*speaker), (*name).to_owned()))
+                        .collect(),
+                },
+            }])
+            .unwrap();
+    }
+
+    fn speaker_names_in_library(store: &dyn Store) {
+        assert_eq!(
+            store.speaker_names_in_library().unwrap(),
+            Vec::<String>::new()
+        );
+        create(store, "old", 10);
+        create(store, "mid", 20);
+        create(store, "new", 30);
+        create(store, "bare", 40);
+        name_speakers(store, "old", &[(0, "Me"), (1, "Lina"), (2, "Omar")]);
+        name_speakers(store, "mid", &[(1, "  Priya "), (2, "Lina"), (3, "   ")]);
+        name_speakers(store, "new", &[(1, "lina"), (2, "Omar")]);
+        assert_eq!(
+            store.speaker_names_in_library().unwrap(),
+            ["lina", "Omar", "Priya", "Lina", "Me"],
+            "trimmed, no blanks, distinct as typed, ordered by the newest recording using each"
+        );
+        store
+            .apply(vec![Change::RecordingDeleted(rid("new"))])
+            .unwrap();
+        assert_eq!(
+            store.speaker_names_in_library().unwrap(),
+            ["Priya", "Lina", "Me", "Omar"]
+        );
+    }
+
     fn settings_round_trip(store: &dyn Store) {
         let pinned = Settings {
             stt: Choice::Pinned("sherpa/qwen3-asr-0.6b".parse().unwrap()),
@@ -1316,6 +1374,13 @@ mod contract {
             auto_process: false,
             processing: Processing::Light,
             switch_recovery: Recovery::Off,
+            vocabulary: vec![
+                VocabularyTerm::new("Priya", Boost::Strong),
+                VocabularyTerm::new("Đạt Nguyễn", Boost::Normal),
+                VocabularyTerm::new("kubectl", Boost::Normal),
+            ],
+            vocabulary_from_speakers: false,
+            vocabulary_hidden_names: vec!["Me".to_owned(), "Tổng đài".to_owned()],
         };
         let off = Settings {
             stt: Choice::Auto,
@@ -1328,13 +1393,20 @@ mod contract {
             auto_process: true,
             processing: Processing::Fast,
             switch_recovery: Recovery::On,
+            vocabulary: Vec::new(),
+            vocabulary_from_speakers: true,
+            vocabulary_hidden_names: Vec::new(),
         };
         let guessed = Settings {
             meeting_languages: vec![LangTag::parse("en").unwrap()],
             meeting_languages_guessed: true,
             ..Settings::default()
         };
-        for settings in [pinned, off, guessed, Settings::default()] {
+        let terms_only = Settings {
+            vocabulary: vec![VocabularyTerm::new("Lina", Boost::Normal)],
+            ..Settings::default()
+        };
+        for settings in [pinned, off, guessed, terms_only, Settings::default()] {
             store
                 .apply(vec![Change::SettingsReplaced(settings.clone())])
                 .unwrap();

@@ -68,6 +68,7 @@ fn request(clip: &Clip) -> TranscribeRequest<'_> {
         threads: 1,
         sentence_times: false,
         locale: None,
+        vocabulary: &[],
     }
 }
 

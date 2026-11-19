@@ -361,6 +361,26 @@ pub fn auto_line<K: ListKind>(rows: &[ModelRow<K>], settings: &Settings) -> Stri
     }
 }
 
+/// The speech model the settings' choice resolves to, even when it still waits on a download or
+/// a server, or `None` when no model resolves (Off, or nothing fits).
+pub fn resolved_speech<'a>(
+    rows: &'a [ModelRow<Stt>],
+    settings: &Settings,
+) -> Option<&'a ModelEntry<Stt>> {
+    let model = match chosen_pick(rows, settings) {
+        Resolution::Use(id) => id.erase(),
+        Resolution::Blocked(
+            Blocker::NeedsProvision { model, .. }
+            | Blocker::Unavailable { model, .. }
+            | Blocker::Incompatible { model, .. },
+        ) => model,
+        Resolution::Skip | Resolution::Blocked(Blocker::NoModel { .. }) => return None,
+    };
+    rows.iter()
+        .map(|r| &r.status.entry)
+        .find(|entry| entry.id.erase() == model)
+}
+
 /// The settings and both model lists, shared by every view in this module and the summaries
 /// sheet. One per app.
 pub struct Models {
@@ -373,6 +393,9 @@ pub struct Models {
     language_note: Option<SharedString>,
     checking: bool,
     generation: u64,
+    /// How many refreshes have finished, so a view that reads more than the cache can tell the
+    /// settings were saved and read back.
+    refreshed: u64,
     /// Listed models downloading at the last look, so the end of one triggers a refresh.
     downloading: HashSet<ModelRef>,
     /// `AppState`'s copy at the last look. It follows `SettingsChanged`, so a change made
@@ -435,6 +458,7 @@ impl Models {
             language_note: None,
             checking: false,
             generation: 0,
+            refreshed: 0,
             downloading: HashSet::new(),
             seen,
             _observe: observe,
@@ -467,6 +491,11 @@ impl Models {
         self.error.as_ref()
     }
 
+    /// How many refreshes have finished.
+    pub fn refreshes(&self) -> u64 {
+        self.refreshed
+    }
+
     /// True while a refresh probes the providers, for "Checking".
     pub fn is_checking(&self) -> bool {
         self.checking
@@ -492,6 +521,7 @@ impl Models {
                     return;
                 }
                 this.checking = false;
+                this.refreshed += 1;
                 let mut errors = Vec::new();
                 match settings {
                     Ok(settings) => this.settings = Some(settings),

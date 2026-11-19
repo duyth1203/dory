@@ -50,6 +50,8 @@ pub(super) struct Model {
     pub window_secs: u64,
     /// The model can time each sentence it returns.
     pub sentence_times: bool,
+    /// The model can favor terms the user lists. Needs a `Layout` whose recognizer takes hotwords.
+    pub vocabulary: bool,
     pub recommended: bool,
     pub rank: i16,
     pub summary: &'static str,
@@ -75,6 +77,7 @@ pub(super) fn models() -> Vec<Model> {
             // while giving the model whole conversational turns; word timestamps split it after.
             window_secs: 120,
             sentence_times: false,
+            vocabulary: true,
             recommended: true,
             rank: 30,
             summary: "NVIDIA's fast speech model for English and 24 other European languages.",
@@ -104,6 +107,7 @@ pub(super) fn models() -> Vec<Model> {
             // what passes 30 seconds, so a full 30-second window lost its last word.
             window_secs: 28,
             sentence_times: true,
+            vocabulary: false,
             recommended: false,
             rank: 10,
             summary: "OpenAI's Whisper, with the broadest language list at 100 languages.",

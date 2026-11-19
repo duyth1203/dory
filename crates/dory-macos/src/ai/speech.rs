@@ -159,6 +159,7 @@ fn entry(row: &Row) -> ModelEntry<Stt> {
             window: Some(WINDOW),
             sentence_times: false,
             lead_in: LEAD_IN,
+            vocabulary: false,
         },
         recommended: false,
         rank: RANK,

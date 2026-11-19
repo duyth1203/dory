@@ -14,6 +14,7 @@ use sherpa_onnx::{
 };
 
 use super::catalog::{Layout, Model};
+use super::hotwords::{NORMAL_SCORE, bpe_vocab_path, ensure_bpe_vocab, hotwords_string};
 
 /// A pause this long between words starts a new segment.
 const GAP_SECS: f32 = 1.0;
@@ -36,6 +37,12 @@ pub(super) fn recognizer_config(
             };
             model.tokens = path("tokens.txt");
             model.model_type = Some("nemo_transducer".into());
+            if recipe.beam {
+                model.modeling_unit = Some("bpe".into());
+                model.bpe_vocab = Some(bpe_vocab_path(dir).to_string_lossy().into_owned());
+                config.decoding_method = Some("modified_beam_search".into());
+                config.hotwords_score = NORMAL_SCORE;
+            }
         }
         Layout::WhisperTurbo => {
             model.whisper = OfflineWhisperModelConfig {
@@ -64,6 +71,9 @@ pub(super) struct Recipe {
     /// Whisper's segment timestamps. Token timestamps stay off, because the turbo export has no
     /// cross-attention outputs to compute them from.
     pub sentence_times: bool,
+    /// Beam search with hotwords, which only the transducer models take. Greedy search takes no
+    /// hotwords, so a request without any keeps the faster decoder.
+    pub beam: bool,
 }
 
 /// One built recognizer and its recipe. A request with another recipe drops it before building
@@ -116,6 +126,9 @@ pub(super) fn engine_code(model: &Model, wanted: &LangTag) -> Option<&'static st
 }
 
 fn load(model: &Model, dir: &Path, recipe: Recipe) -> Result<OfflineRecognizer, EngineError> {
+    if recipe.beam && model.layout == Layout::Parakeet {
+        ensure_bpe_vocab(dir)?;
+    }
     OfflineRecognizer::create(&recognizer_config(model.layout, dir, recipe)).ok_or_else(|| {
         EngineError::Other {
             message: format!("sherpa-onnx could not load {}", model.display_name),
@@ -156,14 +169,22 @@ impl Transcriber for SherpaEngine {
         let clip_len = Ms(wave.samples().len() as u64 * 1000 / rate as u64);
         sink.progress(Fraction::new(0.0));
 
+        let hotwords = hotwords_string(req.vocabulary);
         let recipe = Recipe {
             whisper_language: code.filter(|_| self.model.layout == Layout::WhisperTurbo),
             threads: req.threads.max(1),
             sentence_times: req.sentence_times && self.model.sentence_times,
+            beam: self.model.vocabulary
+                && self.model.layout == Layout::Parakeet
+                && !hotwords.is_empty(),
         };
         let mut built = self.built.lock().unwrap_or_else(PoisonError::into_inner);
         let recognizer = built.get(recipe, |r| load(&self.model, &self.dir, r))?;
-        let stream = recognizer.create_stream();
+        let stream = if recipe.beam {
+            recognizer.create_stream_with_hotwords(&hotwords)
+        } else {
+            recognizer.create_stream()
+        };
         stream.accept_waveform(rate, wave.samples());
         if cancel.is_cancelled() {
             return Err(EngineError::Cancelled);

@@ -33,6 +33,7 @@ if [ ${#views[@]} -eq 0 ]; then
   small=${VISUAL_SMALL:-1}
   views=(
     settings:general settings:recording settings:transcription settings:summaries settings:storage
+    settings:assistants settings:advanced
     settings:transcription:languages-open explainer about queue quit
     queue:running queue:light queue:blocked queue:finished queue:empty queue:busy
     summaries:U1 summaries:U2 summaries:U3

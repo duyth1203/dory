@@ -227,6 +227,7 @@ mod tests {
                             window: None,
                             sentence_times: false,
                             lead_in: Ms(0),
+                            vocabulary: false,
                         },
                         recommended: r.recommended,
                         rank: r.rank,

@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use dory_core::app::{Dory, Ports};
 use dory_core::domain::{
-    ChannelLayout, Goal, LangSet, LangTag, LanguagePref, Ms, Priority, Processing, Recording,
-    RecordingId, Recovery, Settings, Timestamp,
+    Boost, ChannelLayout, Goal, LangSet, LangTag, LanguagePref, Ms, Priority, Processing,
+    Recording, RecordingId, Recovery, Revision, Settings, SpeakerId, SpeakerNames, Timestamp,
+    VocabularyTerm,
 };
 use dory_core::models::{
     Availability, Choice, DiarizationSupport, LangSupport, Llm, ModelAbout, ModelEntry, ModelId,
@@ -54,6 +55,7 @@ fn speech(id: &str, name: &str, languages: &[&str], recommended: bool) -> ModelE
         tags: LangSet::Only(tags(languages)),
     };
     entry.recommended = recommended;
+    entry.caps.vocabulary = id == PARAKEET;
     entry.caps.window = Some(Ms(30_000));
     entry.disk_bytes = Some(1_036_613_791);
     entry.about = ModelAbout {
@@ -1972,4 +1974,239 @@ fn the_output_language_starts_as_same_as_spoken_and_saves_the_choice(cx: &mut Te
         label(window, "output-language-popup", cx).as_deref()
             == Some("Write transcripts and summaries in, Same as spoken")
     });
+}
+
+const ADVANCED: settings_window::Pane = settings_window::Pane::Advanced;
+
+/// Clicks the vocabulary field, types `text`, and presses Return.
+fn add_word(window: AnyWindowHandle, text: &str, cx: &mut TestAppContext) {
+    click(window, "vocabulary-field", cx);
+    cx.update_window(window, |_, window, cx| window.input(text, cx))
+        .unwrap();
+    press(window, "enter", cx);
+}
+
+fn words(rig: &Rig) -> Vec<(String, Boost)> {
+    settings(rig)
+        .vocabulary
+        .into_iter()
+        .map(|t| (t.text, t.boost))
+        .collect()
+}
+
+fn name_speakers(rig: &Rig, names: &[(u16, &str)]) {
+    rig.store
+        .apply(vec![Change::SpeakerNamesReplaced {
+            id: fixtures::SAMPLES[0].id(),
+            names: SpeakerNames {
+                for_revision: Revision(1),
+                names: names
+                    .iter()
+                    .map(|(speaker, name)| (SpeakerId(*speaker), (*name).to_owned()))
+                    .collect(),
+            },
+        }])
+        .unwrap();
+}
+
+#[gpui_kit::test]
+fn advanced_pane_explains_the_vocabulary_and_starts_empty(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, ADVANCED, cx);
+    until(cx, "the pane", |cx| has(window, "vocabulary-field", cx));
+    for (ix, line) in settings_window::advanced::ABOUT.iter().enumerate() {
+        assert_eq!(
+            label(window, &format!("vocabulary-about-{ix}"), cx).as_deref(),
+            Some(*line)
+        );
+    }
+    assert_eq!(
+        label(window, "vocabulary-empty", cx).as_deref(),
+        Some("No words yet.")
+    );
+    assert_eq!(
+        label(window, "settings-title", cx).as_deref(),
+        Some("Advanced")
+    );
+    assert!(
+        !has(window, "vocabulary-unused", cx),
+        "Auto picks Parakeet, which uses the list"
+    );
+    assert_eq!(
+        checked(window, "setting-vocabulary-speakers", cx),
+        Some(true)
+    );
+}
+
+#[gpui_kit::test]
+fn a_word_is_added_flipped_to_strong_and_removed(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, ADVANCED, cx);
+    until(cx, "the pane", |cx| has(window, "vocabulary-field", cx));
+
+    add_word(window, "  Priya ", cx);
+    until(cx, "Priya stored", |_| {
+        words(&rig) == [("Priya".to_owned(), Boost::Normal)]
+    });
+    until(cx, "Priya listed", |cx| {
+        has(window, "vocabulary-term-Priya", cx) && !has(window, "vocabulary-empty", cx)
+    });
+    assert_eq!(
+        label(window, "vocabulary-strong-Priya", cx).as_deref(),
+        Some("Strong for Priya")
+    );
+    assert_eq!(
+        label(window, "vocabulary-remove-Priya", cx).as_deref(),
+        Some("Remove Priya")
+    );
+    assert_eq!(checked(window, "vocabulary-strong-Priya", cx), Some(false));
+    assert_eq!(
+        value(window, "vocabulary-field", cx).unwrap_or_default(),
+        "",
+        "the field empties once the word is saved"
+    );
+
+    add_word(window, "priya", cx);
+    render(window, cx);
+    assert_eq!(
+        label(window, "vocabulary-said", cx).as_deref(),
+        Some("Priya is already in the list.")
+    );
+    assert_eq!(
+        words(&rig).len(),
+        1,
+        "a word that reads the same is not added twice"
+    );
+
+    click(window, "vocabulary-strong-Priya", cx);
+    until(cx, "Strong stored", |_| {
+        words(&rig) == [("Priya".to_owned(), Boost::Strong)]
+    });
+    until(cx, "Strong shown", |cx| {
+        checked(window, "vocabulary-strong-Priya", cx) == Some(true)
+    });
+    click(window, "vocabulary-strong-Priya", cx);
+    until(cx, "Normal stored", |_| {
+        words(&rig) == [("Priya".to_owned(), Boost::Normal)]
+    });
+
+    click(window, "vocabulary-remove-Priya", cx);
+    until(cx, "Priya removed", |_| words(&rig).is_empty());
+    until(cx, "the empty line", |cx| {
+        has(window, "vocabulary-empty", cx)
+    });
+}
+
+#[gpui_kit::test]
+fn a_rejected_word_shows_why_and_keeps_its_text(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, ADVANCED, cx);
+    until(cx, "the pane", |cx| has(window, "vocabulary-field", cx));
+
+    add_word(window, "AC/DC", cx);
+    until(cx, "the message", |cx| has(window, "vocabulary-said", cx));
+    let said = label(window, "vocabulary-said", cx).unwrap();
+    assert!(
+        said.contains("AC/DC") && said.contains("separators"),
+        "{said}"
+    );
+    assert!(words(&rig).is_empty(), "nothing is stored");
+    assert_eq!(
+        value(window, "vocabulary-field", cx).as_deref(),
+        Some("AC/DC"),
+        "the text stays to be fixed"
+    );
+    assert!(has(window, "vocabulary-empty", cx));
+}
+
+#[gpui_kit::test]
+fn the_speakers_switch_turns_names_off_and_on(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, ADVANCED, cx);
+    until(cx, "the pane", |cx| {
+        has(window, "setting-vocabulary-speakers", cx)
+    });
+    assert!(settings(&rig).vocabulary_from_speakers);
+    click(window, "setting-vocabulary-speakers", cx);
+    until(cx, "the switch saved", |_| {
+        !settings(&rig).vocabulary_from_speakers
+    });
+    until(cx, "the off line", |cx| {
+        has(window, "vocabulary-names-off", cx)
+    });
+    assert_eq!(
+        checked(window, "setting-vocabulary-speakers", cx),
+        Some(false)
+    );
+    click(window, "setting-vocabulary-speakers", cx);
+    until(cx, "the switch back on", |_| {
+        settings(&rig).vocabulary_from_speakers
+    });
+    until(cx, "the names", |cx| {
+        !has(window, "vocabulary-names-off", cx)
+    });
+}
+
+#[gpui_kit::test]
+fn a_renamed_speaker_is_listed_hidden_and_shown_again(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    name_speakers(&rig, &[(1, "Lena Ortiz")]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, ADVANCED, cx);
+    until(cx, "the name", |cx| {
+        has(window, "vocabulary-name-Lena Ortiz", cx)
+    });
+    assert_eq!(
+        label(window, "vocabulary-hide-Lena Ortiz", cx).as_deref(),
+        Some("Hide Lena Ortiz")
+    );
+
+    click(window, "vocabulary-hide-Lena Ortiz", cx);
+    until(cx, "the name hidden", |_| {
+        settings(&rig).vocabulary_hidden_names == ["Lena Ortiz"]
+    });
+    until(cx, "the Show button", |cx| {
+        has(window, "vocabulary-show-Lena Ortiz", cx)
+            && !has(window, "vocabulary-hide-Lena Ortiz", cx)
+    });
+    assert_eq!(
+        label(window, "vocabulary-show-Lena Ortiz", cx).as_deref(),
+        Some("Show Lena Ortiz")
+    );
+    assert_eq!(
+        rig.store.settings().unwrap().vocabulary,
+        Vec::<VocabularyTerm>::new(),
+        "hiding a name adds no term"
+    );
+
+    click(window, "vocabulary-show-Lena Ortiz", cx);
+    until(cx, "the name shown", |_| {
+        settings(&rig).vocabulary_hidden_names.is_empty()
+    });
+    until(cx, "the Hide button again", |cx| {
+        has(window, "vocabulary-hide-Lena Ortiz", cx)
+            && !has(window, "vocabulary-show-Lena Ortiz", cx)
+    });
+}
+
+#[gpui_kit::test]
+fn the_pane_says_when_the_speech_model_ignores_the_list(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, ADVANCED, cx);
+    until(cx, "the pane", |cx| has(window, "vocabulary-field", cx));
+    app.update(cx, |app, cx| {
+        let whisper: ModelId<Stt> = WHISPER.parse().unwrap();
+        app.edit_settings(move |s| s.stt = Choice::Pinned(whisper.clone()), cx)
+            .detach();
+    });
+    until(cx, "the note", |cx| has(window, "vocabulary-unused", cx));
+    assert_eq!(
+        label(window, "vocabulary-unused", cx).as_deref(),
+        Some("Your speech model, Whisper, does not use this list. Parakeet does.")
+    );
 }

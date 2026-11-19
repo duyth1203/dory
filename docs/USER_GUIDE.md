@@ -54,6 +54,20 @@ Open Settings with Command-Comma.
 - **Transcription.** Pick the speech model, the meeting languages, the language mode, the pace, and whether to process automatically. Each model has an info button that says what it is good at and what to watch for. **Add model file** lets you use your own model.
 - **Summaries.** Pick the summary model.
 - **Storage.** Shows the data folder and its size, with Show in Finder.
+- **Assistants.** Lets an assistant such as Claude Code, Claude Desktop, Cursor, or Codex read your meetings. Each assistant gets its own key and reads only the level you choose: titles, summaries, or full transcripts. The pane also lists the connected assistants and what they read last.
+- **Advanced.** Holds the speech vocabulary, described below.
+
+### Speech vocabulary
+
+Dory sometimes mishears a name or a product, such as "Lena" for "Lina". Add the word under **Settings > Advanced > Speech vocabulary** and Dory listens harder for it when it transcribes. Type the word, then press Return or choose **Add**. A word cannot contain a slash or a colon. **Remove** takes it out again.
+
+Each word is **Normal** or **Strong**. Normal favors the word gently, and it fixes most names. Switch a word to **Strong** when Normal does not fix it. Strong pushes much harder, but it can turn words that sound alike into your word, so use it only for a word that needs it.
+
+When you rename a speaker in any recording, Dory adds that name to the vocabulary too, up to the 100 newest. The names appear under the switch **Add names you give speakers**. Choose **Hide** next to a name Dory should not use, such as a name you typed by mistake, and **Show** brings it back. Turn the switch off to stop adding names.
+
+Changes apply to recordings transcribed from now on. To use them on an older recording, re-transcribe it. Transcribing takes a little longer while the list has words in it. The vocabulary only changes the words in the transcript, and the summary is written from those words.
+
+Only some speech models use the vocabulary. When yours does not, the pane says so and names a model that does. You can pick another model in **Settings > Transcription**.
 
 ## Keyboard shortcuts
 

@@ -316,6 +316,7 @@ mod tests {
             window: CAP,
             sentence_times,
             lead_in: Ms(0),
+            vocabulary: false,
         }
     }
 

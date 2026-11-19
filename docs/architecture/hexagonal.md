@@ -84,6 +84,7 @@ pub trait StoreRead: Send + Sync {
     fn vocabulary(&self) -> Result<Arc<Vocabulary>, StoreError>;                            // every indexed word, for typo correction
     fn assistant_recordings(&self, query: &AssistantQuery) -> Result<Vec<Found>, StoreError>; // search inside a grant's fields, never a hidden recording
     fn assistant_vocabulary(&self, fields: Fields) -> Result<Vocabulary, StoreError>;      // the words that search can find
+    fn speaker_names_in_library(&self) -> Result<Vec<String>, StoreError>;                  // every name the user gave a speaker, newest recording first, for the speech vocabulary
     // recording, transcript, summary, speaker_names, jobs, settings, checkpoints
 }
 pub trait Store: StoreRead + Send + Sync { fn apply(&self, changes: Vec<Change>) -> Result<(), StoreError>; }
@@ -206,6 +207,12 @@ The queue is the store. The worker takes `next_runnable_job(now)`, publishes the
 The worker evaluates the budget at the start of the transcribe stage and before each speech window that runs the engine, rereading the setting each time, and publishes `StageProgress` with the `Budget`, so a change shows within one window. `threads` goes in `TranscribeRequest` per window. Sherpa builds its recognizer on the first window and rebuilds it when `threads` or the Whisper language changes; the 2-minute hold bounds those rebuilds. `Options::processing` (the CLI's `--pace`) overrides the setting for a bench.
 
 Light is a thread cap at normal priority, not a QoS class. P6b measured both on macOS 26: threads onnxruntime creates do not inherit a background QoS set on the worker, so a background worker made the engine wait on one efficiency-core share of every operation. On the 132-minute take that ran at 8.7 times Fast's time, against 1.7 times for 2 threads at default QoS on a 6-minute clip. Summaries are not paced: Ollama 0.40.16 with the MLX runner ignores `num_thread`, and Gemma works mostly on the GPU, so `CompletionRequest` carries no thread count and a summary pass reports no light reason.
+
+## Speech vocabulary
+
+`Settings` holds names and terms the user wants the speech model to get right (`vocabulary: Vec<VocabularyTerm { text, boost: Normal | Strong }>`), whether the names the user gave speakers are added to them (`vocabulary_from_speakers`, on by default), and speaker names to leave out (`vocabulary_hidden_names`). The core knows only terms and `Boost`. The pure `speech_vocabulary(settings, speaker_names)` lists the user's terms, then speaker names from `StoreRead::speaker_names_in_library` (newest recording first, at most 100), dropping hidden names and any name whose folded words equal a term or an earlier name. `Settings::validate` refuses a term with `/` or `:`, which are separators in the engines' hotword format.
+
+The transcribe stage computes the list once per run and puts it in every `TranscribeRequest::vocabulary`, the first pass, a settle redo, and a recovery decode alike. It sends an empty list to an engine whose `SttCaps::vocabulary` is false. What a term means is the engine's business. Sherpa turns it on for Parakeet only: with a vocabulary it builds the recognizer with `modified_beam_search`, BPE modeling, and a `bpe.vocab` it makes from `tokens.txt` and keeps beside the model directory (provisioning replaces that directory wholesale), and gives each stream `Lina/Priya :6` hotwords, where a `Strong` term takes the per-phrase score 6 and a `Normal` one the recognizer's 2.0. Without a vocabulary it keeps greedy search. A checkpoint is keyed by model, channel, and language, not vocabulary, so a run that resumes after a vocabulary edit keeps the windows it already decoded.
 
 ## Threads
 

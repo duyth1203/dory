@@ -1,6 +1,6 @@
 //! The Settings window (UX-19, UX-20) in the System Settings layout of
 //! `docs/design/settings-icons-blur.md` section 1: a sidebar panel with a search field and the
-//! five panes, then a 52 pt toolbar with the pane's title over one scrolling content area. The
+//! panes, then a 52 pt toolbar with the pane's title over one scrolling content area. The
 //! window is 860 wide, fixed, and at least 560 tall. It reopens on the pane it showed last.
 //!
 //! - General: process recordings automatically, each kind of notification (UX-14), and the
@@ -19,9 +19,13 @@
 //! - Assistants: whether assistants may read the library; an Assistant app popup (Claude Code,
 //!   Claude Desktop, Cursor, Codex) and Copy Setup, which creates that app's key and copies its
 //!   setup; the connected assistants; and their latest reads.
+//! - Advanced: Speech vocabulary (`advanced`): the words and names the speech model listens
+//!   harder for, each Normal or Strong, and the names added from renamed speakers with Hide.
 //!
 //! Content has exactly one scroll area (UX-31). The combobox's list is the only inner one, and it
 //! sits in a popover, not in the page.
+
+pub mod advanced;
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -75,16 +79,18 @@ pub enum Pane {
     Summaries,
     Storage,
     Assistants,
+    Advanced,
 }
 
 impl Pane {
-    pub const ALL: [Pane; 6] = [
+    pub const ALL: [Pane; 7] = [
         Pane::General,
         Pane::Recording,
         Pane::Transcription,
         Pane::Summaries,
         Pane::Storage,
         Pane::Assistants,
+        Pane::Advanced,
     ];
 
     pub fn title(self) -> &'static str {
@@ -95,6 +101,7 @@ impl Pane {
             Pane::Summaries => "Summaries",
             Pane::Storage => "Storage",
             Pane::Assistants => "Assistants",
+            Pane::Advanced => "Advanced",
         }
     }
 
@@ -106,6 +113,7 @@ impl Pane {
             Pane::Summaries => "summaries",
             Pane::Storage => "storage",
             Pane::Assistants => "assistants",
+            Pane::Advanced => "advanced",
         }
     }
 
@@ -126,6 +134,7 @@ impl Pane {
             Pane::Summaries => Icon::FileText,
             Pane::Storage => Icon::HardDrive,
             Pane::Assistants => Icon::Bot,
+            Pane::Advanced => Icon::SlidersHorizontal,
         }
     }
 }
@@ -203,6 +212,29 @@ pub const ENTRIES: &[Entry] = &[
         Pane::Assistants,
         "Assistant activity",
         "row-assistants-activity",
+    ),
+    entry(Pane::Advanced, "Speech vocabulary", "row-vocabulary"),
+    entry(Pane::Advanced, "Hotwords", "row-vocabulary"),
+    entry(Pane::Advanced, "Add a word or name", "row-vocabulary-add"),
+    entry(
+        Pane::Advanced,
+        "Strong boost for a word",
+        "row-vocabulary-words",
+    ),
+    entry(
+        Pane::Advanced,
+        advanced::SPEAKERS_LABEL,
+        "row-vocabulary-speakers",
+    ),
+    entry(
+        Pane::Advanced,
+        "Names added from speakers",
+        "row-vocabulary-names",
+    ),
+    entry(
+        Pane::Advanced,
+        "Hide a speaker name",
+        "row-vocabulary-names",
     ),
 ];
 
@@ -360,6 +392,14 @@ pub struct SettingsWindow {
     assistant_edits: bool,
     assistant_target: Target,
     copy_focus: Vec<FocusHandle>,
+    /// Settings > Advanced: the field for a new word, what was said about the last one, and the
+    /// names the core adds from speakers. `names_read_at` is the [`Models::refreshes`] count the
+    /// names were read at, so they are read again once a save is read back.
+    vocab_field: Entity<InputState>,
+    vocab_said: Option<advanced::Said>,
+    speaker_names: Option<Result<Vec<String>, String>>,
+    names_read_at: u64,
+    names_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -367,7 +407,12 @@ impl SettingsWindow {
     fn new(app: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let models = models_view::install(&app, cx);
         models.update(cx, |m, cx| m.refresh(cx));
-        let observe = cx.observe(&models, |_, _, cx| cx.notify());
+        let observe = cx.observe(&models, |this, models, cx| {
+            if this.pane == Pane::Advanced && models.read(cx).refreshes() != this.names_read_at {
+                this.read_speaker_names(cx);
+            }
+            cx.notify();
+        });
         let devices = app.read(cx).input_devices(cx);
         cx.spawn(async move |this, cx| {
             let devices = devices.await;
@@ -391,6 +436,18 @@ impl SettingsWindow {
                 window.resize(size(px(WIDTH), now.height));
             }
         });
+        let vocab_field =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Add a word or name"));
+        a11y::register_text_field(&vocab_field, cx);
+        let on_add = cx.subscribe_in(
+            &vocab_field,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. }) {
+                    this.add_term(window, cx);
+                }
+            },
+        );
         let pane = app.read(cx).prefs.settings_pane;
         notify::refresh_access(cx);
         // Coming back from System Settings is when notifications may have been turned on.
@@ -403,7 +460,7 @@ impl SettingsWindow {
         // Command-F would not reach the search field until something was clicked.
         let root = cx.focus_handle();
         window.focus(&root, cx);
-        Self {
+        let mut this = Self {
             speech: cx.new(|cx| ModelList::new(models.clone(), cx)),
             summaries: cx.new(|cx| ModelList::new(models.clone(), cx)),
             languages: cx.new(|cx| LanguageCombobox::new(models.clone(), window, cx)),
@@ -426,8 +483,17 @@ impl SettingsWindow {
             assistant_exposure: None,
             assistant_edits: false,
             assistant_target: Target::default(),
-            _subscriptions: vec![observe, on_type, width, on_activation],
+            vocab_field,
+            vocab_said: None,
+            speaker_names: None,
+            names_read_at: 0,
+            names_generation: 0,
+            _subscriptions: vec![observe, on_type, on_add, width, on_activation],
+        };
+        if pane == Pane::Advanced {
+            this.read_speaker_names(cx);
         }
+        this
     }
 
     pub fn pane(&self) -> Pane {
@@ -478,6 +544,10 @@ impl SettingsWindow {
         }
         if self.pane != pane {
             self.scroll.set_offset(point(px(0.), px(0.)));
+        }
+        if pane == Pane::Advanced && self.pane != pane {
+            self.pane = pane;
+            self.read_speaker_names(cx);
         }
         self.pane = pane;
         self.app.update(cx, |app, cx| {
@@ -2094,6 +2164,7 @@ impl Render for SettingsWindow {
             Pane::Summaries => self.summaries(&theme, cx),
             Pane::Storage => self.storage(&theme, cx),
             Pane::Assistants => self.assistants(&theme, window, cx),
+            Pane::Advanced => self.advanced(&theme, window, cx),
         };
         if let Some(place) = self.jump.clone() {
             match place.get() {
@@ -2229,6 +2300,17 @@ mod tests {
         assert!(hits.is_empty());
         assert_eq!(search("").0, Pane::ALL);
         assert_eq!(search("zzz"), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn search_finds_the_speech_vocabulary_by_any_of_its_words() {
+        for query in ["vocabulary", "hotwords", "names", "Strong", "add a word"] {
+            let (panes, hits) = search(query);
+            assert_eq!(panes, [Pane::Advanced], "{query}");
+            assert!(hits.iter().all(|h| h.pane == Pane::Advanced), "{query}");
+            assert!(!hits.is_empty(), "{query}");
+        }
+        assert_eq!(search("advanced").0, [Pane::Advanced]);
     }
 
     #[test]

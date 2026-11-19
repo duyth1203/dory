@@ -17,7 +17,7 @@ use super::pace::Budget;
 use crate::domain::{
     Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Fraction, Job, JobError, LangTag,
     LanguagePref, Ms, Recording, Revision, Segment, Settings, SpeakerId, Stage, Summary,
-    SummaryTranslation, TimeRange, Transcript, Translation,
+    SummaryTranslation, TimeRange, Transcript, Translation, VocabularyTerm, speech_vocabulary,
 };
 use crate::models::{
     Choice, Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, LangSupport, Llm,
@@ -167,6 +167,8 @@ struct WindowCx<'a> {
     meeting: &'a [LangTag],
     /// `SttCaps::lead_in`.
     lead_in: Ms,
+    /// Empty for an engine whose caps say no vocabulary.
+    vocabulary: &'a [VocabularyTerm],
 }
 
 /// What a speech model must do for `recording`, whose audio runs `input` long. The transcribe
@@ -241,6 +243,14 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         .ok_or_else(|| permanent("the speech model left the catalog"))?;
     let native = caps.diarization == DiarizationSupport::Native;
     let language = run_language(&caps, &needs);
+    let vocabulary = if caps.vocabulary {
+        speech_vocabulary(
+            cx.settings,
+            &store.speaker_names_in_library().map_err(failed)?,
+        )
+    } else {
+        Vec::new()
+    };
     let diar_id = if any_diarized && !native {
         settle(
             cx.models
@@ -304,6 +314,7 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         ),
         meeting: &cx.settings.meeting_languages,
         lead_in: caps.lead_in,
+        vocabulary: &vocabulary,
     };
     let total = runs
         .iter()
@@ -538,6 +549,7 @@ fn decode(
         threads,
         sentence_times: wx.recover,
         locale: locale.cloned(),
+        vocabulary: wx.vocabulary,
     };
     let outcome = wx
         .stt

@@ -40,6 +40,12 @@ const USAGE: &str = "usage:
   dory-cli languages [TAG...|--clear]
   dory-cli switch-recovery [on|off|auto]
   dory-cli output-language [TAG|same]
+  dory-cli vocabulary
+  dory-cli vocabulary add TERM... [--strong]
+  dory-cli vocabulary remove TERM...
+  dory-cli vocabulary speakers on|off
+  dory-cli vocabulary hide NAME...
+  dory-cli vocabulary show NAME...
   dory-cli assistants on|off|list
   dory-cli assistants add NAME --exposure titles|summaries|transcripts [--edits never|ask]
   dory-cli assistants exposure NAME titles|summaries|transcripts
@@ -91,6 +97,8 @@ fn main() -> ExitCode {
                 .and_then(|a| config().and_then(|c| settings::switch_recovery(&c, &a))),
             Some("output-language") => args::OutputLanguageArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| settings::output_language(&c, &a))),
+            Some("vocabulary") => args::VocabularyArgs::parse(rest)
+                .and_then(|a| config().and_then(|c| settings::vocabulary(&c, &a))),
             Some("record") => args::RecordArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| record::run(&c, &a))),
             Some("play") => {

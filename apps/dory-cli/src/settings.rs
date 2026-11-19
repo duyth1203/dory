@@ -1,18 +1,18 @@
 //! The commands that write outside recording and processing: `add`, `models choose`,
-//! `models provision`, `languages`, `switch-recovery`, and `output-language`. Each opens Dory with
-//! the data folder locked.
+//! `models provision`, `languages`, `switch-recovery`, `output-language`, and `vocabulary`. Each
+//! opens Dory with the data folder locked, except `vocabulary` with no edit, which only reads.
 
 use dory::Config;
 use dory_core::app::{AppKind, Event};
-use dory_core::domain::Recovery;
+use dory_core::domain::{Boost, Recovery, Settings, VocabularyTerm, folded_words};
 use dory_core::models::{Choice, Diar, Llm, ModelId, Stt};
 
 use crate::args::{
     AddArgs, ChooseArgs, KindArg, LanguagesArgs, OutputLanguageArgs, ProvisionArgs,
-    SwitchRecoveryArgs,
+    SwitchRecoveryArgs, VocabularyArgs,
 };
-use crate::open;
 use crate::wait::block_on;
+use crate::{open, open_library};
 
 pub fn choose(config: &Config, args: &ChooseArgs) -> Result<(), String> {
     let dory = open(config, args.fake_engines)?;
@@ -135,6 +135,103 @@ pub fn output_language(config: &Config, args: &OutputLanguageArgs) -> Result<(),
     Ok(())
 }
 
+pub fn vocabulary(config: &Config, args: &VocabularyArgs) -> Result<(), String> {
+    if *args == VocabularyArgs::Show {
+        let library = open_library(config, false)?;
+        let settings = library.settings().map_err(crate::chain)?;
+        let merged = library.speech_vocabulary().map_err(crate::chain)?;
+        print!("{}", describe_vocabulary(&settings, &merged));
+        return Ok(());
+    }
+    let dory = open(config, false)?;
+    let mut outcome = Ok(());
+    dory.update_settings(|s| outcome = edit_vocabulary(s, args))
+        .map_err(crate::chain)?;
+    outcome?;
+    let settings = dory.settings().map_err(crate::chain)?;
+    let merged = dory.speech_vocabulary().map_err(crate::chain)?;
+    print!("{}", describe_vocabulary(&settings, &merged));
+    Ok(())
+}
+
+/// Applies one edit. A failure leaves `settings` as it was.
+fn edit_vocabulary(settings: &mut Settings, args: &VocabularyArgs) -> Result<(), String> {
+    let same = |a: &str, b: &str| folded_words(a) == folded_words(b);
+    match args {
+        VocabularyArgs::Show => {}
+        VocabularyArgs::Add { text, strong } => {
+            let boost = if *strong {
+                Boost::Strong
+            } else {
+                Boost::Normal
+            };
+            match settings.vocabulary.iter_mut().find(|t| same(&t.text, text)) {
+                Some(term) => term.boost = boost,
+                None => settings
+                    .vocabulary
+                    .push(VocabularyTerm::new(text.clone(), boost)),
+            }
+        }
+        VocabularyArgs::Remove { text } => {
+            let before = settings.vocabulary.len();
+            settings.vocabulary.retain(|t| !same(&t.text, text));
+            if settings.vocabulary.len() == before {
+                return Err(format!("{text:?} is not in the vocabulary"));
+            }
+        }
+        VocabularyArgs::Speakers(on) => settings.vocabulary_from_speakers = *on,
+        VocabularyArgs::Hide { name } => {
+            if !settings
+                .vocabulary_hidden_names
+                .iter()
+                .any(|n| same(n, name))
+            {
+                settings.vocabulary_hidden_names.push(name.clone());
+            }
+        }
+        VocabularyArgs::Unhide { name } => {
+            settings.vocabulary_hidden_names.retain(|n| !same(n, name));
+        }
+    }
+    Ok(())
+}
+
+/// `merged` is `speech_vocabulary`: the user's terms, then the names speakers add.
+fn describe_vocabulary(settings: &Settings, merged: &[VocabularyTerm]) -> String {
+    let mut out = String::new();
+    if settings.vocabulary.is_empty() {
+        out.push_str("terms: none\n");
+    } else {
+        out.push_str("terms:\n");
+        for term in &settings.vocabulary {
+            let strong = if term.boost == Boost::Strong {
+                " (strong)"
+            } else {
+                ""
+            };
+            out.push_str(&format!("  {}{strong}\n", term.text));
+        }
+    }
+    let on = if settings.vocabulary_from_speakers {
+        "on"
+    } else {
+        "off"
+    };
+    out.push_str(&format!("From speaker names: {on}\n"));
+    for name in merged.iter().skip(settings.vocabulary.len()) {
+        out.push_str(&format!("  {}\n", name.text));
+    }
+    if settings.vocabulary_hidden_names.is_empty() {
+        out.push_str("hidden names: none\n");
+    } else {
+        out.push_str("hidden names:\n");
+        for name in &settings.vocabulary_hidden_names {
+            out.push_str(&format!("  {name}\n"));
+        }
+    }
+    out
+}
+
 pub fn add(config: &Config, args: &AddArgs) -> Result<(), String> {
     let dory = open(config, false)?;
     let id = dory
@@ -143,4 +240,94 @@ pub fn add(config: &Config, args: &AddArgs) -> Result<(), String> {
         .map_err(crate::chain)?;
     println!("added {id}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn add(text: &str, strong: bool) -> VocabularyArgs {
+        VocabularyArgs::Add {
+            text: text.into(),
+            strong,
+        }
+    }
+
+    #[test]
+    fn adding_an_existing_term_updates_its_boost_and_keeps_its_spelling() {
+        let mut s = Settings::default();
+        edit_vocabulary(&mut s, &add("Priya", false)).unwrap();
+        edit_vocabulary(&mut s, &add("Acme Corp", false)).unwrap();
+        edit_vocabulary(&mut s, &add("priya", true)).unwrap();
+        assert_eq!(
+            s.vocabulary,
+            [
+                VocabularyTerm::new("Priya", Boost::Strong),
+                VocabularyTerm::new("Acme Corp", Boost::Normal)
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_matches_folded_words_and_a_missing_term_is_an_error() {
+        let mut s = Settings::default();
+        edit_vocabulary(&mut s, &add("Zoë Ng", false)).unwrap();
+        assert!(
+            edit_vocabulary(
+                &mut s,
+                &VocabularyArgs::Remove {
+                    text: "Lina".into()
+                }
+            )
+            .is_err()
+        );
+        edit_vocabulary(
+            &mut s,
+            &VocabularyArgs::Remove {
+                text: "zoe  ng".into(),
+            },
+        )
+        .unwrap();
+        assert!(s.vocabulary.is_empty());
+    }
+
+    #[test]
+    fn hide_and_show_edit_the_hidden_names_once_each() {
+        let mut s = Settings::default();
+        let hide = |name: &str| VocabularyArgs::Hide { name: name.into() };
+        edit_vocabulary(&mut s, &hide("Me")).unwrap();
+        edit_vocabulary(&mut s, &hide("me")).unwrap();
+        edit_vocabulary(&mut s, &hide("Omar")).unwrap();
+        assert_eq!(s.vocabulary_hidden_names, ["Me", "Omar"]);
+        edit_vocabulary(&mut s, &VocabularyArgs::Unhide { name: "ME".into() }).unwrap();
+        assert_eq!(s.vocabulary_hidden_names, ["Omar"]);
+        edit_vocabulary(&mut s, &VocabularyArgs::Speakers(false)).unwrap();
+        assert!(!s.vocabulary_from_speakers);
+    }
+
+    #[test]
+    fn the_listing_shows_terms_strength_the_speaker_toggle_added_names_and_hidden_names() {
+        let s = Settings {
+            vocabulary: vec![
+                VocabularyTerm::new("Priya", Boost::Strong),
+                VocabularyTerm::new("Lina", Boost::Normal),
+            ],
+            vocabulary_hidden_names: vec!["Me".into()],
+            ..Settings::default()
+        };
+        let merged =
+            dory_core::domain::speech_vocabulary(&s, &["Omar".to_owned(), "Me".to_owned()]);
+        assert_eq!(
+            describe_vocabulary(&s, &merged),
+            "terms:\n  Priya (strong)\n  Lina\nFrom speaker names: on\n  Omar\nhidden names:\n  Me\n"
+        );
+        let bare = Settings {
+            vocabulary_from_speakers: false,
+            ..Settings::default()
+        };
+        assert_eq!(
+            describe_vocabulary(&bare, &[]),
+            "terms: none\nFrom speaker names: off\nhidden names: none\n"
+        );
+    }
 }

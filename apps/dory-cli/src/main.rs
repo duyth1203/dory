@@ -5,6 +5,7 @@
 mod args;
 mod assistants;
 mod delete;
+mod eval;
 mod library;
 mod play;
 mod process;
@@ -30,6 +31,8 @@ const USAGE: &str = "usage:
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
   dory-cli process ID [--stt MODEL_ID] [--pace fast|light] [--fake-engines]
   dory-cli process ID --summary [--llm MODEL_ID] [--fake-engines]
+  dory-cli eval CASES_DIR [--stt MODEL_ID] [--llm MODEL_ID] [--summary-only] [--label TEXT]
+    [--tsv FILE] [--fake-engines]
   dory-cli play ID [--seek SECONDS]
   dory-cli models [--about] [--fake-engines]
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID [--fake-engines]
@@ -49,7 +52,8 @@ const USAGE: &str = "usage:
   dory-cli translate-summary ID TAG [--llm MODEL_ID] [--fake-engines]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
-The --fake-* flags and seed write fake audio or fake recordings, so they need $DORY_DATA_DIR set.
+The --fake-* flags and seed write fake audio or fake recordings, and eval imports its audio, so
+they need $DORY_DATA_DIR set.
 $DORY_MACHINE=battery,low-power,thermal=serious pretends the Mac's conditions, also only with
 $DORY_DATA_DIR set.";
 
@@ -94,6 +98,9 @@ fn main() -> ExitCode {
             }
             Some("process") => args::ProcessArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::run(&c, &a))),
+            Some("eval") => {
+                args::EvalArgs::parse(rest).and_then(|a| config().and_then(|c| eval::run(&c, &a)))
+            }
             Some("translate-summary") => args::TranslateSummaryArgs::parse(rest)
                 .and_then(|a| config().and_then(|c| process::translate_summary(&c, &a))),
             Some("assistants") => assistants::AssistantsArgs::parse(rest)
@@ -124,10 +131,15 @@ fn config() -> Result<Config, String> {
 /// Fake audio and fake transcripts never go into the default library: a `--fake-*` flag or `seed`
 /// needs the data folder named explicitly.
 fn allow_fakes(flag: &str) -> Result<(), String> {
+    needs_data_dir(&format!("{flag} writes fake data"))
+}
+
+/// `what` writes into the library, so it never runs against the default data folder.
+fn needs_data_dir(what: &str) -> Result<(), String> {
     match std::env::var_os(DATA_DIR_VAR) {
         Some(dir) if !dir.is_empty() => Ok(()),
         _ => Err(format!(
-            "{flag} writes fake data, so it needs {DATA_DIR_VAR} set to a throwaway folder"
+            "{what}, so it needs {DATA_DIR_VAR} set to a throwaway folder"
         )),
     }
 }

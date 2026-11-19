@@ -1,11 +1,11 @@
 //! `process` queues the pipeline for a recording and follows it to the end. `translate-summary`
 //! does the same for the translation of the recording's summary.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dory::Config;
 use dory_core::app::{Dory, DoryError, Event, Rerun, Subscription};
-use dory_core::domain::{Goal, Job, JobState, RecordingId};
+use dory_core::domain::{Goal, Job, JobState, RecordingId, Stage};
 
 use crate::args::{ProcessArgs, TranslateSummaryArgs};
 use crate::{open, view};
@@ -86,8 +86,28 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// How long a job spent running each stage, to the polling tick.
+#[derive(Debug, Default)]
+pub(crate) struct StageTimes(Vec<(Stage, Duration)>);
+
+impl StageTimes {
+    pub(crate) fn secs(&self, stage: Stage) -> Option<f64> {
+        let times = self.0.iter().filter(|(s, _)| *s == stage);
+        times
+            .clone()
+            .next()
+            .map(|_| times.map(|(_, d)| d.as_secs_f64()).sum())
+    }
+}
+
 /// Prints the job's progress and state changes until it finishes, and fails with what stopped it.
-fn follow(dory: &Dory, events: &Subscription, mut job: Job) -> Result<(), String> {
+pub(crate) fn follow(
+    dory: &Dory,
+    events: &Subscription,
+    mut job: Job,
+) -> Result<StageTimes, String> {
+    let mut times = StageTimes::default();
+    let mut running: Option<(Stage, Instant)> = None;
     let mut shown = None;
     let mut last_progress = None;
     let mut last_budget = None;
@@ -120,6 +140,16 @@ fn follow(dory: &Dory, events: &Subscription, mut job: Job) -> Result<(), String
             .job(job.id)
             .map_err(crate::chain)?
             .ok_or("the job disappeared")?;
+        let now = match &job.state {
+            JobState::Running { stage } => Some(*stage),
+            _ => None,
+        };
+        if running.map(|(stage, _)| stage) != now {
+            if let Some((stage, since)) = running.take() {
+                times.0.push((stage, since.elapsed()));
+            }
+            running = now.map(|stage| (stage, Instant::now()));
+        }
         if shown.as_ref() != Some(&job.state) {
             println!("job {} {}", job.id.0, view::job_state(&job.state));
             shown = Some(job.state.clone());
@@ -144,7 +174,7 @@ fn follow(dory: &Dory, events: &Subscription, mut job: Job) -> Result<(), String
             JobState::Queued | JobState::Running { .. } => std::thread::sleep(TICK),
         }
     }
-    Ok(())
+    Ok(times)
 }
 
 /// A translation of the summary is queued or running, rather than another job holding it.
@@ -209,4 +239,21 @@ pub fn translate_summary(config: &Config, args: &TranslateSummaryArgs) -> Result
     );
     println!("{}", translation.markdown);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stage_that_ran_twice_adds_up_and_one_that_never_ran_has_no_time() {
+        let times = StageTimes(vec![
+            (Stage::Transcribe, Duration::from_millis(1500)),
+            (Stage::Summarize, Duration::from_secs(2)),
+            (Stage::Transcribe, Duration::from_millis(500)),
+        ]);
+        assert_eq!(times.secs(Stage::Transcribe), Some(2.0));
+        assert_eq!(times.secs(Stage::Summarize), Some(2.0));
+        assert_eq!(times.secs(Stage::Translate), None);
+    }
 }

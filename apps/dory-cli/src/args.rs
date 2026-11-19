@@ -273,6 +273,62 @@ impl ProcessArgs {
     }
 }
 
+/// `eval CASES_DIR [--stt MODEL_ID] [--llm MODEL_ID] [--summary-only] [--label TEXT] [--tsv FILE]
+/// [--fake-engines]` runs case folders through the pipeline and scores the result.
+#[derive(Debug, PartialEq)]
+pub struct EvalArgs {
+    pub cases: PathBuf,
+    pub fake_engines: bool,
+    /// Summarizes the stored transcripts again without transcribing.
+    pub summary_only: bool,
+    /// Transcribes with this model instead of the Settings choice.
+    pub stt: Option<ModelId<Stt>>,
+    /// Summarizes with this model instead of the Settings choice.
+    pub llm: Option<ModelId<Llm>>,
+    /// Names the run in the TSV rows, so two runs can be told apart.
+    pub label: String,
+    /// Appends one row per case here.
+    pub tsv: Option<PathBuf>,
+}
+
+impl EvalArgs {
+    pub fn parse(args: &[String]) -> Result<Self, String> {
+        let mut cases = None;
+        let mut fake_engines = false;
+        let mut summary_only = false;
+        let mut stt = None;
+        let mut llm = None;
+        let mut label = String::new();
+        let mut tsv = None;
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
+            match arg.as_str() {
+                "--fake-engines" => fake_engines = true,
+                "--summary-only" => summary_only = true,
+                "--stt" => stt = Some(model_arg("--stt", it.next())?),
+                "--llm" => llm = Some(model_arg("--llm", it.next())?),
+                "--label" => label = it.next().ok_or("--label needs text")?.clone(),
+                "--tsv" => tsv = Some(it.next().ok_or("--tsv needs a file")?.into()),
+                flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
+                _ if cases.is_none() => cases = Some(arg.into()),
+                _ => return Err("eval takes one folder of cases".into()),
+            }
+        }
+        if summary_only && stt.is_some() {
+            return Err("--stt transcribes, so it does not go with --summary-only".into());
+        }
+        Ok(Self {
+            cases: cases.ok_or("eval needs a case folder")?,
+            fake_engines,
+            summary_only,
+            stt,
+            llm,
+            label,
+            tsv,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct PlayArgs {
     pub id: RecordingId,
@@ -540,6 +596,35 @@ mod tests {
         assert!(RecordArgs::parse(&words("--fake-capture 0")).is_err());
         assert!(RecordArgs::parse(&words("--layout both")).is_err());
         assert!(RecordArgs::parse(&words("--mic")).is_err());
+    }
+
+    #[test]
+    fn eval_takes_a_folder_and_run_options() {
+        let a = EvalArgs::parse(&words(
+            "cases --stt a/x --llm b/y --label hot-words --tsv out.tsv --fake-engines",
+        ))
+        .unwrap();
+        assert_eq!(a.cases, PathBuf::from("cases"));
+        assert_eq!(a.stt, Some("a/x".parse().unwrap()));
+        assert_eq!(a.llm, Some("b/y".parse().unwrap()));
+        assert_eq!(a.label, "hot-words");
+        assert_eq!(a.tsv, Some(PathBuf::from("out.tsv")));
+        assert!(a.fake_engines && !a.summary_only);
+
+        let plain = EvalArgs::parse(&words("--summary-only cases")).unwrap();
+        assert!(plain.summary_only && plain.label.is_empty() && plain.tsv.is_none());
+        for bad in [
+            "",
+            "a b",
+            "cases --stt",
+            "cases --llm",
+            "cases --label",
+            "cases --tsv",
+            "cases --nope",
+            "cases --summary-only --stt a/x",
+        ] {
+            assert!(EvalArgs::parse(&words(bad)).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

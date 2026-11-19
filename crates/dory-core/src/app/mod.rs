@@ -48,8 +48,8 @@ use recorder::{Msg, RecorderHandle, commit_sealed};
 use crate::domain::{
     AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LangTag, LanguagePref,
     Pace, Priority, Processing, Recording, RecordingEdit, RecordingId, RecordingQuery,
-    RecordingRow, Settings, SpeakerId, SpeakerNames, Stage, Summary, SummaryRefusal,
-    SummaryTranslation, TakeContainer, Transcript, Translation, Waveform,
+    RecordingRow, Settings, SpeakerId, SpeakerNames, Summary, SummaryRefusal, SummaryTranslation,
+    TakeContainer, Transcript, Translation, Underway, Waveform,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -174,6 +174,8 @@ pub enum DoryError {
     Invalid(#[from] InvalidInput),
     #[error(transparent)]
     SummaryRefused(#[from] SummaryRefusal),
+    #[error(transparent)]
+    Underway(#[from] Underway),
     #[error(transparent)]
     Trash(#[from] TrashError),
     #[error("{0} is already in the library")]
@@ -615,8 +617,10 @@ impl Library<'_> {
 
     /// Asks for the summary in `target`, beside the original, and puts the job at the front of
     /// the queue because the user is waiting. A translation already stored stays until the new
-    /// one replaces it. Refused with [`SummaryRefusal`] when there is no summary, when it is
-    /// already written in `target`, or when a translation of it is running.
+    /// one replaces it. Refused with [`SummaryRefusal`] when there is no summary or it is already
+    /// written in `target`, and with [`Underway`] while a job for the recording is underway, so
+    /// the stage never translates a summary that job is about to replace, or works for one
+    /// language while the store holds a wish for another.
     pub fn translate_summary(&self, id: &RecordingId, target: LangTag) -> Result<(), DoryError> {
         let store = &self.dory.db.store;
         if store.recording(id)?.is_none() {
@@ -625,12 +629,7 @@ impl Library<'_> {
         if let Some(refusal) = SummaryTranslation::refusal(store.summary(id)?.as_ref(), &target) {
             return Err(refusal.into());
         }
-        let running = store.jobs_for(id)?.iter().any(|job| {
-            job.goal.wants(Stage::TranslateSummary) && matches!(job.state, JobState::Running { .. })
-        });
-        if running {
-            return Err(SummaryRefusal::InProgress.into());
-        }
+        Underway::check(store.jobs_for(id)?.iter().map(|job| &job.state))?;
         self.dory.db.apply(vec![
             Change::SummaryTranslationWanted {
                 id: id.clone(),

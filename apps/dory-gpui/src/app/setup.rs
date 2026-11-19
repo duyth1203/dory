@@ -2,7 +2,7 @@
 //! these methods; only this module tree reaches the facade.
 
 use dory_core::app::DoryError;
-use dory_core::domain::{Goal, LangTag, LanguagePref, RecordingId, Settings};
+use dory_core::domain::{Goal, LangTag, LanguagePref, RecordingId, Settings, Underway};
 use dory_core::ports::capture::{Access, CaptureCaps, Source};
 use gpui_kit::Context;
 
@@ -138,8 +138,9 @@ impl AppState {
     }
 
     /// **Re-transcribe in…** (UX-26): pins the language, or returns it to Automatic, and runs the
-    /// whole pipeline again. A job still in flight is cancelled first, so the transcript that
-    /// lands is in the language just picked.
+    /// whole pipeline again. Refused with [`Underway`] while a job is queued or running, as the
+    /// menus that offer it show. A blocked job is cancelled first, so the transcript that lands
+    /// is in the language just picked.
     pub fn retranscribe(
         &mut self,
         id: RecordingId,
@@ -151,8 +152,10 @@ impl AppState {
             LanguagePref::Pinned(tag) => format!("Transcribing again in {}.", language_name(tag)),
         };
         let done = self.core.run(cx, move |dory| {
+            let jobs = dory.library().jobs(&id)?;
+            Underway::check(jobs.iter().map(|job| &job.state))?;
             dory.library().set_language(&id, language)?;
-            for job in dory.library().jobs(&id)? {
+            for job in jobs {
                 if !job.is_terminal() {
                     dory.pipeline().cancel(job.id)?;
                 }

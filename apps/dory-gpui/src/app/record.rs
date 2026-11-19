@@ -9,6 +9,7 @@ use std::pin::Pin;
 use dory_core::app::{AppKind, Dory, Event, RecorderStatus, StartOptions};
 use dory_core::domain::{
     Goal, JobId, JobState, Ms, Pace, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
+    Underway,
 };
 use dory_core::models::{Availability, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use dory_core::ports::ProvisionError;
@@ -292,6 +293,15 @@ impl AppState {
     /// The phase of the recording `id`, if it is listed.
     pub fn phase_of(&self, id: &RecordingId) -> Option<Phase> {
         self.row(id).map(|row| self.phase(row))
+    }
+
+    /// A job for `id` is queued or running, so new processing of it waits: the core's rule
+    /// ([`Underway`]) over every live job of the recording, as the queue read with the rows holds
+    /// them. Every menu and button that offers Re-transcribe in… or Translate Summary… greys out
+    /// by this.
+    pub fn is_underway(&self, id: &RecordingId) -> bool {
+        let jobs = self.queue.iter().filter(|job| &job.recording == id);
+        Underway::check(jobs.map(|job| &job.state)).is_err()
     }
 
     pub fn row(&self, id: &RecordingId) -> Option<&RecordingRow> {

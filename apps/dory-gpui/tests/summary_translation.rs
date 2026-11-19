@@ -233,9 +233,9 @@ fn the_recording_menu_lists_the_meeting_languages_then_every_other_language_but_
             },
         ),
         (
-            "a translation under way",
+            "a job under way",
             MenuState {
-                translating_summary: true,
+                underway: true,
                 ..state.clone()
             },
         ),

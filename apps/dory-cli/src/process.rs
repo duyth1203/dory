@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use dory::Config;
 use dory_core::app::{Dory, DoryError, Event, Subscription};
-use dory_core::domain::{Goal, Job, JobState, SummaryRefusal};
+use dory_core::domain::{Goal, Job, JobState, RecordingId};
 
 use crate::args::{ProcessArgs, TranslateSummaryArgs};
 use crate::{open, view};
@@ -122,6 +122,16 @@ fn follow(dory: &Dory, events: &Subscription, mut job: Job) -> Result<(), String
     Ok(())
 }
 
+/// A translation of the summary is queued or running, rather than another job holding it.
+fn translating(dory: &Dory, id: &RecordingId) -> Result<bool, String> {
+    Ok(dory
+        .library()
+        .jobs(id)
+        .map_err(crate::chain)?
+        .iter()
+        .any(|job| job.goal == Goal::TRANSLATE_SUMMARY && job.state.is_underway()))
+}
+
 pub fn translate_summary(config: &Config, args: &TranslateSummaryArgs) -> Result<(), String> {
     let dory = open(config, args.fake_engines)?;
     let events = dory.events();
@@ -132,13 +142,14 @@ pub fn translate_summary(config: &Config, args: &TranslateSummaryArgs) -> Result
         .library()
         .translate_summary(&args.id, args.target.clone())
     {
-        Err(DoryError::SummaryRefused(SummaryRefusal::InProgress))
-            if dory
-                .library()
-                .summary_translation_wanted(&args.id)
-                .map_err(crate::chain)?
-                .as_ref()
-                == Some(&args.target) =>
+        Err(DoryError::Underway(_))
+            if translating(&dory, &args.id)?
+                && dory
+                    .library()
+                    .summary_translation_wanted(&args.id)
+                    .map_err(crate::chain)?
+                    .as_ref()
+                    == Some(&args.target) =>
         {
             println!("a translation of this summary is running, following it");
         }

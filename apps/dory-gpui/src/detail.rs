@@ -191,6 +191,16 @@ struct TitleEdit {
     _events: Subscription,
 }
 
+/// What the Summary tab's **Translate…** slot shows.
+#[derive(Clone, Copy)]
+enum TranslateSlot {
+    Ready,
+    Translating,
+    /// Greyed out with [`menus::WAITS`] as its tooltip while another job for the recording is
+    /// underway.
+    Waiting,
+}
+
 pub struct DetailPane {
     app: Entity<AppState>,
     session: Entity<Session>,
@@ -512,7 +522,7 @@ impl DetailPane {
         title: Option<String>,
         detail: &Detail,
         shown: Shown,
-        translating: bool,
+        translate: TranslateSlot,
         summarizing: Option<Option<u64>>,
         readout: Option<String>,
         phase: Option<&Phase>,
@@ -626,14 +636,19 @@ impl DetailPane {
                 }),
             )
             .children(
-                (tab == DetailTab::Summary && detail.summary.is_some()).then(|| {
-                    if translating {
-                        action("translate", "Translating…")
-                            .accessibility_label("Translating the summary")
-                            .into_any_element()
-                    } else {
-                        self.translate.clone().into_any_element()
-                    }
+                (tab == DetailTab::Summary && detail.summary.is_some()).then(|| match translate {
+                    TranslateSlot::Translating => action("translate", "Translating…")
+                        .accessibility_label("Translating the summary")
+                        .into_any_element(),
+                    TranslateSlot::Waiting => gated(
+                        action("translate", "Translate…")
+                            .accessibility_label("Translate summary")
+                            .tooltip(menus::WAITS)
+                            .child(Icon::ChevronDown.view(12., theme.text_secondary)),
+                        false,
+                    )
+                    .into_any_element(),
+                    TranslateSlot::Ready => self.translate.clone().into_any_element(),
                 }),
             );
         let actions = div()
@@ -1356,13 +1371,19 @@ impl Render for DetailPane {
                 }
                 let dots = summarizing.then(|| motion::looping(window, cx).then(motion::clock_ms));
                 let text = self.session.read(cx).shown();
-                let translating = matches!(phase, Some(Phase::TranslatingSummary { .. }));
+                let translate = if matches!(phase, Some(Phase::TranslatingSummary { .. })) {
+                    TranslateSlot::Translating
+                } else if self.app.read(cx).is_underway(&detail.recording.id) {
+                    TranslateSlot::Waiting
+                } else {
+                    TranslateSlot::Ready
+                };
                 let row = self.tab_row(
                     tab,
                     stuck.then_some(shown),
                     &detail,
                     text,
-                    translating,
+                    translate,
                     dots,
                     readout.clone(),
                     phase.as_ref(),

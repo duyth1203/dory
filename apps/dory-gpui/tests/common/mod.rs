@@ -141,6 +141,37 @@ pub fn dory_with(
     .expect("open Dory on the samples")
 }
 
+/// As [`dory_on`], with `model` as the one summary model, so a test can hold a job mid-stage.
+pub fn dory_with_llm(
+    store: Arc<MemStore>,
+    model: Arc<dory_core::testing::FakeLanguageModel>,
+) -> Dory {
+    let dir = scratch_dir();
+    Dory::open(
+        Ports {
+            store,
+            takes: Arc::new(MemTakes::in_dir(&dir)),
+            capture: Arc::new(FakeCapture::new()),
+            playback: Arc::new(FakePlayback::new()),
+            trash: Arc::new(FakeTrash::new(&dir)),
+            clock: Arc::new(ManualClock::new(Timestamp(
+                fixtures::now().timestamp_millis(),
+            ))),
+            stt: Vec::new(),
+            llm: vec![Arc::new(dory_core::testing::FakeLlmProvider::new(
+                "fake",
+                vec![dory_core::testing::llm_entry("fake/llm")],
+                model,
+            ))],
+            diar: Vec::new(),
+            machine: Arc::new(dory_core::testing::FakeMachine::default()),
+            guard: None,
+        },
+        options(),
+    )
+    .expect("open Dory with a summary model")
+}
+
 /// Dory's options for a UI test: probes answer on the asking thread, since GPUI's test scheduler
 /// fails a test that is woken from a thread it does not run.
 pub fn options() -> Options {

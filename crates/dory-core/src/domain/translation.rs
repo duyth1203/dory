@@ -59,10 +59,6 @@ pub enum SummaryRefusal {
     NoSummary,
     #[error("The summary is already written in {0}.")]
     AlreadyWritten(LangTag),
-    /// A translation of this summary is running. Another request waits until it ends, so the
-    /// stage never works for one language while the store holds a wish for another.
-    #[error("The summary is being translated already.")]
-    InProgress,
 }
 
 impl SummaryTranslation {

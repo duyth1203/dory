@@ -148,6 +148,33 @@ pub enum JobState {
     Cancelled,
 }
 
+impl JobState {
+    /// Waiting for the worker or running. A blocked job waits on the user instead, and changing
+    /// the recording's language is one way to free it, so it is not underway.
+    pub fn is_underway(&self) -> bool {
+        matches!(self, JobState::Queued | JobState::Running { .. })
+    }
+}
+
+/// New processing of a recording (Re-transcribe in…, Translate Summary…), refused while one of
+/// its jobs is underway. Beside that job it would throw away the work in progress, or translate
+/// a summary the job is about to replace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
+#[error("Dory is still processing this recording. Try again when it finishes.")]
+pub struct Underway;
+
+impl Underway {
+    /// The one rule. The core's entry points check the recording's jobs, and the app's menus
+    /// check the job its library row shows.
+    pub fn check<'a>(jobs: impl IntoIterator<Item = &'a JobState>) -> Result<(), Underway> {
+        if jobs.into_iter().any(JobState::is_underway) {
+            Err(Underway)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobError {
     pub class: FailureClass,
@@ -462,6 +489,40 @@ mod tests {
 
     fn running(stage: Stage) -> JobState {
         JobState::Running { stage }
+    }
+
+    #[test]
+    fn only_a_queued_or_running_job_holds_the_recording() {
+        let cases = [
+            (JobState::Queued, true),
+            (running(T), true),
+            (running(Stage::TranslateSummary), true),
+            (
+                JobState::Blocked {
+                    stage: T,
+                    blocker: blocker(),
+                },
+                false,
+            ),
+            (JobState::Succeeded, false),
+            (
+                JobState::Failed {
+                    stage: S,
+                    error: error(),
+                },
+                false,
+            ),
+            (JobState::Cancelled, false),
+        ];
+        for (state, underway) in cases {
+            assert_eq!(state.is_underway(), underway, "{state:?}");
+            assert_eq!(
+                Underway::check([&JobState::Succeeded, &state]).is_err(),
+                underway,
+                "one job underway among finished ones: {state:?}"
+            );
+        }
+        assert_eq!(Underway::check(None), Ok(()), "a recording with no job");
     }
 
     /// The job every table row starts from. Nonzero attempts, a pending backoff, and a stage

@@ -9,6 +9,10 @@
 //! Its **Re-transcribe in…** submenu and the row menu's offer Automatic and the meeting languages,
 //! by `languages::choices` (UX-26), computed when the menu is built or opened.
 //!
+//! Re-transcribe in… and Translate Summary… grey out while a job for the recording is queued or
+//! running, by the core's rule (`AppState::is_underway`), and say why in a dimmed line above
+//! them ([`WAITS`]). Copy, Export, Rename, Move to Trash, and Play stay: none races the job.
+//!
 //! Edit > Find holds Find, Find Next, and Find Previous. The last two step through the matches of
 //! the active search in the selected recording and are off when there are none (UX-32).
 //!
@@ -23,7 +27,8 @@ use dory_core::domain::{LangTag, LanguagePref, RecordingId};
 use gpui_kit::component::input;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::{
-    App, Context, Entity, Global, KeyBinding, Menu, MenuItem, OsAction, SystemMenuType, Window,
+    App, Context, Entity, Global, KeyBinding, Menu, MenuItem, NoAction, OsAction, SystemMenuType,
+    Window,
 };
 
 use crate::actions::*;
@@ -56,9 +61,13 @@ pub struct MenuState {
     /// The language the selected recording's summary is written in, which Translate Summary…
     /// leaves out.
     pub summary_language: Option<LangTag>,
-    /// A translation of the selected recording's summary is being made.
-    pub translating_summary: bool,
+    /// A job for the selected recording is queued or running, so Re-transcribe in… and Translate
+    /// Summary… wait for it.
+    pub underway: bool,
 }
+
+/// Why Re-transcribe in… and Translate Summary… are greyed out while the recording is processed.
+pub const WAITS: &str = "Available when processing finishes";
 
 /// Where the text scale sits, so View > Bigger and Smaller grey out at the ends (A11Y-7).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -131,10 +140,7 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
             .as_ref()
             .and_then(|d| d.summary.as_ref())
             .and_then(|s| s.language.clone()),
-        translating_summary: matches!(
-            phase,
-            Some(crate::processing::Phase::TranslatingSummary { .. })
-        ),
+        underway: app.selection.id().is_some_and(|id| app.is_underway(id)),
     }
 }
 
@@ -213,25 +219,28 @@ pub fn build(state: MenuState) -> Vec<Menu> {
             MenuItem::separator(),
             MenuItem::submenu(
                 Menu::new("Re-transcribe in").items(
-                    retranscribe_choices(&state.languages)
-                        .into_iter()
-                        .map(|choice| match choice {
-                            Some((name, action)) => {
-                                MenuItem::action(name, action).disabled(!state.has_selection)
-                            }
-                            None => MenuItem::separator(),
-                        }),
+                    waits(state.underway).chain(
+                        retranscribe_choices(&state.languages).into_iter().map(
+                            |choice| match choice {
+                                Some((name, action)) => MenuItem::action(name, action)
+                                    .disabled(!state.has_selection || state.underway),
+                                None => MenuItem::separator(),
+                            },
+                        ),
+                    ),
                 ),
             ),
             MenuItem::submenu(
                 Menu::new("Translate Summary…").items(
-                    translate_choices(&state.languages, state.summary_language.as_ref())
-                        .into_iter()
-                        .map(|choice| match choice {
-                            Some((name, action)) => MenuItem::action(name, action)
-                                .disabled(!state.has_summary || state.translating_summary),
-                            None => MenuItem::separator(),
-                        }),
+                    waits(state.underway).chain(
+                        translate_choices(&state.languages, state.summary_language.as_ref())
+                            .into_iter()
+                            .map(|choice| match choice {
+                                Some((name, action)) => MenuItem::action(name, action)
+                                    .disabled(!state.has_summary || state.underway),
+                                None => MenuItem::separator(),
+                            }),
+                    ),
                 ),
             ),
             MenuItem::action("Play or Pause", TogglePlayback).disabled(!state.has_selection),
@@ -296,6 +305,19 @@ pub fn install(cx: &mut App) {
 struct Target(Entity<AppState>);
 
 impl Global for Target {}
+
+/// The dimmed [`WAITS`] line and a separator, heading a submenu whose items wait for the job.
+fn waits(underway: bool) -> impl Iterator<Item = MenuItem> {
+    underway
+        .then(|| {
+            [
+                MenuItem::action(WAITS, NoAction).disabled(true),
+                MenuItem::separator(),
+            ]
+        })
+        .into_iter()
+        .flatten()
+}
 
 /// View › Theme: Modern and Book, the shown one checked.
 fn theme_items(state: &MenuState) -> Vec<MenuItem> {
@@ -392,51 +414,62 @@ pub fn recording_menu(
             transcript: false,
             timed: false,
         });
+    let underway = target
+        .as_ref()
+        .is_some_and(|app| app.read(cx).is_underway(id));
     let current = target.and_then(|app| {
         let session = app.read(cx).session()?.read(cx).detail()?;
         Some(session.recording.language.clone())
     });
-    menu.menu_with_disabled(
-        "Copy Summary",
-        Box::new(CopySummary),
-        !has.can_copy(CopyWhat::Summary),
-    )
-    .menu_with_disabled(
-        "Copy Transcript",
-        Box::new(CopyTranscript),
-        !has.can_copy(CopyWhat::Transcript),
-    )
-    .separator()
-    .menu_with_disabled(
-        "Export as Markdown…",
-        Box::new(ExportMarkdown),
-        !has.can_export(ExportFormat::Markdown),
-    )
-    .menu_with_disabled(
-        "Export as Text…",
-        Box::new(ExportText),
-        !has.can_export(ExportFormat::Text),
-    )
-    .menu_with_disabled(
-        "Export as SRT…",
-        Box::new(ExportSrt),
-        !has.can_export(ExportFormat::Srt),
-    )
-    .separator()
-    .submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
-        retranscribe_choices(&meeting)
-            .into_iter()
-            .fold(menu, |menu, choice| match choice {
-                Some((name, action)) => {
-                    let checked = current.as_ref().is_some_and(|c| action.picks(c));
-                    menu.menu_with_check(name, checked, Box::new(action))
-                }
-                None => menu.separator(),
-            })
-    })
-    .separator()
-    .menu("Rename", Box::new(Rename))
-    .menu("Move to Trash", Box::new(MoveToTrash))
+    let menu = menu
+        .menu_with_disabled(
+            "Copy Summary",
+            Box::new(CopySummary),
+            !has.can_copy(CopyWhat::Summary),
+        )
+        .menu_with_disabled(
+            "Copy Transcript",
+            Box::new(CopyTranscript),
+            !has.can_copy(CopyWhat::Transcript),
+        )
+        .separator()
+        .menu_with_disabled(
+            "Export as Markdown…",
+            Box::new(ExportMarkdown),
+            !has.can_export(ExportFormat::Markdown),
+        )
+        .menu_with_disabled(
+            "Export as Text…",
+            Box::new(ExportText),
+            !has.can_export(ExportFormat::Text),
+        )
+        .menu_with_disabled(
+            "Export as SRT…",
+            Box::new(ExportSrt),
+            !has.can_export(ExportFormat::Srt),
+        )
+        .separator();
+    // The kit cannot dim a submenu, so while the job runs the entry is a dimmed item that opens
+    // nothing, with the reason under it.
+    let menu = if underway {
+        menu.menu_with_disabled("Re-transcribe in…", Box::new(NoAction), true)
+            .label(WAITS)
+    } else {
+        menu.submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
+            retranscribe_choices(&meeting)
+                .into_iter()
+                .fold(menu, |menu, choice| match choice {
+                    Some((name, action)) => {
+                        let checked = current.as_ref().is_some_and(|c| action.picks(c));
+                        menu.menu_with_check(name, checked, Box::new(action))
+                    }
+                    None => menu.separator(),
+                })
+        })
+    };
+    menu.separator()
+        .menu("Rename", Box::new(Rename))
+        .menu("Move to Trash", Box::new(MoveToTrash))
 }
 
 /// **Recording > Translate Summary…**: the meeting languages, a separator (`None`), then every

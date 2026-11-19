@@ -21,7 +21,7 @@ use gpui_kit::{
     AnyWindowHandle, AppContext as _, Entity, TestAppContext, test::TestWindowExt as _,
 };
 
-use crate::common::{dory_on, id_of, open_fresh, open_with, open_with_prefs, sample_store};
+use crate::common::{dory_on, id_of, open_fresh, open_with, open_with_prefs, sample_store, until};
 
 fn step(app: &Entity<AppState>, cx: &mut TestAppContext) -> OnboardingStep {
     app.read_with(cx, |app, _| app.onboarding())
@@ -332,6 +332,7 @@ fn the_models_step_keeps_meeting_languages_already_chosen(cx: &mut TestAppContex
 
 #[gpui_kit::test]
 fn retranscribe_in_pins_the_language_and_queues_the_whole_pipeline(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
     let store = sample_store();
     let (window, app) = open_with(cx, dory_on(store.clone()));
     let id = id_of("Design review");
@@ -363,6 +364,11 @@ fn retranscribe_in_pins_the_language_and_queues_the_whole_pipeline(cx: &mut Test
         Some("Transcribing again in French.".into())
     );
 
+    // With no speech model the job blocks. Only then does the recording take a new language:
+    // while the job is queued or running, Re-transcribe in… waits for it.
+    until(cx, "the job to block", |_| {
+        !store.jobs_for(&id).unwrap()[0].state.is_underway()
+    });
     app.update(cx, |app, cx| {
         app.retranscribe(id.clone(), LanguagePref::Auto, cx)
     });
@@ -375,7 +381,7 @@ fn retranscribe_in_pins_the_language_and_queues_the_whole_pipeline(cx: &mut Test
     assert_eq!(
         jobs.len(),
         2,
-        "the first job was cancelled and a new one queued"
+        "the blocked job was cancelled and a new one queued"
     );
     assert!(jobs[0].is_terminal());
     assert!(!jobs[1].is_terminal());

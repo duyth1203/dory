@@ -2047,13 +2047,50 @@ fn a_second_request_while_one_runs_is_refused_and_the_wish_stays() {
         .library()
         .translate_summary(&id, LangTag::parse("de").unwrap())
         .unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "The summary is being translated already."
+    assert!(
+        matches!(error, dory_core::app::DoryError::Underway(_)),
+        "{error:?}"
     );
     assert_eq!(
         dory.library().summary_translation_wanted(&id).unwrap(),
         Some(english())
+    );
+}
+
+#[test]
+fn translating_waits_for_the_job_that_is_transcribing_again() {
+    let (rig, id) = summarized_in_tagalog(translator(), 8_192);
+    rig.transcriber.hold_from(0);
+    let dory = rig.open();
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the transcription to start", || {
+        rig.transcriber.is_running()
+    });
+    let error = dory
+        .library()
+        .translate_summary(&id, english())
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Dory is still processing this recording. Try again when it finishes."
+    );
+    assert_eq!(
+        translate_job(&dory, &id),
+        None,
+        "nothing queued to translate a summary the job is about to replace"
+    );
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        None
+    );
+
+    let job = dory.library().jobs(&id).unwrap().pop().unwrap();
+    dory.pipeline().cancel(job.id).unwrap();
+    dory.library().translate_summary(&id, english()).unwrap();
+    assert_eq!(
+        dory.library().summary_translation_wanted(&id).unwrap(),
+        Some(english()),
+        "a cancelled job no longer holds the recording"
     );
 }
 

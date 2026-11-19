@@ -22,7 +22,7 @@ pub use error::{FailureCause, FailureClass, InvalidInput};
 pub use ids::{JobId, RecordingId, Revision};
 pub use job::{
     Blocker, Goal, IllegalTransition, Job, JobError, JobEvent, JobState, MAX_ATTEMPTS, Priority,
-    Stage,
+    Stage, Underway,
 };
 pub use lang::{LangSet, LangTag, LanguagePref};
 pub use media::{Channel, ChannelLayout, Ms};

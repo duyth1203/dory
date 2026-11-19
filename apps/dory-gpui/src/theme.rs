@@ -250,10 +250,14 @@ pub enum Elevation {
     Pop,
 }
 
-/// What the theme is built from besides the appearance: the macOS display settings and the text
-/// scale. `system_prefs`, Settings, and the View menu change it, then call [`sync`].
+/// What the theme is built from besides the appearance: the macOS display settings, the accent
+/// color, and the text scale. `system_prefs`, Settings, and the View menu change it, then call
+/// [`sync`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Display {
+    /// The accent picked in System Settings › Appearance, as `0xRRGGBB`. `None` under
+    /// Multicolor, where an app shows its own accent: Book's ink.
+    pub accent: Option<u32>,
     pub increase_contrast: bool,
     pub differentiate_without_color: bool,
     pub text_scale: f32,
@@ -262,6 +266,7 @@ pub struct Display {
 impl Default for Display {
     fn default() -> Self {
         Display {
+            accent: None,
             increase_contrast: false,
             differentiate_without_color: false,
             text_scale: 1.0,
@@ -270,6 +275,20 @@ impl Default for Display {
 }
 
 impl Global for Display {}
+
+/// The accents System Settings › Appearance offers besides Multicolor, as macOS reports them in
+/// light and dark: the values [`Display::accent`] can take. `tests/contrast.rs` holds every
+/// token pair to its floor with each.
+pub const SYSTEM_ACCENTS: [(&str, u32, u32); 8] = [
+    ("blue", 0x007AFF, 0x0A84FF),
+    ("purple", 0xAF52DE, 0xBF5AF2),
+    ("pink", 0xFF2D55, 0xFF375F),
+    ("red", 0xFF3B30, 0xFF453A),
+    ("orange", 0xFF9500, 0xFF9F0A),
+    ("yellow", 0xFFCC00, 0xFFD60A),
+    ("green", 0x28CD41, 0x32D74B),
+    ("graphite", 0x8E8E93, 0x98989D),
+];
 
 /// WCAG 2.2 AA for body text.
 pub const MIN_CONTRAST: f32 = 4.5;
@@ -478,7 +497,8 @@ fn over((hex, alpha): (u32, f32), under: Hsla) -> Hsla {
 
 impl Theme {
     /// Book (`docs/design/book-theme.md`): paper and ink, an opaque window, and Literata for
-    /// reading. Each token comes from [`BOOK`].
+    /// reading. Each token comes from [`BOOK`], except that a chosen system accent replaces the
+    /// ink, moved until it reads as text on every surface and under its `on_accent` label.
     pub fn new(dark: bool, display: Display) -> Theme {
         let p = &BOOK[dark as usize];
         let high = display.increase_contrast;
@@ -505,7 +525,14 @@ impl Theme {
             surface_raised,
             surface_inset,
         ];
-        let accent = c(p.accent);
+        let on_accent = c(p.on_accent);
+        let accent = display.accent.map_or(c(p.accent), |chosen| {
+            with_contrast_all(
+                c(chosen),
+                &[&reading[..], &[on_accent]].concat(),
+                MIN_CONTRAST,
+            )
+        });
         let record_red = c(p.record_red);
         let attention = with_contrast_all(c(p.attention), &reading, MIN_CONTRAST);
         let wave_floor = if high {
@@ -530,7 +557,7 @@ impl Theme {
             accent,
             accent_text: accent,
             ring: if high { text } else { accent },
-            on_accent: c(p.on_accent),
+            on_accent,
             selection_inactive: highlight,
             wave_rest,
             wave_done: with_contrast_all(accent, &waves, wave_floor),
@@ -974,15 +1001,47 @@ pub fn sync(cx: &mut App) {
         if !theme.dark {
             kit.background = theme.control_bg;
         }
-        kit.primary = theme.accent;
-        kit.primary_foreground = theme.on_accent;
         kit.secondary = theme.control_bg;
         kit.secondary_foreground = theme.text;
         kit.accent = theme.selection_inactive;
         kit.accent_foreground = theme.text;
+        kit_accent(kit, &theme);
     });
     cx.refresh_windows();
 }
+
+/// Paints Kit's accent-colored parts in Dory's accent. Kit keeps its own shadcn palette
+/// otherwise, where `primary` is near-black, so a Kit primary button, switch, checkbox, or
+/// slider, and every text field's caret and selection, would ignore it. Kit's `primary_hover`,
+/// `primary_active`, and `button_primary*` are fields of their own, read only when a Kit theme
+/// loads, so each is set here too.
+fn kit_accent(kit: &mut gpui_kit::component::ThemeColor, theme: &Theme) {
+    // Hover and press move the fill away from its label, so the label only gains contrast:
+    // darker under white text, lighter under night's ink on a pale accent.
+    let away = if luminance(theme.on_accent.into()) > 0.5 {
+        gpui_kit::black()
+    } else {
+        gpui_kit::white()
+    };
+    let hover = blend(away, theme.accent, 0.1);
+    let active = blend(away, theme.accent, 0.2);
+    kit.primary = theme.accent;
+    kit.primary_hover = hover;
+    kit.primary_active = active;
+    kit.primary_foreground = theme.on_accent;
+    kit.button_primary = theme.accent;
+    kit.button_primary_hover = hover;
+    kit.button_primary_active = active;
+    kit.button_primary_foreground = theme.on_accent;
+    kit.link = theme.accent_text;
+    kit.link_hover = theme.accent_text;
+    kit.link_active = theme.accent_text;
+    kit.caret = theme.accent_text;
+    kit.selection = theme.accent.alpha(KIT_SELECTION_ALPHA);
+}
+
+/// Kit's default selection alpha: the text under it stays readable in both appearances.
+const KIT_SELECTION_ALPHA: f32 = 0.3;
 
 /// Tabular figures, so times and percents keep their width as they count (handoff section 2).
 pub fn tabular() -> gpui_kit::FontFeatures {

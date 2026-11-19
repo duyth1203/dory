@@ -13,6 +13,7 @@
 #   VISUAL_THEMES        themes to run (default: "light dark contrast")
 #   VISUAL_SETTLE        seconds to wait after the view is ready (default: 1.5)
 #   VISUAL_SMALL         1 adds the 800 x 560, 200% pass (default: 1 for the whole set, else 0)
+#   VISUAL_ACCENT        a system accent as #RRGGBB, in place of Multicolor's ink (default: none)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -83,7 +84,7 @@ slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | 
 # capture <view> <theme> <width> <height> <text-scale> <suffix>
 capture() {
   local view=$1 theme=$2 width=$3 height=$4 scale=$5 suffix=$6
-  local lib log name appearance prefs_env=() pid=""
+  local lib log name appearance prefs="" prefs_env=() pid=""
   lib=$(mktemp -d /tmp/dory-visual.XXXXXX)
   log="$lib.log"
   cp -cR "$library/." "$lib/"
@@ -92,9 +93,14 @@ capture() {
     "$width" "$height" "$scale" > "$lib/ui-prefs.json"
   case $theme in
     dark) appearance=dark ;;
-    contrast) appearance=light; prefs_env=(--env DORY_SYSTEM_PREFS=increase-contrast) ;;
+    contrast) appearance=light; prefs=increase-contrast ;;
     *) appearance=light ;;
   esac
+  if [ -n "${VISUAL_ACCENT:-}" ]; then
+    prefs="${prefs:+$prefs,}accent=$VISUAL_ACCENT"
+    suffix="$suffix-accent-$(slug "${VISUAL_ACCENT#\#}")"
+  fi
+  if [ -n "$prefs" ]; then prefs_env=(--env "DORY_SYSTEM_PREFS=$prefs"); fi
   name="$(slug "$view")-$theme$suffix"
   : > "$log"
   open -n --stderr "$log" --env "DORY_DATA_DIR=$lib" --env "DORY_SHOW=$view" \

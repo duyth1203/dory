@@ -25,7 +25,7 @@ Contrast is measured against the surface each token sits on.
 | `panel_border`, `divider` | `#DDD2BC` | `#3A342C` | |
 | `text` | `#2A251F` | `#ECE3D3` | Ink: 14:1 light, 13:1 dark |
 | `text_secondary` | `#6A6054` | `#B8AC97` | Light: 5.9:1 on paper, 5.1:1 on endpaper, 4.9:1 on the highlight. Dark: 7.8:1 |
-| `accent`, `accent_text` | `#2E4A86` | `#9DB5E6` | An ink blue taken from the app icon. It is not red (red stays for recording) and not gold. The system accent color is not used |
+| `accent`, `accent_text` | `#2E4A86` | `#9DB5E6` | An ink blue taken from the app icon. It is not red (red stays for recording) and not gold. This is Dory's own accent, shown under Multicolor (the macOS default). An accent picked in System Settings › Appearance replaces it, moved until it reads at 4.5:1 as text on every surface and under `on_accent`, and it follows a change at once |
 | `on_accent` | `#FFFFFF` | `#1C1915` | Flips in dark mode, because the dark accent is light. Check every place that hard-codes white on `accent` |
 | `selection_inactive`, `playing_bg` | `#F2E2A0` | `rgba(222,186,84,0.20)` | A highlighter yellow, from the icon's yellow. It marks the selected row and the playing turn |
 | `card_bg` / `card_border` | `#F3ECDD` / `#E2D7C1` | `#24201B` / `#3A342C` | |

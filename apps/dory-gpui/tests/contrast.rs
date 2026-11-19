@@ -2,33 +2,40 @@
 //! text, 3 to 1 for focus rings and graphics) in light and dark, with and without Increase
 //! Contrast (A11Y-6) and Differentiate Without Color.
 
-use dory_gpui::theme::{Display, Theme, contrast};
+use dory_gpui::theme::{Display, SYSTEM_ACCENTS, Theme, contrast};
 
-/// Every theme the app can build from the system settings.
+/// Every theme the app can build from the system settings: Book's ink and each system accent,
+/// in light and dark, with and without Increase Contrast and Differentiate Without Color.
 fn every_theme() -> Vec<(String, Theme)> {
+    let accents = std::iter::once(("ink", None))
+        .chain(SYSTEM_ACCENTS.map(|(name, light, dark)| (name, Some((light, dark)))));
     let mut themes = Vec::new();
-    for increase_contrast in [false, true] {
-        for differentiate_without_color in [false, true] {
-            let display = Display {
-                increase_contrast,
-                differentiate_without_color,
-                text_scale: 1.0,
-            };
-            let variant = format!(
-                "{}{}",
-                if increase_contrast {
-                    "increase contrast"
-                } else {
-                    ""
-                },
-                if differentiate_without_color {
-                    ", differentiate without color"
-                } else {
-                    ""
+    for (accent, hex) in accents {
+        for increase_contrast in [false, true] {
+            for differentiate_without_color in [false, true] {
+                let variant = format!(
+                    "{accent}{}{}",
+                    if increase_contrast {
+                        ", increase contrast"
+                    } else {
+                        ""
+                    },
+                    if differentiate_without_color {
+                        ", differentiate without color"
+                    } else {
+                        ""
+                    }
+                );
+                for (appearance, dark) in [("light", false), ("dark", true)] {
+                    let display = Display {
+                        accent: hex.map(|(light, night)| if dark { night } else { light }),
+                        increase_contrast,
+                        differentiate_without_color,
+                        text_scale: 1.0,
+                    };
+                    themes.push((format!("{appearance} {variant}"), Theme::new(dark, display)));
                 }
-            );
-            themes.push((format!("light {variant}"), Theme::new(false, display)));
-            themes.push((format!("dark {variant}"), Theme::new(true, display)));
+            }
         }
     }
     themes

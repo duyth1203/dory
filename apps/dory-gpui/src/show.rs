@@ -24,6 +24,10 @@
 //! - `search:<query>`, the query in the sidebar's search field and its first hit open, with the
 //!   matches marked
 //!
+//! `DORY_SYSTEM_PREFS` takes `increase-contrast`, `reduce-transparency`, `reduce-motion`,
+//! `differentiate-without-color`, and `accent=#RRGGBB`, comma-separated. Without `accent=` it
+//! stands for Multicolor.
+//!
 //! The app prints `show: ready` once the view is in place.
 
 use std::cell::Cell;
@@ -113,7 +117,7 @@ impl fmt::Display for LaunchError {
             }
             LaunchError::SystemPrefs(value) => write!(
                 f,
-                "{SYSTEM_PREFS_VAR} takes increase-contrast, reduce-transparency, reduce-motion, and differentiate-without-color, comma-separated, not {value:?}"
+                "{SYSTEM_PREFS_VAR} takes increase-contrast, reduce-transparency, reduce-motion, differentiate-without-color, and accent=#RRGGBB, comma-separated, not {value:?}"
             ),
         }
     }
@@ -265,7 +269,14 @@ fn parse_system_prefs(value: &str) -> Result<SystemPrefs, LaunchError> {
             "reduce-transparency" => prefs.reduce_transparency = true,
             "reduce-motion" => prefs.reduce_motion = true,
             "differentiate-without-color" => prefs.differentiate_without_color = true,
-            _ => return Err(LaunchError::SystemPrefs(value.to_owned())),
+            _ => {
+                prefs.accent = Some(
+                    word.strip_prefix("accent=#")
+                        .filter(|hex| hex.len() == 6)
+                        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                        .ok_or_else(|| LaunchError::SystemPrefs(value.to_owned()))?,
+                )
+            }
         }
     }
     Ok(prefs)
@@ -680,6 +691,20 @@ mod tests {
             launch(None, Some("bold-text")),
             Err(LaunchError::SystemPrefs("bold-text".into()))
         );
+        assert_eq!(
+            launch(None, Some("accent=#FF2D55, increase-contrast")).map(|l| l.system_prefs),
+            Ok(Some(SystemPrefs {
+                accent: Some(0xFF2D55),
+                increase_contrast: true,
+                ..SystemPrefs::default()
+            }))
+        );
+        for bad in ["accent=FF2D55", "accent=#FF2D5", "accent=#GG2D55"] {
+            assert_eq!(
+                launch(None, Some(bad)),
+                Err(LaunchError::SystemPrefs(bad.into()))
+            );
+        }
     }
 
     #[test]

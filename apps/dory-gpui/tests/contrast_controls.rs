@@ -7,23 +7,32 @@ use dory_gpui::marks;
 use dory_gpui::sidebar;
 use dory_gpui::theme::{
     ATTENTION_BORDER_MIN, DISABLED_OUTLINE_HIGH_MIN, Display, MIN_CONTRAST, MIN_NON_TEXT_CONTRAST,
-    Theme, contrast,
+    SYSTEM_ACCENTS, Theme, contrast,
 };
 use gpui_kit::{FontWeight, Hsla, Styled as _, TestAppContext, px};
 
-/// Every theme the system can ask for: both appearances, Increase Contrast on and off.
+/// Every theme the system can ask for: both appearances, Increase Contrast on and off, with
+/// Book's ink and with each system accent.
 fn every_theme() -> Vec<(String, Theme)> {
+    let accents = std::iter::once(("ink", None))
+        .chain(SYSTEM_ACCENTS.map(|(name, light, dark)| (name, Some((light, dark)))));
     let mut themes = Vec::new();
-    for increase_contrast in [false, true] {
-        let display = Display {
-            increase_contrast,
-            ..Display::default()
-        };
-        for (appearance, dark) in [("light", false), ("dark", true)] {
-            themes.push((
-                format!("{appearance}{}", if increase_contrast { " ic" } else { "" }),
-                Theme::new(dark, display),
-            ));
+    for (accent, hex) in accents {
+        for increase_contrast in [false, true] {
+            for (appearance, dark) in [("light", false), ("dark", true)] {
+                let display = Display {
+                    accent: hex.map(|(light, night)| if dark { night } else { light }),
+                    increase_contrast,
+                    ..Display::default()
+                };
+                themes.push((
+                    format!(
+                        "{appearance} {accent}{}",
+                        if increase_contrast { " ic" } else { "" }
+                    ),
+                    Theme::new(dark, display),
+                ));
+            }
         }
     }
     themes

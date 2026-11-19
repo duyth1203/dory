@@ -302,9 +302,14 @@ impl DetailPane {
             self.app.update(cx, |app, cx| app.show_match_tab(tab, cx));
         }
         if place == Some(Place::Title) {
-            let offset = self.page.offset();
-            self.page.set_offset(point(offset.x, px(0.)));
+            self.scroll_to_title();
         }
+    }
+
+    /// The title heads the page, so the page's top shows it.
+    fn scroll_to_title(&self) {
+        let offset = self.page.offset();
+        self.page.set_offset(point(offset.x, px(0.)));
     }
 
     /// A view reports the current match in view, which ends the open's `match-revealed` time.
@@ -339,11 +344,13 @@ impl DetailPane {
         self.title_edit.is_some()
     }
 
-    /// Swaps the title for a field holding it, all selected.
+    /// Swaps the title for a field holding it, all selected, and scrolls it into view: Rename
+    /// also comes from menus and the sidebar while the page is scrolled down.
     pub fn edit_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(detail) = self.session.read(cx).detail() else {
             return;
         };
+        self.scroll_to_title();
         let current = detail.recording.title.clone().unwrap_or_default();
         let placeholder = shown_title(&detail.recording, &Local);
         let field = cx.new(|cx| {

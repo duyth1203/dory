@@ -8,6 +8,7 @@ use dory_core::domain::{
 };
 use dory_core::ports::{Change, Store as _};
 use dory_core::testing::store::MemStore;
+use dory_gpui::actions::Rename;
 use dory_gpui::app::{AppState, DetailTab};
 use dory_gpui::fixtures::{self, SAMPLES};
 use dory_gpui::library::Selection;
@@ -332,6 +333,43 @@ fn scrolling_docks_the_player_and_pins_the_tab_row(cx: &mut TestAppContext) {
         );
     })
     .unwrap();
+}
+
+/// Rename from the More menu, the menu bar, or the sidebar once left the field off screen when
+/// the page was scrolled down.
+#[gpui_kit::test]
+fn rename_brings_the_title_field_into_view_ready_to_type(cx: &mut TestAppContext) {
+    let (window, app) = open_states(cx);
+    select(&app, STALE_NOTES, cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.scroll("detail", ScrollDelta::Pixels(point(px(0.), px(-3000.))), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let page = window.find("detail").bounds();
+        assert!(window.find("title").bounds().bottom() < page.top());
+        window.dispatch_action(Box::new(Rename), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let page = window.find("detail").bounds();
+        let editor = window.find("title-editor").bounds();
+        assert!(
+            editor.top() >= page.top() && editor.bottom() <= page.bottom(),
+            "the title field ({editor:?}) is in the page ({page:?})"
+        );
+        window.input("Quarter plan", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(label_of(window, "title", cx), "Quarter plan");
 }
 
 /// Kit's input frame fixes its height and line height for 13 pt text, so the 30 pt title once

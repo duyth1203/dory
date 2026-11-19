@@ -1,8 +1,9 @@
-//! The menu-bar extra (UX-8): "Dory" at rest, "Dory ·" while recordings are processed, and
-//! "● 12:34" while recording. Its menu starts with what is in progress, then Start or Stop
-//! Recording, Pause or Resume, Show Dory, Processing Queue…, and Quit Dory. It records without
-//! opening the window, and keeps working with the window closed. GPUI has no tray API, so the
-//! `NSStatusItem` is built here with `objc2-app-kit`, and all of its `unsafe` stays in this file.
+//! The menu-bar extra (UX-8): the fish alone at rest, the fish and "·" while recordings are
+//! processed, and the fish and "● 12:34" while recording. Its menu starts with what is in
+//! progress, then Start or Stop Recording, Pause or Resume, Show Dory, Processing Queue…, and
+//! Quit Dory. It records without opening the window, and keeps working with the window closed.
+//! GPUI has no tray API, so the `NSStatusItem` is built here with `objc2-app-kit`, and all of
+//! its `unsafe` stays in this file.
 //!
 //! The title, the menu's words, and what each command does are plain functions, tested without
 //! AppKit. The recorder's status event fires on a phase change only, so [`Clock`] adds the wall
@@ -18,11 +19,13 @@ use crate::a11y;
 use crate::app::AppState;
 use crate::in_progress::{InProgress, TakeState};
 
-pub const IDLE_TITLE: &str = "Dory";
-pub const BUSY_TITLE: &str = "Dory ·";
+pub const NAME: &str = "Dory";
+pub const IDLE_TITLE: &str = "";
+pub const BUSY_TITLE: &str = "·";
 
-/// "Dory", "Dory ·" while recordings are processed, "● 12:34" while recording, "Paused 12:34"
-/// while paused. Stopping a take leaves the grace period, which is no longer a recording.
+/// The text beside the fish: nothing at rest, "·" while recordings are processed, "● 12:34" while
+/// recording, "Paused 12:34" while paused. Stopping a take leaves the grace period, which is no
+/// longer a recording.
 pub fn title(status: &RecorderStatus, elapsed: Ms, busy: bool) -> String {
     match status {
         RecorderStatus::Recording { .. } => format!("● {}", a11y::clock(elapsed)),
@@ -33,7 +36,7 @@ pub fn title(status: &RecorderStatus, elapsed: Ms, busy: bool) -> String {
 }
 
 /// What VoiceOver reads for the menu-bar item (A11Y-1): the app's name and its state in words,
-/// where the title has only a glyph and a clock.
+/// where the item has only the fish, a glyph, and a clock.
 pub fn spoken(status: &RecorderStatus, elapsed: Ms, busy: bool) -> String {
     match status {
         RecorderStatus::Recording { .. } => {
@@ -43,7 +46,7 @@ pub fn spoken(status: &RecorderStatus, elapsed: Ms, busy: bool) -> String {
             format!("Dory, paused, {}", a11y::spoken_duration(elapsed))
         }
         RecorderStatus::Idle | RecorderStatus::Grace { .. } if busy => "Dory, processing".into(),
-        RecorderStatus::Idle | RecorderStatus::Grace { .. } => IDLE_TITLE.to_owned(),
+        RecorderStatus::Idle | RecorderStatus::Grace { .. } => NAME.to_owned(),
     }
 }
 
@@ -246,14 +249,16 @@ mod appkit {
     use gpui_kit::{App, Entity, Task};
     use objc2::rc::Retained;
     use objc2::runtime::{AnyObject, Sel};
-    use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-    use objc2_app_kit::{
-        NSAccessibility as _, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem,
-        NSVariableStatusItemLength,
+    use objc2::{
+        AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel,
     };
-    use objc2_foundation::{NSObject, NSString, ns_string};
+    use objc2_app_kit::{
+        NSAccessibility as _, NSBitmapImageRep, NSCellImagePosition, NSImage, NSMenu, NSMenuItem,
+        NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    };
+    use objc2_foundation::{NSData, NSObject, NSString, ns_string};
 
-    use super::{Clock, Command, IDLE_TITLE, Menu, is_recording, run};
+    use super::{Clock, Command, Menu, is_recording, run};
     use crate::app::AppState;
 
     define_class!(
@@ -299,6 +304,19 @@ mod appkit {
         }
     }
 
+    /// Built by `scripts/menubar-icon.swift` from `fish-source.webp`.
+    const FISH_1X: &[u8] = include_bytes!("../assets/menubar/menubar.png");
+    const FISH_2X: &[u8] = include_bytes!("../assets/menubar/menubar@2x.png");
+
+    /// A template image, so AppKit tints it for a light or dark menu bar and a highlighted item.
+    fn fish() -> Option<Retained<NSImage>> {
+        let image = NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(FISH_2X))?;
+        let one_x = NSBitmapImageRep::imageRepWithData(&NSData::with_bytes(FISH_1X))?;
+        image.addRepresentation(&one_x);
+        image.setTemplate(true);
+        Some(image)
+    }
+
     struct StatusItem {
         item: Retained<NSStatusItem>,
         menu: Retained<NSMenu>,
@@ -316,6 +334,9 @@ mod appkit {
             // target answers its action.
             menu.setAutoenablesItems(false);
             item.setMenu(Some(&menu));
+            if let Some(button) = item.button(mtm) {
+                button.setImage(fish().as_deref());
+            }
             Self {
                 item,
                 menu,
@@ -355,6 +376,11 @@ mod appkit {
             }
             if let Some(button) = self.item.button(self.mtm) {
                 button.setTitle(&NSString::from_str(&menu.title));
+                button.setImagePosition(if menu.title.is_empty() {
+                    NSCellImagePosition::ImageOnly
+                } else {
+                    NSCellImagePosition::ImageLeading
+                });
                 button.setAccessibilityLabel(Some(&NSString::from_str(&menu.spoken)));
             }
             self.menu.removeAllItems();
@@ -408,7 +434,7 @@ mod appkit {
             clock: Clock::default(),
             tick: None,
         }));
-        eprintln!("status-item: created {IDLE_TITLE}");
+        eprintln!("status-item: created");
         refresh(app, &shared, cx);
 
         cx.observe(app, {
@@ -458,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_is_dory_at_rest_a_dot_while_processing_and_the_clock_while_recording() {
+    fn the_fish_stands_alone_at_rest_with_a_dot_while_processing_and_the_clock_while_recording() {
         let recording = RecorderStatus::Recording {
             id: id(),
             recorded: Ms(0),
@@ -472,14 +498,14 @@ mod tests {
             recorded: Ms(0),
         };
         let cases = [
-            (RecorderStatus::Idle, Ms(0), false, "Dory"),
-            (RecorderStatus::Idle, Ms(0), true, "Dory ·"),
+            (RecorderStatus::Idle, Ms(0), false, ""),
+            (RecorderStatus::Idle, Ms(0), true, "·"),
             (recording.clone(), Ms(754_000), false, "● 12:34"),
             (recording.clone(), Ms(754_000), true, "● 12:34"),
             (recording, Ms(3_723_000), false, "● 1:02:03"),
             (paused, Ms(65_000), false, "Paused 1:05"),
-            (grace.clone(), Ms(65_000), false, "Dory"),
-            (grace, Ms(65_000), true, "Dory ·"),
+            (grace.clone(), Ms(65_000), false, ""),
+            (grace, Ms(65_000), true, "·"),
         ];
         for (status, elapsed, busy, want) in cases {
             assert_eq!(
@@ -491,6 +517,11 @@ mod tests {
         assert_eq!(
             spoken(&RecorderStatus::Idle, Ms(0), true),
             "Dory, processing"
+        );
+        assert_eq!(
+            spoken(&RecorderStatus::Idle, Ms(0), false),
+            "Dory",
+            "VoiceOver names the fish"
         );
     }
 

@@ -1561,6 +1561,7 @@ mod tests {
             done: Fraction::new(0.4),
             left: Left::Estimating,
             light: None,
+            chosen: None,
         };
         assert_eq!(
             Body::derive(&weekly, Some(&transcribing)),

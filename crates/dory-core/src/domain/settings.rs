@@ -38,6 +38,14 @@ pub enum Processing {
     Light,
 }
 
+/// How hard the pipeline works on one speech window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Pace {
+    Fast,
+    /// Two threads at normal priority.
+    Light,
+}
+
 /// Recovering the speech a speech model drops when a window switches language. `Auto` recovers
 /// only where it helps: a recording on Automatic, two or more meeting languages, and a model that
 /// reports sentence times. It is `Off` by default because it missed the public-audio rule in

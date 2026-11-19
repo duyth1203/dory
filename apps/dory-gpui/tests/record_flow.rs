@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use dory_core::app::{Dory, Options, Ports, RecorderStatus};
 use dory_core::domain::{
     Blocker, Channel, ChannelLayout, FailureClass, Goal, Job, JobError, JobEvent, JobState, Levels,
-    Ms, Priority, RecordingId, Stage, TakeInfo, TimeRange, Timestamp,
+    Ms, Pace, Priority, RecordingId, Stage, TakeInfo, TimeRange, Timestamp,
 };
 use dory_core::models::{
     Availability, DiarizationSupport, KindTag, Llm, ModelEntry, ModelId, ProviderId, Stt,
@@ -1101,7 +1101,7 @@ fn a_queued_recording_says_how_many_are_ahead_and_moves_to_top(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-fn running_light_says_why_and_use_fast_this_time_overrides_it(cx: &mut TestAppContext) {
+fn running_light_says_why_and_the_pace_switch_goes_fast_and_back_to_light(cx: &mut TestAppContext) {
     let mut rig = Rig::new();
     rig.machine.set(Conditions {
         power: Power::Battery,
@@ -1120,10 +1120,14 @@ fn running_light_says_why_and_use_fast_this_time_overrides_it(cx: &mut TestAppCo
     let id = record(window, &app, 10, cx);
     stop_into_grace(window, &app, cx);
     end_grace(&rig, &app, cx);
-    until(cx, "P5", |cx| label(window, "card-light", cx).is_some());
+    until(cx, "P5", |cx| label(window, "card-pace-chip", cx).is_some());
     assert_eq!(
-        label(window, "card-light", cx).as_deref(),
+        label(window, "card-pace-chip", cx).as_deref(),
         Some("Light, on battery")
+    );
+    assert_eq!(
+        label(window, "card-pace", cx).as_deref(),
+        Some("Use Fast This Time")
     );
     assert_eq!(
         label(window, "card-status", cx).as_deref(),
@@ -1137,8 +1141,38 @@ fn running_light_says_why_and_use_fast_this_time_overrides_it(cx: &mut TestAppCo
         Some("Transcript, 50%, light")
     );
 
-    click(window, "card-run-fast", cx);
-    until(cx, "the job to run fast", |_| rig.jobs(&id)[0].run_fast);
+    click(window, "card-pace", cx);
+    until(cx, "the job to run fast", |_| {
+        rig.jobs(&id)[0].pace == Some(Pace::Fast)
+    });
+    until(cx, "the way back to light", |cx| {
+        label(window, "card-pace", cx).as_deref() == Some("Use Light This Time")
+    });
+    assert_eq!(
+        label(window, "card-pace-chip", cx).as_deref(),
+        Some("Fast, this time")
+    );
+    assert_eq!(
+        label(window, "card-status", cx).as_deref(),
+        Some("Transcribing, 50%. Estimating time left. Running fast this time.")
+    );
+
+    click(window, "card-pace", cx);
+    until(cx, "the job to run light again", |_| {
+        rig.jobs(&id)[0].pace == Some(Pace::Light)
+    });
+    until(cx, "the switch to offer fast again", |cx| {
+        label(window, "card-pace", cx).as_deref() == Some("Use Fast This Time")
+    });
+    assert_eq!(
+        label(window, "card-pace-chip", cx).as_deref(),
+        Some("Light, this time")
+    );
+    assert!(row_word(window, &id, cx).ends_with(", 50%, light"));
+    assert!(
+        matches!(rig.jobs(&id)[0].state, JobState::Running { .. }),
+        "switching never interrupts the job"
+    );
     assert_eq!(
         rig.store.settings().unwrap().processing,
         dory_core::domain::Processing::Auto,

@@ -108,7 +108,9 @@ impl Running {
     /// "Transcribing 40% · about 4 min left", with ", light" in light pace.
     pub fn stage_line(&self) -> String {
         match &self.phase {
-            Phase::Transcribing { done, left, light } => {
+            Phase::Transcribing {
+                done, left, light, ..
+            } => {
                 let light = if light.is_some() { ", light" } else { "" };
                 format!(
                     "Transcribing {}%{light} · {}",
@@ -141,7 +143,12 @@ impl Running {
     pub fn sentence(&self) -> String {
         let title = &self.title;
         match &self.phase {
-            Phase::Transcribing { done, left, light } => {
+            Phase::Transcribing {
+                done,
+                left,
+                light,
+                chosen,
+            } => {
                 let mut said = format!(
                     "{title}, transcribing, {}%, {}",
                     Percent::of(*done).get(),
@@ -149,6 +156,8 @@ impl Running {
                 );
                 if let Some(reason) = light {
                     said.push_str(&format!(", running light because {}", because(*reason)));
+                } else if *chosen == Some(dory_core::domain::Pace::Fast) {
+                    said.push_str(", running fast this time");
                 }
                 said.push('.');
                 said
@@ -319,6 +328,7 @@ mod tests {
             done: Fraction::new(percent / 100.),
             left: Left::About(Ms(left * MIN)),
             light,
+            chosen: None,
         }
     }
 

@@ -11,12 +11,12 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use super::Options;
 use super::events::{Db, Event};
 use super::models::{Engines, Registries};
-use super::pace::{self, Budget, Pacer};
+use super::pace::{self, Budget, LightReason, Pacer};
 use super::recorder::RecorderWatch;
 use super::stages::{self, StageCx, StageError};
 use crate::domain::{
-    FailureClass, Job, JobEvent, JobId, JobState, MAX_ATTEMPTS, Priority, Processing, RecordingId,
-    RecordingQuery, Stage, Timestamp,
+    FailureClass, Job, JobEvent, JobId, JobState, MAX_ATTEMPTS, Pace, Priority, Processing,
+    RecordingId, RecordingQuery, Stage, Timestamp,
 };
 use crate::ports::{CancelToken, Change, Clock, Machine, Store, StoreError, Takes};
 
@@ -136,20 +136,21 @@ struct Pacing {
 
 impl Pacing {
     /// Reads the setting and the job again each time, so a change of either applies from the
-    /// next window. A job the user ran fast is Fast whatever the setting says.
+    /// next window. A pace the user chose for the job wins over the setting.
     fn budget(&mut self, job: JobId) -> Budget {
-        let run_fast = self
-            .store
-            .job(job)
-            .is_ok_and(|j| j.is_some_and(|j| j.run_fast));
-        let setting = if run_fast {
-            Processing::Fast
-        } else {
-            self.processing.unwrap_or_else(|| {
+        let chosen = self.store.job(job).ok().flatten().and_then(|j| j.pace);
+        let setting = match chosen {
+            Some(Pace::Fast) => Processing::Fast,
+            Some(Pace::Light) => {
+                return Budget::Light {
+                    reason: LightReason::ThisTime,
+                };
+            }
+            None => self.processing.unwrap_or_else(|| {
                 self.store
                     .settings()
                     .map_or(Processing::Auto, |s| s.processing)
-            })
+            }),
         };
         self.pacer.next(
             setting,

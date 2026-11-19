@@ -27,7 +27,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use dory_core::domain::{Ms, RecordingId, Waveform};
+use dory_core::domain::{Ms, Pace, RecordingId, Waveform};
 use gpui_kit::{
     AnyElement, App, Bounds, Context, Entity, FocusHandle, FontWeight, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -43,7 +43,7 @@ use crate::glyphs;
 use crate::icons::{self, Icon};
 use crate::library;
 use crate::motion::{self, ease_standard, elapsed, mix};
-use crate::processing::{Fix, Phase, Problem, Step, StepGlyph, light_chip};
+use crate::processing::{Fix, Phase, Problem, Step, StepGlyph};
 use crate::theme::Theme;
 
 /// One bar per [`BAR_PITCH`], at most [`MAX_BARS`], [`GAP`] apart: `paint_bar` gives each bar's
@@ -232,7 +232,7 @@ pub struct PlayerView {
     controls: [FocusHandle; 3],
     fix_focus: FocusHandle,
     top_focus: FocusHandle,
-    fast_focus: FocusHandle,
+    pace_focus: FocusHandle,
     docked: bool,
     shown_at: Option<Instant>,
     wave: Rc<Cell<Bounds<Pixels>>>,
@@ -256,7 +256,7 @@ impl PlayerView {
             controls: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
             fix_focus: cx.focus_handle(),
             top_focus: cx.focus_handle(),
-            fast_focus: cx.focus_handle(),
+            pace_focus: cx.focus_handle(),
             docked: false,
             shown_at: None,
             wave: Rc::default(),
@@ -730,9 +730,9 @@ impl PlayerView {
             .child(status)
             .children(move_to_top);
 
-        let chip = phase.light().map(|reason| {
+        let chip = phase.pace_switch().map(|switch| {
             let (app, id) = (self.app.clone(), id.clone());
-            let label = light_chip(reason);
+            let label = switch.chip;
             div()
                 .flex()
                 .flex_wrap()
@@ -740,7 +740,7 @@ impl PlayerView {
                 .gap(px(10.))
                 .opacity(ease_standard(elapsed(t.chip_at, motion::SLOW)))
                 .child(
-                    a11y::node("card-light", Role::Label, label)
+                    a11y::node("card-pace-chip", Role::Label, label)
                         .min_h(px(22.))
                         .flex()
                         .items_center()
@@ -751,18 +751,20 @@ impl PlayerView {
                         .border_color(theme.control_border)
                         .text_size(theme.text(12.))
                         .text_color(theme.text_secondary)
-                        .child(Icon::BatteryMedium.view(12., theme.text_secondary))
+                        .when(switch.to == Pace::Fast, |chip| {
+                            chip.child(Icon::BatteryMedium.view(12., theme.text_secondary))
+                        })
                         .child(label),
                 )
                 .child(
                     a11y::focusable(
-                        a11y::node("card-run-fast", Role::Button, "Use Fast This Time"),
-                        &self.fast_focus,
+                        a11y::node("card-pace", Role::Button, switch.button()),
+                        &self.pace_focus,
                         &theme,
                         false,
                     )
                     .on_click(move |_, _, cx| {
-                        app.update(cx, |app, cx| app.run_fast(id.clone(), cx))
+                        app.update(cx, |app, cx| app.run_at(id.clone(), switch.to, cx))
                     })
                     .min_h(px(24.))
                     .px(px(4.))
@@ -773,7 +775,7 @@ impl PlayerView {
                     .text_size(theme.text(12.))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(theme.accent_text)
-                    .child("Use Fast This Time"),
+                    .child(switch.button()),
                 )
         });
         let fix = match phase {

@@ -29,7 +29,7 @@ pub use media::{Channel, ChannelLayout, Ms};
 pub use recording::{
     Recording, RecordingEdit, RecordingQuery, RecordingRow, SummaryFlag, TakeContainer, TakeInfo,
 };
-pub use settings::{Processing, Recovery, Settings};
+pub use settings::{Pace, Processing, Recovery, Settings};
 pub use summary_sections::{Sections, list_items, sections, tidy};
 pub use time::{Fraction, TimeRange, Timestamp};
 pub use transcript::{BILINGUAL_SHARE, Segment, SpeakerId, SpeakerNames, Summary, Transcript};

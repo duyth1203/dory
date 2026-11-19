@@ -4,13 +4,7 @@ pub trait Machine: Send + Sync {
     fn conditions(&self) -> Conditions;
 }
 
-/// How hard the pipeline works.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Pace {
-    Fast,
-    /// Two threads at normal priority.
-    Light,
-}
+pub use crate::domain::Pace;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Power {

@@ -11,7 +11,7 @@
 //! - `about`
 //! - `recording:<title>` and `recording:<title>:transcript`, and `recording:<title>:translate-open`
 //!   for the Summary tab with the **Translate…** combobox popover open
-//! - `phase:<P1, P2, P3a, P3b, P4, P5, P6, P7, or P8>[:<title>]`, on that recording or the
+//! - `phase:<P1, P2, P3a, P3b, P4, P5, P5f, P6, P7, or P8>[:<title>]`, on that recording or the
 //!   newest
 //! - `explainer`, the first speech model's info popover in Settings › Transcription, and
 //!   `explainer:<model name>` for the model of that name, speech or summary
@@ -601,7 +601,9 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            ["P1", "P2", "P3a", "P3b", "P4", "P5", "P6", "P7", "P8"]
+            [
+                "P1", "P2", "P3a", "P3b", "P4", "P5", "P5f", "P6", "P7", "P8"
+            ]
         );
         for (ix, label) in labels.iter().enumerate() {
             assert_eq!(
@@ -612,7 +614,7 @@ mod tests {
         assert_eq!(
             view("phase:p8:1:1 with Sam"),
             Ok(Some(View::Phase {
-                ix: 8,
+                ix: 9,
                 title: Some("1:1 with Sam".into())
             }))
         );

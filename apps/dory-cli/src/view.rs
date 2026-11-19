@@ -59,6 +59,7 @@ pub fn budget(budget: Budget) -> String {
             "light, {threads} threads, {}",
             match reason {
                 LightReason::Chosen => "set to light",
+                LightReason::ThisTime => "light this time",
                 LightReason::Battery => "on battery",
                 LightReason::LowPower => "Low Power Mode",
                 LightReason::Hot => "the Mac is hot",

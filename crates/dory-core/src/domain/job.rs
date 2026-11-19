@@ -4,7 +4,7 @@
 
 use thiserror::Error;
 
-use super::{FailureCause, FailureClass, JobId, RecordingId, Timestamp};
+use super::{FailureCause, FailureClass, JobId, Pace, RecordingId, Timestamp};
 use crate::models::{KindTag, Mismatch, ModelRef, Unavailable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -118,9 +118,10 @@ pub struct Job {
     /// The job's spot in line. Lower runs sooner among jobs of the same priority. It starts as
     /// the enqueue time, so jobs run oldest first until the user reorders them.
     pub place: i64,
-    /// The user chose Use Fast This Time (UX-30): this job transcribes at Fast whatever the
-    /// setting and the Mac's conditions. Other jobs keep following the setting.
-    pub run_fast: bool,
+    /// The pace the user chose for this job alone with Use Fast This Time or Use Light This Time
+    /// (UX-30), whatever the setting and the Mac's conditions. `None` follows the setting. Other
+    /// jobs keep following the setting.
+    pub pace: Option<Pace>,
     /// Starts of the current stage. Reset when a stage finishes or the user retries.
     pub attempts: u8,
     /// Retry backoff. The worker skips the job until then.
@@ -210,9 +211,11 @@ pub enum JobEvent {
     /// the worker is not an error, and the wish holds when the job is queued again. Illegal once
     /// the job is terminal.
     Promote,
-    /// Use Fast This Time. Accepted while the job runs or waits, like `Promote`, and kept when
-    /// the job is queued again.
-    RunFast,
+    /// Use Fast This Time or Use Light This Time. Accepted while the job runs or waits, like
+    /// `Promote`, and kept when the job is queued again. The last choice wins.
+    RunAt {
+        pace: Pace,
+    },
     /// The user moved the job to this spot in line. Accepted while the job runs or waits, like
     /// `Promote`, so a move that races the worker is not an error. It also resets the priority
     /// to Normal, so the spot alone decides the order.
@@ -244,7 +247,7 @@ impl Job {
             state: JobState::Queued,
             priority,
             place: created_at.0,
-            run_fast: false,
+            pace: None,
             attempts: 0,
             not_before: None,
             created_at,
@@ -283,8 +286,8 @@ impl Job {
                     next.priority = Priority::Front;
                     true
                 }
-                E::RunFast => {
-                    next.run_fast = true;
+                E::RunAt { pace } => {
+                    next.pace = Some(*pace);
                     true
                 }
                 E::Place { place } => {
@@ -351,8 +354,8 @@ impl Job {
                     next.priority = Priority::Front;
                     true
                 }
-                E::RunFast => {
-                    next.run_fast = true;
+                E::RunAt { pace } => {
+                    next.pace = Some(*pace);
                     true
                 }
                 E::Place { place } => {
@@ -371,8 +374,8 @@ impl Job {
                     next.priority = Priority::Front;
                     true
                 }
-                E::RunFast => {
-                    next.run_fast = true;
+                E::RunAt { pace } => {
+                    next.pace = Some(*pace);
                     true
                 }
                 E::Place { place } => {
@@ -438,7 +441,7 @@ mod tests {
             state,
             priority: Priority::Normal,
             place: 0,
-            run_fast: false,
+            pace: None,
             attempts: 0,
             not_before: None,
             created_at: Timestamp(0),
@@ -491,8 +494,8 @@ mod tests {
             (St::Queued | St::Running { .. } | St::Blocked { .. }, E::Promote) => {
                 with(&|j| j.priority = Priority::Front)
             }
-            (St::Queued | St::Running { .. } | St::Blocked { .. }, E::RunFast) => {
-                with(&|j| j.run_fast = true)
+            (St::Queued | St::Running { .. } | St::Blocked { .. }, E::RunAt { pace }) => {
+                with(&|j| j.pace = Some(*pace))
             }
             (St::Queued | St::Running { .. } | St::Blocked { .. }, E::Place { place }) => {
                 with(&|j| {
@@ -578,7 +581,7 @@ mod tests {
             JobEvent::Unblock => 7,
             JobEvent::Retake => 8,
             JobEvent::Promote => 9,
-            JobEvent::RunFast => 10,
+            JobEvent::RunAt { .. } => 10,
             JobEvent::Place { .. } => 11,
         }
     }
@@ -631,7 +634,8 @@ mod tests {
             JobEvent::Unblock,
             JobEvent::Retake,
             JobEvent::Promote,
-            JobEvent::RunFast,
+            JobEvent::RunAt { pace: Pace::Fast },
+            JobEvent::RunAt { pace: Pace::Light },
             JobEvent::Place { place: 9 },
         ]
     }
@@ -964,17 +968,35 @@ mod tests {
     }
 
     #[test]
-    fn run_fast_survives_a_retry_and_a_wait() {
+    fn a_running_job_goes_light_to_fast_and_back_to_light() {
+        let light = |j: &Job| j.on(&JobEvent::RunAt { pace: Pace::Light });
+        let fast = |j: &Job| j.on(&JobEvent::RunAt { pace: Pace::Fast });
+        let start = job(Goal::ALL, &[], running(T));
+        let fast_now = fast(&start).unwrap();
+        assert_eq!(fast_now.pace, Some(Pace::Fast));
+        let light_again = light(&fast_now).unwrap();
+        assert_eq!(
+            (light_again.state.clone(), light_again.pace),
+            (running(T), Some(Pace::Light)),
+            "the way back keeps the job running"
+        );
+        assert_eq!(fast(&light_again).unwrap().pace, Some(Pace::Fast));
+    }
+
+    #[test]
+    fn the_chosen_pace_survives_a_retry_and_a_wait() {
         let fast = job(Goal::ALL, &[], running(T))
-            .on(&JobEvent::RunFast)
+            .on(&JobEvent::RunAt { pace: Pace::Fast })
             .and_then(|j| {
                 j.on(&JobEvent::Retry {
                     not_before: Timestamp(5),
                 })
             })
-            .and_then(|j| j.on(&JobEvent::RunFast))
             .unwrap();
-        assert_eq!((fast.state, fast.run_fast), (JobState::Queued, true));
+        assert_eq!(
+            (fast.state, fast.pace),
+            (JobState::Queued, Some(Pace::Fast))
+        );
     }
 
     #[test]

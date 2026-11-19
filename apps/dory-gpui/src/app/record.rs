@@ -8,7 +8,7 @@ use std::pin::Pin;
 
 use dory_core::app::{AppKind, Dory, Event, RecorderStatus, StartOptions};
 use dory_core::domain::{
-    Goal, JobId, JobState, Ms, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
+    Goal, JobId, JobState, Ms, Pace, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
 };
 use dory_core::models::{Availability, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use dory_core::ports::ProvisionError;
@@ -282,6 +282,7 @@ impl AppState {
                 .estimates
                 .get(id)
                 .map_or(Left::Estimating, Estimate::left),
+            chosen: job.and_then(|j| j.pace),
             auto_process: self.settings.auto_process,
             models: &self.models,
             downloads: &self.downloads,
@@ -434,9 +435,10 @@ impl AppState {
         cx.notify();
     }
 
-    /// Use Fast This Time (UX-30): this one job runs fast, the setting stays.
-    pub fn run_fast(&mut self, id: RecordingId, cx: &mut Context<Self>) {
-        self.on_active_job(id, cx, |dory, job| dory.pipeline().run_fast(job));
+    /// Use Fast This Time and Use Light This Time (UX-30): this one job runs at `pace` from its
+    /// next speech window, the setting stays.
+    pub fn run_at(&mut self, id: RecordingId, pace: Pace, cx: &mut Context<Self>) {
+        self.on_active_job(id, cx, move |dory, job| dory.pipeline().run_at(job, pace));
     }
 
     fn on_active_job(

@@ -15,8 +15,10 @@ pub const LIGHT_THREADS: u8 = 2;
 /// Why a job runs light.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LightReason {
-    /// The user chose Light.
+    /// The user chose Light in Settings.
     Chosen,
+    /// The user chose Use Light This Time for this job.
+    ThisTime,
     Battery,
     LowPower,
     /// Thermal state serious or critical.

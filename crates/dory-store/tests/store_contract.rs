@@ -1,5 +1,5 @@
 use dory_core::domain::{
-    Channel, ChannelLayout, Goal, JobEvent, JobState, LangTag, LanguagePref, Ms, Priority,
+    Channel, ChannelLayout, Goal, JobEvent, JobState, LangTag, LanguagePref, Ms, Pace, Priority,
     Recording, RecordingId, RecordingQuery, Settings, Stage, SummaryTranslation, TimeRange,
     Timestamp, Translation,
 };
@@ -84,7 +84,7 @@ fn state_survives_closing_and_reopening_the_database() {
                 },
                 Change::Job {
                     job: job.id,
-                    event: JobEvent::RunFast,
+                    event: JobEvent::RunAt { pace: Pace::Light },
                 },
             ])
             .unwrap();
@@ -96,14 +96,14 @@ fn state_survives_closing_and_reopening_the_database() {
     );
     let job = store.jobs_for(&rid("r")).unwrap().remove(0);
     assert_eq!(
-        (job.state, job.priority, job.attempts, job.run_fast),
+        (job.state, job.priority, job.attempts, job.pace),
         (
             JobState::Running {
                 stage: Stage::Transcribe
             },
             Priority::Front,
             1,
-            true
+            Some(Pace::Light)
         )
     );
 }

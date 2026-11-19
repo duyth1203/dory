@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use dory_core::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
-    Job, JobEvent, JobId, JobState, LangTag, Priority, Processing, Recording, RecordingEdit,
+    Job, JobEvent, JobId, JobState, LangTag, Pace, Priority, Processing, Recording, RecordingEdit,
     RecordingId, RecordingQuery, RecordingRow, Recovery, Revision, Segment, Settings, SpeakerId,
     SpeakerNames, Summary, SummaryFlag, SummaryTranslation, TakeInfo, Timestamp, Transcript,
     Translation, Writes,
@@ -274,7 +274,7 @@ struct RawJob {
     attempts: i64,
     not_before: Option<i64>,
     created_at: i64,
-    run_fast: bool,
+    run_fast: i64,
     place: i64,
 }
 
@@ -347,7 +347,7 @@ fn decode_job(raw: RawJob) -> Result<Job, StoreError> {
             other => return Err(corrupt(format!("unknown priority {other}"))),
         },
         place: raw.place,
-        run_fast: raw.run_fast,
+        pace: pace_from_db(raw.run_fast)?,
         attempts: u8::try_from(raw.attempts).map_err(|_| corrupt("job attempts out of range"))?,
         not_before: raw.not_before.map(Timestamp),
         created_at: Timestamp(raw.created_at),
@@ -399,6 +399,25 @@ fn priority_to_db(priority: Priority) -> i64 {
     match priority {
         Priority::Normal => 0,
         Priority::Front => 1,
+    }
+}
+
+/// The job's chosen pace lives in the `run_fast` column, which v3 added when Fast was the only
+/// choice, so its 0 and 1 still read as before.
+fn pace_to_db(pace: Option<Pace>) -> i64 {
+    match pace {
+        None => 0,
+        Some(Pace::Fast) => 1,
+        Some(Pace::Light) => 2,
+    }
+}
+
+fn pace_from_db(raw: i64) -> Result<Option<Pace>, StoreError> {
+    match raw {
+        0 => Ok(None),
+        1 => Ok(Some(Pace::Fast)),
+        2 => Ok(Some(Pace::Light)),
+        other => Err(corrupt(format!("unknown job pace {other}"))),
     }
 }
 
@@ -1851,7 +1870,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             i64::from(job.attempts),
             job.not_before.map(|t| t.0),
             job.created_at.0,
-            job.run_fast,
+            pace_to_db(job.pace),
             columns.error_cause,
             job.place,
         ])

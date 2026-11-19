@@ -137,7 +137,7 @@ mod tests {
             done: Vec::new(),
             state,
             priority: Priority::Normal,
-            run_fast: false,
+            pace: None,
             attempts: 0,
             not_before: None,
             created_at: Timestamp(0),

@@ -295,7 +295,7 @@ impl ProcessingWindow {
         let key = format!("{}", running.job.0);
         let row_focus = self.focus_for(key.clone(), "row", cx);
         let cancel_focus = self.focus_for(key.clone(), "cancel", cx);
-        let fast_focus = self.focus_for(key, "fast", cx);
+        let pace_focus = self.focus_for(key, "pace", cx);
         let app = self.app.clone();
         let id = running.recording.clone();
         let looping = motion::looping(window, cx);
@@ -352,7 +352,7 @@ impl ProcessingWindow {
                 move |window, cx| this.update(cx, |this, cx| this.cancel(job, window, cx)),
             )
         };
-        let light = running.phase.light().map(|reason| {
+        let light = running.phase.pace_switch().map(|switch| {
             let app = app.clone();
             let id = id.clone();
             div()
@@ -361,26 +361,22 @@ impl ProcessingWindow {
                 .items_center()
                 .gap(px(8.))
                 .child(
-                    a11y::node(
-                        "queue-light",
-                        Role::Label,
-                        crate::processing::light_chip(reason),
-                    )
-                    .px(px(8.))
-                    .py(px(2.))
-                    .rounded_full()
-                    .bg(theme.chip_bg)
-                    .text_size(theme.text(12.))
-                    .child(crate::processing::light_chip(reason)),
+                    a11y::node("queue-pace-chip", Role::Label, switch.chip)
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded_full()
+                        .bg(theme.chip_bg)
+                        .text_size(theme.text(12.))
+                        .child(switch.chip),
                 )
                 .child(surface::button(
-                    "queue-run-fast",
-                    "Use Fast This Time",
-                    "Use Fast This Time",
+                    "queue-pace",
+                    switch.button(),
+                    switch.button(),
                     Look::Link,
-                    &fast_focus,
+                    &pace_focus,
                     &theme,
-                    move |_, cx| app.update(cx, |app, cx| app.run_fast(id.clone(), cx)),
+                    move |_, cx| app.update(cx, |app, cx| app.run_at(id.clone(), switch.to, cx)),
                 ))
         });
         let choose = {

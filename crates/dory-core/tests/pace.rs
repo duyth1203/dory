@@ -210,7 +210,8 @@ struct Watching {
 }
 
 struct Gate {
-    at: usize,
+    /// The calls it stops at, so a test can act at more than one window.
+    at: &'static [usize],
     reached: mpsc::Sender<()>,
     resume: mpsc::Receiver<()>,
 }
@@ -231,7 +232,13 @@ impl Transcriber for Watching {
         }
         let call = seen.len() - 1;
         drop(seen);
-        if let Some(gate) = self.gate.lock().unwrap().as_ref().filter(|g| g.at == call) {
+        if let Some(gate) = self
+            .gate
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|g| g.at.contains(&call))
+        {
             gate.reached.send(()).unwrap();
             gate.resume.recv().unwrap();
         }
@@ -449,7 +456,7 @@ fn use_fast_this_time_runs_that_job_fast_from_the_next_window_and_no_other() {
     let (reached_tx, reached) = mpsc::channel();
     let (resume, resume_rx) = mpsc::channel();
     *rig.engine.gate.lock().unwrap() = Some(Gate {
-        at: 1,
+        at: &[1],
         reached: reached_tx,
         resume: resume_rx,
     });
@@ -460,9 +467,10 @@ fn use_fast_this_time_runs_that_job_fast_from_the_next_window_and_no_other() {
         .recv_timeout(Duration::from_secs(30))
         .expect("the engine reaches window 2");
     let job = dory.library().jobs(&id).unwrap()[0].id;
-    dory.pipeline().run_fast(job).unwrap();
-    assert!(
-        dory.pipeline().job(job).unwrap().unwrap().run_fast,
+    dory.pipeline().run_at(job, Pace::Fast).unwrap();
+    assert_eq!(
+        dory.pipeline().job(job).unwrap().unwrap().pace,
+        Some(Pace::Fast),
         "the job records that it runs fast"
     );
     resume.send(()).unwrap();
@@ -500,5 +508,60 @@ fn use_fast_this_time_is_refused_once_the_job_is_done() {
     let dory = rig.open(None);
     finish(&dory, &id, Goal::TRANSCRIBE);
     let job = dory.library().jobs(&id).unwrap()[0].id;
-    assert!(dory.pipeline().run_fast(job).is_err());
+    assert!(dory.pipeline().run_at(job, Pace::Fast).is_err());
+    assert!(dory.pipeline().run_at(job, Pace::Light).is_err());
+}
+
+#[test]
+fn a_running_job_goes_light_to_fast_and_back_to_light_from_the_next_window() {
+    let rig = Rig::new(on_battery(), None);
+    let id = rig.seed(120);
+    let (reached_tx, reached) = mpsc::channel();
+    let (resume, resume_rx) = mpsc::channel();
+    *rig.engine.gate.lock().unwrap() = Some(Gate {
+        at: &[1, 2],
+        reached: reached_tx,
+        resume: resume_rx,
+    });
+    let dory = rig.open(None);
+    let events = dory.events();
+    dory.pipeline().enqueue(&id, Goal::TRANSCRIBE).unwrap();
+    let job = |dory: &Dory| dory.library().jobs(&id).unwrap()[0].id;
+    reached
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the engine reaches window 2");
+    dory.pipeline().run_at(job(&dory), Pace::Fast).unwrap();
+    resume.send(()).unwrap();
+    reached
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the engine reaches window 3");
+    dory.pipeline().run_at(job(&dory), Pace::Light).unwrap();
+    assert_eq!(
+        dory.pipeline().job(job(&dory)).unwrap().unwrap().pace,
+        Some(Pace::Light),
+        "the job records the way back"
+    );
+    resume.send(()).unwrap();
+    eventually("the job to succeed", || {
+        dory.library().jobs(&id).unwrap().pop().map(|j| j.state) == Some(JobState::Succeeded)
+    });
+
+    let fast = fast_count();
+    let threads: Vec<u8> = rig.seen().iter().map(|s| s.threads).collect();
+    assert_eq!(
+        threads,
+        [LIGHT_THREADS, LIGHT_THREADS, fast, LIGHT_THREADS],
+        "light on battery, fast after Use Fast This Time, light again after Use Light This Time"
+    );
+    let shown = budgets(&events, Stage::Transcribe);
+    assert_eq!(
+        shown.last(),
+        Some(&Some(light(LightReason::ThisTime))),
+        "progress says the user chose light: {shown:?}"
+    );
+    assert_eq!(
+        rig.store.settings().unwrap().processing,
+        Processing::Auto,
+        "the setting stays"
+    );
 }

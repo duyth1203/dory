@@ -47,9 +47,9 @@ use recorder::{Msg, RecorderHandle, commit_sealed};
 
 use crate::domain::{
     AssistantAccess, Goal, InvalidInput, Job, JobEvent, JobId, JobState, LangTag, LanguagePref,
-    Priority, Processing, Recording, RecordingEdit, RecordingId, RecordingQuery, RecordingRow,
-    Settings, SpeakerId, SpeakerNames, Stage, Summary, SummaryRefusal, SummaryTranslation,
-    TakeContainer, Transcript, Translation, Waveform,
+    Pace, Priority, Processing, Recording, RecordingEdit, RecordingId, RecordingQuery,
+    RecordingRow, Settings, SpeakerId, SpeakerNames, Stage, Summary, SummaryRefusal,
+    SummaryTranslation, TakeContainer, Transcript, Translation, Waveform,
 };
 use crate::models::{CatalogError, Choice, Diar, KindTag, Llm, ModelId, ModelRef, Stt};
 use crate::ports::capture::{
@@ -1070,10 +1070,11 @@ impl Pipeline<'_> {
         Ok(())
     }
 
-    /// Use Fast This Time (UX-30): runs this one job fast from its next speech window, whatever
-    /// the setting and the Mac's conditions, without changing the setting.
-    pub fn run_fast(&self, job: JobId) -> Result<(), DoryError> {
-        self.event(job, JobEvent::RunFast)
+    /// Use Fast This Time and Use Light This Time (UX-30): runs this one job at `pace` from its
+    /// next speech window, whatever the setting and the Mac's conditions, without changing the
+    /// setting. The user can switch back and forth while the job runs.
+    pub fn run_at(&self, job: JobId, pace: Pace) -> Result<(), DoryError> {
+        self.event(job, JobEvent::RunAt { pace })
     }
 
     pub fn job(&self, job: JobId) -> Result<Option<Job>, StoreError> {

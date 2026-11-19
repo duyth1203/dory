@@ -27,6 +27,7 @@ fn status(row: &RecordingRow, recorder: &RecorderStatus, progress: Option<Progre
         translating_summary: false,
         spot: None,
         left: Left::Estimating,
+        chosen: None,
         auto_process: true,
         models: &models,
         downloads: &downloads,

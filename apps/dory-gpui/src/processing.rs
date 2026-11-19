@@ -72,6 +72,9 @@ pub struct Facts<'a> {
     pub spot: Option<Spot>,
     /// The smoothed time left of the running stage.
     pub left: Left,
+    /// The pace the user chose for the active job alone (UX-30), `None` while it follows the
+    /// setting.
+    pub chosen: Option<Pace>,
     /// Settings > Transcription > Process recordings automatically.
     pub auto_process: bool,
     pub models: &'a HashMap<ModelRef, ModelInfo>,
@@ -95,11 +98,13 @@ pub enum Phase {
     Queued(Spot),
     /// P3b: the transcribe stage started, and no window yet.
     Preparing,
-    /// P4, and P5 when `light` says why it runs light.
+    /// P4, and P5 when `light` says why it runs light. `chosen` is the pace the user picked for
+    /// this job, which `light` already follows.
     Transcribing {
         done: Fraction,
         left: Left,
         light: Option<LightReason>,
+        chosen: Option<Pace>,
     },
     /// Between P4 and P6, when an output language is set: the transcript is ready to read as
     /// spoken, and Dory writes it in the output language.
@@ -248,7 +253,13 @@ impl Phase {
                 Some(p) => Phase::Transcribing {
                     done: p.fraction,
                     left: facts.left,
-                    light: p.budget.and_then(|b| b.reason()),
+                    // The choice shows at once; the budget changes only from the next window.
+                    light: match facts.chosen {
+                        Some(Pace::Fast) => None,
+                        Some(Pace::Light) => Some(LightReason::ThisTime),
+                        None => p.budget.and_then(|b| b.reason()),
+                    },
+                    chosen: facts.chosen,
                 },
                 None => Phase::Preparing,
             },
@@ -484,7 +495,12 @@ impl Phase {
                 }
             }
             Phase::Preparing => "Getting ready to transcribe. Loading the speech model.".into(),
-            Phase::Transcribing { done, left, light } => {
+            Phase::Transcribing {
+                done,
+                left,
+                light,
+                chosen,
+            } => {
                 let percent = Percent::of(*done).get();
                 let mut said = match left {
                     Left::Estimating => format!("Transcribing, {percent}%. Estimating time left."),
@@ -492,6 +508,8 @@ impl Phase {
                 };
                 if let Some(reason) = light {
                     said.push_str(&format!(" Running light because {}.", because(*reason)));
+                } else if *chosen == Some(Pace::Fast) {
+                    said.push_str(" Running fast this time.");
                 }
                 said
             }
@@ -535,11 +553,30 @@ impl Phase {
         }
     }
 
-    /// The chip that says why transcription runs light, with Use Fast This Time (P5).
+    /// Why transcription runs light (P5).
     pub fn light(&self) -> Option<LightReason> {
         match self {
             Phase::Transcribing { light, .. } => *light,
             _ => None,
+        }
+    }
+
+    /// The pace chip and its one button (UX-30): while transcription runs light, or once the
+    /// user chose a pace for this job, so the choice can always be switched back.
+    pub fn pace_switch(&self) -> Option<PaceSwitch> {
+        let Phase::Transcribing { light, chosen, .. } = self else {
+            return None;
+        };
+        match (light, chosen) {
+            (Some(reason), _) => Some(PaceSwitch {
+                chip: light_chip(*reason),
+                to: Pace::Fast,
+            }),
+            (None, Some(Pace::Fast)) => Some(PaceSwitch {
+                chip: "Fast, this time",
+                to: Pace::Light,
+            }),
+            (None, _) => None,
         }
     }
 
@@ -991,10 +1028,27 @@ fn unavailable(reason: &UnavailableReason) -> String {
     }
 }
 
+/// What the pace chip says and the pace its button switches the job to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaceSwitch {
+    pub chip: &'static str,
+    pub to: Pace,
+}
+
+impl PaceSwitch {
+    pub fn button(self) -> &'static str {
+        match self.to {
+            Pace::Fast => "Use Fast This Time",
+            Pace::Light => "Use Light This Time",
+        }
+    }
+}
+
 /// The chip in the card while transcription runs light (UX-30).
 pub fn light_chip(reason: LightReason) -> &'static str {
     match reason {
         LightReason::Chosen => "Light, chosen in Settings",
+        LightReason::ThisTime => "Light, this time",
         LightReason::Battery => "Light, on battery",
         LightReason::LowPower => "Light, Low Power Mode",
         LightReason::Hot => "Light, Mac is warm",
@@ -1005,6 +1059,7 @@ pub fn light_chip(reason: LightReason) -> &'static str {
 pub(crate) fn because(reason: LightReason) -> &'static str {
     match reason {
         LightReason::Chosen => "Light is chosen in Settings",
+        LightReason::ThisTime => "you chose Light for this recording",
         LightReason::Battery => "the Mac is on battery",
         LightReason::LowPower => "Low Power Mode is on",
         LightReason::Hot => "the Mac is warm",
@@ -1143,6 +1198,7 @@ mod tests {
         translating_summary: bool,
         spot: Option<Spot>,
         left: Left,
+        chosen: Option<Pace>,
         models: HashMap<ModelRef, ModelInfo>,
         downloads: HashMap<ModelRef, Download>,
     }
@@ -1166,6 +1222,7 @@ mod tests {
             translating_summary: false,
             spot: None,
             left: Left::Estimating,
+            chosen: None,
             models: HashMap::new(),
             downloads: HashMap::new(),
         }
@@ -1198,6 +1255,7 @@ mod tests {
                 translating_summary: self.translating_summary,
                 spot: self.spot,
                 left: self.left,
+                chosen: self.chosen,
                 auto_process: true,
                 models: &self.models,
                 downloads: &self.downloads,
@@ -1404,6 +1462,63 @@ mod tests {
         ] {
             assert_eq!(light_chip(reason), chip);
         }
+    }
+
+    #[test]
+    fn p5_the_pace_switch_goes_light_to_fast_and_back_to_light() {
+        let on_battery = Some(Budget::Light {
+            reason: LightReason::Battery,
+        });
+        let mut case =
+            weekly()
+                .job(running(Stage::Transcribe))
+                .progress(Stage::Transcribe, 0.4, on_battery);
+        let switch = |case: &Case| case.phase().pace_switch().map(|s| (s.chip, s.button()));
+        assert_eq!(
+            switch(&case),
+            Some(("Light, on battery", "Use Fast This Time"))
+        );
+
+        case.chosen = Some(Pace::Fast);
+        assert_eq!(
+            switch(&case),
+            Some(("Fast, this time", "Use Light This Time")),
+            "the choice shows before the next window's budget arrives"
+        );
+        assert_eq!(
+            case.phase().sentence("Weekly sync"),
+            "Transcribing, 40%. Estimating time left. Running fast this time."
+        );
+        case = case.progress(Stage::Transcribe, 0.5, Some(Budget::Fast { threads: 4 }));
+        assert_eq!(
+            switch(&case),
+            Some(("Fast, this time", "Use Light This Time")),
+            "the way back stays once the job runs fast"
+        );
+
+        case.chosen = Some(Pace::Light);
+        assert_eq!(
+            switch(&case),
+            Some(("Light, this time", "Use Fast This Time"))
+        );
+        assert_eq!(
+            words(&case.phase()).row,
+            (Glyph::Dots, "50%, light".into(), Tone::Accent)
+        );
+        assert_eq!(
+            case.phase().sentence("Weekly sync"),
+            "Transcribing, 50%. Estimating time left. Running light because you chose Light for this recording."
+        );
+    }
+
+    #[test]
+    fn a_job_that_runs_fast_by_the_setting_offers_no_pace_switch() {
+        let case = weekly().job(running(Stage::Transcribe)).progress(
+            Stage::Transcribe,
+            0.4,
+            Some(Budget::Fast { threads: 4 }),
+        );
+        assert_eq!(case.phase().pace_switch(), None);
     }
 
     #[test]
@@ -1982,6 +2097,7 @@ mod tests {
             done: Fraction::new(percent),
             left,
             light: None,
+            chosen: None,
         };
         let queued = Phase::Queued(Spot {
             ahead: 2,

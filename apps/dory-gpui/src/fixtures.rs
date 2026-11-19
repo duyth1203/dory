@@ -4,9 +4,9 @@
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone};
 use dory_core::domain::{
-    Blocker, Channel, ChannelLayout, FailureClass, JobError, JobState, LanguagePref, Ms, Recording,
-    RecordingId, RecordingRow, Revision, Segment, SpeakerId, Stage, Summary, SummaryFlag,
-    TakeContainer, TakeInfo, TimeRange, Timestamp, Transcript,
+    Blocker, Channel, ChannelLayout, FailureClass, JobError, JobState, LanguagePref, Ms, Pace,
+    Recording, RecordingId, RecordingRow, Revision, Segment, SpeakerId, Stage, Summary,
+    SummaryFlag, TakeContainer, TakeInfo, TimeRange, Timestamp, Transcript,
 };
 use dory_core::models::{KindTag, ModelRef};
 
@@ -250,10 +250,11 @@ pub fn card_phases() -> Vec<(&'static str, Phase, Vec<Segment>)> {
         language: None,
     })
     .collect();
-    let transcribing = |light| Phase::Transcribing {
+    let transcribing = |light, chosen| Phase::Transcribing {
         done: Fraction::new(0.4),
         left: Left::About(Ms(4 * MIN)),
         light,
+        chosen,
     };
     vec![
         (
@@ -274,10 +275,15 @@ pub fn card_phases() -> Vec<(&'static str, Phase, Vec<Segment>)> {
             Vec::new(),
         ),
         ("P3b preparing", Phase::Preparing, Vec::new()),
-        ("P4 transcribing", transcribing(None), lines.clone()),
+        ("P4 transcribing", transcribing(None, None), lines.clone()),
         (
             "P5 transcribing light",
-            transcribing(Some(LightReason::Battery)),
+            transcribing(Some(LightReason::Battery), None),
+            lines.clone(),
+        ),
+        (
+            "P5f transcribing fast this time",
+            transcribing(None, Some(Pace::Fast)),
             lines,
         ),
         (
@@ -329,6 +335,7 @@ pub fn queue_state(name: &str) -> Option<crate::processing_queue::Queue> {
             done: Fraction::new(0.4),
             left: Left::About(Ms(if light { 9 } else { 4 } * MIN)),
             light: light.then_some(LightReason::Battery),
+            chosen: None,
         },
     };
     let waiting = |job, title: &str, starts| {

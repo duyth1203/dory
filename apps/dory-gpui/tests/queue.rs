@@ -179,8 +179,11 @@ fn every_section_shows_with_one_sentence_per_row(cx: &mut TestAppContext) {
             "Weekly sync, transcribing, 40%, about 9 minutes left, running light because the Mac is on battery."
         )
     );
-    assert!(has(window, "queue-light", cx), "the light chip");
-    assert!(has(window, "queue-run-fast", cx), "Use Fast This Time");
+    assert!(has(window, "queue-pace-chip", cx), "the light chip");
+    assert_eq!(
+        label(window, "queue-pace", cx).as_deref(),
+        Some("Use Fast This Time")
+    );
     let hiring = id_of("Hiring debrief").to_string();
     assert_eq!(
         label(window, &format!("queue-attention-{hiring}"), cx).as_deref(),

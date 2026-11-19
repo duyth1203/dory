@@ -509,6 +509,7 @@ fn write_recording(
                     id: id.clone(),
                     goal: plan.goal,
                     priority: plan.priority,
+                    picks: Default::default(),
                     at: legacy.created_at,
                 },
             )?;

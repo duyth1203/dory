@@ -138,6 +138,7 @@ mod tests {
             state,
             priority: Priority::Normal,
             pace: None,
+            picks: Default::default(),
             attempts: 0,
             not_before: None,
             created_at: Timestamp(0),

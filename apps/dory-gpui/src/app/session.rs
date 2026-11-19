@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use dory_core::app::RerunMenu;
 use dory_core::domain::{
     Channel, LangTag, Recording, RecordingId, RecordingRow, SpeakerId, SpeakerNames, Summary,
     SummaryTranslation, TimeRange, Transcript, Translation,
 };
+use dory_core::models::{Llm, Stt};
 use dory_core::ports::StoreError;
 use dory_core::search::{self, Query};
 use gpui_kit::component::text::{RenderedText, TextViewState};
@@ -298,8 +300,19 @@ pub struct Session {
     counted: Option<RenderedText>,
     /// A jump that waited for the summary to be rendered.
     jump_pending: bool,
+    /// The models Re-transcribe with… and Re-summarize with… offer for this recording, probed
+    /// off the UI thread, `None` until they arrive.
+    models: RerunModels,
     _load: Option<Task<()>>,
+    _models: Option<Task<()>>,
     _summary_watch: Subscription,
+}
+
+/// What a re-run of one recording can use, per kind.
+#[derive(Clone, Debug, Default)]
+pub struct RerunModels {
+    pub speech: Option<RerunMenu<Stt>>,
+    pub summary: Option<RerunMenu<Llm>>,
 }
 
 /// The current match after a step, and what VoiceOver says about it.
@@ -337,7 +350,9 @@ impl Session {
             summary,
             counted: None,
             jump_pending: false,
+            models: RerunModels::default(),
             _load: None,
+            _models: None,
             _summary_watch: watch,
         };
         session.reload(cx);
@@ -553,7 +568,28 @@ impl Session {
         });
     }
 
+    pub fn rerun_models(&self) -> &RerunModels {
+        &self.models
+    }
+
+    /// Probes the models again, for a transcript that changed the meeting's languages, a
+    /// settings change, or a download that finished.
+    pub(super) fn reload_models(&mut self, cx: &mut Context<Self>) {
+        let library = self.core.dory().library();
+        let speech = library.speech_models(&self.id);
+        let summary = library.summary_models(&self.id);
+        self._models = Some(cx.spawn(async move |this, cx| {
+            let speech = speech.await.ok();
+            let summary = summary.await.ok();
+            let _ = this.update(cx, |this, cx| {
+                this.models = RerunModels { speech, summary };
+                cx.notify();
+            });
+        }));
+    }
+
     pub(super) fn reload(&mut self, cx: &mut Context<Self>) {
+        self.reload_models(cx);
         self.generation += 1;
         let generation = self.generation;
         let id = self.id.clone();

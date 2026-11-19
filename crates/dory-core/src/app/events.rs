@@ -428,6 +428,7 @@ mod tests {
                 id: id(),
                 goal: Goal::ALL,
                 priority: Priority::Normal,
+                picks: Default::default(),
                 at: Timestamp(0),
             },
             Change::Job {

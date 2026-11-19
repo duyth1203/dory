@@ -1,8 +1,9 @@
 //! First run, permissions, settings, and per-recording language on `AppState` (P6). Views call
 //! these methods; only this module tree reaches the facade.
 
-use dory_core::app::DoryError;
-use dory_core::domain::{Goal, LangTag, LanguagePref, RecordingId, Settings, Underway};
+use dory_core::app::Rerun;
+use dory_core::domain::{LangTag, LanguagePref, RecordingId, Settings};
+use dory_core::models::{Llm, ModelId, ModelRef, Stt};
 use dory_core::ports::capture::{Access, CaptureCaps, Source};
 use gpui_kit::Context;
 
@@ -138,9 +139,10 @@ impl AppState {
     }
 
     /// **Re-transcribe in…** (UX-26): pins the language, or returns it to Automatic, and runs the
-    /// whole pipeline again. Refused with [`Underway`] while a job is queued or running, as the
-    /// menus that offer it show. A blocked job is cancelled first, so the transcript that lands
-    /// is in the language just picked.
+    /// whole pipeline again with the Settings models. The core refuses with
+    /// [`dory_core::domain::Underway`] while a job is queued or running, as the menus that offer it
+    /// show, and cancels a blocked job first, so the transcript that lands is in the language just
+    /// picked.
     pub fn retranscribe(
         &mut self,
         id: RecordingId,
@@ -151,27 +153,86 @@ impl AppState {
             LanguagePref::Auto => "Transcribing again in the detected language.".to_owned(),
             LanguagePref::Pinned(tag) => format!("Transcribing again in {}.", language_name(tag)),
         };
-        let done = self.core.run(cx, move |dory| {
-            let jobs = dory.library().jobs(&id)?;
-            Underway::check(jobs.iter().map(|job| &job.state))?;
-            dory.library().set_language(&id, language)?;
-            for job in jobs {
-                if !job.is_terminal() {
-                    dory.pipeline().cancel(job.id)?;
-                }
-            }
-            dory.pipeline().enqueue(&id, Goal::ALL)?;
-            Ok::<_, DoryError>(())
-        });
+        self.rerun(
+            id,
+            Rerun::Transcribe {
+                language,
+                stt: None,
+            },
+            Some(notice),
+            cx,
+        );
+    }
+
+    /// Runs `rerun` for `id`, and says `notice` once it is asked for.
+    pub fn rerun(
+        &mut self,
+        id: RecordingId,
+        rerun: Rerun,
+        notice: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let done = self
+            .core
+            .run(cx, move |dory| dory.library().rerun(&id, rerun));
         self.report(done, cx);
-        self.say(notice, cx);
+        if let Some(notice) = notice {
+            self.say(notice, cx);
+        }
+    }
+
+    /// **Re-transcribe with…**: the selected recording, in its own language, with `stt` for this
+    /// one run, or the Settings choice for `None`.
+    pub fn retranscribe_selection_with(
+        &mut self,
+        stt: Option<ModelId<Stt>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.selection.id().cloned() else {
+            return;
+        };
+        let language = self
+            .session()
+            .and_then(|s| s.read(cx).detail())
+            .map(|d| d.recording.language.clone())
+            .unwrap_or_default();
+        let notice = self.model_notice("Transcribing again", stt.as_ref().map(|m| m.erase()));
+        self.rerun(id, Rerun::Transcribe { language, stt }, Some(notice), cx);
+    }
+
+    /// **Re-summarize with…**: writes the selected recording's summary again with `llm` for this
+    /// one run, or the Settings choice for `None`.
+    pub fn resummarize_selection_with(
+        &mut self,
+        llm: Option<ModelId<Llm>>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.selection.id().cloned() else {
+            return;
+        };
+        let notice = self.model_notice("Summarizing again", llm.as_ref().map(|m| m.erase()));
+        self.rerun(id, Rerun::Summarize { llm }, Some(notice), cx);
+    }
+
+    /// "Summarizing again with Gemma 4 12B." for a pick, the plain verb for Settings.
+    fn model_notice(&self, verb: &str, model: Option<ModelRef>) -> String {
+        match model {
+            Some(model) => format!("{verb} with {}.", self.model_name(&model)),
+            None => format!("{verb}."),
+        }
     }
 
     /// **Translate…** and **Recording > Translate Summary…**: asks the core for the selected
-    /// recording's summary in `target`. The core refuses when there is no summary, when it is
-    /// already written in `target`, or when a translation is running, and the refusal shows as
-    /// the status line. The new translation is shown as soon as it lands.
-    pub fn translate_selected_summary(&mut self, target: LangTag, cx: &mut Context<Self>) {
+    /// recording's summary in `target`, with `llm` for this one translation or the Settings
+    /// choice for `None`. The core refuses when there is no summary, when it is already written
+    /// in `target`, or when a translation is running, and the refusal shows as the status line.
+    /// The new translation is shown as soon as it lands.
+    pub fn translate_selected_summary(
+        &mut self,
+        target: LangTag,
+        llm: Option<ModelId<Llm>>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(id) = self.selection.id().cloned() else {
             return;
         };
@@ -180,10 +241,7 @@ impl AppState {
                 session.set_summary_version(crate::app::SummaryVersion::Translated, cx)
             });
         }
-        let done = self.core.run(cx, move |dory| {
-            dory.library().translate_summary(&id, target)
-        });
-        self.report(done, cx);
+        self.rerun(id, Rerun::TranslateSummary { target, llm }, None, cx);
     }
 
     pub fn retranscribe_selection(&mut self, language: LanguagePref, cx: &mut Context<Self>) {

@@ -490,6 +490,7 @@ fn seed(rig: &Rig, id: &RecordingId, events: Vec<JobEvent>) {
             id: id.clone(),
             goal: Goal::ALL,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(fixtures::now().timestamp_millis()),
         }])
         .unwrap();

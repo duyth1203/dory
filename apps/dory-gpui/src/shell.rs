@@ -386,7 +386,7 @@ impl Shell {
             }))
             .on_action(cx.listener(|this, action: &TranslateSummaryTo, _, cx| {
                 this.app.update(cx, |app, cx| {
-                    app.translate_selected_summary(action.target.clone(), cx)
+                    app.translate_selected_summary(action.target.clone(), action.llm.clone(), cx)
                 })
             }))
             .on_action(cx.listener(|this, _: &CopySummary, _, cx| this.copy(CopyWhat::Summary, cx)))
@@ -426,6 +426,24 @@ impl Shell {
             .on_action(cx.listener(|this, action: &RetranscribeIn, _, cx| {
                 this.app
                     .update(cx, |app, cx| app.retranscribe_selection(action.pref(), cx))
+            }))
+            .on_action(cx.listener(|this, action: &RetranscribeWith, _, cx| {
+                this.app.update(cx, |app, cx| {
+                    app.retranscribe_selection_with(action.stt.clone(), cx)
+                })
+            }))
+            .on_action(cx.listener(|this, action: &TranslateWith, window, cx| {
+                this.app
+                    .update(cx, |app, cx| app.set_tab(DetailTab::Summary, cx));
+                if let Some(detail) = &this.detail {
+                    let llm = action.llm.clone();
+                    detail.update(cx, |detail, cx| detail.open_translate_with(llm, window, cx));
+                }
+            }))
+            .on_action(cx.listener(|this, action: &ResummarizeWith, _, cx| {
+                this.app.update(cx, |app, cx| {
+                    app.resummarize_selection_with(action.llm.clone(), cx)
+                })
             }))
             .on_action(cx.listener(|this, _: &Rename, window, cx| {
                 if let Some(detail) = &this.detail {

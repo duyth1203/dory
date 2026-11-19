@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use dory::Config;
-use dory_core::app::{Dory, DoryError, Event, Subscription};
+use dory_core::app::{Dory, DoryError, Event, Rerun, Subscription};
 use dory_core::domain::{Goal, Job, JobState, RecordingId};
 
 use crate::args::{ProcessArgs, TranslateSummaryArgs};
@@ -27,16 +27,41 @@ pub fn run(config: &Config, args: &ProcessArgs) -> Result<(), String> {
         return Err(format!("no recording {}", args.id));
     }
     let events = dory.events();
-    dory.pipeline()
-        .enqueue(
+    let library = dory.library();
+    match (&args.stt, &args.llm) {
+        (Some(stt), _) => {
+            let recording = library.recording(&args.id).map_err(crate::chain)?;
+            let language = recording.map(|r| r.language).unwrap_or_default();
+            library.rerun(
+                &args.id,
+                Rerun::Transcribe {
+                    language,
+                    stt: Some(stt.clone()),
+                },
+            )
+        }
+        (_, Some(llm)) => library.rerun(
+            &args.id,
+            Rerun::Summarize {
+                llm: Some(llm.clone()),
+            },
+        ),
+        (None, None) => dory.pipeline().enqueue(
             &args.id,
             if args.summary_only {
                 Goal::SUMMARIZE
             } else {
                 Goal::ALL
             },
-        )
-        .map_err(crate::chain)?;
+        ),
+    }
+    .map_err(crate::chain)?;
+    if let Some(stt) = &args.stt {
+        println!("transcribing with {stt} for this run");
+    }
+    if let Some(llm) = &args.llm {
+        println!("summarizing with {llm} for this run");
+    }
     let job = view::latest_job(dory.library().jobs(&args.id).map_err(crate::chain)?)
         .ok_or("the job was not queued")?;
     if matches!(job.state, JobState::Blocked { .. }) {
@@ -138,10 +163,13 @@ pub fn translate_summary(config: &Config, args: &TranslateSummaryArgs) -> Result
     let started = std::time::Instant::now();
     // A job that a blocker held resumes by itself once the engine is back, when this run opens
     // the library. It is the translation asked for, so this run follows it to the end.
-    match dory
-        .library()
-        .translate_summary(&args.id, args.target.clone())
-    {
+    match dory.library().rerun(
+        &args.id,
+        Rerun::TranslateSummary {
+            target: args.target.clone(),
+            llm: args.llm.clone(),
+        },
+    ) {
         Err(DoryError::Underway(_))
             if translating(&dory, &args.id)?
                 && dory

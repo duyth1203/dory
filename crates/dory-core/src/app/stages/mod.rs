@@ -12,12 +12,12 @@ pub mod windows;
 use std::collections::BTreeMap;
 
 use super::events::{Db, Event};
-use super::models::{Engines, Registries};
+use super::models::{AppKind, Engines, Registries};
 use super::pace::Budget;
 use crate::domain::{
     Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Fraction, Job, JobError, LangTag,
-    LanguagePref, Ms, Revision, Segment, Settings, SpeakerId, Stage, Summary, SummaryTranslation,
-    TimeRange, Transcript, Translation,
+    LanguagePref, Ms, Recording, Revision, Segment, Settings, SpeakerId, Stage, Summary,
+    SummaryTranslation, TimeRange, Transcript, Translation,
 };
 use crate::models::{
     Choice, Diar, DiarNeeds, DiarizationNeed, DiarizationSupport, KindTag, LangSupport, Llm,
@@ -169,6 +169,45 @@ struct WindowCx<'a> {
     lead_in: Ms,
 }
 
+/// What a speech model must do for `recording`, whose audio runs `input` long. The transcribe
+/// stage resolves against it, and so does the list a re-run offers.
+pub(crate) fn speech_needs(recording: &Recording, settings: &Settings, input: Ms) -> SttNeeds {
+    let diarized = plan_clips(recording.layout)
+        .iter()
+        .any(|p| matches!(p.speakers, Speakers::Diarized { .. }));
+    SttNeeds {
+        language: recording.language.clone(),
+        expected: settings.meeting_languages.clone(),
+        expected_guessed: settings.meeting_languages_guessed,
+        diarization: if diarized {
+            DiarizationNeed::Required
+        } else {
+            DiarizationNeed::NotNeeded
+        },
+        input,
+    }
+}
+
+/// What a summary model must read and write to summarize `transcript`. With an output language
+/// the summary is written in it. The summarize stage resolves against it, and so does the list a
+/// re-run offers.
+pub(crate) fn summary_needs(
+    models: &Registries,
+    recording: &Recording,
+    transcript: &Transcript,
+    settings: &Settings,
+) -> LlmNeeds {
+    LlmNeeds::new(
+        settings
+            .output_language
+            .clone()
+            .or_else(|| transcript.main_language().cloned()),
+        &recording.language,
+        settings.chosen_meeting_languages(),
+        heard_languages(models, transcript),
+    )
+}
+
 fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let id = &cx.job.recording;
     let store = cx.db.store.as_ref();
@@ -187,22 +226,12 @@ fn transcribe(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
     let any_diarized = plan
         .iter()
         .any(|p| matches!(p.speakers, Speakers::Diarized { .. }));
-    let needs = SttNeeds {
-        language: recording.language.clone(),
-        expected: cx.settings.meeting_languages.clone(),
-        expected_guessed: cx.settings.meeting_languages_guessed,
-        diarization: if any_diarized {
-            DiarizationNeed::Required
-        } else {
-            DiarizationNeed::NotNeeded
-        },
-        input: take.duration,
-    };
-    let stt_id = settle(
-        cx.models
-            .get::<Stt>()
-            .resolve(&cx.settings.stt, &needs, &[]),
-    )?
+    let needs = speech_needs(&recording, cx.settings, take.duration);
+    let stt_id = settle(cx.models.get::<Stt>().resolve(
+        &Stt::choice_for(cx.job, cx.settings),
+        &needs,
+        &[],
+    ))?
     .ok_or(StageError::Blocked(Blocker::NoModel { kind: KindTag::Stt }))?;
     let caps = cx
         .models
@@ -782,11 +811,11 @@ fn translate(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         cx.settings.chosen_meeting_languages(),
         heard_languages(cx.models, &transcript),
     );
-    let Some(llm_id) = settle(
-        cx.models
-            .get::<Llm>()
-            .resolve(&cx.settings.llm, &needs, &[]),
-    )?
+    let Some(llm_id) = settle(cx.models.get::<Llm>().resolve(
+        &Llm::choice_for(cx.job, cx.settings),
+        &needs,
+        &[],
+    ))?
     else {
         return Ok(Vec::new());
     };
@@ -939,11 +968,11 @@ fn translate_summary(cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
         &read,
     );
     // Turning summaries off or having no model is not a quiet skip here: the user asked for this.
-    let llm_id = settle(
-        cx.models
-            .get::<Llm>()
-            .resolve(&cx.settings.llm, &needs, &[]),
-    )?
+    let llm_id = settle(cx.models.get::<Llm>().resolve(
+        &Llm::choice_for(cx.job, cx.settings),
+        &needs,
+        &[],
+    ))?
     .ok_or(StageError::Blocked(Blocker::NoModel { kind: KindTag::Llm }))?;
     let context = cx
         .models
@@ -1039,24 +1068,17 @@ fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
             .filter(|t| t.applies_to(&transcript) && t.target == *target),
         None => None,
     };
-    let mut needs = LlmNeeds::new(
-        target.or_else(|| transcript.main_language().cloned()),
-        &recording.language,
-        cx.settings.chosen_meeting_languages(),
-        heard_languages(cx.models, &transcript),
-    );
+    let mut needs = summary_needs(cx.models, &recording, &transcript, cx.settings);
     let names = store.speaker_names(id).map_err(failed)?;
     let lines = summary::transcript_lines(&transcript, &names, translation.as_ref());
     let instruction = store.summary_instruction(id).map_err(failed)?;
     // Models that refused this meeting. `Auto` resolves again without them and starts over from
     // the transcript, so notes from two models never mix.
+    let choice = Llm::choice_for(cx.job, cx.settings);
     let mut refused: Vec<ModelId<Llm>> = Vec::new();
     let mut last_refusal = None;
     loop {
-        let resolution = cx
-            .models
-            .get::<Llm>()
-            .resolve(&cx.settings.llm, &needs, &refused);
+        let resolution = cx.models.get::<Llm>().resolve(&choice, &needs, &refused);
         let llm_id = match (resolution, last_refusal) {
             (Resolution::Use(id), _) => id,
             (Resolution::Blocked(blocker), None) => return Err(StageError::Blocked(blocker)),
@@ -1093,7 +1115,7 @@ fn summarize(mut cx: StageCx<'_>) -> Result<Vec<Change>, StageError> {
             }
             Err(SummaryError::Engine(
                 error @ (EngineError::UnsupportedLanguage(_) | EngineError::InputRejected(_)),
-            )) if cx.settings.llm == Choice::Auto => {
+            )) if choice == Choice::Auto => {
                 cx.db.publish(Event::DraftReset { job: cx.job.id });
                 // A refusal that names the language rules out every other model that cannot read it.
                 if let EngineError::UnsupportedLanguage(tag) = &error

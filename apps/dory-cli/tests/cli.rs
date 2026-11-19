@@ -763,3 +763,106 @@ fn a_summary_is_translated_beside_the_original_and_a_new_summary_drops_the_trans
         "restoring a summary drops the translation too"
     );
 }
+
+#[test]
+fn a_rerun_uses_the_model_picked_for_it_and_leaves_settings_alone() {
+    let env = Env::new();
+    let mut child = env
+        .cmd(&["record", "--fake-capture", "3"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdin = child.stdin.take();
+    let out = child.wait_with_output().unwrap();
+    drop(stdin);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", text(&out.stderr));
+    let id = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("recorded "))
+        .and_then(|l| l.split(' ').next())
+        .unwrap_or_else(|| panic!("no recorded line in\n{stdout}"))
+        .to_owned();
+    env.ok(&["languages", "en"]);
+    env.ok(&["process", &id, "--fake-engines"]);
+    let first = env.ok(&["show", &id]);
+    assert!(
+        first.contains("Transcript (revision 1, fake/stt)"),
+        "{first}"
+    );
+    assert!(first.contains("Summary (fake/llm)"), "{first}");
+
+    let resummarized = env.ok(&[
+        "process",
+        &id,
+        "--summary",
+        "--llm",
+        "fake/en-only-llm",
+        "--fake-engines",
+    ]);
+    assert!(
+        resummarized.contains("summarizing with fake/en-only-llm for this run"),
+        "{resummarized}"
+    );
+    let shown = env.ok(&["show", &id]);
+    for want in [
+        "Summary (fake/en-only-llm)",
+        "## English-only summary",
+        "Transcript (revision 1, fake/stt)",
+    ] {
+        assert!(shown.contains(want), "missing {want:?} in\n{shown}");
+    }
+
+    env.ok(&[
+        "process",
+        &id,
+        "--stt",
+        "fake/en-locale-stt",
+        "--fake-engines",
+    ]);
+    let shown = env.ok(&["show", &id]);
+    for want in [
+        "Transcript (revision 2, fake/en-locale-stt)",
+        "Summary (fake/llm)",
+    ] {
+        assert!(
+            shown.contains(want),
+            "the re-transcribe ran the picked speech model, and its summary followed Settings: missing {want:?} in\n{shown}"
+        );
+    }
+
+    env.ok(&["process", &id, "--summary", "--fake-engines"]);
+    assert!(
+        env.ok(&["show", &id]).contains("Summary (fake/llm)"),
+        "a run without a pick follows Settings, which the pick never changed"
+    );
+
+    env.ok(&["languages", "tl"]);
+    let refused = env.run(&[
+        "process",
+        &id,
+        "--summary",
+        "--llm",
+        "fake/en-only-llm",
+        "--fake-engines",
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        !text(&refused.stdout).contains("summarizing with"),
+        "a refused pick never says it runs"
+    );
+    assert!(
+        text(&refused.stderr).contains("cannot do this recording's job"),
+        "a model that cannot read the meeting is refused: {}",
+        text(&refused.stderr)
+    );
+    let unknown = env.run(&["process", &id, "--stt", "fake/nope", "--fake-engines"]);
+    assert!(!unknown.status.success());
+    assert!(
+        text(&unknown.stderr).contains("fake/nope is not in the catalog"),
+        "{}",
+        text(&unknown.stderr)
+    );
+}

@@ -5,7 +5,7 @@
 use thiserror::Error;
 
 use super::{FailureCause, FailureClass, JobId, Pace, RecordingId, Timestamp};
-use crate::models::{KindTag, Mismatch, ModelRef, Unavailable};
+use crate::models::{KindTag, Llm, Mismatch, ModelId, ModelRef, Stt, Unavailable};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Stage {
@@ -106,6 +106,15 @@ pub enum Priority {
     Front,
 }
 
+/// The models the user picked for one job from where they started it, over their Settings choice.
+/// `None` follows Settings when the stage runs. Set once, when the job is queued, and kept by every
+/// transition, so a retry, an unblock, or a restart runs the model the user asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Picks {
+    pub stt: Option<ModelId<Stt>>,
+    pub llm: Option<ModelId<Llm>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
     pub id: JobId,
@@ -122,6 +131,7 @@ pub struct Job {
     /// (UX-30), whatever the setting and the Mac's conditions. `None` follows the setting. Other
     /// jobs keep following the setting.
     pub pace: Option<Pace>,
+    pub picks: Picks,
     /// Starts of the current stage. Reset when a stage finishes or the user retries.
     pub attempts: u8,
     /// Retry backoff. The worker skips the job until then.
@@ -275,6 +285,7 @@ impl Job {
             priority,
             place: created_at.0,
             pace: None,
+            picks: Picks::default(),
             attempts: 0,
             not_before: None,
             created_at,
@@ -469,6 +480,7 @@ mod tests {
             priority: Priority::Normal,
             place: 0,
             pace: None,
+            picks: Picks::default(),
             attempts: 0,
             not_before: None,
             created_at: Timestamp(0),
@@ -525,10 +537,16 @@ mod tests {
         assert_eq!(Underway::check(None), Ok(()), "a recording with no job");
     }
 
-    /// The job every table row starts from. Nonzero attempts, a pending backoff, and a stage
-    /// already in `done` would all show if a transition resets or keeps them by mistake.
+    /// The job every table row starts from. Nonzero attempts, a pending backoff, a stage already
+    /// in `done`, and models the user picked would all show if a transition resets or keeps them
+    /// by mistake. No row expects the picks to change, so the table proves every transition keeps
+    /// them.
     fn base(state: JobState) -> Job {
         Job {
+            picks: Picks {
+                stt: Some("a/speech".parse().unwrap()),
+                llm: Some("a/summary".parse().unwrap()),
+            },
             attempts: 1,
             not_before: Some(Timestamp(77)),
             place: 5,
@@ -1014,6 +1032,40 @@ mod tests {
             .and_then(|j| j.on(&JobEvent::Retake))
             .unwrap();
         assert_eq!((back.state, back.place), (JobState::Queued, 42));
+    }
+
+    #[test]
+    fn a_picked_model_survives_a_block_a_crash_a_failure_and_a_retry() {
+        let picks = Picks {
+            stt: None,
+            llm: Some("a/summary".parse().unwrap()),
+        };
+        let mut j = Job {
+            picks: picks.clone(),
+            ..job(Goal::SUMMARIZE, &[], JobState::Queued)
+        };
+        for event in [
+            JobEvent::Started { stage: S },
+            JobEvent::Blocked {
+                stage: S,
+                blocker: blocker(),
+            },
+            JobEvent::Unblock,
+            JobEvent::Started { stage: S },
+            JobEvent::Interrupted,
+            JobEvent::Started { stage: S },
+            JobEvent::Failed {
+                stage: S,
+                error: error(),
+            },
+            JobEvent::Retake,
+            JobEvent::Started { stage: S },
+            JobEvent::StageDone { stage: S },
+        ] {
+            j = j.on(&event).unwrap();
+            assert_eq!(j.picks, picks, "after {event:?}");
+        }
+        assert_eq!(j.state, JobState::Succeeded);
     }
 
     #[test]

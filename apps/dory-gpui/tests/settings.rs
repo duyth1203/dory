@@ -861,6 +861,7 @@ fn a_job_running_light_says_why_on_its_row(cx: &mut TestAppContext) {
             id: id.clone(),
             goal: Goal::TRANSCRIBE,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(fixtures::now().timestamp_millis()),
         }])
         .unwrap();

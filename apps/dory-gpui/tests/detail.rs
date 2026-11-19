@@ -102,6 +102,7 @@ fn states_store() -> Arc<MemStore> {
                 id: broken.id.clone(),
                 goal: Goal::ALL,
                 priority: Priority::Normal,
+                picks: Default::default(),
                 at,
             },
             Change::Job {
@@ -138,6 +139,7 @@ fn open_states(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<AppState>) {
                 id: id_of("Weekly sync"),
                 goal: Goal::ALL,
                 priority: Priority::Normal,
+                picks: Default::default(),
                 at: Timestamp(fixtures::now().timestamp_millis()),
             },
             Change::Job {

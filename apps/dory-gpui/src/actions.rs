@@ -3,6 +3,7 @@
 //! dispatch them instead of declaring their own. A later phase adds its commands here.
 
 use dory_core::domain::{LangTag, LanguagePref};
+use dory_core::models::{Llm, ModelId, Stt};
 
 gpui_kit::actions!(
     dory,
@@ -78,6 +79,32 @@ impl RetranscribeIn {
 #[action(namespace = dory, no_json)]
 pub struct TranslateSummaryTo {
     pub target: LangTag,
+    /// The summary model for this one translation, `None` for the Settings choice.
+    pub llm: Option<ModelId<Llm>>,
+}
+
+/// **Re-transcribe with…** for the selected recording: transcribes it again with this speech
+/// model, `None` for the Settings choice, without changing Settings.
+#[derive(Clone, Debug, PartialEq, Eq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct RetranscribeWith {
+    pub stt: Option<ModelId<Stt>>,
+}
+
+/// **Translate with…** for the selected recording: shows its summary and opens **Translate…**
+/// to translate with this model, `None` for the Settings choice.
+#[derive(Clone, Debug, PartialEq, Eq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct TranslateWith {
+    pub llm: Option<ModelId<Llm>>,
+}
+
+/// **Re-summarize with…** for the selected recording: writes its summary again with this model,
+/// `None` for the Settings choice, without changing Settings.
+#[derive(Clone, Debug, PartialEq, Eq, gpui_kit::Action)]
+#[action(namespace = dory, no_json)]
+pub struct ResummarizeWith {
+    pub llm: Option<ModelId<Llm>>,
 }
 
 /// What a Processing window row's ⋯ menu does to its job (UX-15).

@@ -31,6 +31,7 @@ fn queued_store() -> std::sync::Arc<dory_core::testing::store::MemStore> {
             id: id_of(title),
             goal: Goal::ALL,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(1_000 + n as i64),
         });
         changes.push(Change::Job {

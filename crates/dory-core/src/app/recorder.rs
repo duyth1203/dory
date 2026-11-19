@@ -644,6 +644,7 @@ pub(crate) fn commit_sealed(
             id: id.clone(),
             goal: settings.goal_for(Goal::ALL),
             priority: Priority::Normal,
+            picks: Default::default(),
             at: clock.now(),
         });
     }

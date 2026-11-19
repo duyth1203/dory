@@ -51,6 +51,7 @@ fn transcribing_weekly() -> std::sync::Arc<dory_core::testing::store::MemStore> 
                 id: id_of("Weekly sync"),
                 goal: Goal::ALL,
                 priority: Priority::Normal,
+                picks: Default::default(),
                 at: Timestamp(fixtures::now().timestamp_millis()),
             },
             Change::Job {

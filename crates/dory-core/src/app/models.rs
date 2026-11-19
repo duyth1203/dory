@@ -7,7 +7,7 @@ use std::thread::JoinHandle;
 
 use super::events::{Db, Event};
 use super::pipeline::Nudge;
-use crate::domain::{LanguagePref, Ms, Settings};
+use crate::domain::{Job, LanguagePref, Ms, Picks, Settings};
 use crate::models::{
     Catalog, CatalogError, Choice, Diar, DiarNeeds, DiarizationNeed, Fit, KindTag, Llm, LlmNeeds,
     ModelEntry, ModelId, ModelKind, ModelRef, ModelStatus, Resolution, Stt, SttNeeds, resolve,
@@ -21,6 +21,16 @@ pub trait AppKind: ModelKind {
     fn set_choice(settings: &mut Settings, choice: Choice<Self>);
     /// The needs a model list shows fit against, before any recording is involved.
     fn listing_needs(settings: &Settings) -> Self::Needs;
+    /// The model of this kind the user picked for one job, if any.
+    fn picked(picks: &Picks) -> Option<&ModelId<Self>>;
+
+    /// The choice a stage of `job` resolves: the model the user picked for it, else Settings.
+    fn choice_for(job: &Job, settings: &Settings) -> Choice<Self> {
+        match Self::picked(&job.picks) {
+            Some(id) => Choice::Pinned(id.clone()),
+            None => Self::choice(settings).clone(),
+        }
+    }
 }
 
 impl AppKind for Stt {
@@ -29,6 +39,9 @@ impl AppKind for Stt {
     }
     fn set_choice(settings: &mut Settings, choice: Choice<Stt>) {
         settings.stt = choice;
+    }
+    fn picked(picks: &Picks) -> Option<&ModelId<Stt>> {
+        picks.stt.as_ref()
     }
     fn listing_needs(settings: &Settings) -> SttNeeds {
         SttNeeds {
@@ -47,6 +60,9 @@ impl AppKind for Llm {
     }
     fn set_choice(settings: &mut Settings, choice: Choice<Llm>) {
         settings.llm = choice;
+    }
+    fn picked(picks: &Picks) -> Option<&ModelId<Llm>> {
+        picks.llm.as_ref()
     }
     /// The job's needs before a transcript exists, so Settings shows the fit the job will get.
     /// An output language is what the summary is written in, as in the summarize stage.
@@ -74,6 +90,10 @@ impl AppKind for Diar {
     }
     fn listing_needs(_: &Settings) -> DiarNeeds {
         DiarNeeds
+    }
+    /// Nobody picks a diarizer for one run: it follows the speech model's run.
+    fn picked(_: &Picks) -> Option<&ModelId<Diar>> {
+        None
     }
 }
 

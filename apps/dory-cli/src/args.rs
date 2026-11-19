@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use dory_core::domain::{ChannelLayout, LangTag, Ms, Processing, RecordingId, Recovery};
+use dory_core::models::{Llm, ModelId, ModelKind, Stt};
 use dory_core::ports::capture::MicSelection;
 
 #[derive(Debug, PartialEq)]
@@ -159,6 +160,8 @@ pub struct TranslateSummaryArgs {
     pub id: RecordingId,
     pub target: LangTag,
     pub fake_engines: bool,
+    /// Translates with this model instead of the Settings choice.
+    pub llm: Option<ModelId<Llm>>,
 }
 
 impl TranslateSummaryArgs {
@@ -166,9 +169,12 @@ impl TranslateSummaryArgs {
         let usage = "translate-summary takes a recording id and a language tag";
         let mut words = Vec::new();
         let mut fake_engines = false;
-        for arg in args {
+        let mut llm = None;
+        let mut it = args.iter();
+        while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--fake-engines" => fake_engines = true,
+                "--llm" => llm = Some(model_arg("--llm", it.next())?),
                 _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}")),
                 _ => words.push(arg),
             }
@@ -178,6 +184,7 @@ impl TranslateSummaryArgs {
                 id: parse_id(id)?,
                 target: LangTag::parse(tag).map_err(|e| e.to_string())?,
                 fake_engines,
+                llm,
             }),
             _ => Err(usage.into()),
         }
@@ -206,6 +213,17 @@ pub struct ProcessArgs {
     pub summary_only: bool,
     /// Overrides the Processing setting for this run, for the bench.
     pub pace: Option<Processing>,
+    /// Transcribes with this model instead of the Settings choice.
+    pub stt: Option<ModelId<Stt>>,
+    /// Summarizes with this model instead of the Settings choice. Only with `--summary`.
+    pub llm: Option<ModelId<Llm>>,
+}
+
+/// A model id after `flag`, of the kind the flag picks.
+fn model_arg<K: ModelKind>(flag: &str, word: Option<&String>) -> Result<ModelId<K>, String> {
+    word.ok_or_else(|| format!("{flag} needs a model id"))?
+        .parse()
+        .map_err(|e| format!("{flag}: {e}"))
 }
 
 impl ProcessArgs {
@@ -214,11 +232,15 @@ impl ProcessArgs {
         let mut fake_engines = false;
         let mut summary_only = false;
         let mut pace = None;
+        let mut stt = None;
+        let mut llm = None;
         let mut it = args.iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
                 "--fake-engines" => fake_engines = true,
                 "--summary" => summary_only = true,
+                "--stt" => stt = Some(model_arg("--stt", it.next())?),
+                "--llm" => llm = Some(model_arg("--llm", it.next())?),
                 "--pace" => {
                     pace = Some(match it.next().map(String::as_str) {
                         Some("fast") => Processing::Fast,
@@ -231,11 +253,22 @@ impl ProcessArgs {
                 _ => return Err("process takes one recording id".into()),
             }
         }
+        match (summary_only, &stt, &llm) {
+            (true, Some(_), _) => {
+                return Err("--stt transcribes, so it does not go with --summary".into());
+            }
+            (false, _, Some(_)) => {
+                return Err("--llm picks the summary model, so it needs --summary".into());
+            }
+            _ => {}
+        }
         Ok(Self {
             id: id.ok_or("process needs a recording id")?,
             fake_engines,
             summary_only,
             pace,
+            stt,
+            llm,
         })
     }
 }
@@ -586,6 +619,24 @@ mod tests {
                 .summary_only
         );
         assert_eq!(
+            ProcessArgs::parse(&words("rec_1 --stt a/x")).unwrap().stt,
+            Some("a/x".parse().unwrap())
+        );
+        assert_eq!(
+            ProcessArgs::parse(&words("rec_1 --summary --llm a/y"))
+                .unwrap()
+                .llm,
+            Some("a/y".parse().unwrap())
+        );
+        for bad in [
+            "rec_1 --llm a/y",
+            "rec_1 --summary --stt a/x",
+            "rec_1 --stt",
+            "rec_1 --stt nonsense",
+        ] {
+            assert!(ProcessArgs::parse(&words(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(
             ProcessArgs::parse(&words("rec_1 --pace light"))
                 .unwrap()
                 .pace,
@@ -725,8 +776,16 @@ mod tests {
                 id: RecordingId::parse("r1").unwrap(),
                 target: LangTag::parse("en").unwrap(),
                 fake_engines: false,
+                llm: None,
             }
         );
+        assert_eq!(
+            TranslateSummaryArgs::parse(&words("r1 en --llm a/x"))
+                .unwrap()
+                .llm,
+            Some("a/x".parse().unwrap())
+        );
+        assert!(TranslateSummaryArgs::parse(&words("r1 en --llm")).is_err());
         assert!(
             TranslateSummaryArgs::parse(&words("--fake-engines r1 tl-PH"))
                 .unwrap()

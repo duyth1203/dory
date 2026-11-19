@@ -221,7 +221,10 @@ fn the_recording_menu_lists_the_meeting_languages_then_every_other_language_but_
     assert!(!disabled);
     assert_eq!(
         action.as_any().downcast_ref::<TranslateSummaryTo>(),
-        Some(&TranslateSummaryTo { target: tag("en") })
+        Some(&TranslateSummaryTo {
+            target: tag("en"),
+            llm: None
+        })
     );
 
     for (what, state) in [
@@ -353,7 +356,13 @@ fn choosing_a_language_says_it_is_translating_then_shows_the_translation(cx: &mu
     let (window, app) = open(store(false), model.clone(), cx);
     show(&app, cx);
     model.hold_from(0);
-    cx.dispatch_action(window, TranslateSummaryTo { target: tag("en") });
+    cx.dispatch_action(
+        window,
+        TranslateSummaryTo {
+            target: tag("en"),
+            llm: None,
+        },
+    );
     until(cx, "the translation to start", |_| {
         !model.prompts().is_empty()
     });

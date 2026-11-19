@@ -11,7 +11,7 @@ use std::sync::Arc;
 use super::{RawSegment, StoreError};
 use crate::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, Channel, ClientKey, Fields,
-    Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Priority, Recording, RecordingEdit,
+    Goal, Job, JobEvent, JobId, LangTag, LanguagePref, Picks, Priority, Recording, RecordingEdit,
     RecordingId, RecordingQuery, RecordingRow, Revision, Settings, SpeakerNames, Summary,
     SummaryTranslation, TimeRange, Timestamp, Transcript, Translation,
 };
@@ -130,11 +130,13 @@ pub enum Change {
         id: RecordingId,
         instruction: Option<String>,
     },
-    /// The store assigns the job id.
+    /// The store assigns the job id. A job of the same recording and goal that is still waiting
+    /// keeps its own picks.
     JobEnqueued {
         id: RecordingId,
         goal: Goal,
         priority: Priority,
+        picks: Picks,
         at: Timestamp,
     },
     Job {

@@ -12,7 +12,8 @@
 //! - `RecordingDeleted` for a missing id is a no-op, for the same reason.
 //! - Edits, transcript, summary, names, and enqueue for a missing recording fail with `NotFound`.
 //! - `JobEnqueued` is idempotent per recording and goal. While a non-terminal job with the same
-//!   goal exists, a second enqueue changes nothing, except that a `Front` request promotes it.
+//!   goal exists, a second enqueue changes nothing, except that a `Front` request promotes it. That
+//!   job keeps its own picks. A new job is stored with the picks the change carries.
 //!   Once that job is terminal, an enqueue creates a new job.
 //! - Job ids are assigned in increasing order and are never reused, even after a delete.
 //! - `recordings` lists newest first (ties broken by id). The row's job is the most recently
@@ -160,6 +161,7 @@ impl State {
                 id,
                 goal,
                 priority,
+                picks,
                 at,
             } => {
                 self.entry_mut(&id)?;
@@ -176,8 +178,13 @@ impl State {
                     None => {
                         self.last_job += 1;
                         let job_id = JobId(self.last_job);
-                        self.jobs
-                            .insert(job_id, Job::new(job_id, id, goal, priority, at));
+                        self.jobs.insert(
+                            job_id,
+                            Job {
+                                picks,
+                                ..Job::new(job_id, id, goal, priority, at)
+                            },
+                        );
                     }
                 }
             }
@@ -732,6 +739,10 @@ mod contract {
             "enqueue_after_a_terminal_job_makes_a_new_one",
             enqueue_after_terminal,
         ),
+        (
+            "a_job_keeps_the_models_it_was_queued_with",
+            enqueue_keeps_picks,
+        ),
         ("job_ids_are_never_reused", job_ids_unique),
         ("concurrent_applies_all_land", concurrent_applies),
         (
@@ -889,6 +900,7 @@ mod contract {
                 id: rid(id),
                 goal,
                 priority,
+                picks: Default::default(),
                 at: Timestamp(at),
             }])
             .unwrap();
@@ -1111,6 +1123,7 @@ mod contract {
                 id: rid("r"),
                 goal: Goal::TRANSCRIBE,
                 priority: Priority::Normal,
+                picks: Default::default(),
                 at: Timestamp(11),
             },
             Change::CheckpointSaved {
@@ -1157,6 +1170,7 @@ mod contract {
                 id: rid("r"),
                 goal: Goal::ALL,
                 priority: Priority::Normal,
+                picks: Default::default(),
                 at: Timestamp(1),
             },
             Change::TranscriptReplaced {
@@ -1240,6 +1254,7 @@ mod contract {
             id: ghost,
             goal: Goal::ALL,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(0),
         }]));
         assert_not_found(event(store, JobId(42), JobEvent::Cancelled));
@@ -2464,6 +2479,47 @@ mod contract {
         assert_eq!(runnable(300).as_deref(), Some("b"));
     }
 
+    fn enqueue_keeps_picks(store: &dyn Store) {
+        use crate::domain::Picks;
+        create(store, "r", 1);
+        let enqueue = |llm: &str, at| {
+            store
+                .apply(vec![Change::JobEnqueued {
+                    id: rid("r"),
+                    goal: Goal::SUMMARIZE,
+                    priority: Priority::Front,
+                    picks: Picks {
+                        stt: None,
+                        llm: Some(llm.parse().unwrap()),
+                    },
+                    at: Timestamp(at),
+                }])
+                .unwrap();
+        };
+        enqueue("a/first", 10);
+        let first = only_job(store, "r");
+        assert_eq!(first.picks.llm, Some("a/first".parse().unwrap()));
+        assert_eq!(first.picks.stt, None);
+
+        enqueue("a/second", 20);
+        assert_eq!(
+            only_job(store, "r").picks,
+            first.picks,
+            "a waiting job keeps its own picks"
+        );
+
+        event(store, first.id, JobEvent::Cancelled).unwrap();
+        enqueue("a/second", 30);
+        let jobs = store.jobs_for(&rid("r")).unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[1].picks.llm, Some("a/second".parse().unwrap()));
+        assert_eq!(
+            store.job(jobs[1].id).unwrap().unwrap().picks,
+            jobs[1].picks,
+            "read back as written"
+        );
+    }
+
     fn enqueue_idempotent(store: &dyn Store) {
         create(store, "r", 1);
         enqueue(store, "r", Goal::ALL, Priority::Normal, 10);
@@ -2477,12 +2533,14 @@ mod contract {
                     id: rid("r"),
                     goal: Goal::ALL,
                     priority: Priority::Normal,
+                    picks: Default::default(),
                     at: Timestamp(30),
                 },
                 Change::JobEnqueued {
                     id: rid("r"),
                     goal: Goal::ALL,
                     priority: Priority::Normal,
+                    picks: Default::default(),
                     at: Timestamp(31),
                 },
             ])
@@ -2610,6 +2668,7 @@ mod contract {
                                     id: rid(&id),
                                     goal: Goal::ALL,
                                     priority: Priority::Normal,
+                                    picks: Default::default(),
                                     at: Timestamp(i as i64),
                                 },
                             ])

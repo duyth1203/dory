@@ -20,6 +20,7 @@ mod models;
 mod pace;
 mod pipeline;
 mod recorder;
+mod rerun;
 pub mod stages;
 mod writer;
 
@@ -39,6 +40,7 @@ pub use events::{Event, Subscription, change_events};
 pub use models::{AppKind, ModelRow};
 pub use pace::{Budget, HOLD_MS, LIGHT_THREADS, LightReason, Pacer, light_condition};
 pub use recorder::{RecorderGone, RecorderStatus, StartOptions};
+pub use rerun::{Rerun, RerunMenu};
 
 use events::{Db, EventHub};
 use models::{Provisions, Registries};
@@ -615,35 +617,124 @@ impl Library<'_> {
         self.dory.reader.speaker_names(id)
     }
 
-    /// Asks for the summary in `target`, beside the original, and puts the job at the front of
-    /// the queue because the user is waiting. A translation already stored stays until the new
-    /// one replaces it. Refused with [`SummaryRefusal`] when there is no summary or it is already
-    /// written in `target`, and with [`Underway`] while a job for the recording is underway, so
-    /// the stage never translates a summary that job is about to replace, or works for one
-    /// language while the store holds a wish for another.
-    pub fn translate_summary(&self, id: &RecordingId, target: LangTag) -> Result<(), DoryError> {
+    /// Runs the transcript, the summary, or the summary's translation again, with the model the
+    /// user picked for this one run or, without a pick, the Settings choice. The pick is refused
+    /// when the catalog lacks it or it cannot do this recording's job, which the lists from
+    /// [`Library::speech_models`] and [`Library::summary_models`] never offer.
+    ///
+    /// Every re-run is refused with [`Underway`] while a job for the recording is queued or
+    /// running, so it never throws away work in progress or reworks what that job is about to
+    /// replace. A re-transcribe cancels the recording's blocked jobs first. A re-summary or a
+    /// translation replaces a blocked job of its own kind that runs another model, and keeps one
+    /// that runs the same. A translation goes to the front of the queue because the user is
+    /// waiting, and is refused with [`SummaryRefusal`] when there is no summary or it is already
+    /// written in the target.
+    pub fn rerun(&self, id: &RecordingId, rerun: Rerun) -> Result<(), DoryError> {
+        match self.try_rerun(id, &rerun) {
+            // A job finished between the read and the commit. The second plan sees it finished.
+            Err(DoryError::Store(StoreError::IllegalTransition(_))) => self.try_rerun(id, &rerun),
+            done => done,
+        }
+    }
+
+    fn try_rerun(&self, id: &RecordingId, rerun: &Rerun) -> Result<(), DoryError> {
         let store = &self.dory.db.store;
-        if store.recording(id)?.is_none() {
-            return Err(StoreError::NotFound(id.to_string()).into());
-        }
-        if let Some(refusal) = SummaryTranslation::refusal(store.summary(id)?.as_ref(), &target) {
-            return Err(refusal.into());
-        }
-        Underway::check(store.jobs_for(id)?.iter().map(|job| &job.state))?;
-        self.dory.db.apply(vec![
-            Change::SummaryTranslationWanted {
-                id: id.clone(),
-                target,
-            },
-            Change::JobEnqueued {
-                id: id.clone(),
-                goal: Goal::TRANSLATE_SUMMARY,
-                priority: Priority::Front,
-                at: self.dory.clock.now(),
-            },
-        ])?;
+        let models = &self.dory.models;
+        let recording = store
+            .recording(id)?
+            .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+        let settings = store.settings()?;
+        let picks = rerun.picks();
+        let jobs = store.jobs_for(id)?;
+        let underway = Underway::check(jobs.iter().map(|job| &job.state));
+        let waiting: Vec<Job> = jobs.into_iter().filter(|job| !job.is_terminal()).collect();
+        let mut changes = Vec::new();
+        let replaced = |goal: Goal| -> Vec<JobId> {
+            waiting
+                .iter()
+                .filter(|job| job.goal == goal && job.picks != picks)
+                .map(|job| job.id)
+                .collect()
+        };
+        let (goal, priority, cancelled) = match rerun {
+            Rerun::Transcribe { language, stt } => {
+                if let Some(pick) = stt {
+                    let needs = rerun::rerun_speech_needs(&recording, language, &settings);
+                    rerun::check(models, pick, &needs)?;
+                }
+                changes.push(Change::RecordingEdited {
+                    id: id.clone(),
+                    edit: RecordingEdit::Language(language.clone()),
+                });
+                let all = waiting.iter().map(|job| job.id).collect();
+                (settings.goal_for(Goal::ALL), Priority::Normal, all)
+            }
+            Rerun::Summarize { llm } => {
+                if let Some(pick) = llm {
+                    let needs =
+                        rerun::rerun_summary_needs(store.as_ref(), models, &recording, &settings)?;
+                    rerun::check(models, pick, &needs)?;
+                }
+                (Goal::SUMMARIZE, Priority::Normal, replaced(Goal::SUMMARIZE))
+            }
+            Rerun::TranslateSummary { target, llm } => {
+                if let Some(refusal) =
+                    SummaryTranslation::refusal(store.summary(id)?.as_ref(), target)
+                {
+                    return Err(refusal.into());
+                }
+                if let Some(pick) = llm {
+                    let needs =
+                        rerun::rerun_summary_needs(store.as_ref(), models, &recording, &settings)?;
+                    rerun::check(models, pick, &needs)?;
+                }
+                changes.push(Change::SummaryTranslationWanted {
+                    id: id.clone(),
+                    target: target.clone(),
+                });
+                (
+                    Goal::TRANSLATE_SUMMARY,
+                    Priority::Front,
+                    replaced(Goal::TRANSLATE_SUMMARY),
+                )
+            }
+        };
+        // After the request's own refusals, which say more than "still processing".
+        underway?;
+        changes.extend(cancelled.iter().map(|job| Change::Job {
+            job: *job,
+            event: JobEvent::Cancelled,
+        }));
+        changes.push(Change::JobEnqueued {
+            id: id.clone(),
+            goal,
+            priority,
+            picks,
+            at: self.dory.clock.now(),
+        });
+        self.dory.db.apply(changes)?;
+        self.dory
+            .pipeline
+            .current
+            .cancel_if(|running, _| cancelled.contains(&running));
         self.dory.pipeline.nudge.wake();
         Ok(())
+    }
+
+    /// See [`LibraryReader::speech_models`].
+    pub fn speech_models(
+        &self,
+        id: &RecordingId,
+    ) -> impl Future<Output = Result<RerunMenu<Stt>, StoreError>> + Send + 'static {
+        self.dory.reader.speech_models(id)
+    }
+
+    /// See [`LibraryReader::summary_models`].
+    pub fn summary_models(
+        &self,
+        id: &RecordingId,
+    ) -> impl Future<Output = Result<RerunMenu<Llm>, StoreError>> + Send + 'static {
+        self.dory.reader.summary_models(id)
     }
 
     pub fn jobs(&self, id: &RecordingId) -> Result<Vec<Job>, StoreError> {
@@ -1104,6 +1195,7 @@ impl Pipeline<'_> {
             id: id.clone(),
             goal,
             priority,
+            picks: Default::default(),
             at: self.dory.clock.now(),
         }])?;
         self.dory.pipeline.nudge.wake();
@@ -1352,6 +1444,60 @@ impl LibraryReader {
 
     pub fn settings(&self) -> Result<Settings, StoreError> {
         self.store.settings()
+    }
+
+    /// The speech models a re-transcribe of `id` in its language can use, probed now. Off the
+    /// calling thread, like [`LibraryReader::models`].
+    pub fn speech_models(
+        &self,
+        id: &RecordingId,
+    ) -> impl Future<Output = Result<RerunMenu<Stt>, StoreError>> + Send + 'static {
+        let models = Arc::clone(&self.models);
+        let store = Arc::clone(&self.store);
+        let id = id.clone();
+        off_thread(
+            self.probes,
+            move || {
+                let recording = store
+                    .recording(&id)?
+                    .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+                let settings = store.settings()?;
+                let needs = rerun::rerun_speech_needs(&recording, &recording.language, &settings);
+                Ok(rerun::menu(
+                    &models.get::<Stt>().statuses(),
+                    &settings,
+                    &needs,
+                ))
+            },
+            || Err(StoreError::Unavailable(PROBE_LOST.into())),
+        )
+    }
+
+    /// The summary models a re-summary or a translation of `id`'s summary can use, probed now.
+    pub fn summary_models(
+        &self,
+        id: &RecordingId,
+    ) -> impl Future<Output = Result<RerunMenu<Llm>, StoreError>> + Send + 'static {
+        let models = Arc::clone(&self.models);
+        let store = Arc::clone(&self.store);
+        let id = id.clone();
+        off_thread(
+            self.probes,
+            move || {
+                let recording = store
+                    .recording(&id)?
+                    .ok_or_else(|| StoreError::NotFound(id.to_string()))?;
+                let settings = store.settings()?;
+                let needs =
+                    rerun::rerun_summary_needs(store.as_ref(), &models, &recording, &settings)?;
+                Ok(rerun::menu(
+                    &models.get::<Llm>().statuses(),
+                    &settings,
+                    &needs,
+                ))
+            },
+            || Err(StoreError::Unavailable(PROBE_LOST.into())),
+        )
     }
 
     /// Every model of kind `K`, probed now, with how it fits the default settings.

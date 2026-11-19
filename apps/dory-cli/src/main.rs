@@ -28,7 +28,8 @@ const USAGE: &str = "usage:
   dory-cli show ID [--languages] [--original] [--summary-translation]
   dory-cli delete ID
   dory-cli record [--layout mic-system|mic|system] [--mic DEVICE_UID] [--fake-capture SECONDS]
-  dory-cli process ID [--summary] [--pace fast|light] [--fake-engines]
+  dory-cli process ID [--stt MODEL_ID] [--pace fast|light] [--fake-engines]
+  dory-cli process ID --summary [--llm MODEL_ID] [--fake-engines]
   dory-cli play ID [--seek SECONDS]
   dory-cli models [--about] [--fake-engines]
   dory-cli models choose stt|llm|diar auto|off|MODEL_ID [--fake-engines]
@@ -45,7 +46,7 @@ const USAGE: &str = "usage:
   dory-cli assistants prune
   dory-cli private ID on|off
   dory-cli summary restore ID
-  dory-cli translate-summary ID TAG [--fake-engines]
+  dory-cli translate-summary ID TAG [--llm MODEL_ID] [--fake-engines]
 
 The data folder is $DORY_DATA_DIR, else ~/Library/Application Support/com.dory.app/v2.
 The --fake-* flags and seed write fake audio or fake recordings, so they need $DORY_DATA_DIR set.

@@ -55,7 +55,7 @@ fn every_contract_case_runs_on_sqlite_by_name() {
 }
 
 /// The schema version this build migrates to.
-const LATEST: u32 = 12;
+const LATEST: u32 = 13;
 
 #[test]
 fn state_survives_closing_and_reopening_the_database() {
@@ -69,6 +69,7 @@ fn state_survives_closing_and_reopening_the_database() {
                     id: rid("r"),
                     goal: Goal::ALL,
                     priority: Priority::Front,
+                    picks: Default::default(),
                     at: Timestamp(5),
                 },
             ])
@@ -276,6 +277,47 @@ fn a_version_4_database_gives_each_job_its_enqueue_time_as_its_place() {
     );
 }
 
+#[test]
+fn a_version_12_database_keeps_its_jobs_and_they_follow_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dory.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for (n, sql) in [
+            include_str!("../src/sqlite/schema_v1.sql"),
+            include_str!("../src/sqlite/schema_v2.sql"),
+            include_str!("../src/sqlite/schema_v3.sql"),
+            include_str!("../src/sqlite/schema_v4.sql"),
+            include_str!("../src/sqlite/schema_v5.sql"),
+            include_str!("../src/sqlite/schema_v6.sql"),
+            include_str!("../src/sqlite/schema_v7.sql"),
+            include_str!("../src/sqlite/schema_v8.sql"),
+            include_str!("../src/sqlite/schema_v9.sql"),
+            include_str!("../src/sqlite/schema_v10.sql"),
+            include_str!("../src/sqlite/schema_v11.sql"),
+            include_str!("../src/sqlite/schema_v12.sql"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            conn.execute_batch(sql).unwrap();
+            conn.execute_batch(&format!("PRAGMA user_version = {}", n + 1))
+                .unwrap();
+        }
+        conn.execute_batch(
+            "INSERT INTO recordings (id, created_at, layout) VALUES ('a', 1, 'mic_system');
+             INSERT INTO jobs (recording_id, goal, done, state, priority, attempts, created_at, place)
+                 VALUES ('a', 3, '', 'queued', 0, 0, 900, 900);",
+        )
+        .unwrap();
+    }
+    let store = SqliteStore::open(&path).unwrap();
+    assert_eq!(store.schema_version().unwrap(), LATEST);
+    let job = store.jobs_for(&rid("a")).unwrap().remove(0);
+    assert_eq!(job.picks, Default::default(), "an old job follows Settings");
+    assert_eq!(job.place, 900);
+}
+
 fn found(store: &SqliteStore, text: &str) -> Vec<String> {
     store
         .search(&Query::parse(text).unwrap())
@@ -476,6 +518,7 @@ fn a_job_change_leaves_the_cached_vocabulary_alone() {
             id: rid("a"),
             goal: Goal::ALL,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(5),
         }])
         .unwrap();
@@ -576,6 +619,7 @@ fn a_translate_job_survives_a_restart_at_the_translate_stage() {
             id: rid("r"),
             goal,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(5),
         }])
         .unwrap();
@@ -697,6 +741,7 @@ fn a_translate_summary_job_survives_a_restart_and_keeps_its_wish() {
                 id: rid("r"),
                 goal: Goal::TRANSLATE_SUMMARY,
                 priority: Priority::Front,
+                picks: Default::default(),
                 at: Timestamp(5),
             },
         ])

@@ -689,6 +689,7 @@ fn startup_seals_crashed_takes_drops_stray_audio_and_requeues_running_jobs() {
             id: interrupted.clone(),
             goal: Goal::ALL,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(1),
         }])
         .unwrap();
@@ -1974,6 +1975,7 @@ fn held_queue(rig: &Rig) -> (Dory, [JobId; 3]) {
             id: id.clone(),
             goal: Goal::ALL,
             priority: Priority::Normal,
+            picks: Default::default(),
             at: Timestamp(10 + n as i64),
         });
     }

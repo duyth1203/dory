@@ -10,7 +10,9 @@
 //!   trailing `:min-height` for Settings at its shortest
 //! - `about`
 //! - `recording:<title>` and `recording:<title>:transcript`, and `recording:<title>:translate-open`
-//!   for the Summary tab with the **Translate…** combobox popover open
+//!   for the Summary tab with the **Translate…** combobox popover open, or
+//!   `recording:<title>:translate-with:<model id>` with it open as **Translate Summary with…**
+//!   opens it for that summary model
 //! - `phase:<P1, P2, P3a, P3b, P4, P5, P5f, P6, P7, or P8>[:<title>]`, on that recording or the
 //!   newest
 //! - `explainer`, the first speech model's info popover in Settings › Transcription, and
@@ -29,6 +31,7 @@ use std::cell::Cell;
 use std::fmt;
 use std::rc::Rc;
 
+use dory_core::models::{Llm, ModelId};
 use gpui_kit::{App, Entity, Window, px, size};
 
 use crate::app::{AppEvent, AppState, DetailTab};
@@ -57,6 +60,8 @@ pub enum View {
         tab: DetailTab,
         /// The Summary tab's **Translate…** popover is open.
         translate_open: bool,
+        /// It was opened by **Translate Summary with…** for this model.
+        translate_with: Option<ModelId<Llm>>,
     },
     /// `ix` indexes [`fixtures::card_phases`]. No title means the newest recording.
     Phase {
@@ -208,13 +213,17 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
     }
     if let Some(rest) = trimmed.strip_prefix("recording:") {
         // A title may hold colons ("1:1 with Sam"), so only a known trailing word is a tab.
-        let (title, tab, translate_open) = if let Some(title) = rest.strip_suffix(":transcript") {
-            (title, DetailTab::Transcript, false)
-        } else if let Some(title) = rest.strip_suffix(":translate-open") {
-            (title, DetailTab::Summary, true)
-        } else {
-            (rest, DetailTab::Summary, false)
-        };
+        let (title, tab, translate_open, translate_with) =
+            if let Some((title, model)) = rest.split_once(":translate-with:") {
+                let model = model.trim().parse().map_err(|_| bad())?;
+                (title, DetailTab::Summary, true, Some(model))
+            } else if let Some(title) = rest.strip_suffix(":transcript") {
+                (title, DetailTab::Transcript, false, None)
+            } else if let Some(title) = rest.strip_suffix(":translate-open") {
+                (title, DetailTab::Summary, true, None)
+            } else {
+                (rest, DetailTab::Summary, false, None)
+            };
         if title.is_empty() {
             return Err(bad());
         }
@@ -222,6 +231,7 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
             title: title.to_owned(),
             tab,
             translate_open,
+            translate_with,
         });
     }
     if let Some(rest) = trimmed.strip_prefix("phase:") {
@@ -429,16 +439,15 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
                     if !done.get() && app.read(cx).is_loaded() {
                         done.set(select(&view, &app, cx));
                         if done.get()
-                            && matches!(
-                                view,
-                                View::Recording {
-                                    translate_open: true,
-                                    ..
-                                }
-                            )
+                            && let View::Recording {
+                                translate_open: true,
+                                translate_with,
+                                ..
+                            } = &view
                         {
                             // After the shell has made the detail pane for the selection.
-                            cx.defer(move |cx| open_translate(handle, cx));
+                            let llm = translate_with.clone();
+                            cx.defer(move |cx| open_translate(handle, llm, cx));
                         }
                     }
                 });
@@ -454,8 +463,8 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
     }
 }
 
-/// Opens **Translate…** in the main window's detail pane.
-fn open_translate(handle: gpui_kit::AnyWindowHandle, cx: &mut App) {
+/// Opens **Translate…** in the main window's detail pane, for `llm` when it is set.
+fn open_translate(handle: gpui_kit::AnyWindowHandle, llm: Option<ModelId<Llm>>, cx: &mut App) {
     let _ = handle.update(cx, |_, window, cx| {
         let detail = gpui_kit::base::Root::read(window, cx)
             .view()
@@ -464,7 +473,9 @@ fn open_translate(handle: gpui_kit::AnyWindowHandle, cx: &mut App) {
             .ok()
             .and_then(|shell| shell.read(cx).detail().cloned());
         match detail {
-            Some(detail) => detail.update(cx, |detail, cx| detail.open_translate(window, cx)),
+            Some(detail) => {
+                detail.update(cx, |detail, cx| detail.open_translate_with(llm, window, cx))
+            }
             None => eprintln!("show: no detail pane to open Translate… in"),
         }
     });
@@ -576,7 +587,17 @@ mod tests {
             Ok(Some(View::Recording {
                 title: "1:1 with Sam".into(),
                 tab: DetailTab::Summary,
-                translate_open: false
+                translate_open: false,
+                translate_with: None,
+            }))
+        );
+        assert_eq!(
+            view("recording:1:1 with Sam:translate-with:ollama/gemma4:e4b"),
+            Ok(Some(View::Recording {
+                title: "1:1 with Sam".into(),
+                tab: DetailTab::Summary,
+                translate_open: true,
+                translate_with: Some("ollama/gemma4:e4b".parse().unwrap()),
             }))
         );
         assert_eq!(
@@ -584,7 +605,8 @@ mod tests {
             Ok(Some(View::Recording {
                 title: "Weekly sync".into(),
                 tab: DetailTab::Summary,
-                translate_open: true
+                translate_open: true,
+                translate_with: None,
             }))
         );
         assert_eq!(
@@ -592,7 +614,8 @@ mod tests {
             Ok(Some(View::Recording {
                 title: "Weekly sync".into(),
                 tab: DetailTab::Transcript,
-                translate_open: false
+                translate_open: false,
+                translate_with: None,
             }))
         );
         let labels: Vec<&str> = fixtures::card_phases()

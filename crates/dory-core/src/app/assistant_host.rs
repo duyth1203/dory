@@ -279,6 +279,7 @@ impl AssistantHost {
                             id,
                             goal: crate::domain::Goal::SUMMARIZE,
                             priority: crate::domain::Priority::Normal,
+                            picks: Default::default(),
                             at: self.clock.now(),
                         },
                     ])

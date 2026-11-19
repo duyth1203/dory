@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use dory_core::app::{Dory, Event, Options, Ports};
+use dory_core::app::{Dory, DoryError, Event, Options, Ports, Rerun};
 use dory_core::domain::{
     Blocker, Channel, ChannelLayout, FailureCause, FailureClass, Goal, JobEvent, JobState, LangSet,
     LangTag, LanguagePref, Ms, Recording, RecordingId, Recovery, Revision, Segment, Settings,
@@ -1928,7 +1928,15 @@ fn summary_is_translated_line_by_line() {
     let (rig, id) = summarized_in_tagalog(translator(), 8_192);
     let dory = rig.open();
     let events = dory.events();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     wait_for_translation_job(&dory, &id, JobState::Succeeded);
 
     let job = translate_job(&dory, &id).unwrap();
@@ -1978,11 +1986,25 @@ fn summary_is_translated_line_by_line() {
 fn asking_again_for_another_language_replaces_the_translation_and_a_new_summary_drops_it() {
     let (rig, id) = summarized_in_tagalog(translator(), 8_192);
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     wait_for_translation_job(&dory, &id, JobState::Succeeded);
     let german = LangTag::parse("de").unwrap();
     dory.library()
-        .translate_summary(&id, german.clone())
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: german.clone(),
+                llm: None,
+            },
+        )
         .unwrap();
     eventually("the German translation", || {
         dory.library()
@@ -2004,7 +2026,13 @@ fn translating_into_the_summary_language_is_refused() {
     for target in ["tl", "tl-PH"] {
         let error = dory
             .library()
-            .translate_summary(&id, LangTag::parse(target).unwrap())
+            .rerun(
+                &id,
+                Rerun::TranslateSummary {
+                    target: LangTag::parse(target).unwrap(),
+                    llm: None,
+                },
+            )
             .unwrap_err();
         assert!(
             matches!(
@@ -2019,12 +2047,24 @@ fn translating_into_the_summary_language_is_refused() {
     let nothing = rig.seed("walang-buod", ChannelLayout::Mixed, 3);
     let error = dory
         .library()
-        .translate_summary(&nothing, english())
+        .rerun(
+            &nothing,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
         .unwrap_err();
     assert_eq!(error.to_string(), "There is no summary to translate yet.");
     assert!(
         dory.library()
-            .translate_summary(&RecordingId::parse("ghost").unwrap(), english())
+            .rerun(
+                &RecordingId::parse("ghost").unwrap(),
+                Rerun::TranslateSummary {
+                    target: english(),
+                    llm: None
+                }
+            )
             .is_err()
     );
     assert_eq!(dory.library().jobs(&id).unwrap(), vec![]);
@@ -2041,11 +2081,25 @@ fn a_second_request_while_one_runs_is_refused_and_the_wish_stays() {
     let (rig, id) = summarized_in_tagalog(translator(), 8_192);
     rig.llm.hold_from(0);
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     eventually("the translation to start", || !rig.llm.prompts().is_empty());
     let error = dory
         .library()
-        .translate_summary(&id, LangTag::parse("de").unwrap())
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: LangTag::parse("de").unwrap(),
+                llm: None,
+            },
+        )
         .unwrap_err();
     assert!(
         matches!(error, dory_core::app::DoryError::Underway(_)),
@@ -2068,7 +2122,13 @@ fn translating_waits_for_the_job_that_is_transcribing_again() {
     });
     let error = dory
         .library()
-        .translate_summary(&id, english())
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
         .unwrap_err();
     assert_eq!(
         error.to_string(),
@@ -2086,7 +2146,15 @@ fn translating_waits_for_the_job_that_is_transcribing_again() {
 
     let job = dory.library().jobs(&id).unwrap().pop().unwrap();
     dory.pipeline().cancel(job.id).unwrap();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     assert_eq!(
         dory.library().summary_translation_wanted(&id).unwrap(),
         Some(english()),
@@ -2107,7 +2175,15 @@ fn no_summary_model_blocks_translation_like_summary() {
         })])
         .unwrap();
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     wait_for_translation_to_block(&dory, &id);
     assert_eq!(
         translate_job(&dory, &id).unwrap().state,
@@ -2141,7 +2217,15 @@ fn turning_the_summary_model_off_blocks_a_requested_translation_instead_of_skipp
         })])
         .unwrap();
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     wait_for_translation_job(
         &dory,
         &id,
@@ -2162,7 +2246,15 @@ fn a_quit_mid_translation_resumes_once() {
     write_summary(&rig, &id, &lines, Some("tl"));
     rig.llm.hold_from(2);
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     eventually("the third batch to start", || rig.llm.prompts().len() == 3);
     drop(dory);
     rig.llm.hold_from(usize::MAX);
@@ -2209,7 +2301,15 @@ fn cancelling_a_translation_keeps_the_summary_and_stores_nothing() {
     let (rig, id) = summarized_in_tagalog(translator(), 8_192);
     rig.llm.hold_from(0);
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     eventually("the translation to start", || !rig.llm.prompts().is_empty());
     let job = translate_job(&dory, &id).unwrap();
     assert_eq!(
@@ -2232,7 +2332,15 @@ fn a_summary_written_while_translating_never_gets_the_old_translation() {
     let (rig, id) = summarized_in_tagalog(translator(), 8_192);
     rig.llm.hold_from(0);
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     eventually("the translation to start", || !rig.llm.prompts().is_empty());
     write_summary(&rig, &id, "## Bago", Some("tl"));
     assert_eq!(
@@ -2250,7 +2358,15 @@ fn a_summary_written_while_translating_never_gets_the_old_translation() {
 fn trashing_and_restoring_a_recording_brings_its_summary_translation_back() {
     let (rig, id) = summarized_in_tagalog(translator(), 8_192);
     let dory = rig.open();
-    dory.library().translate_summary(&id, english()).unwrap();
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::TranslateSummary {
+                target: english(),
+                llm: None,
+            },
+        )
+        .unwrap();
     wait_for_translation_job(&dory, &id, JobState::Succeeded);
     let kept = dory.library().summary_translation(&id).unwrap().unwrap();
     let trashed = dory.library().trash(&id).unwrap();
@@ -2885,4 +3001,250 @@ fn what_a_detecting_model_heard_still_counts_when_the_meeting_is_guessed() {
         "fake/english-only"
     );
     assert_eq!(english_only.prompts().len(), 1);
+}
+
+/// One English line, with `fake/first` ranked above `fake/llm`, so `Auto` picks it, and the
+/// meeting already transcribed and summarized by it.
+fn summarized_by_first(first: FakeLanguageModel) -> (Rig, RecordingId, Dory) {
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mic, &[(0, 1_000, 0, "hello")])
+            .detecting("en"),
+        vec![
+            stt(STT, DiarizationSupport::None, WINDOW),
+            stt("fake/zz-stt", DiarizationSupport::None, WINDOW),
+        ],
+        llm(8_192),
+    )
+    .with_summary_model(preferred("fake/first", LangSet::Any), Arc::new(first));
+    let id = rig.seed("picked", ChannelLayout::MicOnly, 10);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    (rig, id, dory)
+}
+
+fn summarize_with(dory: &Dory, id: &RecordingId, llm: Option<&str>) -> Result<(), DoryError> {
+    dory.library().rerun(
+        id,
+        Rerun::Summarize {
+            llm: llm.map(|m| m.parse().unwrap()),
+        },
+    )
+}
+
+fn summary_jobs(dory: &Dory, id: &RecordingId) -> Vec<dory_core::domain::Job> {
+    dory.library()
+        .jobs(id)
+        .unwrap()
+        .into_iter()
+        .filter(|j| j.goal == Goal::SUMMARIZE)
+        .collect()
+}
+
+#[test]
+fn a_summary_rerun_runs_the_picked_model_once_and_settings_stay() {
+    let (rig, id, dory) = summarized_by_first(FakeLanguageModel::new(FIRST_REPLY));
+    let by = |dory: &Dory| dory.library().summary(&id).unwrap().unwrap().produced_by;
+    assert_eq!(by(&dory).as_str(), "fake/first", "Auto's pick");
+
+    summarize_with(&dory, &id, Some(LLM)).unwrap();
+    eventually("the picked re-summary", || {
+        summary_jobs(&dory, &id)
+            .iter()
+            .any(|j| j.state == JobState::Succeeded)
+    });
+    assert_eq!(
+        by(&dory).as_str(),
+        LLM,
+        "produced_by names the model that ran"
+    );
+    assert_eq!(
+        summary_jobs(&dory, &id)[0].picks.llm,
+        Some(LLM.parse().unwrap())
+    );
+    assert_eq!(rig.llm.prompts().len(), 1);
+    assert_eq!(
+        dory.settings().unwrap().llm,
+        Choice::Auto,
+        "Settings never change"
+    );
+
+    summarize_with(&dory, &id, None).unwrap();
+    eventually("the second re-summary", || {
+        summary_jobs(&dory, &id)
+            .iter()
+            .filter(|j| j.state == JobState::Succeeded)
+            .count()
+            == 2
+    });
+    assert_eq!(
+        by(&dory).as_str(),
+        "fake/first",
+        "without a pick, Auto again"
+    );
+}
+
+#[test]
+fn a_picked_model_that_refuses_never_falls_back_and_another_pick_replaces_its_job() {
+    let first = FakeLanguageModel::new(FIRST_REPLY).refusing(Refusal::Language("und"), usize::MAX);
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mic, &[(0, 1_000, 0, "hello")])
+            .detecting("en"),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    )
+    .with_summary_model(llm_entry("fake/first"), Arc::new(first));
+    let id = rig.seed("refusing-pick", ChannelLayout::MicOnly, 10);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    assert_eq!(
+        dory.library()
+            .summary(&id)
+            .unwrap()
+            .unwrap()
+            .produced_by
+            .as_str(),
+        LLM
+    );
+
+    summarize_with(&dory, &id, Some("fake/first")).unwrap();
+    eventually("the picked model to block the job", || {
+        summary_jobs(&dory, &id)
+            .iter()
+            .any(|j| matches!(j.state, JobState::Blocked { .. }))
+    });
+    assert_eq!(rig.llm.prompts().len(), 1, "fake/llm was not asked again");
+    let blocked = summary_jobs(&dory, &id)[0].clone();
+
+    summarize_with(&dory, &id, Some("fake/first")).unwrap();
+    assert_eq!(
+        summary_jobs(&dory, &id),
+        std::slice::from_ref(&blocked),
+        "the same pick keeps the waiting job"
+    );
+
+    summarize_with(&dory, &id, Some(LLM)).unwrap();
+    eventually("the new pick to run", || {
+        summary_jobs(&dory, &id)
+            .iter()
+            .any(|j| j.state == JobState::Succeeded)
+    });
+    let jobs = summary_jobs(&dory, &id);
+    assert_eq!(jobs.len(), 2);
+    assert_eq!(
+        (jobs[0].id, &jobs[0].state),
+        (blocked.id, &JobState::Cancelled)
+    );
+    assert_eq!(rig.llm.prompts().len(), 2);
+}
+
+#[test]
+fn a_pick_the_catalog_lacks_or_that_cannot_read_the_meeting_is_refused() {
+    let rig = Rig::new(
+        FakeTranscriber::new()
+            .with_segments(Channel::Mic, &[(0, 1_000, 0, "kumusta")])
+            .detecting("tl"),
+        vec![stt(STT, DiarizationSupport::None, WINDOW)],
+        llm(8_192),
+    )
+    .with_summary_model(
+        preferred("fake/en-only", LangSet::Only(vec![tag("en")])),
+        Arc::new(FakeLanguageModel::new(FIRST_REPLY)),
+    );
+    let id = rig.seed("tagalog", ChannelLayout::MicOnly, 10);
+    let dory = rig.open();
+    process(&dory, &id, Goal::ALL);
+    for pick in ["fake/en-only", "fake/missing"] {
+        assert!(
+            matches!(
+                summarize_with(&dory, &id, Some(pick)),
+                Err(DoryError::Invalid(_))
+            ),
+            "{pick}"
+        );
+    }
+    assert_eq!(summary_jobs(&dory, &id).len(), 0, "nothing was queued");
+}
+
+#[test]
+fn a_transcribe_rerun_runs_the_picked_speech_model_in_the_language_asked() {
+    let (_rig, id, dory) = summarized_by_first(FakeLanguageModel::new(FIRST_REPLY));
+    assert_eq!(
+        dory.library()
+            .transcript(&id)
+            .unwrap()
+            .unwrap()
+            .produced_by
+            .as_str(),
+        STT
+    );
+    dory.library()
+        .rerun(
+            &id,
+            Rerun::Transcribe {
+                language: LanguagePref::Pinned(tag("en")),
+                stt: Some("fake/zz-stt".parse().unwrap()),
+            },
+        )
+        .unwrap();
+    eventually("the re-transcribe", || {
+        dory.library()
+            .transcript(&id)
+            .unwrap()
+            .is_some_and(|t| t.produced_by.as_str() == "fake/zz-stt")
+    });
+    assert_eq!(
+        dory.library().recording(&id).unwrap().unwrap().language,
+        LanguagePref::Pinned(tag("en"))
+    );
+    assert_eq!(dory.settings().unwrap().stt, Choice::Auto);
+    let menu = dory_core::testing::block_on(dory.library().speech_models(&id)).unwrap();
+    assert_eq!(
+        menu.default,
+        dory_core::models::Resolution::Use(STT.parse().unwrap())
+    );
+    assert_eq!(menu.models.len(), 2);
+}
+
+#[test]
+fn a_rerun_with_a_picked_model_waits_for_the_job_underway() {
+    let (rig, id, dory) = summarized_by_first(FakeLanguageModel::new(FIRST_REPLY));
+    rig.transcriber.hold_from(0);
+    dory.pipeline().enqueue(&id, Goal::ALL).unwrap();
+    eventually("the transcription to start", || {
+        rig.transcriber.is_running()
+    });
+    let before = dory.library().jobs(&id).unwrap();
+    for rerun in [
+        Rerun::Summarize {
+            llm: Some(LLM.parse().unwrap()),
+        },
+        Rerun::Summarize { llm: None },
+        Rerun::Transcribe {
+            language: LanguagePref::Auto,
+            stt: Some("fake/zz-stt".parse().unwrap()),
+        },
+    ] {
+        let error = dory.library().rerun(&id, rerun.clone()).unwrap_err();
+        assert!(
+            matches!(error, DoryError::Underway(_)),
+            "{rerun:?}: {error:?}"
+        );
+    }
+    assert_eq!(
+        dory.library().jobs(&id).unwrap(),
+        before,
+        "nothing queued or cancelled beside the job underway"
+    );
+
+    let running = before.last().unwrap().id;
+    dory.pipeline().cancel(running).unwrap();
+    summarize_with(&dory, &id, Some(LLM)).unwrap();
+    eventually("the picked re-summary once nothing is underway", || {
+        dory.library()
+            .summary(&id)
+            .unwrap()
+            .is_some_and(|s| s.produced_by.as_str() == LLM)
+    });
 }

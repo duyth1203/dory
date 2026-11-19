@@ -9,9 +9,9 @@
 //! Its **Re-transcribe in…** submenu and the row menu's offer Automatic and the meeting languages,
 //! by `languages::choices` (UX-26), computed when the menu is built or opened.
 //!
-//! Re-transcribe in… and Translate Summary… grey out while a job for the recording is queued or
-//! running, by the core's rule (`AppState::is_underway`), and say why in a dimmed line above
-//! them ([`WAITS`]). Copy, Export, Rename, Move to Trash, and Play stay: none races the job.
+//! Re-transcribe in…, Translate Summary…, and the model pickers (Re-transcribe with…, Re-summarize
+//! with…, Translate Summary with…) grey out while a job for the recording is queued or running, by
+//! the core's rule (`AppState::is_underway`), and say why in a dimmed line above them ([`WAITS`]). Copy, Export, Rename, Move to Trash, and Play stay: none races the job.
 //!
 //! Edit > Find holds Find, Find Next, and Find Previous. The last two step through the matches of
 //! the active search in the selected recording and are off when there are none (UX-32).
@@ -22,8 +22,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use dory_core::app::RecorderStatus;
+use dory_core::app::{AppKind, RecorderStatus, RerunMenu};
 use dory_core::domain::{LangTag, LanguagePref, RecordingId};
+use dory_core::models::{Availability, Choice, ModelId, Resolution};
 use gpui_kit::component::input;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::{
@@ -32,10 +33,11 @@ use gpui_kit::{
 };
 
 use crate::actions::*;
-use crate::app::AppState;
+use crate::app::{AppState, RerunModels};
 use crate::export::{CopyWhat, ExportFormat, Has};
 use crate::languages;
 use crate::library::Selection;
+use crate::models_view::size_text;
 use crate::theme::ThemeName;
 
 /// What the commands need to know to be enabled.
@@ -64,6 +66,148 @@ pub struct MenuState {
     /// A job for the selected recording is queued or running, so Re-transcribe in… and Translate
     /// Summary… wait for it.
     pub underway: bool,
+    /// Re-transcribe with…: the Settings choice, a separator (`None`), then each speech model
+    /// that can transcribe the selected recording. Empty until the models are probed.
+    pub retranscribe_with: Vec<Option<ModelItem<RetranscribeWith>>>,
+    /// Re-summarize with…, the same for summary models.
+    pub resummarize_with: Vec<Option<ModelItem<ResummarizeWith>>>,
+}
+
+/// One item of a model picker: what it says, whether it can be picked, and what it does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelItem<A> {
+    pub label: String,
+    pub enabled: bool,
+    pub action: A,
+}
+
+/// A model picker's items: the Settings choice first, named with what it runs now, a separator
+/// (`None`), then each model that can do this recording's job, in the order Auto tries them. A
+/// model that needs a download says so and can still be picked: its job waits on the download,
+/// which the queue offers. A model that cannot run now is shown but cannot be picked.
+pub fn model_items<K: AppKind, A>(
+    menu: &RerunMenu<K>,
+    make: impl Fn(Option<ModelId<K>>) -> A,
+) -> Vec<Option<ModelItem<A>>> {
+    let name = |id: &ModelId<K>| {
+        menu.models
+            .iter()
+            .find(|r| &r.status.entry.id == id)
+            .map_or_else(|| id.to_string(), |r| r.status.entry.display_name.clone())
+    };
+    let label = match (&menu.setting, &menu.default) {
+        (Choice::Auto, Resolution::Use(id)) => format!("Automatic ({})", name(id)),
+        (Choice::Auto, _) => "Automatic".to_owned(),
+        (Choice::Pinned(id), _) => format!("As in Settings ({})", name(id)),
+        (Choice::Off, _) => "As in Settings (Off)".to_owned(),
+    };
+    let mut items = vec![
+        Some(ModelItem {
+            label,
+            enabled: true,
+            action: make(None),
+        }),
+        None,
+    ];
+    items.extend(menu.models.iter().map(|row| {
+        let entry = &row.status.entry;
+        let (label, enabled) = match &row.status.availability {
+            Availability::Ready => (entry.display_name.clone(), true),
+            Availability::NeedsProvision { bytes: Some(bytes) } => (
+                format!("{} (download {})", entry.display_name, size_text(*bytes)),
+                true,
+            ),
+            Availability::NeedsProvision { bytes: None } => {
+                (format!("{} (needs download)", entry.display_name), true)
+            }
+            Availability::Unavailable(_) => {
+                (format!("{} (not available)", entry.display_name), false)
+            }
+        };
+        Some(ModelItem {
+            label,
+            enabled,
+            action: make(Some(entry.id.clone())),
+        })
+    }));
+    items
+}
+
+/// The picker items for the selected recording's re-run models.
+fn rerun_items(models: &RerunModels) -> RerunItems {
+    (
+        models
+            .speech
+            .as_ref()
+            .map(|m| model_items(m, |stt| RetranscribeWith { stt }))
+            .unwrap_or_default(),
+        models
+            .summary
+            .as_ref()
+            .map(|m| model_items(m, |llm| ResummarizeWith { llm }))
+            .unwrap_or_default(),
+    )
+}
+
+/// Translate Summary with…: the summary models Re-summarize with… offers, each opening
+/// **Translate…** for that model.
+pub fn translate_items(
+    summary: &[Option<ModelItem<ResummarizeWith>>],
+) -> Vec<Option<ModelItem<TranslateWith>>> {
+    summary
+        .iter()
+        .map(|item| {
+            item.as_ref().map(|item| ModelItem {
+                label: item.label.clone(),
+                enabled: item.enabled,
+                action: TranslateWith {
+                    llm: item.action.llm.clone(),
+                },
+            })
+        })
+        .collect()
+}
+
+type RerunItems = (
+    Vec<Option<ModelItem<RetranscribeWith>>>,
+    Vec<Option<ModelItem<ResummarizeWith>>>,
+);
+
+/// A native submenu of model items, or one greyed-out line while the models are probed.
+fn native_items<A: gpui_kit::Action + Clone>(
+    items: &[Option<ModelItem<A>>],
+    enabled: bool,
+) -> Vec<MenuItem> {
+    if items.is_empty() {
+        return vec![MenuItem::action("Checking models…", NoAction).disabled(true)];
+    }
+    items
+        .iter()
+        .map(|item| match item {
+            Some(item) => MenuItem::action(item.label.clone(), item.action.clone())
+                .disabled(!enabled || !item.enabled),
+            None => MenuItem::separator(),
+        })
+        .collect()
+}
+
+/// The same as a submenu of the row and ⋯ popup menus.
+fn popup_items<A: gpui_kit::Action + Clone>(
+    menu: PopupMenu,
+    items: &[Option<ModelItem<A>>],
+    enabled: bool,
+) -> PopupMenu {
+    if items.is_empty() {
+        return menu.menu_with_disabled("Checking models…", Box::new(NoAction), true);
+    }
+    items.iter().fold(menu, |menu, item| match item {
+        Some(item) => menu.menu_with_disabled(
+            item.label.clone(),
+            Box::new(item.action.clone()),
+            !enabled || !item.enabled,
+        ),
+        None => menu.separator(),
+    })
 }
 
 /// Why Re-transcribe in… and Translate Summary… are greyed out while the recording is processed.
@@ -120,6 +264,10 @@ impl Recorder {
 
 pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
     let detail = app.session().and_then(|session| session.read(cx).detail());
+    let (retranscribe_with, resummarize_with) = app
+        .session()
+        .map(|session| rerun_items(session.read(cx).rerun_models()))
+        .unwrap_or_default();
     let phase = app.selection.id().and_then(|id| app.phase_of(id));
     let has = detail.as_ref().map(|d| Has::of(d, phase.as_ref()));
     MenuState {
@@ -141,6 +289,8 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
             .and_then(|d| d.summary.as_ref())
             .and_then(|s| s.language.clone()),
         underway: app.selection.id().is_some_and(|id| app.is_underway(id)),
+        retranscribe_with,
+        resummarize_with,
     }
 }
 
@@ -230,6 +380,24 @@ pub fn build(state: MenuState) -> Vec<Menu> {
                     ),
                 ),
             ),
+            MenuItem::submenu(
+                Menu::new("Re-transcribe with").items(waits(state.underway).chain(native_items(
+                    &state.retranscribe_with,
+                    state.has_selection && !state.underway,
+                ))),
+            ),
+            MenuItem::submenu(
+                Menu::new("Re-summarize with").items(waits(state.underway).chain(native_items(
+                    &state.resummarize_with,
+                    state.has_transcript && !state.underway,
+                ))),
+            ),
+            MenuItem::submenu(Menu::new("Translate Summary with").items(
+                waits(state.underway).chain(native_items(
+                    &translate_items(&state.resummarize_with),
+                    state.has_summary && !state.underway,
+                )),
+            )),
             MenuItem::submenu(
                 Menu::new("Translate Summary…").items(
                     waits(state.underway).chain(
@@ -417,6 +585,12 @@ pub fn recording_menu(
     let underway = target
         .as_ref()
         .is_some_and(|app| app.read(cx).is_underway(id));
+    let (retranscribe_with, resummarize_with) = target
+        .as_ref()
+        .and_then(|app| app.read(cx).session())
+        .map(|session| rerun_items(session.read(cx).rerun_models()))
+        .unwrap_or_default();
+    let translate_with = translate_items(&resummarize_with);
     let current = target.and_then(|app| {
         let session = app.read(cx).session()?.read(cx).detail()?;
         Some(session.recording.language.clone())
@@ -452,8 +626,17 @@ pub fn recording_menu(
     // The kit cannot dim a submenu, so while the job runs the entry is a dimmed item that opens
     // nothing, with the reason under it.
     let menu = if underway {
-        menu.menu_with_disabled("Re-transcribe in…", Box::new(NoAction), true)
-            .label(WAITS)
+        [
+            "Re-transcribe in…",
+            "Re-transcribe with…",
+            "Re-summarize with…",
+            "Translate Summary with…",
+        ]
+        .into_iter()
+        .fold(menu, |menu, name| {
+            menu.menu_with_disabled(name, Box::new(NoAction), true)
+        })
+        .label(WAITS)
     } else {
         menu.submenu("Re-transcribe in…", window, cx, move |menu, _, _| {
             retranscribe_choices(&meeting)
@@ -466,6 +649,18 @@ pub fn recording_menu(
                     None => menu.separator(),
                 })
         })
+        .submenu("Re-transcribe with…", window, cx, move |menu, _, _| {
+            popup_items(menu, &retranscribe_with, true)
+        })
+        .submenu("Re-summarize with…", window, cx, move |menu, _, _| {
+            popup_items(menu, &resummarize_with, has.can_copy(CopyWhat::Transcript))
+        })
+        .submenu(
+            "Translate Summary with…",
+            window,
+            cx,
+            move |menu, _, _| popup_items(menu, &translate_with, has.can_copy(CopyWhat::Summary)),
+        )
     };
     menu.separator()
         .menu("Rename", Box::new(Rename))
@@ -482,7 +677,10 @@ pub fn translate_choices(
     languages::translate_choices(meeting, written)
         .into_iter()
         .map(|choice| {
-            choice.map(|target| (languages::name(&target), TranslateSummaryTo { target }))
+            choice.map(|target| {
+                let action = TranslateSummaryTo { target, llm: None };
+                (languages::name(&action.target), action)
+            })
         })
         .collect()
 }

@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use dory_core::domain::LangTag;
+use dory_core::models::{Llm, ModelId};
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::input::{
     Backspace, Enter, Escape, IndentInline, Input, InputEvent, InputState, MoveDown, MoveUp,
@@ -124,6 +125,9 @@ pub struct LanguageCombobox {
     field_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The last thing VoiceOver was told, kept as a status line so it can be read again.
     said: Option<SharedString>,
+    /// **Translate with…** opened the popover for this summary model. `None` translates with the
+    /// Settings choice, as the button does. Cleared when the popover closes.
+    llm: Option<ModelId<Llm>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -179,6 +183,7 @@ impl LanguageCombobox {
                 gpui_kit::size(px(360.), px(36.)),
             ))),
             said: None,
+            llm: None,
             _subscriptions: vec![on_type, on_source],
         }
     }
@@ -262,8 +267,20 @@ impl LanguageCombobox {
         cx.notify();
     }
 
+    /// **Translate with…**: opens the popover to translate with `llm` this one time.
+    pub fn open_with(
+        &mut self,
+        llm: Option<ModelId<Llm>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.llm = llm;
+        self.open(window, cx);
+    }
+
     pub fn close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
+        self.llm = None;
         self.search.update(cx, |s, cx| s.set_value("", window, cx));
         window.focus(&self.field, cx);
         cx.notify();
@@ -300,8 +317,15 @@ impl LanguageCombobox {
         if !self.meeting() {
             // Close first: the action goes out later, from what has focus now, and the search
             // field is gone by then while the button stays.
+            let llm = self.llm.clone();
             self.close(window, cx);
-            window.dispatch_action(Box::new(TranslateSummaryTo { target: row.tag }), cx);
+            window.dispatch_action(
+                Box::new(TranslateSummaryTo {
+                    target: row.tag,
+                    llm,
+                }),
+                cx,
+            );
             return;
         }
         self.toggle(row.tag.clone(), cx);
@@ -407,18 +431,27 @@ impl LanguageCombobox {
         let want = theme.text(ROW) * VISIBLE_ROWS + theme.text(CHROME);
         let place = Placement::of(field, viewport.height, want);
         let meeting = self.meeting();
+        let with = match (&self.purpose, &self.llm) {
+            (Purpose::Translate { app, .. }, Some(llm)) => {
+                format!(
+                    "With {} · {TRANSLATE_HINT}",
+                    app.read(cx).model_name(&llm.erase())
+                )
+            }
+            _ => TRANSLATE_HINT.to_owned(),
+        };
         let (id, name, hint, width) = if meeting {
             (
                 "meeting-languages-popover",
                 "Add meeting languages",
-                HINT,
+                HINT.to_owned(),
                 field.size.width,
             )
         } else {
             (
                 "translate-popover",
                 "Translate summary into",
-                TRANSLATE_HINT,
+                with,
                 theme
                     .text(TRANSLATE_WIDTH)
                     .min(viewport.width - px(2. * MARGIN)),
@@ -582,7 +615,7 @@ impl LanguageCombobox {
             )
             .children(empty)
             .child(
-                a11y::node("language-hint", Role::Label, hint)
+                a11y::node("language-hint", Role::Label, hint.clone())
                     .text_size(theme.text(11.))
                     .text_color(theme.text_secondary)
                     .child(hint),

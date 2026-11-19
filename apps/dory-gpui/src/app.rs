@@ -30,8 +30,8 @@ use gpui_kit::{AppContext as _, Context, Entity, EventEmitter, SharedString, Tas
 
 pub use player::PlayerHandle;
 pub use session::{
-    Detail, Loadable, Moved, Session, Shown, SummaryVersion, TranscriptText, Turn, speaker_label,
-    translated_turns, turns,
+    Detail, Loadable, Moved, RerunModels, Session, Shown, SummaryVersion, TranscriptText, Turn,
+    speaker_label, translated_turns, turns,
 };
 
 pub use self::assistants::{
@@ -404,6 +404,14 @@ impl AppState {
         self.follow_card();
         cx.emit(AppEvent::SelectionChanged);
         cx.notify();
+    }
+
+    /// The selected recording's re-run menus measure fit against the settings and list what is
+    /// downloaded, so either changing probes them again.
+    fn reload_rerun_models(&mut self, cx: &mut Context<Self>) {
+        if let Some(session) = &self.session {
+            session.update(cx, |session, cx| session.reload_models(cx));
+        }
     }
 
     /// The query that found the settled results, which is what marks matches in the detail pane.
@@ -817,9 +825,13 @@ impl AppState {
                     rows = true;
                     detail = true;
                 }
-                Event::SettingsChanged => record::load_settings(&self.core, cx),
+                Event::SettingsChanged => {
+                    record::load_settings(&self.core, cx);
+                    self.reload_rerun_models(cx);
+                }
                 Event::ProvisionFinished { .. } => {
                     rows = true;
+                    self.reload_rerun_models(cx);
                     self.on_record_event(event, cx);
                 }
                 other => self.on_record_event(other, cx),

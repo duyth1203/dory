@@ -36,6 +36,7 @@ use dory_core::domain::{
     ChannelLayout, Goal, Recording, RecordingId, RecordingRow, Segment, Stage, SummaryFlag,
     Transcript,
 };
+use dory_core::models::{Llm, ModelId};
 
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -305,10 +306,16 @@ impl DetailPane {
         }
     }
 
-    /// Opens **Translate…**, for the launch previews in `show`.
-    pub fn open_translate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens **Translate…** to translate with `llm` this one time, or with the Settings choice for
+    /// `None`. **Translate Summary with…** and the launch previews in `show` use it.
+    pub fn open_translate_with(
+        &mut self,
+        llm: Option<ModelId<Llm>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.translate
-            .update(cx, |translate, cx| translate.open(window, cx));
+            .update(cx, |translate, cx| translate.open_with(llm, window, cx));
     }
 
     /// When the session starts showing a match, shows the tab that match is on. Opening a hit

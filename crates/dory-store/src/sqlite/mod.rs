@@ -19,12 +19,12 @@ use std::time::Duration;
 
 use dory_core::domain::{
     AssistantAccess, AssistantChange, AssistantClient, AssistantQuery, ClientKey, Exposure, Fields,
-    Job, JobEvent, JobId, JobState, LangTag, Pace, Priority, Processing, Recording, RecordingEdit,
-    RecordingId, RecordingQuery, RecordingRow, Recovery, Revision, Segment, Settings, SpeakerId,
-    SpeakerNames, Summary, SummaryFlag, SummaryTranslation, TakeInfo, Timestamp, Transcript,
-    Translation, Writes,
+    Job, JobEvent, JobId, JobState, LangTag, Pace, Picks, Priority, Processing, Recording,
+    RecordingEdit, RecordingId, RecordingQuery, RecordingRow, Recovery, Revision, Segment,
+    Settings, SpeakerId, SpeakerNames, Summary, SummaryFlag, SummaryTranslation, TakeInfo,
+    Timestamp, Transcript, Translation, Writes,
 };
-use dory_core::models::{Diar, Llm, Stt};
+use dory_core::models::{Diar, Llm, ModelId, ModelKind, Stt};
 use dory_core::ports::{
     Change, Checkpoint, CheckpointKey, Store, StoreError, StoreRead, TranslationBatch,
     TranslationKey,
@@ -77,6 +77,7 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("schema_v12.sql"),
         then: Some(search::rebuild),
     },
+    Migration::sql(include_str!("schema_v13.sql")),
 ];
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -253,7 +254,7 @@ fn reindex_if_stale(conn: &mut Connection) -> Result<bool, StoreError> {
 
 const JOB_COLUMNS: &str = "id, recording_id, goal, done, state, stage, blocker, error_class, \
                            error_message, priority, attempts, not_before, created_at, run_fast, \
-                           error_cause, place";
+                           error_cause, place, stt_model, llm_model";
 
 struct RawState {
     state: String,
@@ -276,6 +277,8 @@ struct RawJob {
     created_at: i64,
     run_fast: i64,
     place: i64,
+    stt_model: Option<String>,
+    llm_model: Option<String>,
 }
 
 fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
@@ -298,6 +301,8 @@ fn raw_job(row: &Row<'_>) -> rusqlite::Result<RawJob> {
         created_at: row.get(12)?,
         run_fast: row.get(13)?,
         place: row.get(15)?,
+        stt_model: row.get(16)?,
+        llm_model: row.get(17)?,
     })
 }
 
@@ -348,10 +353,23 @@ fn decode_job(raw: RawJob) -> Result<Job, StoreError> {
         },
         place: raw.place,
         pace: pace_from_db(raw.run_fast)?,
+        picks: Picks {
+            stt: picked(raw.stt_model.as_deref())?,
+            llm: picked(raw.llm_model.as_deref())?,
+        },
         attempts: u8::try_from(raw.attempts).map_err(|_| corrupt("job attempts out of range"))?,
         not_before: raw.not_before.map(Timestamp),
         created_at: Timestamp(raw.created_at),
     })
+}
+
+fn picked<K: ModelKind>(column: Option<&str>) -> Result<Option<ModelId<K>>, StoreError> {
+    column
+        .map(|id| {
+            id.parse()
+                .map_err(|_| corrupt(format!("job picks a bad model id {id:?}")))
+        })
+        .transpose()
 }
 
 struct StateColumns {
@@ -1575,6 +1593,7 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
             id,
             goal,
             priority,
+            picks,
             at,
         } => {
             require_recording(tx, id)?;
@@ -1596,8 +1615,8 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                     tx.prepare_cached(
                         "INSERT INTO jobs (recording_id, goal, done, state, stage, blocker,
                                            error_class, error_message, priority, attempts,
-                                           not_before, created_at, place)
-                         VALUES (?1, ?2, '', ?3, NULL, NULL, NULL, NULL, ?4, 0, NULL, ?5, ?5)",
+                                           not_before, created_at, place, stt_model, llm_model)
+                         VALUES (?1, ?2, '', ?3, NULL, NULL, NULL, NULL, ?4, 0, NULL, ?5, ?5, ?6, ?7)",
                     )
                     .map_err(db)?
                     .execute(params![
@@ -1605,7 +1624,9 @@ pub(crate) fn apply_change(tx: &Connection, change: &Change) -> Result<Option<Jo
                         goal_to_db(*goal),
                         columns.state,
                         priority_to_db(*priority),
-                        at.0
+                        at.0,
+                        picks.stt.as_ref().map(ToString::to_string),
+                        picks.llm.as_ref().map(ToString::to_string),
                     ])
                     .map_err(db)?;
                     let rowid = tx.last_insert_rowid();
@@ -1853,7 +1874,7 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             "UPDATE jobs SET goal = ?2, done = ?3, state = ?4, stage = ?5, blocker = ?6,
                              error_class = ?7, error_message = ?8, priority = ?9, attempts = ?10,
                              not_before = ?11, created_at = ?12, run_fast = ?13,
-                             error_cause = ?14, place = ?15
+                             error_cause = ?14, place = ?15, stt_model = ?16, llm_model = ?17
              WHERE id = ?1",
         )
         .map_err(db)?
@@ -1873,6 +1894,8 @@ fn write_job(tx: &Connection, job: &Job) -> Result<(), StoreError> {
             pace_to_db(job.pace),
             columns.error_cause,
             job.place,
+            job.picks.stt.as_ref().map(ToString::to_string),
+            job.picks.llm.as_ref().map(ToString::to_string),
         ])
         .map_err(db)?;
     if changed == 0 {

@@ -1,5 +1,6 @@
-//! While a job for a recording is queued or running, Re-transcribe in… and Translate Summary…
-//! wait for it on every surface that offers them, say why, and come back when it ends. The rule
+//! While a job for a recording is queued or running, Re-transcribe in…, Translate Summary…, and
+//! the model pickers (Re-transcribe with…, Re-summarize with…, Translate Summary with…) wait for
+//! it on every surface that offers them, say why, and come back when it ends. The rule
 //! is the core's (`Underway`), read by `AppState::is_underway`.
 
 mod common;
@@ -88,11 +89,60 @@ fn settles(
     }
 }
 
+/// The model pickers each recording menu offers beside Re-transcribe in….
+const PICKERS: [&str; 3] = [
+    "Re-transcribe with…",
+    "Re-summarize with…",
+    "Translate Summary with…",
+];
+
+/// Opens a recording menu with `open`, points at the model picker `name`, and reports whether its
+/// submenu of models opened, which adds items to the menu. Kit does not tell VoiceOver a popup
+/// item is dimmed, so opening is what shows it. Closes the menu after.
+fn picker_opens(
+    window: AnyWindowHandle,
+    name: &str,
+    open: &dyn Fn(&mut gpui_kit::Window, &mut gpui_kit::App),
+    cx: &mut TestAppContext,
+) -> bool {
+    const SECOND: Duration = Duration::from_secs(1);
+    assert!(
+        settles(window, SECOND, cx, |items| items.is_empty()),
+        "the last menu is still open"
+    );
+    let opened = (0..10).any(|_| {
+        cx.update_window(window, |_, window, cx| open(window, cx))
+            .unwrap();
+        settles(window, SECOND / 4, cx, |items| !items.is_empty())
+    });
+    assert!(opened, "the menu did not open");
+    let items = menu_items(window, cx);
+    let (_, entry) = items
+        .iter()
+        .find(|(label, _)| label == name)
+        .unwrap_or_else(|| panic!("{name} is not in the menu: {items:?}"));
+    let entry = entry.clone();
+    cx.update_window(window, |_, window, cx| window.click(entry, cx))
+        .unwrap();
+    let shown = items.len();
+    let models = settles(window, SECOND / 2, cx, |items| items.len() > shown);
+    for _ in 0..2 {
+        cx.update_window(window, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+    assert!(
+        settles(window, SECOND, cx, |items| items.is_empty()),
+        "Escape closes the menu"
+    );
+    models
+}
+
 /// Opens a recording menu with `open`, points at Re-transcribe in…, and reports whether the
 /// reason line shows and whether the languages opened. Closes the menu after.
 fn popup(
     window: AnyWindowHandle,
-    open: impl Fn(&mut gpui_kit::Window, &mut gpui_kit::App),
+    open: &dyn Fn(&mut gpui_kit::Window, &mut gpui_kit::App),
     cx: &mut TestAppContext,
 ) -> (bool, bool) {
     const SECOND: Duration = Duration::from_secs(1);
@@ -143,7 +193,13 @@ fn assert_offered(
     } else {
         "during the job"
     };
-    for name in ["Re-transcribe in", "Translate Summary…"] {
+    for name in [
+        "Re-transcribe in",
+        "Translate Summary…",
+        "Re-transcribe with",
+        "Re-summarize with",
+        "Translate Summary with",
+    ] {
         let items = submenu(app, name, cx);
         assert_eq!(
             items.first().map(|(label, _)| label.as_str()) == Some(WAITS),
@@ -202,9 +258,16 @@ fn assert_offered(
             ),
         ),
     ] {
-        let (reason, languages) = popup(window, open, cx);
+        let (reason, languages) = popup(window, &*open, cx);
         assert_eq!(reason, !offered, "{when}: the {surface} says why");
         assert_eq!(languages, offered, "{when}: the {surface}'s languages");
+        for name in PICKERS {
+            assert_eq!(
+                picker_opens(window, name, &*open, cx),
+                offered,
+                "{when}: the {surface}'s {name} opens its models only after the job"
+            );
+        }
     }
 }
 
@@ -224,7 +287,14 @@ fn re_transcribe_and_translate_wait_for_the_job_on_every_surface(cx: &mut TestAp
         app.select(Selection::One(id.clone()), cx);
         app.set_tab(DetailTab::Summary, cx);
     });
-    cx.run_until_parked();
+    until(cx, "the re-run models", |cx| {
+        app.read_with(cx, |app, cx| {
+            app.session().is_some_and(|s| {
+                let models = s.read(cx).rerun_models();
+                models.speech.is_some() && models.summary.is_some()
+            })
+        })
+    });
     assert_offered(window, &app, true, cx);
 
     model.hold_from(0);

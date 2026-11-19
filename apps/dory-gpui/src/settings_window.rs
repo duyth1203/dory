@@ -1,10 +1,10 @@
-//! The Settings window (UX-19, UX-20) in the System Settings layout of
+//! The Settings window (UX-19) in the System Settings layout of
 //! `docs/design/settings-icons-blur.md` section 1: a sidebar panel with a search field and the
 //! panes, then a 52 pt toolbar with the pane's title over one scrolling content area. The
 //! window is 860 wide, fixed, and at least 560 tall. It reopens on the pane it showed last.
 //!
-//! - General: process recordings automatically, each kind of notification (UX-14), and the
-//!   appearance note.
+//! - General: process recordings automatically, each kind of notification (UX-14), the
+//!   appearance note, and text size.
 //! - Recording: the Mac's inputs and system audio, as radio groups. No setting carries a
 //!   microphone or a layout yet; every take starts with `StartOptions::default()`, the system
 //!   default input plus system audio, so only those options are enabled.
@@ -43,8 +43,9 @@ use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
     FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
     Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    TestSupportExt as _, TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions,
-    canvas, div, point, prelude::FluentBuilder as _, px, relative, size,
+    TestSupportExt as _, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowOptions, canvas, div, point, prelude::FluentBuilder as _, px,
+    relative, size,
 };
 
 use crate::a11y;
@@ -60,7 +61,6 @@ use crate::radio::{self, Radio, RadioGroup};
 use crate::search_field;
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
 use crate::theme::Theme;
-use crate::theme::ThemeName;
 
 pub const WIDTH: f32 = 860.;
 pub const HEIGHT: f32 = 720.;
@@ -168,9 +168,6 @@ pub const ENTRIES: &[Entry] = &[
     entry(Pane::General, "Summary ready", "row-note-summary"),
     entry(Pane::General, "Needs attention", "row-note-attention"),
     entry(Pane::General, "Model downloaded", "row-note-download"),
-    entry(Pane::General, "Theme", "row-theme"),
-    entry(Pane::General, "Modern theme", "row-theme"),
-    entry(Pane::General, "Book theme", "row-theme"),
     entry(Pane::General, "Appearance", "row-appearance"),
     entry(Pane::General, "Text size", "row-text-size"),
     entry(Pane::Recording, "Microphone", "row-microphone"),
@@ -317,12 +314,11 @@ pub fn open(app: &Entity<AppState>, cx: &mut App) {
             cx,
         ))),
         window_min_size: Some(size(px(WIDTH), px(MIN_HEIGHT))),
-        window_background: crate::glass::window_background(cx),
+        window_background: WindowBackgroundAppearance::Opaque,
         ..Default::default()
     };
     let owner = app.clone();
     match gpui_kit::open_window(options, cx, move |window, cx| {
-        crate::glass::follow(window, cx);
         crate::platform::print_window_id(window);
         cx.new(|cx| SettingsWindow::new(owner, window, cx))
     }) {
@@ -683,125 +679,31 @@ impl SettingsWindow {
                 theme,
                 notifications,
             ),
-            section("settings-theme", "Theme", theme, self.theme_rows(theme, cx)),
+            section(
+                "settings-appearance",
+                "Appearance",
+                theme,
+                self.appearance_rows(theme, cx),
+            ),
         ]
     }
 
-    /// Settings › General › Theme (frame B4): the Modern and Book cards, the note that light and
-    /// dark follow the Mac, and Text size (A11Y-7).
-    fn theme_rows(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let prefs = self.app.read(cx).prefs.clone();
-        let cards = ThemeName::ALL.map(|name| {
-            self.theme_card(name, prefs.theme == name, theme, cx)
-                .into_any_element()
-        });
-        let choice = a11y::node("setting-theme", Role::RadioGroup, "Theme")
-            .px(px(14.))
-            .py(px(12.))
-            .flex()
-            .flex_wrap()
-            .gap(px(12.))
-            .children(cards);
+    /// Settings › General › Appearance: the note that light and dark follow the Mac, and Text
+    /// size (A11Y-7).
+    fn appearance_rows(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let text_scale = self.app.read(cx).prefs.text_scale;
         let appearance = row(
             "setting-appearance",
             "Follows the system",
-            "Light and dark follow the system appearance in both themes. Modern also takes the \
-             system's accent color.",
+            "Light and dark follow the system appearance.",
             None,
             theme,
         );
-        let text_size = self.text_size_row(prefs.text_scale, theme, cx);
+        let text_size = self.text_size_row(text_scale, theme, cx);
         vec![
-            self.mark("row-theme", choice, theme, cx),
             self.mark("row-appearance", appearance, theme, cx),
             self.mark("row-text-size", text_size, theme, cx),
         ]
-    }
-
-    /// A picture card: the theme's own paper and ink with "Aa" in its reading typeface, its name,
-    /// and one line on what it is. A radio button that Tab reaches and Space or Return picks.
-    fn theme_card(
-        &mut self,
-        name: ThemeName,
-        selected: bool,
-        theme: &Theme,
-        cx: &mut Context<Self>,
-    ) -> a11y::Node {
-        let focus = self.focus(format!("theme-{}", name.slug()), cx);
-        let preview = Theme::new(
-            theme.dark,
-            crate::platform::system_accent().unwrap_or_else(|| theme.accent),
-            crate::theme::Display {
-                theme: name,
-                ..crate::theme::Display::default()
-            },
-        );
-        let app = self.app.clone();
-        a11y::focusable(
-            a11y::node(
-                format!("theme-{}", name.slug()),
-                Role::RadioButton,
-                name.label(),
-            ),
-            &focus,
-            theme,
-            false,
-        )
-        .aria_toggled(if selected {
-            gpui_kit::accesskit::Toggled::True
-        } else {
-            gpui_kit::accesskit::Toggled::False
-        })
-        .aria_description(name.description())
-        .on_click(move |_, window, cx| {
-            app.update(cx, |app, cx| app.set_theme(name, cx));
-            window.refresh();
-        })
-        .cursor_pointer()
-        .w(theme.text(180.))
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .p(px(6.))
-        .rounded(px(10.))
-        .child(
-            div()
-                .h(theme.text(72.))
-                .rounded(px(7.))
-                .border_1()
-                .border_color(if selected {
-                    theme.accent
-                } else {
-                    theme.control_border
-                })
-                .when(selected, |tile| tile.border_2())
-                .bg(preview.window_bg)
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(8.))
-                .child(
-                    preview
-                        .reading(div())
-                        .text_size(theme.text(28.))
-                        .text_color(preview.text)
-                        .child("Aa"),
-                )
-                .child(div().size(px(10.)).rounded_full().bg(preview.accent)),
-        )
-        .child(
-            div()
-                .text_size(theme.text(13.))
-                .font_weight(FontWeight::MEDIUM)
-                .child(name.label()),
-        )
-        .child(
-            div()
-                .text_size(theme.text(12.))
-                .line_height(relative(1.4))
-                .text_color(theme.text_secondary)
-                .child(name.description()),
-        )
     }
 
     /// A11Y-7's control in Settings: Smaller and Bigger around the current size.
@@ -1929,7 +1831,7 @@ impl SettingsWindow {
                     .pt(px(44.))
                     .px(px(8.))
                     .rounded(px(12.))
-                    .bg(crate::glass::sidebar_panel(theme, cx))
+                    .bg(theme.sidebar_bg)
                     .border_1()
                     .border_color(theme.panel_border)
                     .when(theme.shadows, |panel| panel.shadow_sm())
@@ -2207,7 +2109,7 @@ impl Render for SettingsWindow {
             }))
             .size_full()
             .flex()
-            .bg(crate::glass::sidebar_column(&theme, cx))
+            .bg(theme.window_bg)
             .text_color(theme.text)
             .child(sidebar)
             .child(

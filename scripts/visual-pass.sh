@@ -13,8 +13,6 @@
 #   VISUAL_THEMES        themes to run (default: "light dark contrast")
 #   VISUAL_SETTLE        seconds to wait after the view is ready (default: 1.5)
 #   VISUAL_SMALL         1 adds the 800 x 560, 200% pass (default: 1 for the whole set, else 0)
-#   VISUAL_BOOK          1 opens every view in the Book theme (default: 0);
-#                        file names gain "-book"
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -90,17 +88,14 @@ capture() {
   log="$lib.log"
   cp -cR "$library/." "$lib/"
   rm -f "$lib/.lock"
-  local book_prefs=""
-  [ "${VISUAL_BOOK:-0}" = 1 ] && book_prefs=',"theme":"book"'
-  printf '{"version":1,"onboarding":"done","window_width":%s,"window_height":%s,"text_scale":%s%s}\n' \
-    "$width" "$height" "$scale" "$book_prefs" > "$lib/ui-prefs.json"
+  printf '{"version":1,"onboarding":"done","window_width":%s,"window_height":%s,"text_scale":%s}\n' \
+    "$width" "$height" "$scale" > "$lib/ui-prefs.json"
   case $theme in
     dark) appearance=dark ;;
     contrast) appearance=light; prefs_env=(--env DORY_SYSTEM_PREFS=increase-contrast) ;;
     *) appearance=light ;;
   esac
   name="$(slug "$view")-$theme$suffix"
-  [ "${VISUAL_BOOK:-0}" = 1 ] && name="$name-book"
   : > "$log"
   open -n --stderr "$log" --env "DORY_DATA_DIR=$lib" --env "DORY_SHOW=$view" \
     --env "DORY_APPEARANCE=$appearance" ${prefs_env[@]+"${prefs_env[@]}"} "$app"

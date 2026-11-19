@@ -1,6 +1,5 @@
 //! Every view of the app, driven into place one after another, for the checks that must hold on
-//! all of them: the accessibility tree (`a11y_tree.rs`) and the hit targets (`targets.rs`). Each
-//! view is taken in Modern, then again in Book, whose names end in ", Book".
+//! all of them: the accessibility tree (`a11y_tree.rs`) and the hit targets (`targets.rs`).
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -24,7 +23,6 @@ use gpui_kit::{
 
 use dory_core::ports::capture::{Access, CaptureCaps};
 use dory_gpui::prefs::MIN_WINDOW_SIZE;
-use dory_gpui::theme::{Display, ThemeName};
 
 use super::{
     dory_with, dory_with_capture, id_of, long_winded_model, open_with, open_with_prefs,
@@ -41,18 +39,7 @@ pub struct View {
     pub height: f32,
 }
 
-thread_local! {
-    /// The theme the views are being taken in.
-    static THEME: std::cell::Cell<ThemeName> = const { std::cell::Cell::new(ThemeName::Modern) };
-}
-
 fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppContext) -> View {
-    let theme = THEME.get();
-    // Each window's app state applies its own saved theme when it opens; this puts the one under
-    // test back before every frame, as choosing it in Settings would.
-    if cx.update(|cx| cx.try_global::<Display>().map(|d| d.theme)) != Some(theme) {
-        cx.update(|cx| dory_gpui::theme::set_display(|display| display.theme = theme, cx));
-    }
     cx.run_until_parked();
     let (elements, width, height) = cx
         .update_window(window, |_, window, cx| {
@@ -75,12 +62,8 @@ fn frame(name: impl Into<String>, window: AnyWindowHandle, cx: &mut TestAppConte
             (elements, width, height)
         })
         .unwrap();
-    let name: String = name.into();
     View {
-        name: match theme {
-            ThemeName::Modern => name,
-            ThemeName::Book => format!("{name}, Book"),
-        },
+        name: name.into(),
         elements,
         width,
         height,
@@ -363,7 +346,7 @@ fn languages_open(
     until(cx, "the languages popover closes", |cx| !popover(cx));
 }
 
-/// About Dory with its Acknowledgements, over the theme the last window set up.
+/// About Dory with its Acknowledgements.
 fn about(views: &mut Vec<View>, cx: &mut TestAppContext) {
     let before = cx.update(|cx| cx.windows());
     cx.update(about::open);
@@ -523,23 +506,8 @@ fn processing(views: &mut Vec<View>, scale: f32, window_size: (f32, f32), cx: &m
     }
 }
 
-/// Every view at the given text scale, in Modern and then in Book.
+/// Every view at the given text scale.
 pub fn every_view(scale: f32, cx: &mut TestAppContext) -> Vec<View> {
-    let mut views = Vec::new();
-    for theme in ThemeName::ALL {
-        THEME.set(theme);
-        views.extend(views_in_theme(scale, cx));
-        // The next theme's pass opens Settings, About, and the Processing window anew.
-        for window in cx.update(|cx| cx.windows()) {
-            let _ = cx.update_window(window, |_, window, _| window.remove_window());
-        }
-        cx.run_until_parked();
-    }
-    THEME.set(ThemeName::Modern);
-    views
-}
-
-fn views_in_theme(scale: f32, cx: &mut TestAppContext) -> Vec<View> {
     // Settings probes models and the recorder captures on their own threads.
     cx.executor().allow_parking();
     let mut views = Vec::new();

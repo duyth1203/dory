@@ -46,7 +46,7 @@ Implement these as one `Theme` struct with `light()` and `dark()` constructors. 
 
 **Accent rule (add to A11Y-8).** The brief says "use the system accent color", but macOS's default blue `#007AFF` measures about 4.0:1 against white, and white text on it is also about 4.0:1. Both fail the 4.5:1 body-text rule. Read the user's accent from AppKit (`NSColor.controlAccentColor`), then derive `accent`, `accent_text` and `on_accent` from it, darkening the lightness (in OKLCH or HSL) until each pair passes 4.5:1. The hex values above are what that rule produces for the default blue. Unit-test it against all eight macOS accent colors in both appearances.
 
-*Amended by `docs/design/book-theme.md` section 2:* every token here and in `floating-surfaces.md` gets a Book light and a Book dark value, and a test fails if any is missing (`theme::tests::book_sets_every_token_itself`).
+*Amended by `docs/design/book-theme.md`:* Book is Dory's only theme since 2026-11-19. Its section 2 gives every token's value, so the hex values and the system-accent rule here describe the retired Modern theme.
 
 *Amended by `docs/design/floating-surfaces.md` section 2:* add `surface_raised`, `surface_border`, `surface_inset`, `inset_border`, `scrim`, `scrim_opaque`, `shadow_float`, `shadow_pop`, `close_bg`, and `track`; retire `menu_bg`, `menu_border`, and `toast_bg`; dark `wave_rest` becomes `#7C8193`. The operator set `surface_border` light to `#C3C7CF`.
 

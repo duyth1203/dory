@@ -17,8 +17,6 @@
 //!   and `set_up_summaries::sheet`.
 //!
 //! - P7 (accessibility): `system_prefs`, and fixes across every view above.
-//! - Window glass (`docs/design/settings-icons-blur.md` section 5): `glass`, used by the shell,
-//!   the sidebar, and `settings_window`.
 //! - The processing view (`docs/design/processing-view.md`): `processing` (the states P1 to P8
 //!   and their words), `estimate` (time left), `motion` and `glyphs`, with the card in
 //!   `player_view` and the lines below it in `detail`.
@@ -45,7 +43,6 @@ pub mod export;
 pub mod find;
 pub mod fixtures;
 pub mod fonts;
-pub mod glass;
 pub mod glyphs;
 pub mod icons;
 pub mod in_progress;
@@ -81,7 +78,7 @@ pub mod transcript_view;
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, TitlebarOptions, Window,
-    WindowBounds, WindowOptions, point, px, size,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions, point, px, size,
 };
 
 /// Gives a library with no meeting languages the system's, marked as a guess. A library that
@@ -123,13 +120,7 @@ pub fn new_state(
     prefs: prefs::Prefs,
     cx: &mut App,
 ) -> Entity<app::AppState> {
-    theme::set_display(
-        |display| {
-            display.text_scale = prefs.text_scale;
-            display.theme = prefs.theme;
-        },
-        cx,
-    );
+    theme::set_display(|display| display.text_scale = prefs.text_scale, cx);
     let state = cx.new(|cx| app::AppState::new(dory, prefs, cx));
     models_view::install(&state, cx);
     cx.set_global(Main {
@@ -160,7 +151,7 @@ pub fn main_window_options(prefs: &prefs::Prefs, cx: &App) -> WindowOptions {
             size(px(width), px(height)),
             cx,
         ))),
-        window_background: glass::window_background(cx),
+        window_background: WindowBackgroundAppearance::Opaque,
         window_min_size: Some(size(
             px(prefs::MIN_WINDOW_SIZE.0),
             px(prefs::MIN_WINDOW_SIZE.1),
@@ -175,7 +166,6 @@ pub fn open_main_window(cx: &mut App) -> gpui_kit::Result<AnyWindowHandle> {
     let options = main_window_options(&app.read(cx).prefs, cx);
     let (handle, _) = gpui_kit::open_window(options, cx, |window, cx| {
         let shell = cx.new(|cx| shell::Shell::new(app.clone(), window, cx));
-        glass::follow(window, cx);
         platform::print_window_id(window);
         prefs::follow_window(&app, window, cx);
         shell

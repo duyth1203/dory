@@ -5,9 +5,8 @@
 //! `--fake-*` flags, so they never touch the real library.
 //!
 //! `DORY_SHOW` takes one of:
-//! - `settings:<pane>`, with `:languages-open` on Transcription for the combobox popover,
-//!   `:theme` on General scrolled to the Theme section as a search would, and an optional
-//!   trailing `:min-height` for Settings at its shortest
+//! - `settings:<pane>`, with `:languages-open` on Transcription for the combobox popover, and an
+//!   optional trailing `:min-height` for Settings at its shortest
 //! - `about`
 //! - `recording:<title>` and `recording:<title>:transcript`, and `recording:<title>:translate-open`
 //!   for the Summary tab with the **Translate…** combobox popover open, or
@@ -50,8 +49,6 @@ pub enum View {
     Settings {
         pane: Pane,
         languages_open: bool,
-        /// Scrolled to General's Theme section.
-        theme: bool,
         min_height: bool,
     },
     About,
@@ -198,16 +195,14 @@ fn parse_view(value: &str) -> Result<View, LaunchError> {
             Some(rest) => (rest, true),
             None => (rest, false),
         };
-        let (pane, languages_open, theme) = match rest.split_once(':') {
-            Some(("transcription", "languages-open")) => (Pane::Transcription, true, false),
-            Some(("general", "theme")) => (Pane::General, false, true),
+        let (pane, languages_open) = match rest.split_once(':') {
+            Some(("transcription", "languages-open")) => (Pane::Transcription, true),
             Some(_) => return Err(bad()),
-            None => (Pane::parse(rest).ok_or_else(bad)?, false, false),
+            None => (Pane::parse(rest).ok_or_else(bad)?, false),
         };
         return Ok(View::Settings {
             pane,
             languages_open,
-            theme,
             min_height,
         });
     }
@@ -317,7 +312,6 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
         View::Settings {
             pane,
             languages_open,
-            theme,
             min_height,
         } => {
             settings_window::open_at(app, pane, cx);
@@ -336,12 +330,6 @@ pub fn run(view: View, app: &Entity<AppState>, window: &mut Window, cx: &mut App
                 }
                 if languages_open {
                     settings.update(cx, |settings, cx| settings.open_languages(window, cx));
-                }
-                if let Some(entry) = theme
-                    .then(|| settings_window::ENTRIES.iter().find(|e| e.label == "Theme"))
-                    .flatten()
-                {
-                    settings.update(cx, |settings, cx| settings.jump(*entry, cx));
                 }
             });
             ready(&view);
@@ -522,19 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_general_theme_scrolls_to_the_theme_section() {
-        assert_eq!(
-            view("settings:general:theme"),
-            Ok(Some(View::Settings {
-                pane: Pane::General,
-                languages_open: false,
-                theme: true,
-                min_height: false
-            }))
-        );
-    }
-
-    #[test]
     fn every_view_parses() {
         for pane in Pane::ALL {
             assert_eq!(
@@ -542,7 +517,6 @@ mod tests {
                 Ok(Some(View::Settings {
                     pane,
                     languages_open: false,
-                    theme: false,
                     min_height: false
                 }))
             );
@@ -552,7 +526,6 @@ mod tests {
             Ok(Some(View::Settings {
                 pane: Pane::Transcription,
                 languages_open: true,
-                theme: false,
                 min_height: true
             }))
         );

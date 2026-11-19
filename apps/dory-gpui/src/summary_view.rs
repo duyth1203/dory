@@ -1,9 +1,8 @@
 //! The Summary tab (UX-4).
 //!
-//! Rendered Markdown at 15/1.6 with 17 pt semibold section headings, from `Detail.summary`.
-//! Kit's `TextView::markdown` draws it; its AX nodes come from `a11y::with_markdown_children`,
-//! since Kit emits none (spike finding 3). A stale summary says so above the text. No summary
-//! says why, from the recording's phase. A summary that failed shows here only, with the one
+//! The summary's Markdown from `Detail.summary`, drawn as Book's page (below). Its AX nodes come
+//! from `a11y::with_markdown_children`, since Kit emits none (spike finding 3). A stale summary
+//! says so above the text. No summary says why, from the recording's phase. A summary that failed shows here only, with the one
 //! button that fixes it (UX-13), which `detail.rs` builds, while the transcript stays readable.
 //! Copy and Export sit in the tab row, which `detail.rs` draws, with **Translate…** and, once the
 //! summary has a translation, the Original / Translated switch. The text drawn is the version the
@@ -11,18 +10,18 @@
 //! a translation is made the tab says so, and a translation that could not be made says why,
 //! with its one button, above the summary that is still there.
 //!
-//! The Markdown is drawn by [`SummaryText`], one per detail pane, from the text view state the
-//! session owns, which keeps its state across tab switches. The session counts the matches over
-//! the text that state renders, so while a search is active this view marks exactly those ranges
-//! with the `search_match` fill, and scrolls the page to the current one when the session asks.
-//! The text view takes a background per range and nothing else, so unlike the transcript's
-//! marks these are the fill alone.
+//! [`SummaryText`], one per detail pane, is over the text view state the session owns, which
+//! keeps its state across tab switches. The session counts the matches over the text that state
+//! renders, so while a search is active it marks exactly those ranges with the `search_match`
+//! fill, and scrolls the page to the current one when the session asks. The text view takes a
+//! background per range and nothing else, so unlike the transcript's marks these are the fill
+//! alone.
 //!
-//! Book (`docs/design/book-theme.md` section 4) draws the same Markdown block by block: serif 17/1.7
+//! Book (`docs/design/book-theme.md` section 4) draws the Markdown block by block: serif 17/1.7
 //! paragraphs and list items in Kit's `TextView` (so they stay selectable and keep bold), small
 //! caps headings, hanging en dashes for bullets, a drop cap on a leading paragraph, and an
-//! asterism between the first two sections. The accessibility nodes are the same in both themes.
-//! Book's blocks are separate text views, so its summary carries no search marks yet.
+//! asterism between the first two sections. The blocks are separate text views, so the summary
+//! carries no search marks yet.
 
 use dory_core::domain::Stage;
 use gpui_kit::component::text::{
@@ -287,12 +286,11 @@ impl Render for SummaryText {
     }
 }
 
-/// `text` draws the Markdown. `fix_button` is the job's fix, shown under a summary that is missing because of it.
+/// `fix_button` is the job's fix, shown under a summary that is missing because of it.
 pub fn summary(
     detail: &Detail,
     phase: Option<&Phase>,
     version: SummaryVersion,
-    text: &Entity<SummaryText>,
     fix_button: Option<AnyElement>,
     theme: &Theme,
     presentation: Presentation,
@@ -369,13 +367,9 @@ pub fn summary(
             } else {
                 body
             };
-            if theme.serif() {
-                return body
-                    .gap(px(0.))
-                    .child(book(markdown, theme, presentation))
-                    .into_any_element();
-            }
-            body.child(text.clone()).into_any_element()
+            body.gap(px(0.))
+                .child(book(markdown, theme, presentation))
+                .into_any_element()
         }
     }
 }
@@ -467,8 +461,7 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
     let lines = lines(markdown);
     let marks = Marks::of(&lines);
     let body = |id: String, text: &str| {
-        theme
-            .reading(TextView::markdown(id, text.to_owned()))
+        TextView::markdown(id, text.to_owned())
             .selectable(true)
             .text_size(theme.text(17.))
             .line_height(relative(1.7))
@@ -477,10 +470,9 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
     let initial = theme.text(17.) * 5.7;
     let mut column = div().flex().flex_col();
     for (ix, line) in lines.iter().enumerate() {
-        if presentation.section_ornament && marks.ornament_before == Some(ix) {
+        if marks.ornament_before == Some(ix) {
             column = column.child(
-                theme
-                    .reading(div())
+                div()
                     .py(px(14.))
                     .flex()
                     .justify_center()
@@ -490,8 +482,7 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
             );
         }
         let el = match *line {
-            Line::Heading(text) => theme
-                .reading(div())
+            Line::Heading(text) => div()
                 .when(ix > 0, |h| h.pt(px(14.)))
                 .pb(px(4.))
                 .text_size(theme.text(14.))
@@ -505,8 +496,7 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
                 .gap(px(10.))
                 .pb(px(4.))
                 .child(
-                    theme
-                        .reading(div())
+                    div()
                         .flex_none()
                         .min_w(theme.text(14.))
                         .text_size(theme.text(17.))
@@ -529,8 +519,7 @@ fn book(markdown: &str, theme: &Theme, presentation: Presentation) -> AnyElement
                     .pb(px(8.))
                     .child(
                         div().flex_none().h(line_height * 3.).child(
-                            theme
-                                .reading(div())
+                            div()
                                 .id("drop-cap")
                                 // Sized so the capital runs from the first line's cap height
                                 // to the third line's baseline, then lifted onto the first.

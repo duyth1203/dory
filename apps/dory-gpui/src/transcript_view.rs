@@ -560,7 +560,7 @@ impl TranscriptView {
         });
 
         let presentation = theme.presentation(f32::from(window.viewport_size().width));
-        if presentation.script_transcript && self.rename.as_ref().is_none_or(|r| r.turn != ix) {
+        if self.rename.as_ref().is_none_or(|r| r.turn != ix) {
             let script = Script {
                 spoken,
                 described,
@@ -668,8 +668,7 @@ impl TranscriptView {
 impl TranscriptView {
     /// Book's play-script turn (`book-theme.md` section 4): "SAM. Okay, …" as one serif
     /// paragraph, the timestamp hanging in the left margin or, below 900 pt, before it. The name
-    /// is still the Rename button, laid over the name's run at its measured width, and the turn
-    /// reads to VoiceOver exactly as in Modern.
+    /// is still the Rename button, laid over the name's run at its measured width.
     fn script_turn(
         &self,
         ix: usize,
@@ -694,7 +693,7 @@ impl TranscriptView {
         let ring = current && self.focus.is_focused(window);
         let size = theme.text(17.);
         let line_height = size * 1.7;
-        let family = SharedString::from(theme.reading_font.family().unwrap_or_default());
+        let family = SharedString::from(crate::fonts::FAMILY);
         let font = |weight, features| Font {
             family: family.clone(),
             features,
@@ -807,13 +806,12 @@ impl TranscriptView {
             .text_size(size)
             .line_height(relative(1.7))
             .child(
-                theme
-                    .reading(a11y::text(
-                        format!("turn-{ix}-text"),
-                        turn.text.clone(),
-                        turn.text_language.clone(),
-                    ))
-                    .child(paragraph),
+                a11y::text(
+                    format!("turn-{ix}-text"),
+                    turn.text.clone(),
+                    turn.text_language.clone(),
+                )
+                .child(paragraph),
             )
             .child(speaker);
         let outline = playing.then(|| theme.highlight_outline()).flatten();
@@ -873,11 +871,10 @@ struct Script<'a> {
     presentation: Presentation,
 }
 
-/// What changes a turn's height besides its text: the text scale and the theme's type.
+/// What changes a turn's height besides its text: the text scale and whether the times hang.
 #[derive(Clone, Copy, PartialEq)]
 struct Measured {
     text_scale: f32,
-    theme: theme::ThemeName,
     hang: bool,
 }
 
@@ -885,7 +882,6 @@ impl Measured {
     fn of(theme: &Theme, hang: bool) -> Measured {
         Measured {
             text_scale: theme.text_scale,
-            theme: theme.name,
             hang,
         }
     }
@@ -1015,7 +1011,6 @@ mod tests {
     #[test]
     fn script_times_hang_only_where_the_margin_holds_them() {
         let script = Presentation {
-            script_transcript: true,
             hanging_timestamps: true,
             ..Presentation::default()
         };

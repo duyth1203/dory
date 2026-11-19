@@ -161,6 +161,8 @@ Accessibility: the field is a combobox, the list is a multi-select listbox, and 
 
 ## 5. Blur and glass: what GPUI can do
 
+*Retired 2026-11-19 with the Modern theme:* the windows are opaque Book paper, and only Reduce Transparency's opaque scrim remains (`docs/design/book-theme.md` section 4).
+
 It can blur the whole window. GPUI's `WindowBackgroundAppearance::Blurred` makes the window background transparent and blurs the desktop behind it, through the system's own blur view on macOS. Use it for the main window and Settings:
 
 - Set the window to Blurred.

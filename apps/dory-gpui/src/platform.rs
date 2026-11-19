@@ -1,8 +1,8 @@
-//! The AppKit calls GPUI does not make for us: reading the user's accent color, posting a
-//! VoiceOver announcement, and, for the visual pass's launch state (`show`), forcing Dory's
-//! appearance and naming a window's number. Everything else in the app is platform-free.
+//! The AppKit calls GPUI does not make for us: posting a VoiceOver announcement and, for the
+//! visual pass's launch state (`show`), forcing Dory's appearance and naming a window's number.
+//! Everything else in the app is platform-free.
 
-use gpui_kit::{Hsla, Window};
+use gpui_kit::Window;
 
 use crate::show::Appearance;
 
@@ -77,27 +77,6 @@ pub fn set_floating(window: &Window, floating: bool) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn set_floating(_: &Window, _: bool) {}
-
-#[cfg(target_os = "macos")]
-pub fn system_accent() -> Option<Hsla> {
-    use objc2_app_kit::{NSColor, NSColorSpace};
-    let accent = NSColor::controlAccentColor();
-    let srgb = accent.colorUsingColorSpace(&NSColorSpace::sRGBColorSpace())?;
-    Some(
-        gpui_kit::Rgba {
-            r: srgb.redComponent() as f32,
-            g: srgb.greenComponent() as f32,
-            b: srgb.blueComponent() as f32,
-            a: 1.0,
-        }
-        .into(),
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn system_accent() -> Option<Hsla> {
-    None
-}
 
 /// Posts `NSAccessibilityAnnouncementRequestedNotification` on `NSApp` at high priority, so
 /// VoiceOver speaks `message` even while focus is elsewhere. Off the main thread it only logs.

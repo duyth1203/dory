@@ -3,13 +3,31 @@
 //! launch and again on every `NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`.
 //!
 //! Reduce motion goes to GPUI's `set_reduce_motion`, which the level meter, the docked player's
-//! fade, and Kit's own transitions read. Reduce transparency goes to `glass`, which turns the
-//! windows opaque. The other two rebuild the theme through `theme::set_display`. All of the
-//! app's AppKit observation lives here.
+//! fade, and Kit's own transitions read. Reduce transparency is kept for the scrim, which goes
+//! opaque (`surface`, `theme::sync`). The other two rebuild the theme through
+//! `theme::set_display`. All of the app's AppKit observation lives here.
 
-use gpui_kit::{App, AsyncApp};
+use gpui_kit::{App, AsyncApp, Global};
 
-use crate::{glass, theme};
+use crate::theme;
+
+#[derive(Default)]
+struct Transparency {
+    reduce: bool,
+}
+
+impl Global for Transparency {}
+
+fn set_reduce_transparency(reduce: bool, cx: &mut App) {
+    if cx.try_global::<Transparency>().map(|t| t.reduce) != Some(reduce) {
+        cx.set_global(Transparency { reduce });
+    }
+}
+
+/// macOS Reduce Transparency, as [`apply`] last reported it.
+pub fn reduces_transparency(cx: &App) -> bool {
+    cx.try_global::<Transparency>().is_some_and(|t| t.reduce)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SystemPrefs {
@@ -19,13 +37,13 @@ pub struct SystemPrefs {
     pub differentiate_without_color: bool,
 }
 
-/// Applies `prefs` to GPUI, the window glass, and the theme. Tests call it to stand in for a
+/// Applies `prefs` to GPUI and the theme. Tests call it to stand in for a
 /// change in System Settings.
 pub fn apply(prefs: SystemPrefs, cx: &mut App) {
     if cx.reduce_motion() != prefs.reduce_motion {
         cx.set_reduce_motion(prefs.reduce_motion);
     }
-    glass::set_reduce_transparency(prefs.reduce_transparency, cx);
+    set_reduce_transparency(prefs.reduce_transparency, cx);
     theme::set_display(
         |display| {
             display.increase_contrast = prefs.increase_contrast;

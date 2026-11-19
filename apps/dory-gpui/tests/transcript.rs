@@ -21,7 +21,7 @@ use dory_gpui::prefs::Prefs;
 use dory_gpui::transcript_view::PAGED_TURNS;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, Role, TestAppContext, Window, WindowBounds,
-    WindowOptions, px, size, test::TestWindowExt as _,
+    WindowOptions, point, px, size, test::TestWindowExt as _,
 };
 
 /// Timed, with a take: Speaker 3, Me, Speaker 3.
@@ -248,11 +248,15 @@ fn turns_read_as_speaker_time_then_text(cx: &mut TestAppContext) {
     });
 }
 
-/// Handoff section 4: each turn has a 30 pt initial circle, however tall its text runs.
+/// Handoff section 4: a turn being renamed has a 30 pt initial circle, however tall its text runs.
 #[gpui_kit::test]
 fn the_speaker_initial_is_a_30_pt_circle(cx: &mut TestAppContext) {
     let (window, app, _) = open(cx);
     show(TIMED, &app, cx);
+    with_window(window, cx, |window, cx| {
+        window.click_at("turn-0", point(px(200.), px(8.)), cx);
+        window.press("shift-enter", cx);
+    });
     with_window(window, cx, |window, _| {
         let turn = window.find("turn-0").bounds();
         let avatar = window.find("turn-0-avatar").bounds();
@@ -388,7 +392,7 @@ fn a_long_transcript_lays_out_only_the_turns_in_view(cx: &mut TestAppContext) {
                 .try_find(format!("turn-{}", LONG_TURNS - 1))
                 .is_none()
         );
-        window.click("turn-0", cx);
+        window.click_at("turn-0", point(px(200.), px(8.)), cx);
         for _ in 0..LONG_TURNS {
             window.press("down", cx);
         }

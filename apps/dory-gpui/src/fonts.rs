@@ -1,11 +1,14 @@
-//! The Book theme's reading typeface, Literata (`docs/design/book-theme.md` section 3), embedded
-//! in the binary so every Mac renders the same type, and the OpenType features its roles use.
+//! Dory's typeface, Literata (`docs/design/book-theme.md` section 3), embedded in the binary so
+//! every Mac renders the same type, and the OpenType features its roles use.
 //! `scripts/vendor-literata.sh` fetches the faces from one pinned official release.
 
 use std::borrow::Cow;
 use std::sync::Arc;
 
 use gpui_kit::{App, FontFeatures, Global};
+
+/// The one typeface every window and control is set in, through GPUI Kit's root (`theme::sync`).
+pub const FAMILY: &str = "Literata";
 
 pub const LITERATA_VERSION: &str = include_str!("../assets/fonts/literata/VERSION");
 pub const LITERATA_LICENSE: &str = include_str!("../assets/fonts/literata/OFL.txt");

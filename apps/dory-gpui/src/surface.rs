@@ -476,7 +476,7 @@ pub fn dialog_layer(window: &mut Window, cx: &mut App) -> Option<impl IntoElemen
     if scrim_in < 1. {
         window.request_animation_frame();
     }
-    let scrim: Hsla = if crate::glass::reduces_transparency(cx) {
+    let scrim: Hsla = if crate::system_prefs::reduces_transparency(cx) {
         theme.scrim_opaque
     } else {
         theme.scrim

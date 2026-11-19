@@ -6,7 +6,6 @@ mod common;
 
 use dory_gpui::prefs::{MIN_WINDOW_SIZE, Prefs};
 use dory_gpui::processing_window;
-use dory_gpui::theme::ThemeName;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, ElementId, Pixels, Role, TestAppContext,
     test::TestWindowExt as _,
@@ -76,11 +75,8 @@ fn the_sidebar_gear_is_a_settings_button_at_the_bottom_left(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn the_gear_stays_in_the_corner_in_book_at_200_percent_in_the_smallest_window(
-    cx: &mut TestAppContext,
-) {
+fn the_gear_stays_in_the_corner_at_200_percent_in_the_smallest_window(cx: &mut TestAppContext) {
     let prefs = Prefs {
-        theme: ThemeName::Book,
         text_scale: 2.0,
         window_size: MIN_WINDOW_SIZE,
         ..past_first_run()

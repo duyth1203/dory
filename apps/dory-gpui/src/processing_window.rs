@@ -975,7 +975,6 @@ impl Render for ProcessingWindow {
             .flex_col()
             .bg(theme.surface_raised)
             .text_color(theme.text)
-            .font_family(".SystemUIFont")
             .child(
                 surface::header("queue", "Processing Queue", queue.summary(), None, &theme)
                     .pl(px(92.)),

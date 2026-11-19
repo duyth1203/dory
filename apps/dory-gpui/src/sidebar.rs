@@ -48,7 +48,7 @@ use crate::menus;
 use crate::prefs;
 use crate::search_field;
 use crate::theme::Theme;
-use crate::{glass, glyphs, motion};
+use crate::{glyphs, motion};
 
 pub struct Sidebar {
     app: Entity<AppState>,
@@ -328,24 +328,9 @@ impl Sidebar {
                             )
                         },
                     )
-                    .child(if theme.serif() {
+                    .child({
                         let title = marked(title, &title_marks, FontWeight::BOLD, filled, &theme);
                         contents_line(title, length, fg, fg2, &theme)
-                    } else {
-                        div()
-                            .text_size(theme.text(14.))
-                            .line_height(relative(1.25))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(fg)
-                            .when(theme.text_scale <= 1.25, |title| title.truncate())
-                            .child(marked(
-                                title,
-                                &title_marks,
-                                FontWeight::BOLD,
-                                filled,
-                                &theme,
-                            ))
-                            .into_any_element()
                     })
                     .child(
                         div()
@@ -507,19 +492,11 @@ fn heading_style<E: Styled + ParentElement>(el: E, label: &str, theme: &Theme) -
         .pt(px(12.))
         .pb(px(4.))
         .text_color(theme.text_secondary);
-    // Book sets the group in serif italic, as a part title in a table of contents.
-    if theme.serif() {
-        theme
-            .reading(header)
-            .italic()
-            .text_size(theme.text(13.))
-            .child(label.to_owned())
-    } else {
-        header
-            .text_size(theme.text(12.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .child(label.to_owned())
-    }
+    // The group is set in serif italic, as a part title in a table of contents.
+    header
+        .italic()
+        .text_size(theme.text(13.))
+        .child(label.to_owned())
 }
 
 /// Book's entry title (serif 15). With leaders it reads "Title ...... 48 min": the title on one
@@ -532,8 +509,7 @@ fn contents_line(
     fg2: Hsla,
     theme: &Theme,
 ) -> AnyElement {
-    let line = theme
-        .reading(div())
+    let line = div()
         .text_size(theme.text(15.))
         .line_height(gpui_kit::relative(1.3))
         .text_color(fg);
@@ -592,7 +568,7 @@ impl Render for Sidebar {
             }
         }
         let list_ring = theme.focus_ring(false);
-        let fill = glass::sidebar_panel(&theme, cx);
+        let fill = theme.sidebar_bg;
         div()
             .flex()
             .flex_none()

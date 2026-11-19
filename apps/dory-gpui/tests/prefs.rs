@@ -5,7 +5,6 @@ use dory_gpui::prefs::{
     DEFAULT_SIDEBAR_WIDTH, DEFAULT_WINDOW_SIZE, Prefs, RESTORE_WITHIN, clamp_sidebar_width,
     restore_selection,
 };
-use dory_gpui::theme::ThemeName;
 
 fn scratch(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("dory-gpui-prefs-{}-{name}", std::process::id()));
@@ -31,7 +30,6 @@ fn prefs_round_trip_through_the_file() {
             notes.set(dory_gpui::notify::NoteKind::Download, false);
             notes
         },
-        theme: ThemeName::Book,
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);
@@ -39,28 +37,25 @@ fn prefs_round_trip_through_the_file() {
 }
 
 #[test]
-fn the_theme_is_remembered_and_new_users_get_modern() {
+fn a_file_saved_when_the_theme_was_a_choice_still_loads_with_every_other_field() {
     let dir = scratch("theme");
     std::fs::create_dir_all(&dir).unwrap();
-    let read = |json: &str| {
-        std::fs::write(Prefs::path(&dir), json).unwrap();
-        Prefs::read(&dir)
-    };
-    assert_eq!(read(r#"{"version":1}"#).theme, ThemeName::Modern);
-    assert_eq!(
-        read(r#"{"version":1,"theme":"book"}"#).theme,
-        ThemeName::Book
-    );
-    let tried = read(r#"{"version":1,"book_offered":true,"theme":"book","text_scale":1.5}"#);
-    assert_eq!(
-        (tried.theme, tried.text_scale),
-        (ThemeName::Book, 1.5),
-        "a file from when Book sat behind Try the Book theme still reads"
-    );
-    assert_eq!(
-        read(r#"{"version":1,"theme":"sepia"}"#).theme,
-        ThemeName::Modern
-    );
+    for theme in ["modern", "book", "sepia"] {
+        std::fs::write(
+            Prefs::path(&dir),
+            format!(
+                r#"{{"version":1,"theme":"{theme}","text_scale":1.5,"settings_pane":"storage"}}"#
+            ),
+        )
+        .unwrap();
+        let prefs = Prefs::read(&dir);
+        assert_eq!(prefs.text_scale, 1.5, "{theme}");
+        assert_eq!(
+            prefs.settings_pane,
+            dory_gpui::settings_window::Pane::Storage,
+            "{theme}"
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

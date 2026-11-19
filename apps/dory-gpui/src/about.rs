@@ -1,7 +1,7 @@
 //! Dory › About Dory: the app's name and version, and Acknowledgements with the license of every
 //! asset Dory ships that someone else made: Lucide's icons, whose license (ISC, and MIT for the
 //! icons that came from Feather) asks for its text to travel with them, and the Literata typeface
-//! (SIL Open Font License 1.1), which the Book theme reads in.
+//! (SIL Open Font License 1.1), which Dory's reading text is set in.
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, FontWeight, Global,

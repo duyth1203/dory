@@ -4,6 +4,8 @@ This spec covers dialogs, the scrim, popovers, menus and toasts as one family, a
 
 Source: Claude Design, from the request in `docs/plans/claude-design-dialogs-request.md`.
 
+*Amended by `docs/design/book-theme.md`:* Book is Dory's only theme since 2026-11-19. The layout and behavior here still hold; the token values and the glass sidebar describe the retired Modern theme.
+
 | Frame | Shows |
 | --- | --- |
 | Q1 | Queue: one running job and two queued. Focus starts on Close |

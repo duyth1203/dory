@@ -551,20 +551,15 @@ impl DetailPane {
                 move |_, cx| app.update(cx, |app, cx| app.set_tab(which, cx)),
             )
             .min_h(theme.text(34.));
-            // Book: serif small caps, the selected tab in ink and the other in secondary.
-            if theme.serif() {
-                theme
-                    .reading(tab_el)
-                    .font_features(fonts::small_caps())
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if tab == which {
-                        theme.text
-                    } else {
-                        theme.text_secondary
-                    })
-            } else {
-                tab_el
-            }
+            // Serif small caps, the selected tab in ink and the other in secondary.
+            tab_el
+                .font_features(fonts::small_caps())
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if tab == which {
+                    theme.text
+                } else {
+                    theme.text_secondary
+                })
         };
         let dots =
             summarizing.map(|at| glyphs::dots(theme.accent_text, 14., at).into_any_element());
@@ -901,33 +896,19 @@ impl DetailPane {
 }
 
 /// A one- or two-line state in place of the tabs. Its label is its text, for VoiceOver.
-/// The recording title: 30 bold in Modern, a serif chapter title (38, weight 500) in Book.
+/// The recording title: a serif chapter title (38, weight 500).
 fn title_type<E: Styled>(el: E, theme: &Theme) -> E {
-    if theme.serif() {
-        theme
-            .reading(el)
-            .text_size(theme.text(38.))
-            .font_weight(FontWeight::MEDIUM)
-            .line_height(relative(1.15))
-    } else {
-        el.text_size(theme.text(30.))
-            .font_weight(FontWeight::BOLD)
-            .line_height(relative(1.2))
-    }
+    el.text_size(theme.text(38.))
+        .font_weight(FontWeight::MEDIUM)
+        .line_height(relative(1.15))
 }
 
-/// The metadata line: 14 secondary in Modern, a serif italic 16 byline in Book. Same words.
+/// The metadata line: a serif italic 16 byline.
 fn byline_type<E: Styled>(el: E, theme: &Theme) -> E {
-    let el = el.text_color(theme.text_secondary);
-    if theme.serif() {
-        theme
-            .reading(el)
-            .italic()
-            .text_size(theme.text(16.))
-            .line_height(relative(1.5))
-    } else {
-        el.text_size(theme.text(14.)).line_height(relative(1.4))
-    }
+    el.text_color(theme.text_secondary)
+        .italic()
+        .text_size(theme.text(16.))
+        .line_height(relative(1.5))
 }
 
 /// Book's running head: the recording's name and date in small caps over a hairline. Decorative,
@@ -936,8 +917,7 @@ fn running_head(recording: &Recording, theme: &Theme) -> impl IntoElement {
     let date = library::local(recording.created_at, &Local)
         .format("%A, %-d %B")
         .to_string();
-    theme
-        .reading(div())
+    div()
         .id("running-head")
         .test_support()
         .flex()
@@ -1101,11 +1081,7 @@ impl DetailPane {
         } else {
             px(42. + 12. * (theme.text_scale - 1.).max(0.))
         };
-        let (body_size, body_line) = if script.script_transcript {
-            (17., 1.7)
-        } else {
-            (15., 1.6)
-        };
+        let (body_size, body_line) = (17., 1.7);
         let arriving = self
             .arrivals
             .iter()
@@ -1152,8 +1128,7 @@ impl DetailPane {
                             .child(start.map(a11y::clock).unwrap_or_default()),
                     )
                     .child(
-                        theme
-                            .reading(div())
+                        div()
                             .flex_1()
                             .min_w_0()
                             .text_size(theme.text(body_size))
@@ -1425,7 +1400,6 @@ impl Render for DetailPane {
                             &detail,
                             phase.as_ref(),
                             text.summary,
-                            &self.summary,
                             fix.map(IntoElement::into_any_element),
                             &theme,
                             theme.presentation(f32::from(window.viewport_size().width)),

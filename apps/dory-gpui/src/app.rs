@@ -506,16 +506,6 @@ impl AppState {
         cx.notify();
     }
 
-    /// Settings › General › Theme and View › Theme (UX-20): remembered in the UI prefs, and shown
-    /// with a cross-fade.
-    pub fn set_theme(&mut self, name: crate::theme::ThemeName, cx: &mut Context<Self>) {
-        self.prefs.theme = name;
-        if cx.try_global::<crate::theme::Display>().map(|d| d.theme) != Some(name) {
-            crate::theme::switch_to(name, cx);
-        }
-        cx.notify();
-    }
-
     /// The user picks a tab: a click, Command-1, or Command-2.
     pub fn set_tab(&mut self, tab: DetailTab, cx: &mut Context<Self>) {
         self.tab = tab;

@@ -116,13 +116,6 @@ fn every_view_is_covered(cx: &mut TestAppContext) {
     ] {
         assert!(names.iter().any(|n| n == want), "{want} missing: {names:?}");
     }
-    for modern in names.iter().filter(|n| !n.ends_with(", Book")) {
-        let book = format!("{modern}, Book");
-        assert!(
-            names.contains(&book),
-            "{book} missing: every view runs in both themes"
-        );
-    }
 }
 
 /// A11Y-1: a button that shows only an icon still says what it does. The icon itself has no node,

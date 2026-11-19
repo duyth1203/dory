@@ -7,8 +7,9 @@ use dory_core::domain::{Boost, MAX_SPEAKER_NAMES, Settings, VocabularyTerm, fold
 use dory_core::models::Stt;
 use gpui_kit::component::input::Input;
 use gpui_kit::{
-    AnyElement, Context, IntoElement, ParentElement as _, Role, SharedString, Styled as _, Window,
-    prelude::FluentBuilder as _, px, relative,
+    AnyElement, Context, IntoElement, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, prelude::FluentBuilder as _, px,
+    relative,
 };
 
 use super::{SettingsWindow, row, row_with, section};
@@ -324,7 +325,7 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Each word with its Normal / Strong switch and Remove, or the empty line.
+    /// Each word with its Normal / Strong switch and an X to remove it, or the empty line.
     fn words(&mut self, settings: &Settings, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         if settings.vocabulary.is_empty() {
             return a11y::node("vocabulary-empty", Role::Label, EMPTY)
@@ -380,21 +381,31 @@ impl SettingsWindow {
         let remove_focus = self.focus(format!("vocabulary-remove-{text}"), cx);
         let models = self.models.clone();
         let target = text.clone();
-        let remove = button(
-            format!("vocabulary-remove-{text}"),
-            format!("Remove {text}"),
-            "Remove",
-            false,
+        let remove = a11y::focusable(
+            a11y::node(
+                format!("vocabulary-remove-{text}"),
+                Role::Button,
+                format!("Remove {text}"),
+            ),
             &remove_focus,
             theme,
-            move |_, cx| {
-                a11y::announce(&format!("Removed {target}"));
-                let target = target.clone();
-                models.update(cx, |m, cx| {
-                    m.edit(move |s| s.vocabulary.retain(|t| t.text != target), cx)
-                });
-            },
-        );
+            false,
+        )
+        .on_click(move |_, _, cx| {
+            a11y::announce(&format!("Removed {target}"));
+            let target = target.clone();
+            models.update(cx, |m, cx| {
+                m.edit(move |s| s.vocabulary.retain(|t| t.text != target), cx)
+            });
+        })
+        .cursor_pointer()
+        .flex_none()
+        .size(icons::scaled(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .child(Icon::X.view(14., theme.text_secondary));
         a11y::node(
             format!("vocabulary-term-{text}"),
             Role::ListItem,

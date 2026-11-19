@@ -8,7 +8,7 @@
 //! word beside it, or the label of the button it sits in, and never the icon.
 //!
 //! [`Assets`] serves the same files to the GPUI Kit components that draw a Lucide icon by path,
-//! such as a menu's check mark.
+//! such as a menu's check mark, and [`Icon::kit`] hands one to a Kit button or menu item.
 
 use std::borrow::Cow;
 
@@ -63,6 +63,8 @@ icons! {
     GripVertical => "grip-vertical.svg",
     HardDrive => "hard-drive.svg",
     Info => "info.svg",
+    List => "list.svg",
+    ListFilter => "list-filter.svg",
     Mic => "mic.svg",
     Pause => "pause.svg",
     Play => "play.svg",
@@ -98,6 +100,10 @@ impl Icon {
     /// control or a figure that keeps its own size, such as the player's transport.
     pub fn fixed(self, size: f32, color: Hsla) -> Svg {
         self.view(size, color).size(px(size))
+    }
+
+    pub fn kit(self) -> gpui_kit::component::Icon {
+        gpui_kit::component::Icon::empty().path(format!("icons/{}", self.file()))
     }
 
     /// The icon a GPUI Kit component asks for at `path`, such as `icons/check.svg`.

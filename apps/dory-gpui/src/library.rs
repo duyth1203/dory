@@ -117,6 +117,16 @@ impl StatusFilter {
         }
     }
 
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            StatusFilter::All => Icon::List,
+            StatusFilter::Processing => Icon::Ellipsis,
+            StatusFilter::NeedsAttention => Icon::TriangleAlert,
+            StatusFilter::Done => Icon::CircleCheck,
+        }
+    }
+
     /// Processing holds everything that is not finished and not failing, so a recording that
     /// waits to be transcribed is never hidden by every filter but All.
     pub fn admits(self, status: RowStatus) -> bool {

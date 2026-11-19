@@ -23,9 +23,10 @@ use std::ops::Range;
 
 use chrono::Local;
 use dory_core::search::Section;
+use gpui_kit::component::Side;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Escape, InputEvent, InputState};
-use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _};
+use gpui_kit::component::menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenuItem};
 use gpui_kit::{
     AnyElement, AppContext as _, Context, Entity, FocusHandle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement, Pixels, Render, Role,
@@ -37,6 +38,7 @@ use crate::a11y;
 use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
 use crate::app::{AppEvent, AppState};
 use crate::fonts;
+use crate::icons::Icon;
 use crate::library::{self, DateGroup, Glyph, Selection, StatusFilter};
 use crate::marks::marked;
 use crate::menus;
@@ -110,19 +112,23 @@ impl Sidebar {
             .compact()
             .label(filter.label())
             .accessibility_label(format!("Filter, {}", filter.label()))
+            .icon(Icon::ListFilter.kit())
             .dropdown_menu(move |menu, _, _| {
-                menu.menu_with_check("All", filter == StatusFilter::All, Box::new(FilterAll))
-                    .menu_with_check(
-                        "Processing",
-                        filter == StatusFilter::Processing,
-                        Box::new(FilterProcessing),
-                    )
-                    .menu_with_check(
-                        "Needs attention",
-                        filter == StatusFilter::NeedsAttention,
-                        Box::new(FilterNeedsAttention),
-                    )
-                    .menu_with_check("Done", filter == StatusFilter::Done, Box::new(FilterDone))
+                StatusFilter::ALL
+                    .into_iter()
+                    .fold(menu.check_side(Side::Right), |menu, f| {
+                        menu.item(
+                            PopupMenuItem::new(f.label())
+                                .icon(f.icon().kit())
+                                .checked(f == filter)
+                                .action(match f {
+                                    StatusFilter::All => Box::new(FilterAll),
+                                    StatusFilter::Processing => Box::new(FilterProcessing),
+                                    StatusFilter::NeedsAttention => Box::new(FilterNeedsAttention),
+                                    StatusFilter::Done => Box::new(FilterDone),
+                                }),
+                        )
+                    })
             })
     }
 

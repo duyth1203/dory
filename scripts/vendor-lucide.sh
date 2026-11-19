@@ -14,7 +14,7 @@ version=${1:-$(cat "$dest/VERSION")}
 icons=(
   battery-medium bot captions check chevron-down chevron-right chevrons-up-down circle
   circle-check circle-dashed circle-stop circle-x clock copy ellipsis file-text grip-vertical
-  hard-drive info list list-filter mic pause play plus search settings-2 square triangle-alert x
+  hard-drive info list list-filter mic pause play plus search settings settings-2 square triangle-alert x
 )
 # The 20 to 22 pt transport controls draw at 1.5 stroke, which Lucide sets inside each file.
 transport=(pause play rotate-ccw rotate-cw)

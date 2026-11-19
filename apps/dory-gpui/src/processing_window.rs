@@ -930,7 +930,16 @@ impl Render for ProcessingWindow {
             surface::button(
                 "queue-settings",
                 "Processing Settings…",
-                "Processing Settings…",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        a11y::probe("queue-settings-icon")
+                            .flex_none()
+                            .child(Icon::Settings.view(14., theme.accent_text)),
+                    )
+                    .child("Processing Settings…"),
                 Look::Link,
                 &self.settings,
                 &theme,

@@ -391,10 +391,11 @@ mod window {
             assert_eq!(start.label(), Some("Start Recording"));
             assert_eq!(start.focused(), Some(true), "focused at launch");
 
-            let order: [ElementId; 6] = [
+            let order: [ElementId; 7] = [
                 "search".into(),
                 "filter".into(),
                 "recordings".into(),
+                "sidebar-settings".into(),
                 "sidebar-resize".into(),
                 "record".into(),
                 "start-recording".into(),

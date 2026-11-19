@@ -151,7 +151,7 @@ pub enum Look {
 pub fn button(
     id: impl Into<SharedString>,
     spoken: impl Into<SharedString>,
-    text: impl Into<SharedString>,
+    text: impl IntoElement,
     look: Look,
     focus: &FocusHandle,
     theme: &Theme,
@@ -194,7 +194,7 @@ pub fn button(
             Look::Disabled => b.bg(theme.track).text_color(theme.text_secondary),
         })
         .relative()
-        .child(text.into())
+        .child(text)
 }
 
 /// A 1 pt edge over a focusable button. The focus ring's transparent 2 pt border sits outside

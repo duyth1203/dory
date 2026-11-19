@@ -1,6 +1,7 @@
-//! The inset sidebar panel (UX-1, UX-25): search, the status filter, and the recordings grouped
-//! by date. While a search has results, the date groups give way to two sections, "Titles" and
-//! "In conversations" (UX-32), with a line saying so above them when the search was corrected.
+//! The inset sidebar panel (UX-1, UX-25): search, the status filter, the recordings grouped
+//! by date, and the Settings gear at the bottom left. While a search has results, the date
+//! groups give way to two sections, "Titles" and "In conversations" (UX-32), with a line saying
+//! so above them when the search was corrected.
 //! It reads `AppState` and writes only through its methods.
 //!
 //! Each row has two lines (`docs/design/processing-view.md` section 4): the title, then the date
@@ -35,7 +36,9 @@ use gpui_kit::{
 };
 
 use crate::a11y;
-use crate::actions::{FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, Rename};
+use crate::actions::{
+    FilterAll, FilterDone, FilterNeedsAttention, FilterProcessing, OpenSettings, Rename,
+};
 use crate::app::{AppEvent, AppState};
 use crate::fonts;
 use crate::icons::Icon;
@@ -130,6 +133,17 @@ impl Sidebar {
                         )
                     })
             })
+    }
+
+    /// The gear at the panel's bottom left. It sends the same `OpenSettings` as Command-Comma.
+    fn settings_button() -> impl IntoElement {
+        Button::new("sidebar-settings")
+            .ghost()
+            .compact()
+            .icon(Icon::Settings.kit())
+            .accessibility_label("Settings")
+            .tooltip_with_action("Settings", &OpenSettings, None)
+            .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx))
     }
 
     /// The headings and rows, and the selected row's index among them.
@@ -692,6 +706,15 @@ impl Render for Sidebar {
                                     &theme,
                                 )
                             })),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .px(px(4.))
+                            .pb(px(8.))
+                            .child(Self::settings_button()),
                     ),
             )
             .child(prefs::sidebar_resize_handle(&self.app, cx))

@@ -67,8 +67,12 @@ fn system_prompt(prompt: Prompt, language: Option<&LangTag>) -> String {
             "a short phrase in that language".to_owned(),
         ),
     };
+    // A meeting that says "decision made" after each topic got one empty bullet per topic, such
+    // as "A decision was made on payment retry.", until every pass said what a decision holds.
+    // In the summary prompt alone it was not enough, because the notes carried the empty lines.
     let task = "A task someone will do is an action item, not a decision, even when the meeting \
-                calls it a decision.";
+                calls it a decision. A decision says what was chosen, such as \"Ship the beta on \
+                Monday\". Leave out a line that only says a decision was made.";
     let sections = format!(
         "Write the whole summary in {language}{included}. Use Markdown with three sections in this order: \
          key points, decisions, and action items. Start each section with a \"## \" heading and \
@@ -477,6 +481,25 @@ mod tests {
             notes.contains("Write in the language the meeting was held in. "),
             "{notes}"
         );
+    }
+
+    /// The Two hour planning eval case says "Okay, decision made." after each of its 40 topics,
+    /// and Gemma wrote 23 to 32 decisions that only said a decision was made.
+    #[test]
+    fn every_pass_says_a_decision_names_what_was_chosen() {
+        for prompt in [
+            Prompt::SummaryOfTranscript,
+            Prompt::SummaryOfNotes,
+            Prompt::NotesOfTranscript,
+            Prompt::NotesOfNotes,
+        ] {
+            let system = system_prompt(prompt, None);
+            assert!(
+                system.contains("A decision says what was chosen")
+                    && system.contains("Leave out a line that only says a decision was made."),
+                "{prompt:?}: {system}"
+            );
+        }
     }
 
     /// Asked to keep every key point, name, number, and date, Apple Intelligence copied the

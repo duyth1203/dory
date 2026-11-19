@@ -1,6 +1,6 @@
 [package]
 name = "dory-core"
-version = "0.2.1"
+version = "0.2.2"
 description = "Dory domain, ports, and product policy. No platform, runtime, or IO dependencies."
 edition.workspace = true
 rust-version.workspace = true

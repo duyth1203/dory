@@ -1,6 +1,6 @@
 [package]
 name = "dory-engines"
-version = "0.2.1"
+version = "0.2.2"
 description = "Portable model providers: sherpa-onnx speech and Ollama summaries."
 edition.workspace = true
 rust-version.workspace = true

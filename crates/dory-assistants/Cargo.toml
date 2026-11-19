@@ -1,6 +1,6 @@
 [package]
 name = "dory-assistants"
-version = "0.2.1"
+version = "0.2.2"
 description = "Dory's control channel: carries an assistant's change request from dory-mcp to the running app."
 edition.workspace = true
 rust-version.workspace = true

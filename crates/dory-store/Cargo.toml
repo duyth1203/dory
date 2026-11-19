@@ -1,6 +1,6 @@
 [package]
 name = "dory-store"
-version = "0.2.0"
+version = "0.2.1"
 description = "Dory storage adapters: SQLite store, file-system takes, legacy import."
 edition.workspace = true
 rust-version.workspace = true

@@ -44,6 +44,7 @@ use gpui_kit::{
 };
 
 use crate::a11y;
+use crate::actions::Find;
 use crate::app::{AppState, Assistants, Connected, Originals, Target};
 use crate::combobox::LanguageCombobox;
 use crate::icons::{self, Icon};
@@ -398,11 +399,15 @@ impl SettingsWindow {
                 notify::refresh_access(cx);
             }
         });
+        // With nothing focused a shortcut dispatches from the window root, above this view, so
+        // Command-F would not reach the search field until something was clicked.
+        let root = cx.focus_handle();
+        window.focus(&root, cx);
         Self {
             speech: cx.new(|cx| ModelList::new(models.clone(), cx)),
             summaries: cx.new(|cx| ModelList::new(models.clone(), cx)),
             languages: cx.new(|cx| LanguageCombobox::new(models.clone(), window, cx)),
-            root: cx.focus_handle(),
+            root,
             pane_focus: Pane::ALL.iter().map(|p| (*p, cx.focus_handle())).collect(),
             hit_focus: HashMap::new(),
             focus: HashMap::new(),
@@ -2107,6 +2112,12 @@ impl Render for SettingsWindow {
         let sidebar = self.sidebar(&theme, cx);
         div()
             .track_focus(&self.root)
+            .on_action(cx.listener(|this, _: &Find, window, cx| {
+                this.search.update(cx, |search, cx| {
+                    search.focus(window, cx);
+                    search.select_all(window, cx);
+                })
+            }))
             .on_action(cx.listener(|this, action: &ChooseAssistantApp, _, cx| {
                 this.assistant_target = action.target;
                 cx.notify();

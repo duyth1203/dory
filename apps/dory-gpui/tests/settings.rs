@@ -2040,7 +2040,7 @@ fn advanced_pane_explains_the_vocabulary_and_starts_empty(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
-fn a_word_is_added_flipped_to_strong_and_removed(cx: &mut TestAppContext) {
+fn a_word_is_added_switched_to_strong_and_back_and_removed(cx: &mut TestAppContext) {
     let rig = rig(&["en"]);
     let (main, app) = open(&rig, cx);
     let window = open_settings(&app, main, ADVANCED, cx);
@@ -2054,13 +2054,14 @@ fn a_word_is_added_flipped_to_strong_and_removed(cx: &mut TestAppContext) {
         has(window, "vocabulary-term-Priya", cx) && !has(window, "vocabulary-empty", cx)
     });
     assert_eq!(
-        label(window, "vocabulary-strong-Priya", cx).as_deref(),
-        Some("Strong for Priya")
+        label(window, "vocabulary-boost-Priya", cx).as_deref(),
+        Some("Boost for Priya")
     );
     assert_eq!(
         label(window, "vocabulary-remove-Priya", cx).as_deref(),
         Some("Remove Priya")
     );
+    assert_eq!(checked(window, "vocabulary-normal-Priya", cx), Some(true));
     assert_eq!(checked(window, "vocabulary-strong-Priya", cx), Some(false));
     assert_eq!(
         value(window, "vocabulary-field", cx).unwrap_or_default(),
@@ -2086,8 +2087,9 @@ fn a_word_is_added_flipped_to_strong_and_removed(cx: &mut TestAppContext) {
     });
     until(cx, "Strong shown", |cx| {
         checked(window, "vocabulary-strong-Priya", cx) == Some(true)
+            && checked(window, "vocabulary-normal-Priya", cx) == Some(false)
     });
-    click(window, "vocabulary-strong-Priya", cx);
+    click(window, "vocabulary-normal-Priya", cx);
     until(cx, "Normal stored", |_| {
         words(&rig) == [("Priya".to_owned(), Boost::Normal)]
     });

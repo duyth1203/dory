@@ -68,6 +68,7 @@ use crate::menus;
 use crate::motion::{self, ease_standard, elapsed};
 use crate::player_view::PlayerView;
 use crate::processing::{self, Fix, Phase};
+use crate::segmented::{self, Choice};
 use crate::summary_view::{self, SummaryText};
 use crate::theme::Theme;
 use crate::transcript_view::{self, TranscriptView};
@@ -770,20 +771,25 @@ impl DetailPane {
             .as_ref()
             .map(|t| crate::languages::name(&t.target));
         let session = self.session.clone();
-        self.switch(
+        segmented::switch(
             ("transcript-text", "Transcript text"),
             [
-                ("text-original", "Original"),
-                ("text-translated", "Translated"),
+                Choice {
+                    id: "text-original".into(),
+                    label: "Original".into(),
+                    description: Some("The transcript as it was spoken".into()),
+                },
+                Choice {
+                    id: "text-translated".into(),
+                    label: "Translated".into(),
+                    description: written_in
+                        .map(|name| format!("The transcript written in {name}").into()),
+                },
             ],
             &self.text_focus,
-            detail.translated(text),
-            [
-                Some("The transcript as it was spoken".to_owned()),
-                written_in.map(|name| format!("The transcript written in {name}")),
-            ],
-            move |translated, cx| {
-                let text = if translated {
+            usize::from(detail.translated(text)),
+            move |ix, cx| {
+                let text = if ix == 1 {
                     TranscriptText::Translated
                 } else {
                     TranscriptText::Spoken
@@ -806,20 +812,25 @@ impl DetailPane {
             .as_ref()
             .map(|t| crate::languages::name(&t.target));
         let session = self.session.clone();
-        self.switch(
+        segmented::switch(
             ("summary-text", "Summary text"),
             [
-                ("summary-original", "Original"),
-                ("summary-translated", "Translated"),
+                Choice {
+                    id: "summary-original".into(),
+                    label: "Original".into(),
+                    description: Some("The summary as it was written".into()),
+                },
+                Choice {
+                    id: "summary-translated".into(),
+                    label: "Translated".into(),
+                    description: written_in
+                        .map(|name| format!("The summary written in {name}").into()),
+                },
             ],
             &self.summary_focus,
-            detail.summary_translated(version),
-            [
-                Some("The summary as it was written".to_owned()),
-                written_in.map(|name| format!("The summary written in {name}")),
-            ],
-            move |translated, cx| {
-                let version = if translated {
+            usize::from(detail.summary_translated(version)),
+            move |ix, cx| {
+                let version = if ix == 1 {
                     SummaryVersion::Translated
                 } else {
                     SummaryVersion::Original
@@ -828,70 +839,6 @@ impl DetailPane {
             },
             theme,
         )
-    }
-
-    /// A two-button Original / Translated radio group. `pick` gets `true` for Translated.
-    #[allow(clippy::too_many_arguments)]
-    fn switch(
-        &self,
-        (id, label): (&'static str, &'static str),
-        ids: [(&'static str, &'static str); 2],
-        focus: &[FocusHandle; 2],
-        translated: bool,
-        descriptions: [Option<String>; 2],
-        pick: impl Fn(bool, &mut App) + Clone + 'static,
-        theme: &Theme,
-    ) -> AnyElement {
-        let option = |ix: usize| {
-            let (id, label) = ids[ix];
-            let is_translated = ix == 1;
-            let selected = translated == is_translated;
-            let pick = pick.clone();
-            let el = a11y::focusable(
-                a11y::node(id, Role::RadioButton, label),
-                &focus[ix],
-                theme,
-                selected,
-            )
-            .aria_toggled(if selected {
-                gpui_kit::accesskit::Toggled::True
-            } else {
-                gpui_kit::accesskit::Toggled::False
-            })
-            .aria_position_in_set(ix + 1)
-            .aria_size_of_set(2)
-            .on_click(move |_, _, cx| pick(is_translated, cx))
-            .cursor_pointer()
-            .min_h(theme.text(26.).max(px(24.)))
-            .px(px(10.))
-            .flex()
-            .items_center()
-            .text_size(theme.text(13.))
-            .rounded(px(6.));
-            let el = match &descriptions[ix] {
-                Some(description) => el.aria_description(description.clone()),
-                None => el,
-            };
-            if selected {
-                el.bg(theme.accent)
-                    .text_color(theme.on_accent)
-                    .font_weight(FontWeight::SEMIBOLD)
-            } else {
-                el.text_color(theme.text_secondary)
-            }
-            .child(label)
-        };
-        a11y::node(id, Role::RadioGroup, label)
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .p(px(2.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme.control_border)
-            .child(option(0))
-            .child(option(1))
-            .into_any_element()
     }
 }
 

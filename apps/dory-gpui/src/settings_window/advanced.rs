@@ -7,9 +7,8 @@ use dory_core::domain::{Boost, MAX_SPEAKER_NAMES, Settings, VocabularyTerm, fold
 use dory_core::models::Stt;
 use gpui_kit::component::input::Input;
 use gpui_kit::{
-    AnyElement, Context, FontWeight, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, prelude::FluentBuilder as _, px,
-    relative,
+    AnyElement, Context, IntoElement, ParentElement as _, Role, SharedString, Styled as _, Window,
+    prelude::FluentBuilder as _, px, relative,
 };
 
 use super::{SettingsWindow, row, row_with, section};
@@ -17,6 +16,7 @@ use crate::a11y;
 use crate::icons::{self, Icon};
 use crate::models_view::{self, button, note};
 use crate::radio::{self, Radio};
+use crate::segmented::{self, Choice};
 use crate::theme::Theme;
 
 pub const ABOUT: [&str; 3] = [
@@ -28,8 +28,28 @@ pub const EMPTY: &str = "No words yet.";
 pub const SPEAKERS_LABEL: &str = "Add names you give speakers";
 pub const NO_NAMES: &str = "No speaker names yet. Rename a speaker in a recording to add one.";
 pub const NAMES_OFF: &str = "Names are not added while this is off.";
+const NORMAL_EFFECT: &str = "Favors this word gently, without changing words that sound alike.";
 const STRONG_EFFECT: &str =
     "Pushes the speech model harder toward this word. It can turn words that sound alike into it.";
+
+/// A word's boosts in the order its switch shows them.
+const BOOSTS: [Boost; 2] = [Boost::Normal, Boost::Strong];
+
+/// The Normal and Strong choices on `text`'s switch, with what each does for VoiceOver.
+fn boost_choices(text: &str) -> [Choice; 2] {
+    [
+        Choice {
+            id: format!("vocabulary-normal-{text}").into(),
+            label: "Normal".into(),
+            description: Some(NORMAL_EFFECT.into()),
+        },
+        Choice {
+            id: format!("vocabulary-strong-{text}").into(),
+            label: "Strong".into(),
+            description: Some(STRONG_EFFECT.into()),
+        },
+    ]
+}
 
 /// What sits under the field: a rejected term's message, or the word that is already listed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -304,7 +324,7 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    /// Each word with its Strong control and Remove, or the empty line.
+    /// Each word with its Normal / Strong switch and Remove, or the empty line.
     fn words(&mut self, settings: &Settings, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         if settings.vocabulary.is_empty() {
             return a11y::node("vocabulary-empty", Role::Label, EMPTY)
@@ -327,54 +347,36 @@ impl SettingsWindow {
 
     fn word(&mut self, term: &VocabularyTerm, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let text = term.text.clone();
-        let strong = term.boost == Boost::Strong;
-        let strong_focus = self.focus(format!("vocabulary-strong-{text}"), cx);
+        let focus = [
+            self.focus(format!("vocabulary-normal-{text}"), cx),
+            self.focus(format!("vocabulary-strong-{text}"), cx),
+        ];
         let models = self.models.clone();
         let target = text.clone();
-        let next = if strong { Boost::Normal } else { Boost::Strong };
-        let toggle = a11y::focusable(
-            a11y::node(
-                format!("vocabulary-strong-{text}"),
-                Role::CheckBox,
-                format!("Strong for {text}"),
+        let boost = segmented::switch(
+            (
+                format!("vocabulary-boost-{text}"),
+                format!("Boost for {text}"),
             ),
-            &strong_focus,
+            boost_choices(&text),
+            &focus,
+            BOOSTS.iter().position(|b| *b == term.boost).unwrap_or(0),
+            move |ix, cx| {
+                let target = target.clone();
+                let next = BOOSTS[ix];
+                models.update(cx, |m, cx| {
+                    m.edit(
+                        move |s| {
+                            if let Some(t) = s.vocabulary.iter_mut().find(|t| t.text == target) {
+                                t.boost = next;
+                            }
+                        },
+                        cx,
+                    )
+                })
+            },
             theme,
-            strong,
-        )
-        .aria_toggled(if strong {
-            gpui_kit::accesskit::Toggled::True
-        } else {
-            gpui_kit::accesskit::Toggled::False
-        })
-        .aria_description(STRONG_EFFECT)
-        .on_click(move |_, _, cx| {
-            let target = target.clone();
-            models.update(cx, |m, cx| {
-                m.edit(
-                    move |s| {
-                        if let Some(t) = s.vocabulary.iter_mut().find(|t| t.text == target) {
-                            t.boost = next;
-                        }
-                    },
-                    cx,
-                )
-            })
-        })
-        .cursor_pointer()
-        .flex_none()
-        .min_h(px(28.))
-        .px(px(12.))
-        .flex()
-        .items_center()
-        .rounded(px(14.))
-        .text_size(theme.text(13.))
-        .font_weight(FontWeight::MEDIUM)
-        .when(strong, |b| b.bg(theme.accent).text_color(theme.on_accent))
-        .when(!strong, |b| {
-            b.bg(theme.control_bg).border_color(theme.control_border)
-        })
-        .child("Strong");
+        );
         let remove_focus = self.focus(format!("vocabulary-remove-{text}"), cx);
         let models = self.models.clone();
         let target = text.clone();
@@ -411,7 +413,7 @@ impl SettingsWindow {
                 .text_size(theme.text(13.))
                 .child(text),
         )
-        .child(toggle)
+        .child(boost)
         .child(remove)
         .into_any_element()
     }

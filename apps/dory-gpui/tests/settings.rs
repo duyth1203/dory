@@ -1605,6 +1605,60 @@ fn the_clear_button_empties_the_settings_search(cx: &mut TestAppContext) {
     assert!(typing, "focus stays in the field");
 }
 
+/// Command-F in Settings goes to its search field and selects what it holds, as System Settings
+/// does, so the next word typed replaces the last search.
+#[gpui_kit::test]
+fn command_f_in_settings_focuses_its_search_and_selects_the_text(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    cx.update(dory_gpui::menus::install);
+    cx.update(|cx| settings_window::open(&app, cx));
+    let window = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| *w != main)
+        .expect("the Settings window opened");
+    press(window, "cmd-f", cx);
+    assert!(
+        focused(window, "settings-search", cx),
+        "straight after opening, before anything was clicked"
+    );
+    cx.update_window(window, |_, window, cx| window.input("process", cx))
+        .unwrap();
+    click(window, "settings-hit-processing", cx);
+    assert!(
+        !focused(window, "settings-search", cx),
+        "focus left the field"
+    );
+
+    press(window, "cmd-f", cx);
+    assert!(focused(window, "settings-search", cx));
+    cx.update_window(window, |_, window, cx| window.input("storage", cx))
+        .unwrap();
+    render(window, cx);
+    assert!(
+        has(window, "settings-pane-storage", cx),
+        "the new word replaced the old"
+    );
+    assert!(!has(window, "settings-hit-processing", cx));
+}
+
+/// Command-F in the main window still goes to the library search, with Settings open beside it.
+#[gpui_kit::test]
+fn command_f_in_the_main_window_still_focuses_the_library_search(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    cx.update(dory_gpui::menus::install);
+    let settings = open_settings(&app, main, settings_window::Pane::General, cx);
+    cx.update_window(main, |_, window, _| window.activate_window())
+        .unwrap();
+    assert!(!focused(main, "search", cx));
+
+    press(main, "cmd-f", cx);
+    assert!(focused(main, "search", cx));
+    assert!(!focused(settings, "settings-search", cx));
+}
+
 /// UX-31: a wheel anywhere over Settings content moves the page, so no inner area keeps it.
 #[gpui_kit::test]
 fn settings_content_has_one_scroll_area(cx: &mut TestAppContext) {

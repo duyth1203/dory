@@ -213,6 +213,42 @@ fn closing_the_window_keeps_the_state_and_the_recorder(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn a_reopened_window_shows_the_selected_recording(cx: &mut TestAppContext) {
+    let (window, app) = launch(cx, dory_on(sample_store()), past_first_run());
+    let row = format!("row-{}", id_of("Design review"));
+    click(window, &row, cx);
+    assert!(element(window, "start-recording", cx).is_none());
+
+    let before = cx.update(|cx| cx.windows());
+    cx.update(|cx| settings_window::open(&app, cx));
+    let settings = cx
+        .update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| !before.contains(w))
+        .expect("the Settings window opened");
+    cx.update_window(settings, |_, window, _| window.remove_window())
+        .unwrap();
+    close(window, cx);
+    cx.update(|cx| status_item::run(Command::Show, &app, cx));
+    let reopened = main_window(cx).expect("Show Dory reopens the window");
+
+    assert!(
+        element(reopened, "start-recording", cx).is_none(),
+        "the reopened window shows the selected recording, not the start screen"
+    );
+    assert_eq!(
+        element(reopened, "recordings", cx).and_then(|list| list.focused()),
+        Some(true),
+        "the keyboard lands in the list, since the start screen is not shown"
+    );
+    click(reopened, &row, cx);
+    assert!(
+        element(reopened, "start-recording", cx).is_none(),
+        "clicking the selected row shows it"
+    );
+}
+
+#[gpui_kit::test]
 fn the_menu_bar_item_records_with_no_window_open(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let (window, app) = launch(cx, recordable(empty()), past_first_run());

@@ -158,8 +158,9 @@ pub const ENTRIES: &[Entry] = &[
     entry(Pane::General, "Summary ready", "row-note-summary"),
     entry(Pane::General, "Needs attention", "row-note-attention"),
     entry(Pane::General, "Model downloaded", "row-note-download"),
-    entry(Pane::General, "Theme", "row-book-offered"),
-    entry(Pane::General, "Try the Book theme", "row-book-offered"),
+    entry(Pane::General, "Theme", "row-theme"),
+    entry(Pane::General, "Modern theme", "row-theme"),
+    entry(Pane::General, "Book theme", "row-theme"),
     entry(Pane::General, "Appearance", "row-appearance"),
     entry(Pane::General, "Text size", "row-text-size"),
     entry(Pane::Recording, "Microphone", "row-microphone"),
@@ -603,87 +604,43 @@ impl SettingsWindow {
                 theme,
                 notifications,
             ),
-            section(
-                "settings-theme",
-                "Theme",
-                theme,
-                self.theme_rows(theme, window, cx),
-            ),
+            section("settings-theme", "Theme", theme, self.theme_rows(theme, cx)),
         ]
     }
 
-    /// Settings › General › Theme (frame B4): Try the Book theme, then, once it is on, the Modern
-    /// and Book cards; the note that light and dark follow the Mac; and Text size (A11Y-7).
-    fn theme_rows(
-        &mut self,
-        theme: &Theme,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    /// Settings › General › Theme (frame B4): the Modern and Book cards, the note that light and
+    /// dark follow the Mac, and Text size (A11Y-7).
+    fn theme_rows(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let prefs = self.app.read(cx).prefs.clone();
-        let mut rows = Vec::new();
-        let focus = self.focus("book-offered", cx);
-        let app = self.app.clone();
-        let offered = prefs.book_offered;
-        let try_book = radio::checkbox(
-            Radio::new("setting-book-offered", "Try the Book theme").description(
-                "An experimental theme with warm paper and serif reading type. Turning it off \
-                 returns to Modern.",
-            ),
-            offered,
-            &focus,
+        let cards = ThemeName::ALL.map(|name| {
+            self.theme_card(name, prefs.theme == name, theme, cx)
+                .into_any_element()
+        });
+        let choice = a11y::node("setting-theme", Role::RadioGroup, "Theme")
+            .px(px(14.))
+            .py(px(12.))
+            .flex()
+            .flex_wrap()
+            .gap(px(12.))
+            .children(cards);
+        let appearance = row(
+            "setting-appearance",
+            "Follows the system",
+            "Light and dark follow the system appearance in both themes. Modern also takes the \
+             system's accent color.",
+            None,
             theme,
-            window,
-            move |window, cx| {
-                app.update(cx, |app, cx| app.set_book_offered(!offered, cx));
-                window.refresh();
-            },
-        );
-        rows.push(self.mark("row-book-offered", try_book, theme, cx));
-        if offered {
-            let shown = prefs.shown_theme();
-            let cards = ThemeName::ALL.map(|name| {
-                self.theme_card(name, shown == name, theme, cx)
-                    .into_any_element()
-            });
-            rows.push(
-                self.mark(
-                    "row-theme",
-                    a11y::node("setting-theme", Role::RadioGroup, "Theme")
-                        .px(px(14.))
-                        .py(px(12.))
-                        .flex()
-                        .flex_wrap()
-                        .gap(px(12.))
-                        .children(cards),
-                    theme,
-                    cx,
-                ),
-            );
-        }
-        rows.push(
-            self.mark(
-                "row-appearance",
-                row(
-                    "setting-appearance",
-                    "Follows the system",
-                    "Light and dark follow the system appearance in both themes. Modern also takes \
-                 the system's accent color.",
-                    None,
-                    theme,
-                )
-                .into_any_element(),
-                theme,
-                cx,
-            ),
         );
         let text_size = self.text_size_row(prefs.text_scale, theme, cx);
-        rows.push(self.mark("row-text-size", text_size, theme, cx));
-        rows
+        vec![
+            self.mark("row-theme", choice, theme, cx),
+            self.mark("row-appearance", appearance, theme, cx),
+            self.mark("row-text-size", text_size, theme, cx),
+        ]
     }
 
     /// A picture card: the theme's own paper and ink with "Aa" in its reading typeface, its name,
-    /// and one line on what it is. A radio button, so arrows and Space work as in any group.
+    /// and one line on what it is. A radio button that Tab reaches and Space or Return picks.
     fn theme_card(
         &mut self,
         name: ThemeName,

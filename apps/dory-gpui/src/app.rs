@@ -499,28 +499,11 @@ impl AppState {
     }
 
     /// Settings › General › Theme and View › Theme (UX-20): remembered in the UI prefs, and shown
-    /// with a cross-fade. Book is chosen only while it is offered.
+    /// with a cross-fade.
     pub fn set_theme(&mut self, name: crate::theme::ThemeName, cx: &mut Context<Self>) {
-        if name == crate::theme::ThemeName::Book && !self.prefs.book_offered {
-            return;
-        }
         self.prefs.theme = name;
-        self.show_theme(cx);
-    }
-
-    /// Settings › General › Theme › Try the Book theme. Turning it off returns to Modern.
-    pub fn set_book_offered(&mut self, on: bool, cx: &mut Context<Self>) {
-        self.prefs.book_offered = on;
-        if !on {
-            self.prefs.theme = crate::theme::ThemeName::Modern;
-        }
-        self.show_theme(cx);
-    }
-
-    fn show_theme(&mut self, cx: &mut Context<Self>) {
-        let shown = self.prefs.shown_theme();
-        if cx.try_global::<crate::theme::Display>().map(|d| d.theme) != Some(shown) {
-            crate::theme::switch_to(shown, cx);
+        if cx.try_global::<crate::theme::Display>().map(|d| d.theme) != Some(name) {
+            crate::theme::switch_to(name, cx);
         }
         cx.notify();
     }

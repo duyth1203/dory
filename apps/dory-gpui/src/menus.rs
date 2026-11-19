@@ -49,9 +49,8 @@ pub struct MenuState {
     pub can_step: bool,
     pub recorder: Recorder,
     pub text_scale: Scale,
-    /// View › Theme: the theme shown, and whether Book is offered (it is experimental).
+    /// View › Theme: the theme shown.
     pub theme: ThemeName,
-    pub book_offered: bool,
     /// The meeting languages, which Re-transcribe in… offers.
     pub languages: Vec<LangTag>,
     /// The language the selected recording's summary is written in, which Translate Summary…
@@ -126,8 +125,7 @@ pub fn menu_state(app: &AppState, cx: &App) -> MenuState {
             .is_some_and(|session| session.read(cx).found().is_some()),
         recorder: Recorder::of(app.recorder()),
         text_scale: Scale::of(app.prefs.text_scale),
-        theme: app.prefs.shown_theme(),
-        book_offered: app.prefs.book_offered,
+        theme: app.prefs.theme,
         languages: app.settings().meeting_languages.clone(),
         summary_language: detail
             .as_ref()
@@ -299,14 +297,12 @@ struct Target(Entity<AppState>);
 
 impl Global for Target {}
 
-/// View › Theme: Modern, and Book once Settings offers it, the shown one checked.
+/// View › Theme: Modern and Book, the shown one checked.
 fn theme_items(state: &MenuState) -> Vec<MenuItem> {
-    let mut items =
-        vec![MenuItem::action("Modern", UseModernTheme).checked(state.theme == ThemeName::Modern)];
-    if state.book_offered {
-        items.push(MenuItem::action("Book", UseBookTheme).checked(state.theme == ThemeName::Book));
-    }
-    items
+    vec![
+        MenuItem::action("Modern", UseModernTheme).checked(state.theme == ThemeName::Modern),
+        MenuItem::action("Book", UseBookTheme).checked(state.theme == ThemeName::Book),
+    ]
 }
 
 /// Keeps the menus in step with `app`. Called once by `main`, before the window opens.

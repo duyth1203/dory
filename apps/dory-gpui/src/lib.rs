@@ -123,11 +123,10 @@ pub fn new_state(
     prefs: prefs::Prefs,
     cx: &mut App,
 ) -> Entity<app::AppState> {
-    let shown = prefs.shown_theme();
     theme::set_display(
         |display| {
             display.text_scale = prefs.text_scale;
-            display.theme = shown;
+            display.theme = prefs.theme;
         },
         cx,
     );

@@ -13,7 +13,7 @@
 #   VISUAL_THEMES        themes to run (default: "light dark contrast")
 #   VISUAL_SETTLE        seconds to wait after the view is ready (default: 1.5)
 #   VISUAL_SMALL         1 adds the 800 x 560, 200% pass (default: 1 for the whole set, else 0)
-#   VISUAL_BOOK          1 opens every view in the Book theme, offered in Settings (default: 0);
+#   VISUAL_BOOK          1 opens every view in the Book theme (default: 0);
 #                        file names gain "-book"
 set -euo pipefail
 
@@ -90,7 +90,7 @@ capture() {
   cp -cR "$library/." "$lib/"
   rm -f "$lib/.lock"
   local book_prefs=""
-  [ "${VISUAL_BOOK:-0}" = 1 ] && book_prefs=',"book_offered":true,"theme":"book"'
+  [ "${VISUAL_BOOK:-0}" = 1 ] && book_prefs=',"theme":"book"'
   printf '{"version":1,"onboarding":"done","window_width":%s,"window_height":%s,"text_scale":%s%s}\n' \
     "$width" "$height" "$scale" "$book_prefs" > "$lib/ui-prefs.json"
   case $theme in

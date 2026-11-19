@@ -1,6 +1,6 @@
-//! Choosing the Book theme (`docs/design/book-theme.md` sections 4 and 5): it is offered only
-//! once Settings turns it on, View › Theme switches to it and back, the choice is remembered, the
-//! window has no glass, and its flags draw without changing what VoiceOver reads.
+//! Choosing the Book theme (`docs/design/book-theme.md` sections 4 and 5): Settings shows Modern
+//! and Book as choices from the start, a card or View › Theme switches at once, the choice is
+//! remembered, the window has no glass, and its flags draw without changing what VoiceOver reads.
 
 mod common;
 
@@ -9,15 +9,15 @@ use dory_gpui::app::{AppState, DetailTab};
 use dory_gpui::library::Selection;
 use dory_gpui::prefs::Prefs;
 use dory_gpui::theme::{Theme, ThemeName};
-use dory_gpui::{glass, menus};
+use dory_gpui::{glass, menus, settings_window};
 use gpui_kit::{
-    AnyWindowHandle, AppContext as _, Entity, Role, TestAppContext, test::TestWindowExt as _,
+    AnyWindowHandle, AppContext as _, Entity, MenuItem, Role, TestAppContext,
+    test::TestWindowExt as _,
 };
 
 fn book_prefs(size: (f32, f32)) -> Prefs {
     Prefs {
         window_size: size,
-        book_offered: true,
         theme: ThemeName::Book,
         ..past_first_run()
     }
@@ -59,22 +59,158 @@ fn spoken_transcript(window: AnyWindowHandle, cx: &mut TestAppContext) -> Vec<St
     .unwrap()
 }
 
+fn open_settings(
+    app: &Entity<AppState>,
+    main: AnyWindowHandle,
+    cx: &mut TestAppContext,
+) -> AnyWindowHandle {
+    cx.update(|cx| settings_window::open_at(app, settings_window::Pane::General, cx));
+    cx.run_until_parked();
+    cx.update(|cx| cx.windows())
+        .into_iter()
+        .find(|w| *w != main)
+        .expect("the Settings window opened")
+}
+
+/// What VoiceOver hears for a theme card: its role, name, and whether it is the chosen one.
+fn card(
+    window: AnyWindowHandle,
+    id: &'static str,
+    cx: &mut TestAppContext,
+) -> (Option<Role>, Option<String>, Option<bool>) {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let el = window.find(id);
+        (el.role(), el.label().map(str::to_owned), el.checked())
+    })
+    .unwrap()
+}
+
+fn theme_menu(app: &Entity<AppState>, cx: &mut TestAppContext) -> Vec<(String, bool)> {
+    let built = cx.update(|cx| menus::build(menus::menu_state(app.read(cx), cx)));
+    let view = built
+        .iter()
+        .find(|m| m.name == "View")
+        .expect("a View menu");
+    let items = view
+        .items
+        .iter()
+        .find_map(|item| match item {
+            MenuItem::Submenu(sub) if sub.name == "Theme" => Some(&sub.items),
+            _ => None,
+        })
+        .expect("View › Theme");
+    items
+        .iter()
+        .filter_map(|item| match item {
+            MenuItem::Action { name, checked, .. } => Some((name.to_string(), *checked)),
+            _ => None,
+        })
+        .collect()
+}
+
 #[gpui_kit::test]
-fn book_is_offered_only_once_settings_turns_it_on(cx: &mut TestAppContext) {
+fn settings_shows_modern_and_book_from_the_start(cx: &mut TestAppContext) {
+    let (main, app) = open_with_prefs(cx, common::dory_on(sample_store()), past_first_run());
+    let window = open_settings(&app, main, cx);
+    assert!(
+        has(window, "setting-theme", cx),
+        "the Theme choice shows at once"
+    );
+    assert_eq!(
+        cx.update_window(window, |_, window, _| window.find("setting-theme").role())
+            .unwrap(),
+        Some(Role::RadioGroup)
+    );
+    assert_eq!(
+        card(window, "theme-modern", cx),
+        (Some(Role::RadioButton), Some("Modern".into()), Some(true)),
+        "a new user gets Modern"
+    );
+    assert_eq!(
+        card(window, "theme-book", cx),
+        (Some(Role::RadioButton), Some("Book".into()), Some(false))
+    );
+    assert!(!has(window, "setting-book-offered", cx), "no Try step");
+}
+
+#[gpui_kit::test]
+fn picking_a_theme_card_switches_at_once_by_click_and_keyboard(cx: &mut TestAppContext) {
+    let (main, app) = open_with_prefs(cx, common::dory_on(sample_store()), past_first_run());
+    let window = open_settings(&app, main, cx);
+    cx.update_window(window, |_, window, cx| {
+        window.click("settings-search", cx);
+        window.input("book", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("settings-hit-book-theme", cx);
+    })
+    .unwrap();
+    for _ in 0..20 {
+        cx.run_until_parked();
+        let on_screen = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let card = window.find("theme-book").bounds().center();
+                window.find("settings-panel").bounds().contains(&card)
+            })
+            .unwrap();
+        if on_screen {
+            break;
+        }
+    }
+
+    cx.update_window(window, |_, window, cx| window.click("theme-book", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx), ThemeName::Book, "one click on Book switches");
+    assert_eq!(card(window, "theme-book", cx).2, Some(true));
+    assert_eq!(card(window, "theme-modern", cx).2, Some(false));
+    assert_eq!(
+        theme_menu(&app, cx),
+        [("Modern".into(), false), ("Book".into(), true)]
+    );
+
+    cx.update_window(window, |_, window, cx| window.click("theme-modern", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx), ThemeName::Modern, "and back to Modern");
+
+    cx.update_window(window, |_, window, cx| {
+        window.press("tab", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("theme-book").focused(),
+            Some(true),
+            "Tab reaches Book"
+        );
+        window.press("space", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(shown(cx), ThemeName::Book, "Space on Book switches");
+    assert_eq!(card(window, "theme-book", cx).2, Some(true));
+}
+
+#[gpui_kit::test]
+fn view_theme_lists_both_themes_and_switches_between_them(cx: &mut TestAppContext) {
     let (_, app) = open_with_prefs(cx, common::dory_on(sample_store()), past_first_run());
     assert_eq!(shown(cx), ThemeName::Modern);
-    app.update(cx, |app, cx| app.set_theme(ThemeName::Book, cx));
-    cx.run_until_parked();
-    assert_eq!(shown(cx), ThemeName::Modern, "Book is not offered yet");
-    let menu = cx.update(|cx| menus::menu_state(app.read(cx), cx));
-    assert!(!menu.book_offered);
+    assert_eq!(
+        theme_menu(&app, cx),
+        [("Modern".into(), true), ("Book".into(), false)]
+    );
 
-    app.update(cx, |app, cx| app.set_book_offered(true, cx));
     app.update(cx, |app, cx| app.set_theme(ThemeName::Book, cx));
     cx.run_until_parked();
     assert_eq!(shown(cx), ThemeName::Book);
-    let menu = cx.update(|cx| menus::menu_state(app.read(cx), cx));
-    assert_eq!((menu.theme, menu.book_offered), (ThemeName::Book, true));
+    assert_eq!(
+        theme_menu(&app, cx),
+        [("Modern".into(), false), ("Book".into(), true)]
+    );
 
     app.update(cx, |app, cx| app.set_theme(ThemeName::Modern, cx));
     cx.run_until_parked();
@@ -83,19 +219,6 @@ fn book_is_offered_only_once_settings_turns_it_on(cx: &mut TestAppContext) {
         ThemeName::Modern,
         "View › Theme › Modern switches back"
     );
-
-    app.update(cx, |app, cx| app.set_theme(ThemeName::Book, cx));
-    app.update(cx, |app, cx| app.set_book_offered(false, cx));
-    cx.run_until_parked();
-    assert_eq!(
-        shown(cx),
-        ThemeName::Modern,
-        "withdrawing Book returns to Modern"
-    );
-    assert_eq!(
-        app.read_with(cx, |app, _| app.prefs.theme),
-        ThemeName::Modern
-    );
 }
 
 #[gpui_kit::test]
@@ -103,15 +226,12 @@ fn the_chosen_theme_is_remembered_across_launches(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!("dory-book-theme-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let (_, app) = open_with_prefs(cx, common::dory_on(sample_store()), past_first_run());
-    app.update(cx, |app, cx| {
-        app.set_book_offered(true, cx);
-        app.set_theme(ThemeName::Book, cx);
-    });
+    app.update(cx, |app, cx| app.set_theme(ThemeName::Book, cx));
     cx.run_until_parked();
     app.read_with(cx, |app, _| app.prefs.write(&dir)).unwrap();
 
     let saved = Prefs::read(&dir);
-    assert_eq!((saved.book_offered, saved.theme), (true, ThemeName::Book));
+    assert_eq!(saved.theme, ThemeName::Book);
     let _ = std::fs::remove_dir_all(&dir);
     let (_, _) = open_with_prefs(cx, common::dory_on(sample_store()), saved);
     assert_eq!(shown(cx), ThemeName::Book, "a relaunch opens in Book");

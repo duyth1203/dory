@@ -16,7 +16,6 @@ use crate::library::Tone;
 pub enum ThemeName {
     #[default]
     Modern,
-    /// Experimental: offered only once Settings › General › Theme › Try the Book theme is on.
     Book,
 }
 

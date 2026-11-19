@@ -31,7 +31,6 @@ fn prefs_round_trip_through_the_file() {
             notes.set(dory_gpui::notify::NoteKind::Download, false);
             notes
         },
-        book_offered: true,
         theme: ThemeName::Book,
     };
     prefs.write(&dir).unwrap();
@@ -40,20 +39,24 @@ fn prefs_round_trip_through_the_file() {
 }
 
 #[test]
-fn the_theme_is_remembered_and_book_shows_only_while_offered() {
+fn the_theme_is_remembered_and_new_users_get_modern() {
     let dir = scratch("theme");
     std::fs::create_dir_all(&dir).unwrap();
     let read = |json: &str| {
         std::fs::write(Prefs::path(&dir), json).unwrap();
         Prefs::read(&dir)
     };
-    let old = read(r#"{"version":1}"#);
-    assert_eq!((old.book_offered, old.theme), (false, ThemeName::Modern));
-    assert_eq!(old.shown_theme(), ThemeName::Modern);
-    let book = read(r#"{"version":1,"book_offered":true,"theme":"book"}"#);
-    assert_eq!(book.shown_theme(), ThemeName::Book);
-    let withdrawn = read(r#"{"version":1,"book_offered":false,"theme":"book"}"#);
-    assert_eq!(withdrawn.shown_theme(), ThemeName::Modern);
+    assert_eq!(read(r#"{"version":1}"#).theme, ThemeName::Modern);
+    assert_eq!(
+        read(r#"{"version":1,"theme":"book"}"#).theme,
+        ThemeName::Book
+    );
+    let tried = read(r#"{"version":1,"book_offered":true,"theme":"book","text_scale":1.5}"#);
+    assert_eq!(
+        (tried.theme, tried.text_scale),
+        (ThemeName::Book, 1.5),
+        "a file from when Book sat behind Try the Book theme still reads"
+    );
     assert_eq!(
         read(r#"{"version":1,"theme":"sepia"}"#).theme,
         ThemeName::Modern

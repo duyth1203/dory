@@ -79,20 +79,26 @@ impl Shell {
         let record = cx.new(|cx| RecordControl::new(app.clone(), cx));
         let onboarding = cx.new(|cx| Onboarding::new(app.clone(), cx));
         let step = app.read(cx).onboarding();
+        let page = ScrollHandle::new();
+        // A window reopened on the same state shows the recording still selected (UX-8).
+        let detail = Self::detail_pane(&app, &page, window, cx);
         let on_select = cx.subscribe_in(&app, window, |this, app, event: &AppEvent, window, cx| {
             if *event == AppEvent::SelectionChanged {
-                this.detail = app.read(cx).session().cloned().map(|session| {
-                    let (app, page) = (app.clone(), this.page.clone());
-                    cx.new(|cx| DetailPane::new(app, session, page, window, cx))
-                });
+                this.detail = Self::detail_pane(app, &this.page, window, cx);
                 cx.notify();
             }
         });
         let on_app = cx.observe(&app, |_, _, cx| cx.notify());
         let on_appearance = cx.observe_window_appearance(window, |_, _, cx| theme::sync(cx));
         let start_focus = cx.focus_handle();
-        // Nothing has focus at launch otherwise, and Tab does nothing (spike finding 4).
-        window.focus(&start_focus, cx);
+        // Nothing has focus at launch otherwise, and Tab does nothing (spike finding 4). A handle
+        // that never renders does not count as lost, so a window opening on a recording starts
+        // in the list.
+        let first = match &detail {
+            Some(_) => sidebar.read(cx).list_focus().clone(),
+            None => start_focus.clone(),
+        };
+        window.focus(&first, cx);
         // Starting a recording swaps the focused start screen for the detail pane. With nothing
         // focused no shortcut reaches the window root, so Command-Period could not stop it.
         let on_focus_lost = cx.on_focus_lost(window, |this, window, cx| {
@@ -114,7 +120,7 @@ impl Shell {
         Self {
             app,
             sidebar,
-            detail: None,
+            detail,
             record,
             onboarding,
             step,
@@ -123,7 +129,7 @@ impl Shell {
             undo_stop_focus: cx.focus_handle(),
             grant_focus: [cx.focus_handle(), cx.focus_handle()],
             regions: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
-            page: ScrollHandle::new(),
+            page,
             _subscriptions: vec![
                 on_select,
                 on_app,
@@ -132,6 +138,18 @@ impl Shell {
                 on_activation,
             ],
         }
+    }
+
+    /// The pane for the selected recording, `None` when nothing is selected.
+    fn detail_pane(
+        app: &Entity<AppState>,
+        page: &ScrollHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<DetailPane>> {
+        let session = app.read(cx).session().cloned()?;
+        let (app, page) = (app.clone(), page.clone());
+        Some(cx.new(|cx| DetailPane::new(app, session, page, window, cx)))
     }
 
     pub fn detail(&self) -> Option<&Entity<DetailPane>> {

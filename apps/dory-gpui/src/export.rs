@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, Local, TimeZone as _};
 use dory_core::domain::{Ms, RecordingId, Segment};
-use gpui_kit::{App, ClipboardItem, Entity};
+use gpui_kit::{App, Entity};
 
 use crate::a11y;
 use crate::app::{AppState, Detail, DetailTab, Shown, Turn, speaker_label};
@@ -58,6 +58,24 @@ impl ExportBlocked {
 pub enum CopyWhat {
     Summary,
     Transcript,
+}
+
+impl CopyWhat {
+    /// What `tab`'s own Copy button copies.
+    pub fn of(tab: DetailTab) -> CopyWhat {
+        match tab {
+            DetailTab::Summary => CopyWhat::Summary,
+            DetailTab::Transcript => CopyWhat::Transcript,
+        }
+    }
+
+    /// The [`crate::copied`] key the tab row's Copy button flashes by.
+    pub fn key(self) -> &'static str {
+        match self {
+            CopyWhat::Summary => "copy-summary",
+            CopyWhat::Transcript => "copy-transcript",
+        }
+    }
 }
 
 /// What the open recording has to copy or export. Copy and Export act on text that is shown, so
@@ -115,10 +133,7 @@ impl Has {
 
     /// The tab's own Copy: the summary on Summary, the transcript on Transcript.
     pub fn copy(self, tab: DetailTab) -> bool {
-        match tab {
-            DetailTab::Summary => self.can_copy(CopyWhat::Summary),
-            DetailTab::Transcript => self.can_copy(CopyWhat::Transcript),
-        }
+        self.can_copy(CopyWhat::of(tab))
     }
 
     /// Export writes the text of the tab it is on. The Summary tab also offers the transcript's
@@ -449,10 +464,10 @@ pub fn copy(detail: &Detail, has: Has, what: CopyWhat, shown: Shown, cx: &mut Ap
         }),
     };
     if let Some(text) = text {
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-        a11y::announce(match what {
+        let said = match what {
             CopyWhat::Summary => "Summary copied",
             CopyWhat::Transcript => "Transcript copied",
-        });
+        };
+        crate::copied::copy(what.key(), text, said, cx);
     }
 }

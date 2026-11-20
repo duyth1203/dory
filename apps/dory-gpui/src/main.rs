@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 
 use dory_gpui::{
-    consent, icons, menus, notify, platform, prefs, quit, show, status_item, system_prefs,
+    consent, hotkeys, icons, menus, notify, platform, prefs, quit, show, status_item, system_prefs,
 };
 
 fn main() -> ExitCode {
@@ -64,6 +64,7 @@ fn main() -> ExitCode {
         menus::watch(&state, cx);
         quit::install(&state, cx);
         status_item::install(&state, cx);
+        hotkeys::install(&state, cx);
         notify::install(&state, cx);
         let window = match dory_gpui::open_main_window(cx) {
             Ok(window) => window,

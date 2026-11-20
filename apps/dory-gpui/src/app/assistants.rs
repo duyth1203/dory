@@ -5,15 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use dory_core::domain::{AssistantClient, AuditEntry, Exposure, Timestamp, Writes};
-use gpui_kit::{ClipboardItem, Context, SharedString};
+use gpui_kit::{Context, SharedString};
 
 use super::AppState;
 
 /// How many activity lines Settings shows.
 pub const ACTIVITY_LINES: usize = 12;
-
-/// How long Copy Setup shows its check mark after a copy.
-pub const COPIED_FOR: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// What Settings > Assistants shows, read off the main thread.
 #[derive(Clone, Debug, Default)]
@@ -196,28 +193,6 @@ impl AppState {
         self.connected.as_ref()
     }
 
-    /// Whether Copy Setup copied within the last [`COPIED_FOR`].
-    pub fn just_copied(&self) -> bool {
-        self.copied
-    }
-
-    /// Shows the check mark, and clears it [`COPIED_FOR`] later unless another copy came first.
-    fn flash_copied(&mut self, cx: &mut Context<Self>) {
-        self.copied = true;
-        self.copy_flash += 1;
-        let flash = self.copy_flash;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(COPIED_FOR).await;
-            let _ = this.update(cx, |state, cx| {
-                if state.copy_flash == flash {
-                    state.copied = false;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
     /// Where Connect says the helper is. Found beside the app at launch; tests point it at a
     /// file of their own.
     pub fn set_assistant_helper(&mut self, helper: Option<PathBuf>) {
@@ -353,9 +328,12 @@ impl AppState {
                     Ok((key, replaced)) => {
                         let text =
                             setup_text(target, &helper, key.as_str(), custom_data_dir().as_deref());
-                        cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                        crate::a11y::announce(target.next_step());
-                        state.flash_copied(cx);
+                        crate::copied::copy(
+                            crate::copied::CONNECT_SETUP,
+                            text.clone(),
+                            target.next_step(),
+                            cx,
+                        );
                         Connected::Copied {
                             target,
                             shown: shorten_key(&text, key.as_str()),

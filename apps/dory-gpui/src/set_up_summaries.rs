@@ -24,7 +24,7 @@ use dory_core::models::{
     Availability, Choice, Fit, Llm, Mismatch, ModelId, ModelRef, Resolution, UnavailableReason,
 };
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, FontWeight, IntoElement,
+    App, AppContext as _, Context, Entity, FocusHandle, FontWeight, IntoElement,
     ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Subscription,
     Window, div, prelude::FluentBuilder as _, px,
 };
@@ -399,9 +399,15 @@ pub fn progress_words(download: Download) -> (String, String) {
 }
 
 /// Each command with its own Copy button.
-pub(crate) fn ollama_steps(copy_focus: &[FocusHandle], theme: &Theme) -> gpui_kit::Div {
+pub(crate) fn ollama_steps(copy_focus: &[FocusHandle], theme: &Theme, cx: &App) -> gpui_kit::Div {
     let mut steps = div().flex().flex_col().gap(px(8.));
     for (command, focus) in COMMANDS.into_iter().zip(copy_focus) {
+        let key = format!("command-{command}");
+        let spoken = if crate::copied::is(&key, cx) {
+            format!("Copied {command}")
+        } else {
+            format!("Copy {command}")
+        };
         steps = steps.child(
             div()
                 .flex()
@@ -423,15 +429,26 @@ pub(crate) fn ollama_steps(copy_focus: &[FocusHandle], theme: &Theme) -> gpui_ki
                     .text_size(theme.text(13.))
                     .child(command),
                 )
-                .child(button(
-                    format!("copy-{command}"),
-                    format!("Copy {command}"),
-                    "Copy",
-                    false,
-                    focus,
-                    theme,
-                    move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(command.into())),
-                )),
+                .child(
+                    button(
+                        format!("copy-{command}"),
+                        spoken,
+                        "",
+                        false,
+                        focus,
+                        theme,
+                        move |_, cx| {
+                            crate::copied::copy(
+                                format!("command-{command}"),
+                                command.into(),
+                                "Command copied",
+                                cx,
+                            )
+                        },
+                    )
+                    .gap(px(6.))
+                    .children(crate::copied::face(&key, "Copy", theme, cx)),
+                ),
         );
     }
     steps

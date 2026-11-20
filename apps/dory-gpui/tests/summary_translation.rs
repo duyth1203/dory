@@ -329,6 +329,30 @@ fn the_switch_shows_the_original_and_copy_and_export_follow_it(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn copying_from_the_menu_flashes_the_tab_rows_copy_button(cx: &mut TestAppContext) {
+    let (window, app) = open(store(false), translator(), cx);
+    show(&app, cx);
+    let copy_label = |cx: &mut TestAppContext| {
+        with_window(window, cx, |window, _| {
+            window.find("copy").label().map(str::to_owned)
+        })
+    };
+    assert_eq!(copy_label(cx).as_deref(), Some("Copy summary"));
+
+    cx.dispatch_action(window, CopySummary);
+    assert_eq!(clipboard(cx), TAGALOG);
+    assert_eq!(
+        copy_label(cx).as_deref(),
+        Some("Copied"),
+        "the button says so, wherever the copy came from"
+    );
+
+    cx.executor()
+        .advance_clock(dory_gpui::copied::COPIED_FOR + std::time::Duration::from_millis(50));
+    assert_eq!(copy_label(cx).as_deref(), Some("Copy summary"));
+}
+
+#[gpui_kit::test]
 fn a_summary_with_no_translation_has_no_switch_and_offers_translate(cx: &mut TestAppContext) {
     let (window, app) = open(store(false), translator(), cx);
     show(&app, cx);

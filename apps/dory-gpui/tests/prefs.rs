@@ -30,6 +30,14 @@ fn prefs_round_trip_through_the_file() {
             notes.set(dory_gpui::notify::NoteKind::Download, false);
             notes
         },
+        shortcuts: {
+            use dory_gpui::shortcuts::{Bind, Shortcut, Shortcuts};
+            let mut shortcuts = Shortcuts::default();
+            shortcuts
+                .set(Bind::StartStop, Shortcut::parse("ctrl-alt-cmd-r").unwrap())
+                .unwrap();
+            shortcuts
+        },
     };
     prefs.write(&dir).unwrap();
     assert_eq!(Prefs::read(&dir), prefs);

@@ -7,11 +7,11 @@
 //!
 //! `watch` restores the selection on the first list of rows (only after a short absence, see
 //! [`RESTORE_WITHIN`]) and saves with a debounce whenever the window size, the sidebar width, the
-//! selection, the onboarding step, the text scale, the last Settings pane, or a notification
-//! setting changes, and once more on quit with the quit time.
+//! selection, the onboarding step, the text scale, the last Settings pane, a notification
+//! setting, or a global shortcut changes, and once more on quit with the quit time.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,7 @@ use crate::library::Selection;
 use crate::notify::NoteKind;
 use crate::onboarding::OnboardingStep;
 use crate::settings_window::Pane;
+use crate::shortcuts::Shortcuts;
 
 pub const SIDEBAR_WIDTH: RangeInclusive<f32> = 240.0..=380.0;
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 300.0;
@@ -66,6 +67,8 @@ pub struct Prefs {
     pub processing_origin: Option<(f32, f32)>,
     /// Settings › General › Notifications (UX-14).
     pub notifications: Notifications,
+    /// Settings › Recording › Keyboard Shortcuts. None by default.
+    pub shortcuts: Shortcuts,
 }
 
 /// Which kinds of notification are on. All are on by default, so only the ones turned off are
@@ -101,6 +104,7 @@ impl Default for Prefs {
             settings_pane: Pane::General,
             processing_origin: None,
             notifications: Notifications::default(),
+            shortcuts: Shortcuts::default(),
         }
     }
 }
@@ -119,6 +123,7 @@ struct Disk {
     settings_pane: Option<String>,
     processing_origin: Option<(f32, f32)>,
     notifications_off: Vec<String>,
+    shortcuts: BTreeMap<String, String>,
 }
 
 impl Default for Disk {
@@ -146,6 +151,7 @@ impl From<&Prefs> for Disk {
                 .iter()
                 .map(|kind| kind.slug().to_owned())
                 .collect(),
+            shortcuts: prefs.shortcuts.to_disk(),
         }
     }
 }
@@ -199,6 +205,7 @@ impl Prefs {
                     .filter_map(|slug| NoteKind::parse(slug))
                     .collect(),
             },
+            shortcuts: Shortcuts::from_disk(&disk.shortcuts),
         }
     }
 
@@ -222,6 +229,7 @@ impl Prefs {
             && self.settings_pane == other.settings_pane
             && self.processing_origin == other.processing_origin
             && self.notifications == other.notifications
+            && self.shortcuts == other.shortcuts
     }
 }
 

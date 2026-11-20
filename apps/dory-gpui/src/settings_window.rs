@@ -41,17 +41,19 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, Entity, FocusHandle,
-    FontWeight, Global, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render,
-    Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    TestSupportExt as _, TitlebarOptions, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowControlArea, WindowOptions, canvas, div, point, prelude::FluentBuilder as _, px,
-    relative, size,
+    FontWeight, Global, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
+    Pixels, Render, Role, ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, TestSupportExt as _, TitlebarOptions, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowControlArea, WindowOptions, canvas, div, point,
+    prelude::FluentBuilder as _, px, relative, size,
 };
 
 use crate::a11y;
 use crate::actions::Find;
 use crate::app::{AppState, Assistants, Connected, Originals, Target};
 use crate::combobox::LanguageCombobox;
+use crate::copied;
+use crate::hotkeys;
 use crate::icons::{self, Icon};
 use crate::languages;
 use crate::models_view::{self, ModelList, Models, button, note, size_text};
@@ -60,6 +62,7 @@ use crate::processing::PACE_CHOICES;
 use crate::radio::{self, Radio, RadioGroup};
 use crate::search_field;
 use crate::set_up_summaries::{COMMANDS, ollama_steps};
+use crate::shortcuts::{Bind, Shortcut};
 use crate::theme::Theme;
 
 pub const WIDTH: f32 = 860.;
@@ -172,6 +175,21 @@ pub const ENTRIES: &[Entry] = &[
     entry(Pane::General, "Text size", "row-text-size"),
     entry(Pane::Recording, "Microphone", "row-microphone"),
     entry(Pane::Recording, "System audio", "row-system-audio"),
+    entry(
+        Pane::Recording,
+        "Keyboard shortcuts",
+        "row-shortcut-start-stop",
+    ),
+    entry(
+        Pane::Recording,
+        "Start or stop recording",
+        "row-shortcut-start-stop",
+    ),
+    entry(
+        Pane::Recording,
+        "Pause or resume recording",
+        "row-shortcut-pause-resume",
+    ),
     entry(Pane::Transcription, "Language", "row-language"),
     entry(
         Pane::Transcription,
@@ -396,6 +414,11 @@ pub struct SettingsWindow {
     speaker_names: Option<Result<Vec<String>, String>>,
     names_read_at: u64,
     names_generation: u64,
+    /// Settings > Recording > Keyboard Shortcuts: the bind whose next keystroke is recorded,
+    /// the interceptor that takes it before any key binding, and what was said about the last.
+    capturing: Option<Bind>,
+    capture: Option<Subscription>,
+    shortcut_said: Option<(Bind, SharedString)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -447,11 +470,15 @@ impl SettingsWindow {
         let pane = app.read(cx).prefs.settings_pane;
         notify::refresh_access(cx);
         // Coming back from System Settings is when notifications may have been turned on.
-        let on_activation = cx.observe_window_activation(window, |_, window, cx| {
+        let on_activation = cx.observe_window_activation(window, |this, window, cx| {
             if window.is_window_active() {
                 notify::refresh_access(cx);
+            } else {
+                // The shortcuts come back as soon as the user leaves Settings.
+                this.stop_capture(cx);
             }
         });
+        cx.on_release(|_, cx| hotkeys::suspend(false, cx)).detach();
         // With nothing focused a shortcut dispatches from the window root, above this view, so
         // Command-F would not reach the search field until something was clicked.
         let root = cx.focus_handle();
@@ -484,6 +511,9 @@ impl SettingsWindow {
             speaker_names: None,
             names_read_at: 0,
             names_generation: 0,
+            capturing: None,
+            capture: None,
+            shortcut_said: None,
             _subscriptions: vec![observe, on_type, on_add, width, on_activation],
         };
         if pane == Pane::Advanced {
@@ -535,6 +565,7 @@ impl SettingsWindow {
     }
 
     pub fn select(&mut self, pane: Pane, cx: &mut Context<Self>) {
+        self.stop_capture(cx);
         if pane == Pane::Storage && self.pane != pane {
             self.storage = Storage::Unread;
         }
@@ -911,7 +942,207 @@ impl SettingsWindow {
                 theme,
                 vec![self.mark("row-system-audio", system, theme, cx)],
             ),
+            section(
+                "settings-shortcuts",
+                "Keyboard shortcuts",
+                theme,
+                Bind::ALL
+                    .into_iter()
+                    .map(|bind| {
+                        let row = self.shortcut_row(bind, theme, cx);
+                        self.mark(shortcut_row_id(bind), row, theme, cx)
+                    })
+                    .collect(),
+            ),
         ]
+    }
+
+    /// A bind's row: what is set, a button that records the next keystroke, and Clear.
+    fn shortcut_row(&mut self, bind: Bind, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let set = self.app.read(cx).prefs.shortcuts.get(bind).cloned();
+        let capturing = self.capturing == Some(bind);
+        let (visible, spoken) = match (&set, capturing) {
+            (_, true) => (
+                "Type Shortcut…".to_owned(),
+                format!("{}, type the shortcut", bind.label()),
+            ),
+            (Some(shortcut), false) => (
+                shortcut.symbols(),
+                format!("{}, {}", bind.label(), shortcut.spoken()),
+            ),
+            (None, false) => (
+                "Record Shortcut".to_owned(),
+                format!("Record a shortcut to {}", bind.label().to_lowercase()),
+            ),
+        };
+        let this = cx.entity().downgrade();
+        let focus = self.focus(format!("shortcut-{}", bind.slug()), cx);
+        let record = button(
+            format!("shortcut-{}", bind.slug()),
+            spoken,
+            visible,
+            capturing,
+            &focus,
+            theme,
+            move |window, cx| {
+                let _ = this.update(cx, |this, cx| this.toggle_capture(bind, window, cx));
+            },
+        );
+        let clear = (set.is_some() && !capturing).then(|| {
+            let app = self.app.clone();
+            let focus = self.focus(format!("shortcut-clear-{}", bind.slug()), cx);
+            button(
+                format!("shortcut-clear-{}", bind.slug()),
+                format!("Clear the shortcut to {}", bind.label().to_lowercase()),
+                "Clear",
+                false,
+                &focus,
+                theme,
+                move |_, cx| {
+                    app.update(cx, |app, cx| {
+                        app.prefs.shortcuts.clear(bind);
+                        cx.notify();
+                    })
+                },
+            )
+        });
+        let said = self
+            .shortcut_said
+            .as_ref()
+            .filter(|(about, _)| *about == bind)
+            .map(|(_, said)| said.clone());
+        let taken = set
+            .as_ref()
+            .filter(|_| hotkeys::taken(bind, cx))
+            .map(|shortcut| {
+                SharedString::from(format!(
+                    "Another app already uses {}. Record a different one.",
+                    shortcut.symbols()
+                ))
+            });
+        let (note, warn) = match (said.or(taken), capturing) {
+            (Some(note), _) => (note, true),
+            (None, true) => (
+                "Press the keys together. Escape cancels; Delete removes the shortcut.".into(),
+                false,
+            ),
+            (None, false) => (SharedString::from(bind.hint()), false),
+        };
+        let below = a11y::node(
+            format!("shortcut-note-{}", bind.slug()),
+            Role::Label,
+            note.clone(),
+        )
+        .text_size(theme.text(12.))
+        .line_height(relative(1.4))
+        .text_color(if warn {
+            theme.attention
+        } else {
+            theme.text_secondary
+        })
+        .child(note)
+        .into_any_element();
+        row_with(
+            shortcut_row_id(bind),
+            bind.title(),
+            below,
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .children(clear)
+                    .child(record)
+                    .into_any_element(),
+            ),
+            theme,
+        )
+        .into_any_element()
+    }
+
+    /// Records `bind`'s next keystroke, or stops if it was already recording. The interceptor sees
+    /// keys before any key binding, so ⌘W and ⌘, are recorded instead of closing or reopening
+    /// Settings.
+    fn toggle_capture(&mut self, bind: Bind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.capturing == Some(bind) {
+            self.stop_capture(cx);
+            return;
+        }
+        self.capturing = Some(bind);
+        self.shortcut_said = None;
+        hotkeys::suspend(true, cx);
+        let ours = window.window_handle();
+        let this = cx.entity().downgrade();
+        self.capture = Some(cx.intercept_keystrokes(move |event, window, cx| {
+            if window.window_handle() != ours || event.keystroke.is_modifier_key() {
+                return;
+            }
+            cx.stop_propagation();
+            let keystroke = event.keystroke.clone();
+            let _ = this.update(cx, |this, cx| this.captured(&keystroke, cx));
+        }));
+        crate::a11y::announce("Type the shortcut");
+        cx.notify();
+    }
+
+    fn captured(&mut self, keystroke: &gpui_kit::Keystroke, cx: &mut Context<Self>) {
+        let Some(bind) = self.capturing else {
+            return;
+        };
+        let plain = !keystroke.modifiers.modified();
+        match keystroke.key.as_str() {
+            "escape" if plain => {}
+            "backspace" | "delete" if plain => {
+                self.app.update(cx, |app, cx| {
+                    app.prefs.shortcuts.clear(bind);
+                    cx.notify();
+                });
+                crate::a11y::announce("Shortcut removed");
+            }
+            _ => {
+                let said = match Shortcut::accept(keystroke) {
+                    Err(refusal) => Some(refusal.message().to_owned()),
+                    Ok(shortcut) => {
+                        let set = self.app.update(cx, |app, cx| {
+                            let set = app.prefs.shortcuts.set(bind, shortcut.clone());
+                            cx.notify();
+                            set
+                        });
+                        match set {
+                            Ok(()) => {
+                                crate::a11y::announce(&format!(
+                                    "{} set to {}",
+                                    bind.label(),
+                                    shortcut.spoken()
+                                ));
+                                None
+                            }
+                            Err(other) => Some(format!(
+                                "{} is already the shortcut to {}.",
+                                shortcut.symbols(),
+                                other.label().to_lowercase()
+                            )),
+                        }
+                    }
+                };
+                // A refused keystroke keeps recording, so the next try needs no click.
+                if let Some(said) = said {
+                    crate::a11y::announce(&said);
+                    self.shortcut_said = Some((bind, said.into()));
+                    cx.notify();
+                    return;
+                }
+            }
+        }
+        self.stop_capture(cx);
+    }
+
+    fn stop_capture(&mut self, cx: &mut Context<Self>) {
+        if self.capturing.take().is_some() {
+            self.capture = None;
+            hotkeys::suspend(false, cx);
+            cx.notify();
+        }
     }
 
     fn language_row(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
@@ -1157,7 +1388,7 @@ impl SettingsWindow {
                     "Summaries run on this Mac through Ollama. Install and start it in Terminal, then choose Check again.",
                     theme,
                 ))
-                .child(ollama_steps(&self.copy_focus, theme))
+                .child(ollama_steps(&self.copy_focus, theme, cx))
                 .child(
                     div()
                         .flex()
@@ -1507,12 +1738,7 @@ impl SettingsWindow {
             });
         let focus = self.focus("connect-copy", cx);
         let app = self.app.clone();
-        let copied = self.app.read(cx).just_copied();
-        let (icon, color) = if copied {
-            (Icon::Check, theme.accent)
-        } else {
-            (Icon::Copy, theme.text_secondary)
-        };
+        let copied = copied::is(copied::CONNECT_SETUP, cx);
         let copy = button(
             "connect-copy",
             if copied {
@@ -1532,17 +1758,7 @@ impl SettingsWindow {
             },
         )
         .gap(px(6.))
-        .child(
-            div()
-                .id(if copied {
-                    "copy-icon-check"
-                } else {
-                    "copy-icon-copy"
-                })
-                .test_support()
-                .child(icon.view(13., color)),
-        )
-        .child(if copied { "Copied" } else { "Copy Setup" });
+        .children(copied::face(copied::CONNECT_SETUP, "Copy Setup", theme, cx));
         let status = self.app.read(cx).connected().cloned().map(|c| match c {
             Connected::Copied {
                 target,
@@ -1943,6 +2159,13 @@ fn row(
     )
 }
 
+fn shortcut_row_id(bind: Bind) -> &'static str {
+    match bind {
+        Bind::StartStop => "row-shortcut-start-stop",
+        Bind::PauseResume => "row-shortcut-pause-resume",
+    }
+}
+
 fn row_with(
     id: &'static str,
     label: &'static str,
@@ -2085,6 +2308,23 @@ impl Render for SettingsWindow {
         let sidebar = self.sidebar(&theme, cx);
         div()
             .track_focus(&self.root)
+            // Escape reaches here only once nothing inside wanted it: a menu, a popover, or the
+            // language list closes first. Typed search clears first, then the window closes.
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let key = &event.keystroke;
+                if key.key != "escape" || key.modifiers.modified() {
+                    return;
+                }
+                cx.stop_propagation();
+                if this.query.is_empty() {
+                    window.remove_window();
+                } else {
+                    this.search
+                        .update(cx, |search, cx| search.set_value("", window, cx));
+                    this.query = SharedString::default();
+                    cx.notify();
+                }
+            }))
             .on_action(cx.listener(|this, _: &Find, window, cx| {
                 this.search.update(cx, |search, cx| {
                     search.focus(window, cx);

@@ -702,7 +702,7 @@ fn the_summaries_sheet_says_when_summaries_are_ready(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn ollama_section_only_for_ollama_choices(cx: &mut TestAppContext) {
+fn ollama_section_only_for_ollama_choices_and_each_command_copy_says_so(cx: &mut TestAppContext) {
     let mut rig = rig(&["en"]);
     let gemma: ModelId<Llm> = GEMMA.parse().unwrap();
     rig.llm.set_availability(
@@ -742,6 +742,27 @@ fn ollama_section_only_for_ollama_choices(cx: &mut TestAppContext) {
     click(window, &format!("model-{GEMMA}"), cx);
     until(cx, "the Ollama steps once Gemma is chosen", |cx| {
         has(window, "settings-ollama", cx)
+    });
+
+    click(window, "copy-ollama serve", cx);
+    until(cx, "the command's check mark", |cx| {
+        label(window, "copy-ollama serve", cx).as_deref() == Some("Copied ollama serve")
+    });
+    assert_eq!(
+        cx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("ollama serve")
+    );
+    assert_eq!(
+        label(window, "copy-brew install ollama", cx).as_deref(),
+        Some("Copy brew install ollama"),
+        "only the command just copied says so"
+    );
+    cx.executor()
+        .advance_clock(dory_gpui::copied::COPIED_FOR + Duration::from_millis(50));
+    until(cx, "the Copy label to come back", |cx| {
+        label(window, "copy-ollama serve", cx).as_deref() == Some("Copy ollama serve")
     });
 }
 
@@ -1526,6 +1547,113 @@ fn settings_reopens_on_the_pane_it_showed_last(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_shortcut_is_recorded_from_the_next_keystroke_and_cleared(cx: &mut TestAppContext) {
+    use dory_gpui::shortcuts::{Bind, Shortcut};
+
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::Recording, cx);
+    let saved = |bind, cx: &mut TestAppContext| {
+        app.read_with(cx, |app, _| {
+            app.prefs.shortcuts.get(bind).map(Shortcut::unparse)
+        })
+    };
+    let note = |bind: &str, cx: &mut TestAppContext| {
+        label(window, &format!("shortcut-note-{bind}"), cx).unwrap_or_default()
+    };
+    until(cx, "the shortcut rows", |cx| {
+        has(window, "shortcut-start-stop", cx)
+    });
+    assert_eq!(
+        label(window, "shortcut-start-stop", cx).as_deref(),
+        Some("Record a shortcut to start or stop recording"),
+        "none is set by default"
+    );
+    assert_eq!(saved(Bind::StartStop, cx), None);
+
+    click(window, "shortcut-start-stop", cx);
+    assert_eq!(
+        label(window, "shortcut-start-stop", cx).as_deref(),
+        Some("Start or stop recording, type the shortcut")
+    );
+    press(window, "r", cx);
+    assert_eq!(
+        saved(Bind::StartStop, cx),
+        None,
+        "a plain R would eat typing"
+    );
+    assert!(
+        note("start-stop", cx).starts_with("Hold ⌘ or ⌃"),
+        "{}",
+        note("start-stop", cx)
+    );
+    press(window, "ctrl-alt-r", cx);
+    assert_eq!(saved(Bind::StartStop, cx).as_deref(), Some("ctrl-alt-r"));
+    assert_eq!(
+        label(window, "shortcut-start-stop", cx).as_deref(),
+        Some("Start or stop recording, Control Option R")
+    );
+
+    click(window, "shortcut-pause-resume", cx);
+    press(window, "ctrl-alt-r", cx);
+    assert_eq!(saved(Bind::PauseResume, cx), None, "one shortcut, one bind");
+    assert!(
+        note("pause-resume", cx).contains("already the shortcut to start or stop recording"),
+        "{}",
+        note("pause-resume", cx)
+    );
+    press(window, "escape", cx);
+    assert!(
+        cx.update(|cx| cx.windows().contains(&window)),
+        "Escape cancels the recording, not Settings"
+    );
+    assert_eq!(
+        label(window, "shortcut-pause-resume", cx).as_deref(),
+        Some("Record a shortcut to pause or resume recording")
+    );
+
+    click(window, "shortcut-pause-resume", cx);
+    press(window, "cmd-w", cx);
+    assert!(
+        cx.update(|cx| cx.windows().contains(&window)),
+        "⌘W is recorded, not run"
+    );
+    assert_eq!(saved(Bind::PauseResume, cx).as_deref(), Some("cmd-w"));
+
+    click(window, "shortcut-clear-start-stop", cx);
+    assert_eq!(saved(Bind::StartStop, cx), None);
+    assert!(!has(window, "shortcut-clear-start-stop", cx));
+}
+
+#[gpui_kit::test]
+fn escape_clears_typed_search_then_closes_settings(cx: &mut TestAppContext) {
+    let rig = rig(&["en"]);
+    let (main, app) = open(&rig, cx);
+    let window = open_settings(&app, main, settings_window::Pane::General, cx);
+    click(window, "settings-search", cx);
+    cx.update_window(window, |_, window, cx| window.input("process", cx))
+        .unwrap();
+    render(window, cx);
+    assert!(has(window, "settings-hit-processing", cx));
+
+    press(window, "escape", cx);
+    assert!(
+        !has(window, "settings-hit-processing", cx),
+        "the first Escape clears the search"
+    );
+    assert!(cx.update(|cx| cx.windows().contains(&window)));
+
+    cx.update_window(window, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(
+        !cx.update(|cx| cx.windows().contains(&window)),
+        "the next Escape closes Settings"
+    );
+    assert!(cx.update(|cx| cx.windows().contains(&main)));
+}
+
+#[gpui_kit::test]
 fn search_jumps_to_the_setting_and_highlights_it(cx: &mut TestAppContext) {
     let rig = rig(&["en"]);
     let (main, app) = open(&rig, cx);
@@ -1912,7 +2040,7 @@ fn the_assistant_app_menu_picks_codex_and_copies_its_config(cx: &mut TestAppCont
         Some("Copied the setup for Codex")
     );
     cx.executor()
-        .advance_clock(dory_gpui::app::COPIED_FOR + Duration::from_millis(50));
+        .advance_clock(dory_gpui::copied::COPIED_FOR + Duration::from_millis(50));
     until(cx, "the copy icon to come back", |cx| {
         has(window, "copy-icon-copy", cx) && !has(window, "copy-icon-check", cx)
     });

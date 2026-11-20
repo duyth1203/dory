@@ -175,6 +175,10 @@ pub struct TranscriptView {
     measured_for: Measured,
     /// The page's left margin beside the column, as the detail pane last measured it.
     gutter: f32,
+    /// How tall a long transcript's list is, as the detail pane last measured the page.
+    list_height: Option<Pixels>,
+    /// How tall the tab row pinned over the page is.
+    tab_row: Pixels,
     _subscriptions: [Subscription; 2],
 }
 
@@ -207,6 +211,8 @@ impl TranscriptView {
             marked: None,
             measured_for: Measured::of(&Theme::get(cx), false),
             gutter: 0.,
+            list_height: None,
+            tab_row: Theme::get(cx).text(TAB_ROW),
             _subscriptions: [on_session, on_player],
         };
         view.sync_detail(cx);
@@ -315,7 +321,7 @@ impl TranscriptView {
     ) -> impl IntoElement + use<> {
         let (page, list) = (self.page.clone(), self.list.clone());
         let this = cx.entity().downgrade();
-        let (top, bottom) = (Theme::get(cx).text(TAB_ROW) + px(8.), px(DOCK_CLEARANCE));
+        let (top, bottom) = (self.tab_row + px(8.), px(DOCK_CLEARANCE));
         canvas(
             move |bounds, window, cx: &mut App| {
                 let item = if in_list {
@@ -901,6 +907,14 @@ impl TranscriptView {
             cx.notify();
         }
     }
+
+    /// The detail pane sets these each time it lays out, just before this view renders.
+    pub fn set_viewport(&mut self, list_height: Option<Pixels>, tab_row: Pixels) {
+        self.list_height = list_height;
+        if tab_row > Pixels::ZERO {
+            self.tab_row = tab_row;
+        }
+    }
 }
 
 /// The script's timestamp column and the gap after it. The transcript moves left by both so the
@@ -966,7 +980,12 @@ impl Render for TranscriptView {
                 .children(turns)
                 .into_any_element();
         }
-        let height = window.viewport_size().height - px(TOOLBAR) - Theme::get(cx).text(TAB_ROW);
+        let height = self.list_height.unwrap_or_else(|| {
+            window.viewport_size().height
+                - px(TOOLBAR)
+                - Theme::get(cx).text(TAB_ROW)
+                - px(DOCK_CLEARANCE)
+        });
         // The clearance sits outside the list: GPUI's list reports its scroll range without its
         // own padding, and the chaining rule reads that range to find the bottom.
         let probe = self.reveal.map(|r| self.probe(r.turn, true, cx));
@@ -981,7 +1000,7 @@ impl Render for TranscriptView {
                         cx.processor(|this, ix, window, cx| this.render_turn(ix, window, cx)),
                     )
                     .w_full()
-                    .h(height - px(DOCK_CLEARANCE)),
+                    .h(height),
                 )),
             )
             .children(probe)

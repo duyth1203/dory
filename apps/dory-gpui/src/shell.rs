@@ -28,6 +28,8 @@ use crate::sidebar::Sidebar;
 use crate::theme::{self, Theme};
 
 const NARROW_WINDOW: f32 = 900.0;
+/// Space under the page's column, inside the scroll area.
+pub const PAGE_BOTTOM: f32 = 32.0;
 
 /// The landmarks F6 and Shift-F6 move between, in visual order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -614,7 +616,7 @@ impl Render for Shell {
                                     .w_full()
                                     .max_w(px(theme.column() + 2. * side_padding))
                                     .px(px(side_padding))
-                                    .pb(px(32.))
+                                    .pb(px(PAGE_BOTTOM))
                                     .child(page),
                             ),
                     )

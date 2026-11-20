@@ -58,7 +58,8 @@ use crate::app::{
     AppState, Detail, DetailTab, Loadable, Saved, Session, Shown, SummaryVersion, TranscriptText,
 };
 use crate::combobox::LanguageCombobox;
-use crate::export::{ExportFormat, Has};
+use crate::copied;
+use crate::export::{CopyWhat, ExportFormat, Has};
 use crate::find::Place;
 use crate::fonts;
 use crate::icons::{self, Icon};
@@ -177,7 +178,10 @@ struct Pinning {
     column_x: Pixels,
     column_w: Pixels,
     card_h: Pixels,
+    /// The tab row in the page's flow, without the title.
     tabs_h: Pixels,
+    /// The tab row pinned to the top, with the title, which can wrap it onto another line.
+    pinned_h: Pixels,
     docked: bool,
     stuck: bool,
 }
@@ -186,7 +190,12 @@ struct Pinning {
 enum Slot {
     Card,
     Tabs,
+    Pinned,
 }
+
+/// Space the page keeps under the column while the player is docked, so the bar never covers
+/// the end of the page.
+const DOCKED_CLEARANCE: f32 = 80.;
 
 struct TitleEdit {
     field: Entity<InputState>,
@@ -450,20 +459,30 @@ impl DetailPane {
         let pane: WeakEntity<Self> = cx.entity().downgrade();
         canvas(
             move |bounds, window, cx: &mut App| {
-                let visible = window.content_mask().bounds;
                 let mut next = measured.get();
-                next.visible = visible;
-                next.column_x = bounds.origin.x;
-                next.column_w = bounds.size.width;
+                // The pinned row paints outside the scroll area, so it only reports its height.
+                if let Slot::Pinned = slot {
+                    next.pinned_h = bounds.size.height;
+                } else {
+                    let visible = window.content_mask().bounds;
+                    next.visible = visible;
+                    next.column_x = bounds.origin.x;
+                    next.column_w = bounds.size.width;
+                }
+                let visible = next.visible;
                 match slot {
                     Slot::Card => {
                         next.card_h = bounds.size.height;
                         next.docked = bounds.bottom() < visible.top();
                     }
+                    // While stuck the slot holds the pinned row's height, not its own.
                     Slot::Tabs => {
-                        next.tabs_h = bounds.size.height;
+                        if !laid_out.stuck {
+                            next.tabs_h = bounds.size.height;
+                        }
                         next.stuck = bounds.top() < visible.top();
                     }
+                    Slot::Pinned => {}
                 }
                 measured.set(next);
                 if next != laid_out {
@@ -534,6 +553,7 @@ impl DetailPane {
         summarizing: Option<Option<u64>>,
         readout: Option<String>,
         phase: Option<&Phase>,
+        just_copied: bool,
         theme: &Theme,
     ) -> AnyElement {
         let tab_button = |id: &'static str,
@@ -572,6 +592,11 @@ impl DetailPane {
                 Box::new(CopyTranscript),
             ),
         };
+        let (copy_label, copy_name) = if just_copied {
+            ("Copied", "Copied")
+        } else {
+            (copy_label, copy_name)
+        };
         let id = detail.recording.id.clone();
         let action = |id: &'static str, label: &str| {
             Button::new(id)
@@ -603,6 +628,9 @@ impl DetailPane {
             .child(gated(
                 action("copy", copy_label)
                     .accessibility_label(copy_name.to_owned())
+                    .when(just_copied, |button| {
+                        button.child(Icon::Check.view(12., theme.accent_text))
+                    })
                     .on_click(move |_, window, cx| window.dispatch_action(copy.boxed_clone(), cx)),
                 copy_on,
             ))
@@ -1271,6 +1299,29 @@ impl Render for DetailPane {
         let has_card = processing || detail.recording.take.is_some();
         let docked = !processing && detail.recording.take.is_some() && pinning.docked;
         let stuck = body == Body::Tabs && pinning.stuck;
+        // The pinned row is measured once it first shows; until then it is taken as tall as the
+        // row in the page.
+        let row_h = if stuck && pinning.pinned_h > Pixels::ZERO {
+            pinning.pinned_h
+        } else {
+            pinning.tabs_h
+        };
+        // What a long transcript's list may fill: the page's clip less the pinned row and what
+        // the page keeps under the list. At the bottom of the page the list then starts right
+        // under the pinned row, so no turn hides behind it.
+        let list_height = (pinning.tabs_h > Pixels::ZERO).then(|| {
+            let under = px(transcript_view::DOCK_CLEARANCE)
+                + px(crate::shell::PAGE_BOTTOM)
+                + if docked {
+                    px(DOCKED_CLEARANCE)
+                } else {
+                    Pixels::ZERO
+                };
+            pinning.visible.size.height - row_h - under
+        });
+        self.transcript.update(cx, |transcript, _| {
+            transcript.set_viewport(list_height, row_h)
+        });
 
         let card_slot = has_card.then(|| {
             div()
@@ -1316,6 +1367,7 @@ impl Render for DetailPane {
                     dots,
                     readout.clone(),
                     phase.as_ref(),
+                    copied::is(CopyWhat::of(tab).key(), cx),
                     &theme,
                 );
                 let (in_flow, pinned) = if stuck {
@@ -1325,7 +1377,7 @@ impl Render for DetailPane {
                 };
                 let slot = div()
                     .relative()
-                    .when(stuck, |slot| slot.h(pinning.tabs_h))
+                    .when(stuck, |slot| slot.h(row_h))
                     .children(in_flow)
                     .child(self.watch(Slot::Tabs, cx));
                 let page = match tab {
@@ -1366,8 +1418,10 @@ impl Render for DetailPane {
                             .position(point(pinning.visible.left(), pinning.visible.top()))
                             .child(
                                 div()
+                                    .relative()
                                     .w(pinning.visible.size.width)
                                     .bg(theme.window_bg)
+                                    .child(self.watch(Slot::Pinned, cx))
                                     .child(
                                         div()
                                             .ml(pinning.column_x - pinning.visible.left())
@@ -1434,7 +1488,7 @@ impl Render for DetailPane {
             .flex_col()
             .gap(px(16.))
             .pt(px(24.))
-            .when(docked, |page| page.pb(px(80.)))
+            .when(docked, |page| page.pb(px(DOCKED_CLEARANCE)))
             .child(
                 div()
                     .flex()
